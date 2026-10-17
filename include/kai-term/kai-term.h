@@ -268,6 +268,21 @@ typedef struct Term {
        cl_w is the number of cells the anchor consumed (1 or 2); cl_join is set after a ZWJ so
        the next emoji base codepoint also joins the same anchor. */
     int cl_valid, cl_cx, cl_cy, cl_w, cl_join;
+    /* The shell's input line, remembered so main.c can tell an UNTOUCHED prompt from a line the user
+       has already typed on (term_at_prompt). prompt_row holds prompt_cols cells — the whole row the
+       cursor was sitting on at the last snapshot — and prompt_cx the cursor column at that moment.
+       A snapshot is taken at the end of every output burst EXCEPT while input_pending is set, i.e. while
+       bytes the terminal itself sent are still outstanding: output arriving then is the tty echoing that
+       typing (or readline redrawing the line), and remembering it would remember the user's half-typed
+       command as the prompt. prompt_valid is 0 after anything that moves or re-wraps rows (a resize, a
+       reset, CSI 3 J), which means "unknown" — and unknown counts as NOT at a prompt. prompt_cy is the row
+       the snapshot is of: comparing it stops a cursor that moved to a DIFFERENT row which happens to look
+       like the remembered one (two blank rows) from passing for the prompt. Leaving the alternate screen
+       is the one case that re-takes the snapshot even while an echo is outstanding — the main grid comes
+       back byte-for-byte, so the row under the restored cursor IS the prompt. See the prompt section in
+       src/vt.c. */
+    Cell *prompt_row;
+    int   prompt_cols, prompt_cx, prompt_cy, prompt_valid, input_pending;
     /* Terminal query responses (CPR, DA1, DA2) queued for the PTY. */
     char resp[256];
     int resp_len;
@@ -310,6 +325,51 @@ void term_init(Term *t, int rows, int cols, int scrollback);
 void term_destroy(Term *t);
 void term_resize(Term *t, int rows, int cols);
 void term_parse(Term *t, const uint8_t *buf, size_t len);
+
+/* Is this session sitting at a prompt the user has not typed on? 1 = the row the cursor is on still
+   holds exactly what the shell last printed there, and the cursor has not moved since.
+   WHY THIS EXISTS: the file manager writes at the shell's prompt (`cd <dir>`, or the selected path),
+   and doing that on top of a half-typed command mangles it and then RUNS the mangled result. Kai-Term
+   cannot know where a prompt ENDS — the tty echoes what the user types, and that echo arrives as
+   ordinary output — so the rule is a snapshot of the cursor row plus the cursor column, re-taken
+   whenever the application produces output that is not the echo of bytes we sent. Typing, a history
+   recall (readline redraws the line) and a paste all change that row without any application output
+   in between, so they are caught; backspacing everything away, or arrowing back down to an empty
+   prompt, redraws it exactly as the shell printed it and the match comes back. 0 also answers for the
+   alternate screen, for a session scrolled back into its history, and for one whose rows moved since
+   the last snapshot. */
+int term_at_prompt(Term *t);
+/* Tell the model that the terminal just sent these bytes to the application (a keystroke, a paste, a
+   line the file manager typed). A payload holding CR or LF submits the line, which clears the flag; so
+   does Ctrl+C, which discards it. That is what lets term_parse tell an echo/redraw (bytes we sent are
+   outstanding — do NOT re-take the prompt snapshot) from the application's own output (do). Call it for
+   INPUT only: a query answer (DA1, DSR, CPR) or a mouse report is not typing and must not set it. */
+void term_note_input(Term *t, const void *buf, size_t len);
+
+/* The longest input line term_prompt_line() will hand back. A line of `cols` wide codepoints plus
+   CLUSTER_MAX modifiers each cannot come near this at any window size Kai-Term supports, so hitting the
+   cap means something absurd — and term_prompt_line() REFUSES rather than truncating a command. */
+#define FM_LINE_MAX 8192
+
+/* Can the session's input line be described EXACTLY as "the remembered prompt, then typed text that ends
+   exactly at the cursor"? 1 = yes, and `out` (NUL-terminated, at most cap-1 bytes) receives that typed
+   text — "" when the line is empty. 0 = no, and `out` is untouched.
+   WHY THIS EXISTS: the file manager must follow the browser even when the user has already typed
+   something (user request, s79): Kai-Term clears the line, sends `cd <dir>`, and puts what was there back
+   on the new prompt. That is only safe if it can say what IS on the line and prove where the line ends,
+   which is exactly what this answers. It is deliberately STRICTER than term_at_prompt() in shape and
+   LOOSER in one way:
+     - requires the prompt prefix (columns 0..prompt_cx-1) to still match the snapshot, so the prompt
+       itself was not redrawn under us, and everything right of the cursor to match it too, so the cursor
+       sits at the END of the line's content. A cursor parked mid-line is a refusal: erasing from there
+       would leave the right half of the text behind, and the `cd` would be typed in front of it.
+     - does NOT consult input_pending. The row comparison is the evidence, and Kai-Term's own typed path
+       sets that flag while leaving a perfectly describable line behind.
+   A wide glyph contributes ONE codepoint (its continuation cell is skipped) and a cluster's extra
+   codepoints are appended, so re-typing the returned bytes reproduces the line. A cell never written
+   inside the range becomes a space, as in term_selection_text(). If the text does not fit in cap the
+   answer is 0: losing half of the user's command is worse than not following the browser. */
+int term_prompt_line(Term *t, char *out, size_t cap);
 
 /* selection */
 typedef struct {
@@ -414,11 +474,13 @@ int keymods_parse(const char *spec, unsigned *mods);
 int keybind_parse_plain(const char *spec, KeyBind *out);
 
 /* The keys the file manager uses while it has the keyboard. Grouped in one struct because they are
-   twelve actions of one feature, and main.c matches them as a set. */
+   fourteen actions of one feature, and main.c matches them as a set. */
 typedef struct {
     KeyBind up, down, pageup, pagedown, home, end;   /* move the selection */
-    KeyBind open;        /* Enter: descend into the selected directory */
-    KeyBind parent;      /* Backspace: go to the parent directory */
+    KeyBind left;      /* go to the parent directory (the same action BackSpace has always had) */
+    KeyBind right;     /* descend into the selected directory — and NOTHING on a file, unlike open */
+    KeyBind open;      /* Enter: descend into the selected directory, else type its path */
+    KeyBind parent;    /* Backspace: go to the parent directory */
     KeyBind refresh;     /* re-read the current directory */
     KeyBind preview;     /* show / hide the preview pane */
     KeyBind hidden;      /* show / hide dotfiles */
@@ -948,6 +1010,9 @@ typedef struct Font {
     int      catlas_w, catlas_h;
     uint32_t catlas_tex;   /* GL texture of catlas (renderer owns, font marks dirty) */
     int      catlas_dirty;
+    int      catlas_broken; /* 1 while the renderer cannot get GPU storage for catlas: draw the mono
+                               fallback instead (the renderer sets and clears it, font.c never reads it
+                               except through the renderer's own emit path) */
     int      cshelf_x, cshelf_y, cshelf_h;
     ColorGlyph **ctab;     /* open-addressing hash over the cluster sequence */
     unsigned ctab_mask, ctab_count;
@@ -1014,6 +1079,13 @@ typedef struct Render {
                                     repaint its own cells but not the bar that names its tab. */
     void *ecfg;                  /* EGLConfig */
     void *nwin;                  /* EGLNativeWindowType (wl_egl_window) */
+    /* Texture uploads fail when the GPU is out of memory (this box runs a local LLM that holds most of
+       the VRAM). Every upload site logs the failure, and none of them may draw with the texture that
+       has no texels — on the NVIDIA driver that faults inside libnvidia-eglcore. These counters back the
+       error lines off to about one per two seconds while a retry loop runs, and catlas_wait paces the
+       color-atlas retry itself (see render_draw). */
+    int atlas_upload_fails, catlas_upload_fails, img_upload_fails, fm_upload_fails;
+    int catlas_wait;             /* frames to skip before re-trying a refused color-atlas upload */
 } Render;
 
 /* ---------- image decoding (src/img.c) ----------
@@ -1060,7 +1132,10 @@ int  render_init(Render *r, void *wl_display, void *egl_window, int w, int h, fl
    grid of pane p is terms[lay->pane[p].tab] (NULL draws an empty pane). `fm` is the file manager whose
    cell grids the layout laid out (NULL or fm->on == 0 draws no band); its painted panes go through the
    same two passes as a session grid, and its preview picture is drawn between the batches like any other
-   picture. Returns 1 when a new buffer was attached, 0 when the swap failed. */
+   picture. Returns 1 when a new buffer was attached, 0 when nothing was drawn (a failed swap, or a
+   refused texture upload that the renderer can live without), and -1 when the glyph atlas could not be
+   uploaded even after dropping every picture texture: nothing can be drawn at all, and the caller must
+   exit rather than keep going (drawing with an unbacked texture segfaults inside the driver). */
 int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const FileMgr *fm);
 void render_resize(Render *r, int w, int h);
 void render_destroy(Render *r);

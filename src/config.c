@@ -85,6 +85,8 @@ void config_default(Config *c)
     keybind_parse_plain("Page_Down", &c->fm_key.pagedown);
     keybind_parse_plain("Home",      &c->fm_key.home);
     keybind_parse_plain("End",       &c->fm_key.end);
+    keybind_parse_plain("Left",      &c->fm_key.left);
+    keybind_parse_plain("Right",     &c->fm_key.right);
     keybind_parse_plain("Return",    &c->fm_key.open);
     keybind_parse_plain("BackSpace", &c->fm_key.parent);
     keybind_parse_plain("r",         &c->fm_key.refresh);
@@ -466,6 +468,13 @@ static void apply(Config *c, const char *key, char *val)
         set_fm_keybind(&c->fm_key.home, key, val);
     } else if (!strcmp(key, "fm_key_end")) {
         set_fm_keybind(&c->fm_key.end, key, val);
+    } else if (!strcmp(key, "fm_key_left")) {
+        /* Back to the parent directory — the arrow the user expects to mean "up one level". */
+        set_fm_keybind(&c->fm_key.left, key, val);
+    } else if (!strcmp(key, "fm_key_right")) {
+        /* Into the highlighted directory. Unlike fm_key_open this never types anything: on a file it
+           does nothing at all, which is what makes holding Right through a listing safe. */
+        set_fm_keybind(&c->fm_key.right, key, val);
     } else if (!strcmp(key, "fm_key_open")) {
         set_fm_keybind(&c->fm_key.open, key, val);
     } else if (!strcmp(key, "fm_key_parent")) {

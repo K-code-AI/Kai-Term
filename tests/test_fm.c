@@ -90,6 +90,15 @@ static int find_pos(const FileMgr *fm, const char *name)
     return -1;
 }
 
+/* Is NAME one of the entries a scan produced (the whole listing, not the filtered view)? */
+static int has_entry(const FmScan *s, const char *name)
+{
+    for (int i = 0; i < s->n; i++)
+        if (!strcmp(s->ent[i].name, name))
+            return 1;
+    return 0;
+}
+
 /* A text file, written by strlen() and never by a hand-typed byte count. The first draft typed the
    counts: code.c lost its last 11 bytes (so the `return` a later check looks for was not in the file),
    and notes.md / Makefile asked for MORE bytes than their literal holds, i.e. read past it. */
@@ -411,10 +420,15 @@ static void test_scan(void)
 
     FmScan *s = fm_scan_build(root, 1);
     CHECK(s != NULL, "scan: a listing is produced");
-    CHECK(s && s->n == real, "scan: every entry is listed (compared against a plain opendir count)");
+    CHECK(s && s->n == real + 1,
+          "scan: every entry is listed (plain opendir count) plus the .. row the model adds");
     CHECK(s && !s->err[0], "scan: a readable directory reports no error");
     CHECK(s && !s->truncated, "scan: a small directory is not truncated");
     CHECK(s && !strcmp(s->dir, root), "scan: the answer names the directory it scanned");
+    CHECK(s && !strcmp(s->ent[0].name, "..") && s->ent[0].kind == FMK_DIR && !s->ent[0].hidden,
+          "scan: .. is the first entry, is a directory, and is never hidden");
+    CHECK(s && s->ent[0].mtime > 0 && (s->ent[0].mode & S_IFDIR) == S_IFDIR,
+          "scan: .. carries the PARENT's own stat, not a made-up one");
 
     /* Directories first, then case-insensitive: Zdir sorts with the other directories, not after them. */
     int zdir = -1, adir = -1, first_file = -1;
@@ -423,7 +437,7 @@ static void test_scan(void)
         if (!strcmp(s->ent[i].name, "adir")) adir = i;
         if (!strcmp(s->ent[i].name, "file.txt")) first_file = i;
     }
-    CHECK(adir == 0, "scan: the first entry is a directory");
+    CHECK(adir == 1, "scan: the first entry under .. is a directory");
     CHECK(zdir > adir && zdir < first_file, "scan: directories come first, case-insensitively");
     CHECK(s->ent[adir].kind == FMK_DIR, "scan: a directory is FMK_DIR");
     CHECK(s->ent[adir].mode & 0755, "scan: the mode is kept");
@@ -451,11 +465,20 @@ static void test_scan(void)
         CHECK(fifo >= 0 && s->ent[fifo].kind == FMK_FIFO, "scan: a FIFO is FMK_FIFO");
     }
 
-    /* The cap: truncation must be reported, not silently dropped. */
+    /* The cap: truncation must be reported, not silently dropped. The .. row costs one slot — it is an
+       entry like any other, and a listing that dropped it under a cap would hide the way out. */
     FmScan *t = fm_scan_build_n(root, 2, 5);
     CHECK(t && t->n == 5, "scan: max_entries is honoured");
     CHECK(t && t->truncated, "scan: a capped listing says so");
+    CHECK(t && !strcmp(t->ent[0].name, ".."), "scan: a capped listing still starts with ..");
     fm_scan_free(t);
+
+    /* The root has no parent to show, so it gets no .. row — the same move fm_parent() refuses. */
+    FmScan *r = fm_scan_build("/", 6);
+    CHECK(r && r->n > 0, "scan: / lists something");
+    CHECK(r && strcmp(r->ent[0].name, "..") && !has_entry(r, ".."),
+          "scan: / has no .. row");
+    fm_scan_free(r);
 
     /* Failure paths. */
     FmScan *bad = fm_scan_build("/kai-term-no-such-directory", 3);
@@ -487,6 +510,13 @@ static void test_nav(void)
     fm_init(&fm, root);
     CHECK(!strcmp(fm.dir, root), "nav: the model starts in the requested directory");
     CHECK(fm.focus == FM_FOCUS_LIST && fm.preview_on, "nav: sane initial focus/preview state");
+    /* The row the band opens ON is the row the first Return / Right acts on. Measured live (s76): it
+       opened on the `..` row, so the first Right went UP a level instead of into a directory. */
+    CHECK(fm.sel == 1, "init: a non-root directory opens on its first REAL row, not on the .. row");
+    FileMgr r0;
+    fm_init(&r0, "/");
+    CHECK(r0.sel == 0, "init: / opens on row 0, because it has no .. row");
+    fm_destroy(&r0);
 
     unsigned long seq = 0;
     CHECK(fm_go(&fm, root, &seq) == 1, "nav: the first listing is requested");
@@ -501,7 +531,7 @@ static void test_nav(void)
     CHECK(fm_install_scan(&fm, fresh) == 1, "nav: the newest answer is installed");
     CHECK(fm.n > 0 && fm.nvis < fm.n, "nav: the view hides the dotfile");
     CHECK(fm.have_listing, "nav: a listing is now installed");
-    CHECK(fm_sel(&fm) == 0, "nav: the first entry is selected");
+    CHECK(fm_sel(&fm) == 1, "nav: a fresh listing selects the first REAL entry, not the .. row");
     CHECK(fm_count(&fm) == fm.nvis, "nav: fm_count is the view size");
 
     /* Asking for the directory we are already showing must not re-request it. */
@@ -516,13 +546,13 @@ static void test_nav(void)
 
     fm_set_size(&fm, 40, 10, 40, 10);
     int avail = 10 - 2;                       /* header + footer */
-    CHECK(fm_sel(&fm) == 0 && fm.top == 0, "nav: fresh view starts at the top");
+    CHECK(fm_sel(&fm) == 1 && fm.top == 0, "nav: fresh view starts at the top");
     fm_move(&fm, 1);
-    CHECK(fm_sel(&fm) == 1, "nav: move down");
+    CHECK(fm_sel(&fm) == 2, "nav: move down");
     fm_move(&fm, -1);
-    CHECK(fm_sel(&fm) == 0, "nav: move up");
+    CHECK(fm_sel(&fm) == 1, "nav: move up");
     fm_move(&fm, -5);
-    CHECK(fm_sel(&fm) == 0, "nav: the selection cannot go above the first entry");
+    CHECK(fm_sel(&fm) == 0, "nav: the selection cannot go above the .. row");
     fm_page(&fm, 1);
     CHECK(fm_sel(&fm) == avail, "nav: one page is one pane of entries");
     CHECK(fm.top == 1, "nav: the view scrolled to keep the selection visible");
@@ -534,24 +564,35 @@ static void test_nav(void)
 
     /* The selected entry and its path. */
     const FmEntry *e = fm_sel_entry(&fm);
-    CHECK(e != NULL && e->kind == FMK_DIR, "nav: the selected entry is the first directory");
+    CHECK(e != NULL && !strcmp(e->name, ".."), "nav: Home lands on the .. row");
     char path[1024];
     CHECK(fm_entry_path(&fm, 0, path, sizeof path), "nav: the path of entry 0 is built");
-    CHECK(strncmp(path, root, strlen(root)) == 0 && path[strlen(root)] == '/' &&
-          !strcmp(path + strlen(root) + 1, fm_sel_entry(&fm)->name),
-          "nav: an entry path is the directory, one slash, and the name");
+    CHECK(!strcmp(path, "/tmp"), "nav: the .. row's path is the parent, not dir/.. left as text");
     CHECK(fm_entry_path(&fm, 9999, path, sizeof path) == 0 && path[0] == 0,
           "nav: an out-of-range position builds nothing");
 
     /* Enter on a directory descends; Enter on a file does nothing. */
+    fm_select(&fm, find_pos(&fm, "adir"));
+    CHECK(fm_sel_entry(&fm) && !strcmp(fm_sel_entry(&fm)->name, "adir"),
+          "nav: the selection moved to a real directory");
     CHECK(fm_go_sel(&fm, &seq) == 1, "nav: Enter on a directory requests the new listing");
     char want[1024];
     snprintf(want, sizeof want, "%s/adir", root);
     CHECK(!strcmp(fm.dir, want), "nav: the model moved into adir");
+    /* Until adir's listing lands, the entries in memory belong to root. Building a preview path out of
+       them asked the worker to stat `<adir>/<a name from root>` — measured live (s76) on every single
+       navigation (`fm: preview: cannot stat …/dirA: No such file or directory`). */
+    CHECK(!fm.have_listing, "nav: the old listing no longer describes this directory");
+    char ppath[1024];
+    unsigned long pseq = 0;
+    CHECK(fm_preview_request(&fm, &pseq, ppath, sizeof ppath) == 1 && !strcmp(ppath, want),
+          "nav: while the new listing loads, the preview asked for is the directory itself");
     FmScan *as = fm_scan_build(fm.dir, seq);
     CHECK(fm_install_scan(&fm, as) == 1, "nav: adir's listing installs");
-    CHECK(fm_count(&fm) == 1 && !strcmp(fm_sel_entry(&fm)->name, "inside.txt"),
-          "nav: adir holds exactly the one file created in it");
+    CHECK(fm_count(&fm) == 2 && !strcmp(vis_at(&fm, 0)->name, ".."),
+          "nav: the directory entered starts with its own .. row");
+    CHECK(fm_count(&fm) == 2 && !strcmp(fm_sel_entry(&fm)->name, "inside.txt"),
+          "nav: adir holds the one file created in it, and lands on it");
     CHECK(fm_go_sel(&fm, &seq) == 0, "nav: Enter on a plain file does not navigate");
     CHECK(fm_parent(&fm, &seq) == 1, "nav: Backspace goes to the parent");
     CHECK(!strcmp(fm.dir, root), "nav: the parent of root/adir is root");
@@ -559,7 +600,7 @@ static void test_nav(void)
     CHECK(fm_parent(&fm, &seq) == 1 && !strcmp(fm.dir, "/"), "nav: the parent of /tmp is /");
     CHECK(fm_parent(&fm, &seq) == 0, "nav: / has no parent");
 
-    /* An empty directory has no selection at all. */
+    /* An empty directory holds nothing but the .. row, and that row is a way out, not a dead end. */
     FileMgr e2;
     fm_init(&e2, "/tmp");
     char emptydir[512];
@@ -569,14 +610,25 @@ static void test_nav(void)
     fm_go(&e2, emptydir, &es);
     FmScan *es_scan = fm_scan_build(emptydir, es);
     fm_install_scan(&e2, es_scan);
-    CHECK(fm_count(&e2) == 0 && fm_sel(&e2) == -1, "nav: an empty directory has no selection");
-    fm_move(&e2, 1);
-    fm_page(&e2, 1);
-    fm_end(&e2);
-    CHECK(fm_sel(&e2) == -1, "nav: navigation on an empty view stays empty (no crash, no wrap)");
-    CHECK(fm_go_sel(&e2, &es) == 0, "nav: Enter with nothing selected does nothing");
+    CHECK(fm_count(&e2) == 1 && !strcmp(fm_sel_entry(&e2)->name, ".."),
+          "nav: an empty directory still offers the .. row");
+    CHECK(fm_sel(&e2) == 0, "nav: and selects it, because there is nothing else");
+    CHECK(fm_go_sel(&e2, &es) == 1 && !strcmp(e2.dir, "/tmp"),
+          "nav: Enter on .. goes up one level");
     fm_destroy(&e2);
     rmdir(emptydir);
+
+    /* A model with no listing at all (the directory could not be read) has no selection, and every
+       navigation on it is a no-op rather than a crash. */
+    FileMgr e3;
+    fm_init(&e3, "/kai-term-no-such-directory");
+    CHECK(fm_count(&e3) == 0 && fm_sel(&e3) == -1, "nav: an unreadable directory has no selection");
+    fm_move(&e3, 1);
+    fm_page(&e3, 1);
+    fm_end(&e3);
+    CHECK(fm_sel(&e3) == -1, "nav: navigation on an empty view stays empty (no crash, no wrap)");
+    CHECK(fm_go_sel(&e3, &es) == 0, "nav: Enter with nothing selected does nothing");
+    fm_destroy(&e3);
 
     fm_destroy(&fm);
 }
@@ -594,7 +646,8 @@ static void test_preview(void)
 {
     FmPreview *p = pv_of("", 1);          /* the directory itself */
     CHECK(p && p->kind == FMP_DIR, "preview: a directory previews as a directory");
-    CHECK(p && p->n == count_dir(root), "preview: a directory preview lists its entries");
+    CHECK(p && p->n == count_dir(root) + 1,
+          "preview: a directory preview lists its entries (and the .. row it starts with)");
     CHECK(p && p->nmeta >= 3, "preview: metadata is built for every kind");
     int found_type = 0;
     if (p)
@@ -719,13 +772,21 @@ static void test_paint(void)
     CHECK(pch(&fm.list, 1, 0) == '/', "paint: the header row shows the directory path");
     const FmEntry *e = fm_sel_entry(&fm);
     CHECK(e != NULL, "paint: something is selected");
-    CHECK(pbg(&fm.list, 0, 1) == SEL_BG && pbg(&fm.list, 20, 1) == SEL_BG,
+    /* Which ROW the painter drew the selection on is the painter's business: entries start below the
+       header and the pane shows a window of the view starting at `top`. Derive it, never hard-code it. */
+    int selrow = 1 + (fm.sel - fm.top);
+    CHECK(pbg(&fm.list, 0, selrow) == SEL_BG && pbg(&fm.list, 20, selrow) == SEL_BG,
           "paint: the selected row is highlighted across its whole width");
-    CHECK(pbg(&fm.list, 0, 2) == BASE_BG, "paint: an unselected row is not");
-    CHECK(pch(&fm.list, 1, 1) == (uint32_t)e->name[0], "paint: the selected name starts at column 1");
-    CHECK(pch(&fm.list, 2, 1) == (uint32_t)e->name[1], "paint: and continues cell by cell");
-    CHECK(pfg(&fm.list, 1, 1) == FM_DIR_COL, "paint: a directory name is drawn in the directory colour");
-    CHECK(pbg(&fm.list, 1, 1) == SEL_BG, "paint: the glyph keeps the row's highlight as its background");
+    CHECK(selrow + 1 < fm.list.rows - 1 && pbg(&fm.list, 0, selrow + 1) == BASE_BG,
+          "paint: an unselected row is not");
+    CHECK(pch(&fm.list, 1, selrow) == (uint32_t)e->name[0], "paint: the selected name starts at column 1");
+    CHECK(pch(&fm.list, 2, selrow) == (uint32_t)e->name[1], "paint: and continues cell by cell");
+    CHECK(pfg(&fm.list, 1, selrow) == FM_DIR_COL, "paint: a directory name is drawn in the directory colour");
+    CHECK(pbg(&fm.list, 1, selrow) == SEL_BG, "paint: the glyph keeps the row's highlight as its background");
+    /* The .. row is drawn like the directory it is, and it is the first row of the pane. */
+    CHECK(fm.top == 0 && !strcmp(vis_at(&fm, 0)->name, "..") &&
+          pch(&fm.list, 1, 1) == '.' && pch(&fm.list, 2, 1) == '.' && pfg(&fm.list, 1, 1) == FM_DIR_COL,
+          "paint: the .. row is the first entry row, drawn as a directory");
 
     int footer_ink = 0;
     for (int x = 0; x < fm.list.cols; x++)

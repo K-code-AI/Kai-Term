@@ -209,6 +209,16 @@ static void parent_path(const char *dir, char *out, size_t cap)
     snprintf(out, cap, "%s", tmp);
 }
 
+/* Which row a listing of `dir` should start on: 1, because row 0 is the `..` row, or 0 at the root, which
+   has no `..` row at all (fm_parent() refuses that move too — the two must agree). Used by fm_init() and
+   fm_go(), which are the two places that choose a selection for a directory nobody has picked in yet. */
+static int first_row_of(const char *dir)
+{
+    char up[FM_PATH_MAX];
+    parent_path(dir, up, sizeof up);
+    return strcmp(up, dir) ? 1 : 0;
+}
+
 /* dir + "/" + name, without ever producing "//" for the root. */
 static void join_path(char *out, size_t cap, const char *dir, const char *name)
 {
@@ -237,10 +247,14 @@ static int entry_kind(mode_t m)
 }
 
 /* Directories first, then case-insensitive by name, then by bytes so the order is total (qsort is not
-   stable, so a comparator that ties leaves the order up to libc). */
+   stable, so a comparator that ties leaves the order up to libc). ".." is pinned before all of that:
+   it is navigation, not content, and a row the user has to hunt for is worse than a fixed one. */
 static int entry_cmp(const void *va, const void *vb)
 {
     const FmEntry *a = va, *b = vb;
+    int adots = !strcmp(a->name, ".."), bdots = !strcmp(b->name, "..");
+    if (adots != bdots)
+        return bdots - adots;
     int ad = a->kind == FMK_DIR, bd = b->kind == FMK_DIR;
     if (ad != bd)
         return bd - ad;
@@ -275,6 +289,31 @@ FmScan *fm_scan_build_n(const char *dir, unsigned long seq, int max_entries)
         closedir(d);
         snprintf(s->err, sizeof s->err, "out of memory listing %.180s", s->dir);
         return s;
+    }
+
+    /* ".." is the first row of every listing except the root's. It is what lets a single mouse click go
+       back a directory, it gives the pointer the same move the Left arrow and BackSpace have, and it makes
+       "up one level" a thing that can be seen. It is SYNTHESIZED rather than taken from readdir: then the
+       row is guaranteed to be there and to have the same shape on every filesystem. Its stat is the
+       parent's own, so the metadata the preview shows for it is real, not invented. At "/" the parent is
+       "/", so the row would be a lie about going anywhere and is left out — fm_parent() refuses the same
+       move, so the two agree. */
+    if (strcmp(s->dir, "/")) {
+        FmEntry *e = &s->ent[s->n++];          /* cap is 64 here, so slot 0 always exists */
+        memset(e, 0, sizeof *e);
+        snprintf(e->name, sizeof e->name, "%s", "..");
+        e->kind = FMK_DIR;
+        e->hidden = 0;                         /* never caught by the dotfile filter */
+        char up[FM_PATH_MAX];
+        parent_path(s->dir, up, sizeof up);
+        struct stat st;
+        if (stat(up, &st) == 0) {
+            e->mode = st.st_mode;
+            e->size = (uint64_t)st.st_size;
+            e->mtime = (int64_t)st.st_mtime;
+        } else {
+            e->kind = FMK_MISSING;             /* cannot happen on a real tree; drawn grey if it does */
+        }
     }
 
     errno = 0;
@@ -345,6 +384,11 @@ void fm_init(FileMgr *fm, const char *dir)
     norm_path(dir && dir[0] ? dir : "/", fm->dir, sizeof fm->dir);
     fm->focus = FM_FOCUS_LIST;
     fm->preview_on = 1;
+    /* The same rule fm_go() uses: row 0 is the `..` row everywhere but the root, and the row the band
+       opens ON is the row the first Return / Right acts on. Opening on `..` meant the first key press
+       went UP a level (measured live, s76). fm_install_scan()'s clamp pulls it back to 0 for a directory
+       that holds nothing else. */
+    fm->sel = first_row_of(fm->dir);
     fm->dirty = 1;
 }
 
@@ -486,6 +530,17 @@ int fm_go(FileMgr *fm, const char *dir, unsigned long *seq)
     if (!strcmp(want, fm->dir) && fm->have_listing)
         return 0;              /* already showing it */
     snprintf(fm->dir, sizeof fm->dir, "%s", want);
+    /* A freshly entered directory selects its first REAL row. Position 0 is the ".." row everywhere but
+       the root, and landing there would make the first Right (or Enter) after a navigation go straight
+       back out again. The clamp in fm_install_scan() pulls it back to 0 for a directory that holds
+       nothing else. */
+    fm->sel = first_row_of(want);
+    /* The entries still in ent[] belong to the directory the user LEFT. They stay painted while the new
+       listing loads (an empty browser for a moment reads as a broken window), but nothing may build a
+       PATH out of them: `fm_preview_request()` did exactly that and asked the worker to stat
+       `<new dir>/<name from the old listing>` for every single navigation (measured live, s76 —
+       `fm: preview: cannot stat …/dirA: No such file or directory` on every move). */
+    fm->have_listing = 0;
     fm->seq++;
     fm->scan_req = fm->seq;
     if (seq)
@@ -511,8 +566,7 @@ int fm_parent(FileMgr *fm, unsigned long *seq)
     parent_path(fm->dir, up, sizeof up);
     if (!strcmp(up, fm->dir))
         return 0;              /* already at the root */
-    fm->sel = 0;
-    return fm_go(fm, up, seq);
+    return fm_go(fm, up, seq); /* fm_go picks the selection */
 }
 
 int fm_go_sel(FileMgr *fm, unsigned long *seq)
@@ -524,17 +578,14 @@ int fm_go_sel(FileMgr *fm, unsigned long *seq)
     if (!fm_entry_path(fm, fm->sel, path, sizeof path))
         return 0;
     if (e->kind == FMK_DIR) {
-        fm->sel = 0;
-        return fm_go(fm, path, seq);
+        return fm_go(fm, path, seq);   /* fm_go picks the selection */
     }
     if (e->kind == FMK_SYMLINK) {
         /* lstat says "symlink"; only stat says what it points at. Following a link to a directory is
            what the user means by Enter, and a dangling link simply fails the stat and does nothing. */
         struct stat st;
-        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-            fm->sel = 0;
+        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
             return fm_go(fm, path, seq);
-        }
     }
     return 0;
 }
@@ -558,7 +609,15 @@ int fm_entry_path(const FileMgr *fm, int pos, char *out, size_t cap)
             out[0] = 0;
         return 0;
     }
-    join_path(out, cap, fm->dir, fm->ent[fm->vis[pos]].name);
+    const FmEntry *e = &fm->ent[fm->vis[pos]];
+    /* ".." gets the parent's own path rather than "<dir>/.." text: the preview header shows this
+       string, and "/home/user/src/.." reads worse there than "/home/user". Nothing else about the
+       entry is special-cased — it is an ordinary row of the listing. */
+    if (!strcmp(e->name, "..")) {
+        parent_path(fm->dir, out, cap);
+        return 1;
+    }
+    join_path(out, cap, fm->dir, e->name);
     return 1;
 }
 
@@ -889,7 +948,9 @@ int fm_install_preview(FileMgr *fm, FmPreview *pv)
 int fm_preview_request(FileMgr *fm, unsigned long *seq, char *path, size_t cap)
 {
     char want[FM_PATH_MAX];
-    if (fm_sel_entry(fm))
+    /* Only a listing of THIS directory can say what is selected. Between a navigation and the answer the
+       entries in memory are the previous directory's, so the directory itself is what gets previewed. */
+    if (fm->have_listing && fm_sel_entry(fm))
         fm_entry_path(fm, fm->sel, want, sizeof want);
     else
         snprintf(want, sizeof want, "%s", fm->dir);

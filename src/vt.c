@@ -642,25 +642,34 @@ static void pen_default(Term *t)
 
 void term_init(Term *t, int rows, int cols, int scrollback)
 {
+    /* Was there a live Term here to clean up at all? The answer has to be taken BEFORE anything is
+       destroyed, because grid_destroy() memsets the Grid and so clears `valid`: the old code re-read
+       t->g.valid for the third block, which made that block DEAD — a reset (ESC c) freed the grid but
+       leaked the image list, the APC buffer, the kitty chunk assembly and the prompt snapshot. Found by
+       LeakSanitizer the day the snapshot became a heap field (s75). The GRID_VALID test is not
+       decoration either: term_init also runs on a never-initialized Term, where stack garbage is
+       routinely non-zero (measured 32511), and freeing a garbage pointer is a crash. */
+    int was_valid = (t->g.valid == GRID_VALID);
     /* If called as a reset (ESC c / RIS) while the alt screen is active, first
        discard the alt grid and restore the main grid so neither is leaked. */
-    if (t->g.valid == GRID_VALID && t->alt_screen) {
+    if (was_valid && t->alt_screen) {
         grid_destroy(&t->g);            /* the alt grid */
         t->g = t->alt;                  /* restore main grid */
         memset(&t->alt, 0, sizeof(t->alt));
         t->alt_screen = 0;
     }
-    if (t->g.valid == GRID_VALID)
+    if (was_valid)
         grid_destroy(&t->g);            /* free old main grid buffers (fixes RIS leak) */
-    if (t->g.valid == GRID_VALID) {
-        /* A real reset: the screen and everything anchored to it goes. The GRID_VALID guard is not
-           decoration — term_init also runs on a never-initialized Term, where stack garbage is
-           routinely non-zero, and freeing a garbage pointer is a crash. Same reason grid_destroy
-           is guarded. */
+    if (was_valid) {
+        /* A real reset: the screen and everything anchored to it goes. */
         term_free_images(t);
         free(t->ps.apc);
         t->ps.apc = NULL;
         kitty_tx_free(&t->ps);
+        free(t->prompt_row);        /* the prompt snapshot belongs to the old grid */
+        t->prompt_row = NULL;
+        t->prompt_cols = 0;
+        t->prompt_valid = 0;
     }
     memset(t, 0, sizeof(*t));
     grid_init(&t->g, rows, cols, scrollback);
@@ -717,8 +726,205 @@ void term_grid_geometry(int win_w, int win_h, int cell_w, int cell_h, int pad,
     if (rows) *rows = imax_(1, (win_h - 2 * my) / cell_h);
 }
 
+/* ---------- the shell's input line ----------
+   The file manager writes at the shell's prompt (`cd <dir>`, or the path the user picked). Doing that on
+   top of a half-typed command mangles the command and then RUNS the mangled result, so main.c asks
+   term_at_prompt() first. There is no way to know where a prompt ENDS: the tty echoes what the user
+   types, and that echo arrives through the same pty fd as any other output, so "a prompt" and "a prompt
+   plus typed text" are the same kind of bytes as far as the terminal is concerned. What CAN be told
+   apart is WHO caused the output: main.c calls term_note_input() for every byte it sends, so output that
+   arrives while those bytes are outstanding is an echo or a readline redraw, and output that arrives
+   while none are is the application's own.
+
+   So: at the end of every output burst, re-take the snapshot (the whole cursor row plus the cursor
+   column) UNLESS input_pending is set. Typing therefore never moves the snapshot — it only makes the row
+   stop matching it. That catches typed text, a history recall and a paste. It also un-catches them
+   correctly: backspacing everything away, or arrowing back down to an empty prompt, redraws the line
+   exactly as the shell printed it, and the match comes back. Submitting the line (CR/LF in what we sent)
+   clears input_pending, so the shell's next output — its output plus the next prompt — re-takes it.
+
+   The row comparison alone is NOT enough, because an application is not obliged to echo: measured 2026-10-19
+   (`.scratch/s77/livegate`, `.scratch/s77/echochk`), interactive bash in a Kai-Term pty echoed nothing at
+   all for the characters typed, so the row never changed and the line read as untouched. term_at_prompt()
+   therefore also refuses while input_pending is set — Kai-Term knows it has sent bytes that have not been
+   submitted, whether or not the application shows them. The window closes in exactly two ways: the payload
+   that was sent contains CR/LF/Ctrl+C (submitted or discarded), or an output burst leaves the row matching
+   the remembered prompt again, which is the application PROVING the line is empty (readline's `\b \b`
+   erase, an arrow-key redraw). An application that shows nothing keeps the window shut, which is the safe
+   direction to be wrong in. */
+
+void term_note_input(Term *t, const void *buf, size_t len)
+{
+    if (!t)
+        return;
+    const unsigned char *p = (const unsigned char *)buf;
+    for (size_t i = 0; i < len; i++) {
+        /* CR or LF submits the line; Ctrl+C discards it. Both end the echo window: what the
+           application prints next is output, not an echo of what is on the line. */
+        if (p[i] == '\r' || p[i] == '\n' || p[i] == 0x03)
+            t->input_pending = 0;
+        else
+            t->input_pending = 1;
+    }
+}
+
+/* Two cells count as the same for the prompt comparison. A cell never written (ch == 0) and a cell
+   holding a space are the same thing on a prompt line: readline erases characters with `\b \b`, which
+   leaves literal spaces where the typed text was, and a line cleared that way must read as empty again —
+   otherwise backspacing a mistake away would leave the prompt "dirty" forever. Colours, attributes and
+   cluster data still have to match, so a line redrawn with different attributes is treated as changed
+   (the safe answer: refuse to write there). */
+static int prompt_cell_same(const Cell *a, const Cell *b)
+{
+    uint32_t ac = (a->ch == 0 || a->ch == ' ') ? 0 : a->ch;
+    uint32_t bc = (b->ch == 0 || b->ch == ' ') ? 0 : b->ch;
+    if (ac != bc || a->fg != b->fg || a->bg != b->bg ||
+        a->attr != b->attr || a->nextra != b->nextra)
+        return 0;
+    for (int i = 0; i < a->nextra; i++)
+        if (a->extra[i] != b->extra[i])
+            return 0;
+    return 1;
+}
+
+/* Remember the row the cursor is on. The parser's cy is a live-view row and main.c snaps the view to
+   live_off before every parse, which is the same row grid_vprow() names. */
+static void prompt_snapshot(Term *t)
+{
+    int cols = t->g.cols;
+    if (t->g.valid != GRID_VALID || cols < 1) {
+        t->prompt_valid = 0;
+        return;
+    }
+    if (t->prompt_cols < cols) {
+        Cell *grown = realloc(t->prompt_row, (size_t)cols * sizeof(Cell));
+        if (!grown) {
+            /* Out of memory: say "unknown", which term_at_prompt() answers as "not at a prompt". The
+               old buffer is freed so a resize that fails cannot leak the grid it could not grow. */
+            free(t->prompt_row);
+            t->prompt_row = NULL;
+            t->prompt_cols = 0;
+            t->prompt_valid = 0;
+            return;
+        }
+        t->prompt_row = grown;
+        t->prompt_cols = cols;
+    }
+    const Cell *row = grid_vprow(&t->g, t->cy);
+    if (!row) {
+        t->prompt_valid = 0;
+        return;
+    }
+    for (int x = 0; x < cols; x++)
+        t->prompt_row[x] = row[x];
+    t->prompt_cx = t->cx;
+    t->prompt_cy = t->cy;
+    t->prompt_valid = 1;
+}
+
+/* Does the row under the cursor still look exactly like the prompt that was last remembered? This says
+   nothing about whether bytes are outstanding — that is term_at_prompt()'s job. */
+static int prompt_row_matches(Term *t)
+{
+    if (!t || t->g.valid != GRID_VALID || t->alt_screen)
+        return 0;                       /* a full-screen app owns the screen, not the prompt */
+    if (!t->prompt_valid || !t->prompt_row || t->prompt_cols < t->g.cols)
+        return 0;                       /* unknown: refuse to write at a line we cannot describe */
+    if (t->g.scroll_off != t->g.live_off)
+        return 0;                       /* the user is looking at history, not at the prompt */
+    if (t->cx != t->prompt_cx || t->cy != t->prompt_cy || t->cy < 0 || t->cy >= t->g.rows)
+        return 0;
+    const Cell *row = grid_vprow(&t->g, t->cy);
+    if (!row)
+        return 0;
+    for (int x = 0; x < t->g.cols; x++)
+        if (!prompt_cell_same(&row[x], &t->prompt_row[x]))
+            return 0;
+    return 1;
+}
+
+int term_at_prompt(Term *t)
+{
+    /* Two independent reasons to keep off the line: it does not look like the prompt any more, or bytes
+       Kai-Term sent have not been submitted (the application may have consumed them without showing
+       anything). Both answer "no" when the truth is unknown. */
+    if (t->input_pending)
+        return 0;
+    return prompt_row_matches(t);
+}
+
+int term_prompt_line(Term *t, char *out, size_t cap)
+{
+    if (!out || cap < 1)
+        return 0;
+    if (!t || t->g.valid != GRID_VALID || t->alt_screen)
+        return 0;                       /* a full-screen app owns the screen, not the prompt */
+    if (!t->prompt_valid || !t->prompt_row || t->prompt_cols < t->g.cols)
+        return 0;                       /* unknown: we cannot describe the line, so do not touch it */
+    if (t->g.scroll_off != t->g.live_off)
+        return 0;                       /* the user is looking at history, not at the prompt */
+    if (t->cy < 0 || t->cy >= t->g.rows || t->cy != t->prompt_cy)
+        return 0;                       /* the line moved, or the cursor left it */
+    if (t->cx < 0 || t->cx >= t->g.cols || t->prompt_cx < 0 || t->prompt_cx > t->cx)
+        return 0;                       /* cursor left of where the prompt ended: it is mid-line */
+    const Cell *row = grid_vprow(&t->g, t->cy);
+    if (!row)
+        return 0;
+    /* The prompt itself must still be what the shell printed. If readline redrew it with different
+       attributes the snapshot no longer describes the line, and "everything before the cursor that is
+       not the prompt" would include prompt characters. */
+    for (int x = 0; x < t->prompt_cx; x++)
+        if (!prompt_cell_same(&row[x], &t->prompt_row[x]))
+            return 0;
+    /* And the cursor must sit at the END of the line's content. Erasing from mid-line (the user pressed
+       Left) would leave the text right of the cursor in place, and the `cd` would then be typed in front
+       of it and RUN on it — the one thing this feature must never do. */
+    for (int x = t->cx; x < t->g.cols; x++)
+        if (!prompt_cell_same(&row[x], &t->prompt_row[x]))
+            return 0;
+
+    /* What is between the end of the prompt and the cursor is what the user typed. Wide glyphs own two
+       cells (the second is an ATTR_WIDE continuation holding nothing), and a cluster's extra codepoints
+       belong to the anchor cell, so re-typing the bytes reproduces the line.
+       Built in a local buffer and copied only at the end: a caller that gets 0 must find its buffer
+       untouched, and a half-written command in it would be worse than the refusal. */
+    char tmp[FM_LINE_MAX];
+    size_t n = 0;
+    for (int x = t->prompt_cx; x < t->cx; x++) {
+        const Cell *c = &row[x];
+        if (c->attr & ATTR_WIDE)
+            continue;
+        uint32_t cps[CLUSTER_MAX + 1];
+        int ncp = 0;
+        cps[ncp++] = c->ch ? c->ch : ' ';   /* never-written cell == space, as in term_selection_text() */
+        for (int k = 0; k < c->nextra && ncp < (int)(sizeof cps / sizeof cps[0]); k++)
+            cps[ncp++] = c->extra[k];
+        for (int k = 0; k < ncp; k++) {
+            char b8[4];
+            int m = utf8_encode(cps[k], b8);
+            if (m <= 0)
+                continue;
+            if (n + (size_t)m >= sizeof tmp)
+                return 0;   /* refuse rather than hand back half of the user's command */
+            memcpy(tmp + n, b8, (size_t)m);
+            n += (size_t)m;
+        }
+    }
+    if (n + 1 >= cap)
+        return 0;                          /* the caller's buffer is too small — say so, do not truncate */
+    tmp[n] = 0;
+    memcpy(out, tmp, n + 1);
+    return 1;
+}
+
 void term_resize(Term *t, int rows, int cols)
 {
+    /* A resize moves and re-wraps rows, so a snapshot taken before it names cells that no longer exist.
+       The clean/dirty answer must survive the resize all the same — a user who has typed nothing should
+       still be able to use the file manager after dragging the window — so the state is read BEFORE the
+       rows move and re-taken AFTER them if it was clean. A line the user had already typed on stays
+       "not at a prompt", which is the safe direction to be wrong in. */
+    int was_clean = term_at_prompt(t);
     int old_live = t->g.live_off;
     int old_cy = t->cy;
     /* The cursor travels through the reflow as an absolute row[] slot + column: grid_resize maps it
@@ -748,6 +954,10 @@ void term_resize(Term *t, int rows, int cols)
     t->wrap_next = 0;
     cluster_invalidate(t);
     term_select_clear(t);   /* selection is viewport-relative; drop it on resize */
+    if (was_clean)
+        prompt_snapshot(t);
+    else
+        t->prompt_valid = 0;
 }
 
 void term_select_clear(Term *t)
@@ -954,6 +1164,10 @@ void term_destroy(Term *t)
         free(t->ps.apc);
         t->ps.apc = NULL;
         kitty_tx_free(&t->ps);
+        free(t->prompt_row);
+        t->prompt_row = NULL;
+        t->prompt_cols = 0;
+        t->prompt_valid = 0;
     }
     if (t->alt_screen) {
         grid_destroy(&t->g);            /* alt grid */
@@ -988,6 +1202,9 @@ static void alt_screen_enter(Term *t, int save_cursor)
     t->cy = 0;
     t->wrap_next = 0;
     t->alt_screen = 1;
+    /* The prompt snapshot is deliberately LEFT ALONE: it describes the MAIN grid, which is being parked
+       and will come back byte-for-byte. prompt_row_matches() already refuses while alt_screen is up, so
+       keeping it costs nothing and losing it would cost the shell follow for the rest of the session. */
 }
 
 static void alt_screen_leave(Term *t, int restore_cursor)
@@ -1005,6 +1222,15 @@ static void alt_screen_leave(Term *t, int restore_cursor)
     t->cx = iclamp_(t->cx, 0, t->g.cols - 1);
     t->cy = iclamp_(t->cy, 0, t->g.rows - 1);
     t->wrap_next = 0;
+    /* Back from the alternate screen the snapshot is STILL the one taken before the application ran, and
+       that is exactly right: the main grid and the cursor are restored byte-for-byte, so the row the
+       snapshot describes is the row now on screen. Re-taking it HERE (s76's fix) was wrong in a way only
+       the s79 requirement exposed — it recorded the cursor where the user had left it, which made a
+       half-typed command look like an EMPTY prompt, and the file manager would then have erased that
+       command. s76's real problem was different and is fixed at its source instead: the end-of-burst
+       snapshot used to be taken from the ALTERNATE grid while a full-screen app was up, which is why
+       invalidating on leave seemed necessary. It is now skipped while the alternate screen is active, so
+       the snapshot never describes the wrong grid and never needs to be thrown away. */
 }
 
 static void linefeed(Term *t)
@@ -1256,6 +1482,7 @@ static void erase_scrollback(Term *t)
 {
     Grid *g = &t->g;
     cluster_invalidate(t);              /* the anchor cell may have just moved rows */
+    t->prompt_valid = 0;                /* every row moved; the shell repaints its prompt after clear */
     if (!g_clear_scrollback || g->scrollback_max <= 0)
         return;                         /* nothing retained (e.g. the alt screen) -> nothing to do */
     int so = g->scroll_off;
@@ -2599,4 +2826,22 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
        to rows that no longer exist are dropped here, once per burst rather than per escape
        sequence. */
     image_prune(t);
+
+    /* The prompt snapshot, once per burst for the same reason as image_prune() (see the prompt section
+       above). While input_pending is set the bytes arriving here are the echo of what the terminal sent,
+       or readline redrawing the line the user is typing — remembering THAT as "the prompt" would let the
+       file manager write on top of it, which is the whole bug this machinery exists to prevent. And while
+       the ALTERNATE screen is up, t->g is a full-screen application's screen, not the shell's: snapshotting
+       it is what used to force alt_screen_leave() to throw the snapshot away (and losing it disabled the
+       shell follow for the rest of the session, s76). The snapshot always describes the MAIN grid. */
+    if (t->alt_screen)
+        ;
+    else if (!t->input_pending)
+        prompt_snapshot(t);
+    else if (prompt_row_matches(t))
+        /* The application has put the remembered prompt back on screen — the line is provably empty again
+           (readline's erase, an arrow-key redraw). Close the echo window on that evidence only; an
+           application that shows nothing leaves it open. The snapshot itself is not re-taken here: the row
+           already equals it, cell for cell. */
+        t->input_pending = 0;
 }

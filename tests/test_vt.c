@@ -17,6 +17,32 @@ static void feed(const char *s)
     term_parse(&T, (const uint8_t *)s, strlen(s));
 }
 
+/* What src/main.c really does with a keystroke: the bytes go to the pty (and term_note_input() tells the
+   model they are outstanding), and what the tty echoes back arrives LATER, as a separate term_parse.
+   Feeding an echo without noting the input would test a state the real program can never be in. */
+static void type(const char *s)
+{
+    term_note_input(&T, s, strlen(s));
+    term_parse(&T, (const uint8_t *)s, strlen(s));
+}
+
+/* A key whose echo is not the key itself: Enter sends CR, the tty echoes CRLF. */
+static void press(const char *in, const char *echo)
+{
+    term_note_input(&T, in, strlen(in));
+    term_parse(&T, (const uint8_t *)echo, strlen(echo));
+}
+
+/* Bytes the terminal itself sends to the application — the file manager's `cd`, the path it types. The
+   length comes from strlen(), never from a hand-typed count: `"cd /tmp\r", 9` reads one byte past the
+   literal (its NUL), and because that byte is not a CR it RE-OPENS the echo window the CR had just
+   closed — which is what made the `cd it ran leaves the line clean` check fail (s76). Same class as the
+   truncated-file-literal bug s72 recorded: no hand-typed byte count survives contact with the literal. */
+static void send_in(const char *s)
+{
+    term_note_input(&T, s, strlen(s));
+}
+
 /* Fill a dead frame with non-zero pointers so a Term declared on the stack afterwards cannot
    accidentally look zero-initialized (see the term_init guard test at the end of main). */
 __attribute__((noinline)) static void dirty_stack(void)
@@ -1791,7 +1817,7 @@ int main(void)
 
     /* --- config: the file manager (file_manager / fm_rows / fm_* bindings) ----------------------
        Off by default, because the feature must not change what a user who never touches it sees. The
-       twelve fm_key_* bindings are the ones allowed to be bare keys (keybind_parse_plain). */
+       fourteen fm_key_* bindings are the ones allowed to be bare keys (keybind_parse_plain). */
     {
         Config c;
         const char *path = "/tmp/kterm_test_config6.conf";
@@ -1812,6 +1838,10 @@ int main(void)
               "config: Ctrl+Shift+Down gives the keyboard back to the terminal");
         CHECK(c.fm_key.up.set && c.fm_key.up.sym == KB_KEY_Up && c.fm_key.up.mods == 0,
               "config: the default browser key is a bare Up");
+        CHECK(c.fm_key.left.set && c.fm_key.left.sym == KB_KEY_Left && c.fm_key.left.mods == 0,
+              "config: Left goes to the parent directory by default");
+        CHECK(c.fm_key.right.set && c.fm_key.right.sym == KB_KEY_Right && c.fm_key.right.mods == 0,
+              "config: Right enters the highlighted directory by default");
         CHECK(c.fm_key.open.set && c.fm_key.open.sym == KB_KEY_Return,
               "config: Return opens a directory");
         CHECK(c.fm_key.parent.set && c.fm_key.parent.sym == KB_KEY_BackSpace,
@@ -1825,7 +1855,8 @@ int main(void)
         if (f) {
             fputs("file_manager = on\nfm_rows = 6\nfm_preview = off\nfm_show_hidden = yes\n"
                   "fm_follow = 0\nkey_file_manager = Alt+F\nkey_fm_focus = none\n"
-                  "fm_key_up = k\nfm_key_down = j\nfm_key_open = Enter\n", f);
+                  "fm_key_up = k\nfm_key_down = j\nfm_key_open = Enter\n"
+                  "fm_key_left = h\nfm_key_right = l\n", f);
             fclose(f);
             config_default(&c);
             config_load(&c, path);
@@ -1841,18 +1872,26 @@ int main(void)
                   "config: fm_key_up = k rebinds the browser's up key");
             CHECK(c.fm_key.down.sym == 'j', "config: fm_key_down = j");
             CHECK(c.fm_key.open.sym == KB_KEY_Return, "config: fm_key_open = Enter (same keysym as Return)");
+            CHECK(c.fm_key.left.set && c.fm_key.left.sym == 'h' && c.fm_key.left.mods == 0,
+                  "config: fm_key_left = h rebinds the parent-directory key to a bare h");
+            CHECK(c.fm_key.right.set && c.fm_key.right.sym == 'l' && c.fm_key.right.mods == 0,
+                  "config: fm_key_right = l rebinds the enter-directory key to a bare l");
             CHECK(c.fm_key.refresh.set && c.fm_key.refresh.sym == 'r',
                   "config: a fm_key the file does not mention keeps its default");
 
             f = fopen(path, "w");
-            fputs("fm_rows = 0\nfm_key_up = none\nfm_key_open = Ctrl+Shift+Nope\n", f);
+            fputs("fm_rows = 0\nfm_key_up = none\nfm_key_left = none\n"
+                  "fm_key_open = Ctrl+Shift+Nope\nfm_key_right = Ctrl+Shift+Nope\n", f);
             fclose(f);
             config_default(&c);
             config_load(&c, path);
             CHECK(c.fm_rows == FM_ROWS_MIN, "config: fm_rows = 0 clamps to the layout minimum");
             CHECK(c.fm_key.up.set == 0, "config: fm_key_up = none unbinds that action");
+            CHECK(c.fm_key.left.set == 0, "config: fm_key_left = none leaves BackSpace as the only way up");
             CHECK(c.fm_key.open.set && c.fm_key.open.sym == KB_KEY_Return,
                   "config: an unparseable fm_key keeps the default instead of disabling the action");
+            CHECK(c.fm_key.right.set && c.fm_key.right.sym == KB_KEY_Right,
+                  "config: an unparseable fm_key_right keeps Right, it does not disable entering");
 
             f = fopen(path, "w");
             fputs("fm_rows = 99999\n", f);
@@ -2128,6 +2167,270 @@ int main(void)
         CHECK(lcols == 80 && lrows == 30,
               "layout: a file-manager startup gets the configured cols x rows back for the terminal pane");
     }
+
+    /* ---------- the shell's input line: term_at_prompt() (src/vt.c) ----------
+       The file manager writes at the shell's prompt (`cd <dir>`, a selected path), and it must not do
+       that on top of a command the user is halfway through. Kai-Term cannot tell a prompt from a prompt
+       plus typed text by looking at the BYTES (the tty echoes typing, and that echo arrives as ordinary
+       output), so what the model remembers is the cursor row as the application last printed it, and the
+       echo window around what the terminal itself sent is what keeps that memory honest. These checks
+       follow a realistic shell: prompt, echo, readline's own redraws (\r, \b \b, \x1b[K), Enter. */
+    term_destroy(&T);
+    term_init(&T, 10, 20, 100);
+    CHECK(term_at_prompt(&T) == 0, "prompt: before anything is printed nothing is known");
+    feed("prompt$ ");
+    CHECK(term_at_prompt(&T) == 1, "prompt: a prompt the shell just printed is untouched");
+    type("ls");                             /* the tty echoes exactly these bytes back */
+    CHECK(term_at_prompt(&T) == 0, "prompt: typed text makes the line dirty");
+    type("\b \b\b \b");                     /* readline's erase: back, space, back — twice */
+    CHECK(term_at_prompt(&T) == 1, "prompt: erasing everything makes it clean again (space == blank)");
+    press("\r", "\r\n");                    /* Enter submits the line */
+    feed("file1  file2\r\nprompt$ ");       /* the command's output, then the next prompt */
+    CHECK(term_at_prompt(&T) == 1, "prompt: the next prompt after Enter is untouched");
+    type("\x1b[A");                         /* Up: readline redraws a recalled command on the line */
+    feed("\r\x1b[Kls -l");
+    CHECK(term_at_prompt(&T) == 0, "prompt: a history recall is not an empty line");
+    type("\x1b[B");                         /* Down: readline redraws the empty prompt */
+    feed("\r\x1b[Kprompt$ ");
+    CHECK(term_at_prompt(&T) == 1, "prompt: arrowing back down to an empty prompt is");
+    type("\x1b[D");                         /* Left: the cursor moves, the text does not */
+    CHECK(term_at_prompt(&T) == 0,
+          "prompt: a cursor moved off the prompt position does not count as empty");
+    type("\x1b[C");
+    CHECK(term_at_prompt(&T) == 1, "prompt: and moving it back does");
+    type("x");
+    feed("\r\x1b[K\x1b[31mprompt$ \x1b[0m"); /* the same text redrawn in another colour */
+    CHECK(term_at_prompt(&T) == 0, "prompt: the same text in another colour counts as changed");
+    feed("\r\x1b[Kprompt$ ");
+    CHECK(term_at_prompt(&T) == 1, "prompt: redrawn exactly as remembered, it counts as unchanged");
+
+    /* A query answer is output, not typing: DA1/DSR/CPR go out through the pty but must not open an
+       echo window, or every probe would stop the prompt being remembered. The line has to be submitted
+       first: the checks above left an echo window open (the last thing sent was `x`), and asserting
+       `input_pending == 0` on top of that would test a state the program cannot be in. */
+    press("\r", "\r\n");                    /* Enter submits — that is what closes the window */
+    feed("prompt$ ");
+    CHECK(term_at_prompt(&T) == 1 && T.input_pending == 0,
+          "prompt: submitting the line closes the echo window");
+    T.resp_len = 0;
+    feed("\x1b[5n");
+    CHECK(T.resp_len > 0 && T.input_pending == 0,
+          "prompt: answering DSR is output — it does not open an echo window");
+    CHECK(term_at_prompt(&T) == 1, "prompt: and a probe leaves the prompt known");
+
+    /* What the file manager types is input too: a second injection has to be refused until the line is
+       submitted, and a cd it ran has to leave the line clean for the next one. */
+    send_in("'/tmp/x'");
+    feed("'/tmp/x'");
+    CHECK(term_at_prompt(&T) == 0, "prompt: a path the file manager typed makes the line dirty");
+    send_in("cd /tmp\r");
+    feed("\r\nprompt$ ");
+    CHECK(term_at_prompt(&T) == 1, "prompt: and the cd it ran leaves the line clean again");
+
+    /* An application is NOT obliged to echo. Measured 2026-10-19 against a real pty (`.scratch/s77/livegate`,
+       `.scratch/s77/echochk`): interactive bash in Kai-Term's pty returned nothing at all for typed
+       characters, so the row never changed and the line read as untouched — the file manager would have
+       written `cd <dir>` onto a half-typed command and run the result. The echo window is what catches
+       that: bytes sent and never submitted keep the line dirty whatever the application shows, and only
+       the application putting the remembered prompt back on screen (or CR/LF/Ctrl+C) clears it. */
+    send_in("rm -rf");                     /* nothing comes back: this application does not echo */
+    CHECK(term_at_prompt(&T) == 0,
+          "prompt: typed text with NO echo at all still makes the line dirty");
+    feed("\r\x1b[K");                      /* the line is repainted empty — that is not the remembered prompt */
+    CHECK(term_at_prompt(&T) == 0,
+          "prompt: an empty line is not the remembered prompt either");
+    feed("prompt$ ");                      /* the remembered prompt, cell for cell, at the same place */
+    CHECK(term_at_prompt(&T) == 1 && T.input_pending == 0,
+          "prompt: the remembered prompt redrawn closes the echo window");
+    send_in("rm -rf");
+    CHECK(term_at_prompt(&T) == 0, "prompt: and typed text makes it dirty again");
+    send_in("\x03");                       /* Ctrl+C discards the line */
+    CHECK(term_at_prompt(&T) == 1, "prompt: Ctrl+C discards the line and re-arms the gate");
+
+    /* The alternate screen is never "at a prompt" while it is up, and it must not disturb the snapshot:
+       the main grid is parked and comes back byte-for-byte, so the row the snapshot describes is the row
+       that reappears. Re-taking the snapshot on leave (what s76 did, because the end-of-burst snapshot used
+       to be taken from the ALTERNATE grid while the app was up) recorded the cursor where the user had left
+       it, which made a half-typed command look like an EMPTY prompt — s79's clear-the-line rule would then
+       have erased it. The snapshot now always describes the main grid. */
+    type("\x1b[A");                         /* an arrow key: opens an echo window no CR will ever close */
+    CHECK(T.input_pending == 1, "prompt: an arrow key leaves an echo window open");
+    feed("\x1b[?1049h");
+    CHECK(term_at_prompt(&T) == 0, "prompt: the alternate screen is not a prompt");
+    feed("\x1b[2J\r\x1b[Hvim repaints the whole screen\x1b[?1049l");
+    CHECK(T.prompt_valid == 1,
+          "prompt: the snapshot survives the full-screen application — the main grid is parked and "
+          "restored byte-for-byte, so it still describes the row now on screen");
+    CHECK(term_at_prompt(&T) == 0,
+          "prompt: a line that was dirty when the application started is STILL dirty when it exits — "
+          "re-taking the snapshot on leave made a half-typed command look empty");
+    type("\x1b[B");                         /* the echo that puts the cursor back on the prompt row */
+    CHECK(T.input_pending == 0 && term_at_prompt(&T) == 1,
+          "prompt: and the echo that restores the remembered row closes the window again");
+
+    /* Scrolled back into history = the user is not looking at the prompt. The grid is 10 rows, so this
+       needs output that actually reaches the bottom margin — two newlines do not scroll anything. The
+       command that produced the output is submitted first, which is also what closes the echo window the
+       arrow key above left open. */
+    send_in("ls -l\r");
+    for (int i = 0; i < 12; i++)
+        feed("file0i\r\n");
+    feed("prompt$ ");
+    CHECK(T.g.live_off > 1, "prompt: the session has history to scroll into");
+    CHECK(term_at_prompt(&T) == 1, "prompt: the prompt after that output is known again");
+    T.g.scroll_off = T.g.live_off - 1;
+    CHECK(term_at_prompt(&T) == 0, "prompt: scrolled back is not the prompt");
+    T.g.scroll_off = T.g.live_off;
+    CHECK(term_at_prompt(&T) == 1, "prompt: back at the live bottom it is");
+
+    /* A resize moves and re-wraps rows; the clean/dirty answer has to survive it. */
+    term_resize(&T, 12, 20);
+    CHECK(term_at_prompt(&T) == 1, "prompt: a resize while clean stays clean");
+    type("rm -rf ");
+    CHECK(term_at_prompt(&T) == 0, "prompt: typed text is still dirty across a resize");
+    term_resize(&T, 10, 20);
+    CHECK(term_at_prompt(&T) == 0, "prompt: and a resize does not lose it");
+    press("\r", "\r\n");
+    feed("prompt$ ");
+    CHECK(term_at_prompt(&T) == 1, "prompt: submitting the line ends the echo window");
+
+    /* Two rows holding exactly the same text: the row content alone cannot say which one the prompt is,
+       so the snapshot's own row (prompt_cy) is compared too. The cursor moves while an echo is
+       outstanding, which is the only way a move does NOT re-take the reference. */
+    term_destroy(&T);
+    term_init(&T, 10, 20, 100);
+    feed("prompt$ \r\nprompt$ ");
+    CHECK(term_at_prompt(&T) == 1, "prompt: the row the cursor sits on is the prompt");
+    type("\x1b[A");                         /* up: identical text, different row */
+    CHECK(T.cy == 0 && term_at_prompt(&T) == 0,
+          "prompt: a cursor on an identical row above the prompt is not at the prompt");
+    type("\x1b[B");
+    CHECK(term_at_prompt(&T) == 1, "prompt: and back down on the prompt row it is");
+
+    /* A reset (ESC c) frees what the old screen owned — the snapshot included — and the fresh terminal
+       answers about its own blank screen instead of comparing against freed memory (LeakSanitizer and
+       ASan both watch this in `make asan`). Written as two escapes on purpose: "\x1bc" is ONE hex escape
+       (0x1bc, out of range for a char), not ESC followed by 'c'. */
+    feed("\x1b" "c");
+    CHECK(term_at_prompt(&T) == 1, "prompt: after a reset the fresh screen is described, not freed memory");
+    CHECK(T.cx == 0 && T.cy == 0,
+          "prompt: and it really was a reset — the cursor went home (the old \"\\x1bc\" byte would "
+          "have printed a character and left it at column 1)");
+
+    /* ---------- the same line WITH text on it: term_prompt_line() (src/vt.c) ----------
+       The user's rule (s79): the prompt must ALWAYS end up in the directory the browser is looking at, so
+       a navigation may NOT be refused because the line already holds text — Kai-Term clears the line, sends
+       the `cd`, and puts the text back on the new prompt. That is only safe if the model can say EXACTLY
+       what is on the line and where the line ends, which is what these checks pin. */
+    term_destroy(&T);
+    term_init(&T, 10, 40, 100);            /* wide enough that the checks below never wrap a line */
+    char pline[FM_LINE_MAX];
+    feed("prompt$ ");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && pline[0] == 0,
+          "line: an untouched prompt is describable and holds nothing");
+    type("rm -rf su");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "rm -rf su"),
+          "line: the typed text is what comes back, so it can be put back afterwards");
+    CHECK(term_at_prompt(&T) == 0,
+          "line: that same line is still NOT the untouched prompt the old gate insisted on");
+    type("\x1b[D");                        /* Left: the cursor moves, the text does not */
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
+          "line: a cursor parked mid-line is refused — erasing from there would leave the right half "
+          "of the command behind for the cd to run on");
+    type("\x1b[C");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "rm -rf su"),
+          "line: describable again once the cursor is back at the end of the text");
+
+    /* input_pending is deliberately NOT a reason to refuse here: the row comparison is the evidence, and
+       the path Kai-Term typed itself leaves a perfectly describable line behind. */
+    send_in("'/tmp/x'");
+    CHECK(T.input_pending == 1 && term_at_prompt(&T) == 0,
+          "line: bytes are outstanding, so the old gate refuses");
+    feed("'/tmp/x'");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "rm -rf su'/tmp/x'"),
+          "line: with an echo window open the text is still exactly describable");
+
+    /* readline redrawing the whole line in another colour: the prompt prefix no longer matches the
+       snapshot, so "everything between the prompt and the cursor" would include prompt characters. */
+    feed("\r\x1b[K\x1b[31mprompt$ \x1b[0mrm -rf su'/tmp/x'");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
+          "line: a prompt redrawn in another colour is refused, not half-captured");
+
+    /* A line that WRAPS onto the next row is not describable either: the snapshot holds one row, and the
+       text the user typed now lives in two of them. */
+    feed("\x1b" "c");
+    term_resize(&T, 10, 20);
+    feed("prompt$ ");
+    type("a very long command that will not fit");
+    CHECK(T.cy != T.prompt_cy,
+          "line: the setup really did wrap the typed text onto another row");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
+          "line: a wrapped input line is refused rather than half-read");
+    term_resize(&T, 10, 40);
+
+    /* A buffer too small is a refusal, never a truncated command: losing half of what the user typed is
+       worse than not following the browser. */
+    feed("\x1b" "c");
+    feed("prompt$ ");
+    type("ls -l");
+    char tiny[4];
+    tiny[0] = 'Z'; tiny[1] = 0;
+    CHECK(term_prompt_line(&T, tiny, sizeof tiny) == 0 && tiny[0] == 'Z',
+          "line: too little room answers 0 and leaves the caller's buffer alone");
+    CHECK(term_prompt_line(&T, pline, FM_LINE_MAX) == 1 && !strcmp(pline, "ls -l"),
+          "line: and the same line fits in a real buffer");
+
+    /* A wide glyph owns two cells but contributes ONE codepoint: the continuation cell is ATTR_WIDE with
+       ch == 0, and re-typing must reproduce the character, not a space. */
+    term_destroy(&T);
+    term_init(&T, 10, 20, 100);
+    feed("p ");
+    type("\xf0\x9f\x98\x80");              /* U+1F600: wide, one anchor cell + one continuation */
+    CHECK(cellch(0, 2) == 0x1f600 && (cellattr(0, 3) & ATTR_WIDE) && cellch(0, 3) == 0,
+          "line: the setup really did leave an ATTR_WIDE continuation cell with no codepoint in it");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "\xf0\x9f\x98\x80"),
+          "line: a wide glyph contributes one codepoint, not its continuation cell");
+
+    /* The alternate screen is owned by a full-screen application, not by a prompt — and it leaves the
+       snapshot of the main grid alone, so the line is describable again the moment it is back. */
+    feed("\x1b[?1049h");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
+          "line: the alternate screen has no prompt line to describe");
+    feed("\x1b[2J\r\x1b[Hthe application paints its own screen\x1b[?1049l");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "\xf0\x9f\x98\x80"),
+          "line: back on the main screen the same line is describable again, text and all");
+
+    /* Scrolled back into history is not the line the user is looking at. Two newlines scroll nothing in a
+       10-row grid, so this first needs output that actually reaches the bottom margin.
+       The prompt is printed by the shell (feed) and the emoji is TYPED (type): one feed("p \xf0\x9f\x98\x80")
+       would write the whole row as application output, and term_parse() legitimately re-takes the snapshot at
+       the end of such a burst, so the describable typed text really is "" then. That setup was the reason
+       these two checks failed (measured 2026-10-19 with .scratch/s82/promptprobe) — the model was right. */
+    press("\r", "\r\n");
+    for (int i = 0; i < 12; i++)
+        feed("filler\r\n");
+    feed("p ");
+    type("\xf0\x9f\x98\x80");
+    CHECK(T.g.live_off > 0, "line: the grid has history to scroll into");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "\xf0\x9f\x98\x80"),
+          "line: at the live bottom the new prompt line is describable");
+    T.g.scroll_off = T.g.live_off - 1;
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
+          "line: scrolled back into history is not the input line");
+    T.g.scroll_off = T.g.live_off;
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "\xf0\x9f\x98\x80"),
+          "line: and back at the live bottom it is again");
+
+    /* The rule that broken setup tripped over, pinned so the next reader does not "fix" the model over it:
+       a row the APPLICATION wrote whole IS the prompt, so it is describable and holds no typed text. */
+    press("\r", "\r\n");
+    for (int i = 0; i < 12; i++)
+        feed("filler\r\n");
+    feed("p \xf0\x9f\x98\x80");
+    CHECK(T.input_pending == 0 && T.prompt_cx == T.cx && T.prompt_cy == T.cy,
+          "line: an output burst with nothing outstanding re-takes the snapshot at its own end");
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && pline[0] == 0,
+          "line: so that row is describable and the typed text on it is empty — correctly");
 
     /* ---------- graphics: the kitty image protocol (src/vt.c) ----------
        Headless on purpose: the decoded PIXELS live in the model, so the parser, the chunk assembly,
