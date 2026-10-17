@@ -36,8 +36,9 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
 - **File manager** — A browser and a live preview pane can be split into the top of the window, drawn with
   the same font, colours and cells as the terminal. It shows the directory contents, an image preview
   (PNG, JPEG, WebP, GIF), syntax-highlighted text, or the type, size, dates, owner and permissions of
-  anything else, and the shell below follows the directory you browse into. One shortcut shows it, another
-  moves the keyboard between the browser and the terminal.
+  anything else, and the shell below follows the directory you browse into. The listing starts with a `..`
+  row, one click selects and a double-click opens. One shortcut shows it, another moves the keyboard
+  between the browser and the terminal.
 - **Font zoom** — Increase or decrease the font size without resizing the window.
 - **System clipboard** — Copy and paste use the standard Wayland clipboard, so text copied in Kai-Term
   pastes into other applications and text copied anywhere else pastes into Kai-Term.
@@ -81,6 +82,16 @@ Other available targets:
 | `make run` | Build and launch Kai-Term |
 | `make clean` | Remove generated build files |
 
+The command-line tests check the option parser by running the real binary, so part of them opens real
+windows. Before those checks run the suite makes **one** probe launch; if it cannot draw (no Wayland
+session, or a GPU with no video memory left) the window checks are reported as skipped with the reason
+instead of being repeated. Set `KAI_TERM_TEST_NO_WINDOW=1` to skip them without even mapping the probe
+window:
+
+```sh
+KAI_TERM_TEST_NO_WINDOW=1 make test
+```
+
 ## Usage
 
 Launch Kai-Term:
@@ -115,6 +126,13 @@ The default startup directory is the user's home directory. You can change it in
 | `-h` | `--help` | Show the option list and exit |
 
 Long options also accept the `--name=VALUE` form (for example `--workingdir=/tmp`).
+
+### Exit status
+
+Kai-Term exits `0` after a normal session (the last tab closed, the window closed, or `-h`/`-v`). It exits
+`1` for a command-line error (an unknown option, or a flag with no argument) and also when the renderer
+cannot get video memory for its glyph atlas — the log then ends with
+`kai-term: no video memory for the glyph atlas — exiting` and `kai-term exiting — renderer failure`.
 
 ### Images
 
@@ -151,8 +169,9 @@ terminal, and closing it returns the window to exactly what it was before.
 
 The browser lists the current directory — directories first, then files, case-insensitively — with the
 directory path in its header line and, in its footer, how many entries are shown, whether the listing was
-capped, and any error. Each row shows the name, a `@` for a symlink, and the size for a file. The selected
-row is highlighted across the whole width and keeps the colour of its kind.
+capped, and any error. The first row is always `..`, the way back up (the root directory has no such row,
+because there is nothing above it). Each row shows the name, a `@` for a symlink, and the size for a file.
+The selected row is highlighted across the whole width and keeps the colour of its kind.
 
 The preview pane shows whatever fits the selected entry:
 
@@ -170,23 +189,33 @@ line saying why there is no preview — never as garbage and never as an error t
 |---|---|
 | `Up` / `Down` | move the selection (holding the key walks the list) |
 | `Page_Up` / `Page_Down`, `Home` / `End` | move by a page, to the first / last entry |
+| `Left` | go to the parent directory |
+| `Right` | enter the highlighted directory — and **nothing at all** on a file, so holding it cannot write at your prompt |
 | `Return` | open the selected directory; on a file, type its quoted path at the shell prompt **without** pressing Enter |
 | `BackSpace` | go to the parent directory |
 | `r` | re-read the current directory |
 | `p` | show or hide the preview pane (with it off, the browser is the full width of the band) |
 | `.` | show or hide dotfiles |
 | `Escape` | close the file manager |
-| mouse left click | select the row under the pointer; a click in the terminal pane hands the keyboard back |
+| mouse left click | select the row under the pointer; a **second click on the same row** opens it (enter the directory, or type a file's path); a click in the terminal pane hands the keyboard back |
 | mouse wheel | over the band it walks the listing; over the terminal it scrolls history as usual |
 
 `Ctrl`+`Shift`+`Up` gives the keyboard to the browser, `Ctrl`+`Shift`+`Down` gives it back to the terminal.
-While the browser has the keyboard the keys above belong to it; the moment the terminal has it those same
-keys go to the shell unchanged, so `Up` is still history recall. A thin border marks which region has the
-keyboard.
+While the browser has the keyboard the keys above belong to it **and no other key reaches the terminal** —
+typing with the band focused cannot write into a shell you are not looking at. The window's own shortcuts
+(new session, close, switch, zoom, copy, paste, `Shift`+`PageUp`/`PageDown` scrolling) keep working from
+either side, because they belong to the window and not to the text. The moment the terminal has the keyboard
+those same keys go to the shell unchanged, so `Up` is still history recall. A thin border marks which region
+has the keyboard.
 
 By default, browsing into a directory also sends `cd '<that directory>'` to the shell, so the prompt lands
 where you are looking (`fm_follow = 0` turns that off). Kai-Term never runs a file for you: `Return` on a
 file only types its path, and you add the command.
+
+**Neither of those two lines is sent unless the terminal is sitting at an untouched prompt.** If you have
+started typing a command, recalled one from history or pasted something, the file manager leaves your line
+alone and logs why (`fm: not telling the shell to follow — its input line is not empty`). Clear the line,
+or press Enter, and the next navigation goes through again.
 
 To have the band up from startup, set `file_manager = 1` in the configuration file.
 
@@ -246,6 +275,8 @@ Settings use a simple `key = value` format.
 | `fm_key_pagedown` | `Page_Down` | Move down one page |
 | `fm_key_home` | `Home` | Select the first entry |
 | `fm_key_end` | `End` | Select the last entry |
+| `fm_key_left` | `Left` | Go to the parent directory |
+| `fm_key_right` | `Right` | Enter the highlighted directory (does nothing to a file) |
 | `fm_key_open` | `Return` | Open a directory / type a file's path |
 | `fm_key_parent` | `BackSpace` | Go to the parent directory |
 | `fm_key_refresh` | `r` | Re-read the current directory |
@@ -310,8 +341,8 @@ repeats follow at `repeat_rate` per second. Repeating works for everything typed
 `Shift`+`PageUp`/`PageDown`/`Home`/`End` history scrolling. The shortcuts that change the terminal itself
 (`Ctrl`+`+`/`-`/`0` zoom and `Ctrl`+`Shift`+`C`/`V`) never repeat, so a held key cannot run past a font
 size or paste over and over. Releasing the key stops the repeat immediately; setting `repeat_delay = 0`
-disables repeating entirely. The file manager's movement keys repeat the same way (holding `Down` walks
-the listing); its one-shot keys — open, parent, refresh, preview, dotfiles, close — never do.
+disables repeating entirely. The file manager's movement keys repeat the same way (holding `Down` walks the
+listing); its one-shot keys — open, go up, go into a directory, refresh, preview, dotfiles, close — never do.
 
 ### File-manager keys
 
@@ -324,6 +355,8 @@ unchanged.
 | `Up` / `Down` | Move the selection (hold to walk the list) |
 | `Page_Up` / `Page_Down` | Move by one page |
 | `Home` / `End` | First / last entry |
+| `Left` | Go to the parent directory |
+| `Right` | Enter the highlighted directory; on a file it does nothing |
 | `Return` | Open the selected directory; on a file, type its quoted path at the prompt |
 | `BackSpace` | Go to the parent directory |
 | `r` | Re-read the current directory |

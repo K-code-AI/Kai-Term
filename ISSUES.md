@@ -6,15 +6,34 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**None.** Verified 2026-10-18 from a clean tree: `make` exit 0 with 0 warnings; `make test` -> `CLI: 92
-checks, 0 failures, 0 skipped` + 613 checks 0 failures + `MODEL OK (0 problems)` + 220 checks 0 failures;
-`make asan` -> 613/0 + MODEL OK + 220/0 with no AddressSanitizer/UBSan/LeakSanitizer report; no
-`TODO`/`FIXME`/`XXX` anywhere in `src/`, `include/`, `tests/`.
+**No open bug.** Re-measured 2026-10-19 after the s75-s81 work was committed:
+`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **680 checks, 0 failures**; `./bin/dbg` **MODEL OK
+(0 problems)**; `./bin/test_fm` **235 checks, 0 failures**; `make asan` exit 0 with the same counts and no
+sanitizer report; `tests/cli_test.sh` green (94 checks, 0 failures, 0 skipped) when the probe launch can draw,
+62 checks + 10 skipped under `KAI_TERM_TEST_NO_WINDOW=1`. No `TODO`/`FIXME`/`XXX` anywhere in `src/`,
+`include/`, `tests/`.
 
-The integrated file manager (README "File manager") is built, wired into the window and covered by 220
-model/layout/config checks; its input routing was verified live by injecting keys through the compositor and
-reading the bytes the PTY received. **Its appearance has not yet been confirmed by a human eye** — see the
-s74 journal entry in AGENT.md. Its limits are under "Known limitations" — "File manager".
+The 2 failures that were here on the previous measurement (`tests/test_vt.c:2410` and `:2416`) were **bugs in
+the test, not in the terminal** (measured with `.scratch/s82/promptprobe.c`): the checks built their scrolled
+case with one burst of application output (`feed("p 😀")`), and the model correctly re-takes the prompt
+snapshot at the end of such a burst, so the typed text really was empty. The checks now print the prompt and
+type the text, and two further checks pin the rule the broken setup tripped over. `src/vt.c` was not changed
+for them.
+
+**One behaviour the user asked for is not implemented yet** (it is a request, not a bug): navigating the file
+manager while the shell's input line already holds text should clear that line, `cd`, and put the text back on
+the new prompt. Today such a navigation is *refused* instead — see "Known limitations", "File manager". The
+design and the ordered plan are in AGENT.md "Current Task (s83)".
+
+Everything else below is current behaviour, not a bug.
+
+The integrated file manager (README "File manager") is built, wired into the window and covered by 235
+model/layout/config checks plus the 680 passing ones in the VT/config suite; its input routing was verified
+live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
+file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
+at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s75/s76 entries in
+AGENT.md. **Its appearance has not yet been confirmed by a human eye** — that is the one open item, and it
+belongs to the user. Its limits are under "Known limitations" — "File manager".
 
 Image support is confirmed by eye in the user's window (`timg -p k <file.png>`, 2026-10-17) as well as by
 the model tests and the `graphics: N image(s) drawn` log line. Its limits are listed under
@@ -22,6 +41,22 @@ the model tests and the `graphics: N image(s) drawn` log line. Its limits are li
 
 To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` logs. Not reproducible ->
 not filed; it is not a bug until it reproduces.
+
+## Fixed
+
+**Kai-Term segfaulted inside the graphics driver when the GPU refused a texture (2026-10-19).** Symptom:
+`kai-term error: atlas glTexImage2D failed: 0x505 (512x512)` followed by SIGSEGV at address 0x4 inside
+`libnvidia-eglcore`, reached from `draw_quads()` — 85 core dumps from one run of `tests/cli_test.sh` on a
+machine whose video memory was already full. Cause: every texture-upload site (`render_draw()`'s two
+atlases, `img_tex()`, `fm_preview_tex()`) logged the failure and then drew with a texture that had no
+texels. Now: the glyph atlas is retried once after dropping every application-picture texture (the model
+still holds those pixels), and if it is still refused `render_draw()` returns -1 and the process exits 1
+with `kai-term: no video memory for the glyph atlas — exiting`; a refused color-emoji atlas falls back to
+monochrome glyphs and retries about once a second; a refused picture or preview texture skips that picture
+until an upload succeeds. Verified by forcing the failure in an A/B build (`.scratch/s81/`): the old tree
+draws with an unbacked texture and exits 0, the new one exits 1 with the message; the color-atlas branch
+was forced the same way and the terminal ran on and exited 0. The natural trigger needs a GPU with no
+memory left, so it has not been re-run for real since the fix.
 
 ## Known limitations
 
@@ -135,6 +170,25 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   about a `cd` you typed yourself. Navigating away and back to a directory sends the line again. It is
   never sent to a session on the alternate screen (vim, htop, less would receive it as typing), and
   switching session clears the memory so the newly visible shell is re-synced on the next navigation.
+- **The `cd` and the typed path go only to a prompt the model can describe as untouched.** Kai-Term cannot
+  see where a prompt ends — the tty echoes what you type, and that echo arrives as ordinary output — so it
+  remembers the whole cursor row as the shell last printed it and compares. Typing, a history recall
+  (readline redraws the line) and a paste all make it stop matching; backspacing everything away, or
+  arrowing back down to an empty prompt, makes it match again. Anything else — a session scrolled back into
+  its history, one whose rows just moved, one on the alternate screen — counts as "unknown", and unknown is
+  answered as "do not write here". The safe direction to be wrong in is refusing: the navigation happens and
+  the shell simply is not told (`-d` logs `fm: not telling the shell to follow — its input line is not
+  empty`). Pressing Enter or Ctrl+C in the terminal re-arms it.
+- **The injected command cannot be hidden from the screen.** The tty echoes what Kai-Term writes, and
+  discarding those bytes would leave the screen showing something readline believes is not there — its next
+  redraw (`\r\x1b[K…`) would print the command anyway, and everything in between would be a lie. So `cd
+  '<dir>'` appears at your prompt and runs, exactly as if you had typed it. Suppressing it would need the
+  shell's cooperation, not the terminal's.
+- **While a foreground command is running, the follow line waits in the tty input buffer.** Kai-Term cannot
+  tell a shell at a prompt from a shell running `sleep`, so the line is queued: it becomes the next command
+  when that program exits, or is consumed as stdin by one that reads stdin (`cat`, `dc`, …). Browsing while a
+  command that reads stdin is in front of you is the one case where the line can land somewhere unexpected —
+  `fm_follow = 0` avoids it.
 - **Kai-Term never opens a file.** `Return` on a file types its quoted path at the prompt and stops there;
   there is no "default application", no shell-out, and no confirmation dialog. Opening things is a decision
   deliberately left to the user.
@@ -155,17 +209,32 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   pane falls back to metadata with `webp file could not be decoded` (measured 2026-10-18 with
   `.scratch/s74/animprobe` on 4-frame GIF and WebP files: GIF 20x20 decoded, WebP refused). Reading that
   first frame would need `libwebpdemux`, which Kai-Term deliberately does not link.
-- **Sorting and columns are fixed.** Directories first, then case-insensitive by name (then by bytes, so
-  the order is total). No sort options, no tree view, no multi-select, and no rename / copy / move / delete
-  — the browser reads the filesystem and writes nothing to it.
-- **A click selects; it does not open.** One click moves the selection to the row under the pointer and
-  gives the browser the keyboard; entering a directory takes `Return`. There is no double-click.
-  The wheel over the band walks the listing instead of scrolling the terminal's history.
+- **Sorting and columns are fixed.** `..` is always the first row (except at `/`, which has no parent),
+  then directories first, then case-insensitive by name (then by bytes, so the order is total). No sort
+  options, no tree view, no multi-select, and no rename / copy / move / delete — the browser reads the
+  filesystem and writes nothing to it.
+- **One click selects, a double-click opens.** Two left clicks on the same row within 500 ms enter the
+  directory or type the file's path; the threshold is not configurable, and a click on the header, on the
+  preview or on a different row breaks the pair. A single click never opens, and the band's clicks never
+  reach an application that has grabbed the mouse. The wheel over the band walks the listing instead of
+  scrolling the terminal's history.
+- **While the band owns the keyboard, no other key reaches the shell** — that is the point of the feature,
+  but it also means the band's own bindings are the only way to move there. The window's shortcuts (sessions,
+  zoom, copy/paste, `Shift`+`PageUp`/`PageDown` scrolling, the band's toggle and focus keys) still work, and
+  a click in the terminal pane hands the keyboard back.
 - **The band is not part of the terminal's grid.** It is drawn from its own `Cell` arrays through the same
   renderer passes, so it uses the same font, colours and wide-glyph rules — but the terminal's selection,
   scrollback and mouse reporting do not reach it, and text in the preview pane cannot be selected.
 
 **Rendering / input**
+
+- **Video memory is shared with everything else on the GPU, and Kai-Term gives up rather than draw
+  garbage.** If the driver refuses the glyph atlas, the application-picture textures are dropped first
+  (their pixels are still in the model) and the upload is retried once; if that still fails the run ends
+  with exit status 1 and `kai-term: no video memory for the glyph atlas — exiting`. A refused color-emoji
+  atlas is not fatal: emoji are drawn monochrome and the upload is retried about once a second. A refused
+  picture or file-manager-preview texture skips that picture until an upload succeeds. Nothing is ever
+  drawn with a texture the GPU refused — that used to fault inside the driver (see "Fixed").
 
 - **Color emoji come from whatever color font fontconfig finds.** The installed NotoColorEmoji.ttf is
   bitmap-only (CBDT/CBLC, a single strike), so zoomed emoji are scaled from that one strike instead of

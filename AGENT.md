@@ -17,12 +17,17 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-verified 2026-10-18, session 74 — the file manager is BUILT, WIRED, DOCUMENTED and COMMITTED; the only open item is the user's eye on it)
+## Current Status (re-verified 2026-10-19, session 82 — the tree is MID-TASK: s79's model half is in it, `./bin/test_vt` is RED on 2 test-setup bugs, and s75-s81 are uncommitted)
 
-- `make clean && make` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). `make test` -> exit 0: `CLI: 92 checks, 0 failures, 0 skipped`,
-  `./bin/test_vt` **613 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm`
-  **220 checks, 0 failures**. `make asan` -> exit 0, 613/0 + MODEL OK + 220/0, no sanitizer report.
+- `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **678 checks, 2 failures**
+  (`tests/test_vt.c:2410` and `:2416` — proven to be **test-setup bugs, not model bugs**, see "Current
+  Task (s82)"), `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**.
+  `make test` is therefore RED, and `tests/cli_test.sh` is a second problem of its own — see s81 below.
+  `make asan` has not been run this session.
+- s75-s79 work is in the tree **uncommitted**: `git status -sb` -> 12 modified files, HEAD `2985ee4`.
+- Older verification (s74, before s75-s79 changed the tree): `make test` green at CLI 92/0, test_vt 613/0,
+  MODEL OK, test_fm 220/0; `make asan` green. Counts above are the current truth.
 - The whole feature is committed and pushed — `src/img.c`, `src/fm.c`, `tests/test_fm.c` (new) and the
   `Makefile`, `include/kai-term/kai-term.h`, `src/{config,layout,main,render,vt}.c`,
   `tests/{test_vt.c,cli_test.sh}`, `README.md`, `ISSUES.md`, `AGENT.md` changes. `git status -sb` shows a
@@ -63,7 +68,416 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git log --oneline origin/main -1`. `git fetch` before push — user commits on GitHub too. Never commit
   `bin/` or `build/`.
 
-## Current Task (s71 — NEW FEATURE: integrated file manager with live previews)
+## Current Task (s83 — executing the s82 plan: green tests, commit the verified range, then the clear -> `cd` -> re-populate machine)
+
+**User request (2026-10-19):** "We need to continue the work on Kai-Term, Previous session should've drafted
+the plan." The plan is s82's, below under "Previous Task (s82 — PLAN ONLY…)". This session implements it.
+
+**s83 measured start (measured this session, not inherited):**
+- `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- `./bin/test_vt` **678 checks, 2 failures** (`tests/test_vt.c:2410`, `:2416`); `./bin/dbg` **MODEL OK
+  (0 problems)**; `./bin/test_fm` **235 checks, 0 failures**.
+- `git status -sb` -> 13 modified files, HEAD `2985ee4`, `main` == `origin/main`. s75-s81 are all verified
+  work sitting uncommitted.
+- Re-ran `.scratch/s82/promptprobe` myself: `TEST 2410: feed 'p emoji' … pcx=4 … prompt_line=1 []` (the
+  whole row was application output, so the snapshot legitimately moved to cx=4 and the typed text is `""`),
+  and the realistic variant passes at the same scroll position — `variant: type emoji … live=17 pcx=2 inp=1
+  prompt_line=1 [😀]`, `scrolled back -> 0`, `back at live -> 1 [😀]`. The model is right; the test setup is
+  the bug. Confirmed before touching anything.
+
+**s83 objective:** land s79's requirement — "it should first empty the prompt, cd into the new dir, then
+repopulate the prompt with what was in it previously. Basically the prompt part should ALWAYS be in the same
+directory as the File Manager" — without ever running a mangled command and without ever losing what the user
+typed, and get the whole s75-s81 range committed.
+
+**s83 planned steps (each one: edit -> AGENT.md -> build/test; never commit red):**
+1. `tests/test_vt.c` only: rebuild the scrolled case as `feed("p ")` + `type("😀")`, and add one check pinning
+   the rule the probe exposed (a row written entirely by application output IS the prompt, so the describable
+   typed text is `""`). Expect ~680 checks, 0 failures.
+2. Commit the verified work in three honest pieces: (a) s75-s78 file-manager/pty fixes, (b) s79's model half
+   (`vt.c` + header + `test_vt.c`), (c) s81's renderer/CLI-suite/docs. `git fetch` first.
+3. `src/main.c`: the `IDLE -> ERASING -> CDING -> RETYPING -> IDLE` state machine from the s82 design, the
+   `fm_send_path()` gate change, the `tab_switch()` reset. Build stays 0 warnings.
+4. Headless checks in `tests/test_vt.c` for the predicates the machine leans on; `make test` + `make asan`
+   green (with `KAI_TERM_TEST_NO_WINDOW=1` unless the window path is under test).
+5. Live run, ONE window, through fish: partial command typed, navigate the band, read the bytes the shell
+   received. Ground truth is the bytes, not the screen. `coredumpctl list` afterwards.
+6. Docs: README:211-217 (the refuse rule becomes clear -> `cd` -> re-populate, with its limits), README:194
+   and :360 (`Return` on a file), the ISSUES.md limitation, AGENT.md's prompt invariant.
+7. Ask the user for the eye verdict (the band's appearance and the new clear/re-populate behaviour).
+
+**s83 expected outcome:** `make test` green at ~680 checks / 0 failures and `make asan` clean; navigating with
+a half-typed command leaves that command intact on the new prompt in the new directory; a stuck or
+interrupted sequence drops with a log line instead of typing anything; the whole s75-s81 range on
+`origin/main`; README/ISSUES describe only what is implemented.
+
+### s83 entry 1 — step 1 done: `tests/test_vt.c` is GREEN (680 checks, 0 failures); the model was never touched
+
+Read AGENT.md + ISSUES.md first, then re-measured the tree instead of trusting the journal (numbers in the
+"s83 measured start" block above), and re-ran `.scratch/s82/promptprobe` myself before editing anything — its
+output is quoted there and it settles the question: the model is right, the test's setup was unrepresentative.
+
+**Trap found while measuring, worth recording:** `make -j8` builds only `bin/kai-term` (the default target is
+`all` -> `$(BIN)`); `bin/test_vt`, `bin/dbg` and `bin/test_fm` are prerequisites of `make test`, not of `make`.
+So the first run after editing `tests/test_vt.c` printed the OLD 678/2 result from a stale binary
+(`bin/test_vt` mtime 18:26 vs the source at 19:32). Same class as the sanitizer-prerequisite trap already in
+Key Decisions. After a test-source edit, build the test targets explicitly (`make -j8 bin/test_vt bin/dbg
+bin/test_fm`) or use `make test`.
+
+**Step 1 — `tests/test_vt.c` only, no `src/` change.** The scrolled case at :2405-2416 was rebuilt the way the
+check describes it: the shell prints the prompt (`feed("p ")`) and the USER types the emoji (`type("😀")`),
+instead of one `feed("p 😀")` that wrote the whole row as application output. Two new checks pin the rule that
+broken setup tripped over, so nobody "fixes" the snapshot logic over it next time:
+`T.input_pending == 0 && T.prompt_cx == T.cx && T.prompt_cy == T.cy` after an output burst with nothing
+outstanding (the snapshot re-takes at its own end), and `term_prompt_line() == 1` with `pline[0] == 0` for that
+same row (a row the application wrote whole IS the prompt, and it holds no typed text — correctly).
+
+**Measured (exact commands):**
+- `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- `make -j8 bin/test_vt bin/dbg bin/test_fm` -> exit 0, 0 warnings.
+- `./bin/test_vt` -> **680 checks, 0 failures** (678 -> 680: the two new checks; the 2 failures are gone).
+- `./bin/dbg` -> **MODEL OK (0 problems)**; `./bin/test_fm` -> **235 checks, 0 failures**.
+- `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh ./bin/kai-term` -> `CLI: 62 checks, 0 failures, 10 skipped`,
+  rc 0, no window mapped.
+- `make -j8 asan` -> rc **0**: `test_vt_asan` 680/0, `dbg_asan` MODEL OK, `test_fm_asan` 235/0, and
+  `grep -cE "AddressSanitizer|runtime error|LeakSanitizer|SUMMARY|ERROR"` over the whole run -> **0**.
+
+`make test` is therefore no longer red. ISSUES.md's "Open" section still describes the red state and is
+updated with the commit step.
+
+**Next action (step 2):** commit the verified range in three honest pieces — (a) s75-s78 file-manager/pty
+fixes, (b) s79's model half, (c) s81's renderer/CLI-suite/docs — after `git fetch`.
+
+### s83 entry 2 — step 2 done: the whole s75-s81 range is committed in three verified pieces
+
+`git fetch origin` first: `main` == `origin/main`, nothing on GitHub to integrate.
+
+**The plan's three-way split (s75-s78 / s79-model / s81) is not expressible by file**, because four files
+carry more than one session: `include/kai-term/kai-term.h` (s75 fields + s79 prototype + s81 `Render` counters),
+`src/main.c` (s75/s76 routing + s81 fatal-renderer), `src/vt.c` (s75/s76/s77 gate + s79
+`term_prompt_line`), `tests/cli_test.sh` (s76 config checks + s81 probe). Hunk-level staging across those was
+rejected: it is exactly the splicing that has damaged files here before, and an intermediate hunk state need
+not even compile. The split is therefore by file group, and each commit message names the sessions it carries:
+
+1. `1a0eb97` — header, `src/config.c`, `src/fm.c`, `src/vt.c`, `tests/test_vt.c`, `tests/test_fm.c` (the model
+   half: the `..` row, `fm_key_left`/`fm_key_right`, the prompt gate, `term_prompt_line()`, the test fixes).
+2. `378f34e` — `src/main.c`, `src/pty.c`, `src/render.c`, `tests/cli_test.sh` (the window half: the key
+   swallow, Left/Right, the `term_at_prompt()` gate, double-click, the pty raw-mode fix, the refused-texture
+   paths, the CLI probe).
+3. the docs commit — `README.md`, `ISSUES.md`, `AGENT.md`.
+
+**Each committed tree was built and run, not assumed:** `git write-tree` -> `git archive` into
+`/home/kaida/Project/.scratch/s83/c1` and `c2`, then `make -j8` there.
+- `c1` (commit 1's tree): `make -j8` exit 0, 0 warnings; `test_vt` **680/0**; `dbg` **MODEL OK**; `test_fm`
+  **235/0**. So the model half stands on its own — the header changes are additive and the still-uncommitted
+  `main.c`/`render.c` compile against them.
+- `c2` (commit 2's tree): `make -j8` exit 0, 0 warnings; `test_vt` 680/0; `dbg` MODEL OK; `test_fm` 235/0;
+  `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh` -> **62 checks, 0 failures, 10 skipped**, no window mapped.
+
+**Damage done while verifying, recorded because it is a trap:** in `c1` I ran the CLI suite with
+`KAI_TERM_TEST_NO_WINDOW=1` — and it mapped ~15 windows anyway, because that env var is honoured only by
+s81's `cli_test.sh`, which lives in commit 2. The run reported `CLI: 92 checks, 0 failures, 0 skipped`.
+`coredumpctl list` afterwards shows **no new core dump** (the newest `kai-term` entry is still the 17:27:30
+one from s79), and the GPU was at 11807/12227 MiB, so nothing failed — but windows did appear on the user's
+screen. Rule: **never run `tests/cli_test.sh` from a pre-s81 tree expecting the no-window opt-out**; check
+which version of the script is on disk first.
+
+**ISSUES.md `## Open` corrected** — it still claimed the tree was red on 2 checks. It now states the measured
+green counts, keeps the explanation of why those 2 were test bugs (so the next reader does not re-diagnose
+them), and records plainly that the user's clear -> `cd` -> re-populate request is **not implemented yet** —
+today such a navigation is refused, which is the limitation already listed under "File manager".
+
+**Next action (step 3):** `src/main.c` — the `IDLE -> ERASING -> CDING -> RETYPING -> IDLE` machine, the
+`fm_send_path()` gate, and the `tab_switch()` reset.
+
+## Previous Task (s82 — PLAN ONLY: finish the s75-s79 work. Planned, not implemented.)
+
+**User request (2026-10-19):** "Prepare the plan for finishing s75-s79 work but don't do the work itself."
+Nothing in this plan is implemented. The planning step itself changed only the journals — no `src/`, no
+`tests/`, no README (the `src/render.c`, `src/main.c`, header, `tests/cli_test.sh` and README edits in
+`git status` are s81's, already described under "Previous Task (s81)").
+
+**s82 measured start (all of it measured, not inherited):**
+- `make -j8` -> exit 0, 0 warnings. `./bin/test_vt` **678 checks, 2 failures** (`tests/test_vt.c:2410`,
+  `:2416`); `./bin/dbg` MODEL OK; `./bin/test_fm` 235/0; `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh
+  ./bin/kai-term` -> 62 checks, 0 failures, 10 skipped. `make test` / `make asan` stop at those 2 checks.
+- `git status -sb` -> 13 modified files, HEAD `2985ee4`. **s75, s76, s77, s78 and s81 are all verified work
+  sitting uncommitted.**
+- `grep -n "term_at_prompt" src/main.c` -> `fm_send_cd()` (:909) and `fm_send_path()` (:1036) still use the
+  OLD gate. There is no deferred-follow state machine, no captured-line buffer, no deadline: **s79 step 3 was
+  never started.** `term_prompt_line()` exists in `src/vt.c` (:856) and in the header, and `tests/test_vt.c`
+  has 16 calls to it — s79 steps 1-2 are in the tree.
+
+**Root cause of the 2 red checks — the TEST is wrong, the model is right.** Measured with
+`/home/kaida/Project/.scratch/s82/promptprobe.c` (throwaway, replays the test's exact sequence and prints
+`prompt_valid/prompt_cx/prompt_cy/input_pending/live_off` plus the answer of `term_at_prompt()` and
+`term_prompt_line()` at every step):
+- The test builds the scrolled case with `feed("p \xf0\x9f\x98\x80")` — one burst of **application output**.
+  `term_parse()` re-takes the prompt snapshot at the end of every burst when `input_pending` is clear
+  (src/vt.c:2839), so the whole `p 😀` row legitimately BECOMES the prompt and the typed text is `""`. The
+  check expects `"😀"`, so it fails. Probe line: `TEST 2410: feed 'p emoji' … pcx=4 … prompt_line=1 []`.
+- The sequence the earlier passing checks use — application prints the prompt, then the **user** types
+  (`feed("p ")` then `type("😀")`) — works correctly at the scrolled bottom: probe line
+  `variant: type emoji … live=17 pcx=2 inp=1 prompt_line=1 [😀]`, then `scrolled back -> 0`, then
+  `back at live -> 1 [😀]`. That is exactly what `:2410`/`:2416` claim to test.
+- So `vt.c`'s snapshot logic needs **no** change; the fix is the test's setup (`feed("p ")` + `type("😀")`
+  instead of one `feed`). s79 step 2 is complete.
+
+**What s75-s79 left unfinished, item by item:**
+| Item | State | Evidence |
+|---|---|---|
+| s75/s76 band keys, `..` row, click-to-open, focus gate | done, verified | 235 `test_fm` checks, s76 live run |
+| s77 prompt gate not depending on the app echoing (`input_pending`) | done, verified | s77 `.scratch/s77/livegate` + `echochk`, test_vt checks |
+| s78 pty no longer forcing raw mode on every child | done, verified | s78 live Ctrl+C run |
+| s79 step 1-2: `term_prompt_line()` + header + 16 checks | done, verified | probe above; the 2 red checks are test bugs |
+| s79 step 3: the clear -> `cd` -> re-populate machine in `main.c` | **not started** | `fm_send_cd`/`fm_send_path` still gate on `term_at_prompt()` |
+| s79 step 4: green `make test` / `make asan` | **blocked** by the 2 test checks | measured above |
+| s79 step 5: README + ISSUES for the new prompt rule | **not done** | README:215 and the ISSUES limitation still describe the old refuse-the-touched-line rule |
+| s79 step 6: live run through fish | **not done** | no harness, no journal entry |
+| s75-s79 + s81 commits | **not done** | `git status -sb` |
+
+**s82 objective:** land the user's s79 requirement — "it should first empty the prompt, cd into the new
+dir, then repopulate the prompt with what was in it previously. Basically the prompt part should ALWAYS be
+in the same directory as the File Manager" — without ever running a mangled command and without ever losing
+what the user typed, and get the whole s75-s79 range committed.
+
+**s82 design (decided before writing code):**
+1. `main.c` gets a small state machine, one per window, keyed to the tab that started it:
+   `IDLE -> ERASING -> CDING -> RETYPING -> IDLE`, with `fm_cd_line[FM_LINE_MAX]` (the captured text),
+   `fm_cd_dir[FM_PATH_MAX]`, `fm_cd_tab`, and a `CLOCK_MONOTONIC` deadline.
+   - `fm_send_cd()` keeps the fast path (`term_at_prompt()` -> send now). Otherwise
+     `term_prompt_line()` captures the typed text; on 1, send `\x15` (Ctrl+U — measured s79 to be
+     `backward-kill-line` in fish 4.6, `unix-line-discard` in readline and in zsh emacs mode) and go to
+     ERASING. On 0, the old refusal log stays.
+   - The machine advances **after each `term_parse()` of that tab's pty output**, never on a timer alone:
+     ERASING -> `term_at_prompt()` true means the erase is PROVEN to have worked -> send `cd <dir>\r`;
+     CDING -> the model shows a new prompt and `term_at_prompt()` is true -> retype `fm_cd_line` with no CR.
+     **Safety property: the `cd` is never sent unless the erase is proven, so "runs a mangled command" is
+     closed by construction, not by trusting the key binding.**
+   - Abort (log + `IDLE`, `fm_last_cd` untouched): any keystroke the user sends while a sequence is in
+     flight, `tab_switch()`, the tab closing, entering the alternate screen, the deadline expiring.
+     Never retype captured text without re-checking `term_at_prompt()` — stale text over a new line is
+     exactly the mangling this must not do.
+   - `fm_send_path()` (Return on a file) stops refusing a line that merely has text: the gate becomes
+     `term_prompt_line()`, and it appends at the cursor (no CR is sent, so nothing can run).
+   - No new config key — the user asked for this to always happen.
+2. `main.c` is in no test binary, so the honest coverage is the live harness, not a unit test. Say that in
+   the journal rather than implying the machine is tested.
+
+**s82 planned steps (each one: edit -> AGENT.md -> build/test; never commit red):**
+1. `tests/test_vt.c` only: rebuild the scrolled case as `feed("p ")` + `type("😀")` at `:2405-2416`, and ADD
+   one check pinning the rule the probe exposed — a line written entirely by application output is the
+   prompt, so `term_prompt_line()` returns 1 with `""`. Expect `678 -> ~680 checks, 0 failures`.
+2. Commit the verified work in three pieces so each is honest: (a) s75-s78 file-manager/pty fixes,
+   (b) s79's model half (`vt.c` + header + `test_vt.c`), (c) s81's renderer/CLI-suite/docs. `git fetch`
+   first — the user commits on GitHub too.
+3. `src/main.c`: the state machine above, plus the `fm_send_path()` gate and the `tab_switch()` reset
+   (next to `fm_last_cd[0] = 0` at :694). Build must stay 0 warnings.
+4. Headless checks for the predicates the machine leans on (`term_prompt_line` after an erase, the
+   `input_pending` interaction) in `tests/test_vt.c`; then `make test` and `make asan` green.
+5. Live run, one window only (GPU rule from s81): `./bin/kai-term -d` with fish, type a partial command,
+   navigate the band, and read what the shell actually received — `fc -l` inside the shell, the way
+   `.scratch/s80/cwdinj.c` did — plus the `-d` lines `fm: told the shell to follow: …`. Ground truth is the
+   bytes, not the screen. Check `coredumpctl list` afterwards.
+6. Docs: README:211-217 (the "never sent unless at an untouched prompt" paragraph becomes clear -> `cd` ->
+   re-populate, with its limits), README:194/360 (`Return` on a file), ISSUES.md limitation "The `cd` and
+   the typed path go only to a prompt the model can describe as untouched" (the "queued in the tty input
+   buffer" and "cannot be hidden from the screen" limits stay true), AGENT.md prompt invariant.
+7. Ask the user for the eye verdict — the clear/re-populate is visible behaviour, and the file manager's
+   appearance is still unconfirmed by a human.
+
+**s82 expected outcome:** `make test` green at ~680 checks / 0 failures and `make asan` clean; navigating
+with a half-typed command leaves that command intact on the new prompt in the new directory; a stuck or
+interrupted sequence drops with a log line instead of typing anything; the whole s75-s81 range is on
+`origin/main`; README/ISSUES describe only what is implemented.
+
+**Explicitly NOT done in this step:** no source, test or README change. The only files written are
+AGENT.md and one sentence of ISSUES.md whose status claim the probe disproved.
+
+### s82 entry 1 — the plan, plus the root cause of the 2 red checks; no implementation
+
+Read AGENT.md and ISSUES.md first, then measured the tree rather than trusting the journal:
+`make -j8` 0 warnings; `test_vt` 678/2, `dbg` MODEL OK, `test_fm` 235/0, `KAI_TERM_TEST_NO_WINDOW=1` CLI
+62/0 with 10 skipped; `git status -sb` 13 modified files at HEAD `2985ee4`.
+
+Wrote `/home/kaida/Project/.scratch/s82/promptprobe.c` (throwaway, outside the repo; links `src/vt.c`,
+`src/img.c`, `src/config.c`, no window) to replay the failing checks' sequence and print the snapshot state
+at every step. Result — the model is right and the test is wrong, as recorded in the table and the root-cause
+block above. It also proved the two behaviours `:2410`/`:2416` ask for already work at `live_off = 17`
+(`prompt_line=1 [😀]` at the live bottom, `0` while scrolled back, `1 [😀]` again on return).
+
+Confirmed by reading `src/main.c` that s79 step 3 does not exist: `fm_send_cd()` (:909) and `fm_send_path()`
+(:1036) still gate on `term_at_prompt()`, and there is no captured-line buffer or deadline anywhere.
+
+**Files changed this entry:** `AGENT.md` (the s82 plan, s81 moved to "Previous Task", Current Status and
+Next Steps item 3 corrected, one new pitfall) and `ISSUES.md` (the Open section's claim that the red checks
+were a model problem — disproved). `git status` shows `src/` and `tests/` untouched since the s81 edits
+(mtimes 18:20-18:22 vs the journals at 18:54-18:55).
+
+**Next action, for whoever picks this up:** step 1 of the plan — fix the two `tests/test_vt.c` setups, then
+commit the three verified pieces before writing any new `main.c` code.
+
+## Previous Task (s81 — refused texture uploads: fixed, documented, NOT yet committed)
+
+**User report (2026-10-19):** "I don't know what kind of test you keep doing, but it'd be fun to stop
+crashing my compositor."
+
+**s81 measured start (before any edit this session):**
+- `make -j8` -> exit 0, 0 warnings. `./bin/test_vt` **678 checks / 2 failures** (s79's in-progress
+  `term_prompt_line` checks, `tests/test_vt.c:2410` and `:2416`); `./bin/dbg` MODEL OK; `./bin/test_fm`
+  235/0. `git status -sb` -> 12 modified files, HEAD `2985ee4` (s75-s79 uncommitted).
+- **What recent sessions put on the user's screen:** `tests/cli_test.sh` launches the real binary **15
+  times** (`-e true`), and every one of those launches maps a real xdg-toplevel on the user's niri.
+  s79 ran `./bin/kai-term -e true` another 20 times for the current tree plus 5 times for a
+  `git archive HEAD` A/B.
+- **Evidence of the damage:** `coredumpctl list` holds **85 `bin/kai-term` SIGSEGV dumps** timestamped
+  17:27:14-17:27:30 — the suite plus the A/B loops (`bin/kai-term` and `.scratch/s79/head/bin/kai-term`).
+- **Why it segfaults, read off the source:** `render_draw()` logs `atlas glTexImage2D failed: 0x505`
+  (src/render.c:1371-1375), sets no flag, and draws anyway (`draw_quads()` at :1431). Drawing with a
+  texture the GPU refused is what faults inside `libnvidia-eglcore` — s79's ASan backtrace: SEGV at
+  address 0x4 in `draw_quads` <- `redraw` <- `xdg_surface_configure`. The same "log it and draw anyway"
+  shape is in `img_tex()` (:516-520) and `fm_preview_tex()` (:945-948).
+- **Why the upload fails at all:** `nvidia-smi` -> **11751 / 12227 MiB used**. `/Data/LocalAI/Strata/engine/strata`
+  (pid 4552) holds 9740 MiB and `strata-vision` (4540) 1306 MiB — the user runs a local LLM on this GPU, so
+  ~470 MiB is left for the whole desktop and even the 512x512 alpha8 atlas (256 KB) can be refused.
+- **What the compositor did:** `journalctl --user` shows niri exiting cleanly twice — `niri::input: quitting
+  after confirming exit dialog` at 17:43:09 and 18:06:36 — i.e. the user restarted the session twice,
+  immediately after the 17:27 core-dump storm. niri logged no panic and left no core dump, so do NOT write
+  here that niri crashed. What IS on record: 85 dead clients and their windows, a GPU at its limit, and a
+  session the user chose to restart.
+
+**s81 objective:** Kai-Term must never draw with a texture the GPU refused (that is the crash), and the
+suite must never launch a storm of windows when there is no room for them.
+
+**s81 planned steps (each one: edit -> AGENT.md -> build/test):**
+1. `src/render.c`: mono-atlas upload failure -> free the picture caches and retry once, then report a fatal
+   renderer failure instead of drawing; color-atlas failure -> fall back to mono glyphs and skip the frame;
+   picture/preview upload failure -> skip that picture (both callers already treat tex 0 as "skip").
+2. `src/main.c`: `render_draw()` returning -1 -> stop the loop and exit with status 1 instead of SIGSEGV.
+3. `tests/cli_test.sh`: ONE preflight launch decides whether the window checks run at all; if it fails they
+   are reported as skipped with the reason instead of launching 14 more windows. `KAI_TERM_TEST_NO_WINDOW=1`
+   skips them on request.
+4. `make`, the headless suites, `make asan`, then ONE live launch to confirm the new failure path.
+5. ISSUES.md (open item, then Fixed once verified), README (the behaviour as it is), ENVIRONMENT.md (host
+   fact: this GPU is shared with a local LLM — never launch a window storm).
+
+**s81 expected outcome:** a run that cannot get video memory exits with a clear error and status 1; the CLI
+suite costs one window instead of fifteen and says why it skipped; no new core dumps.
+
+### s81 entry 1 — steps 1-2 done: no texture the GPU refused is ever drawn; a refused glyph atlas exits cleanly
+
+Changed `src/render.c`, `include/kai-term/kai-term.h`, `src/main.c` — one rule applied at all four upload
+sites: **a texture the GPU refused to give storage to must never be sampled by a draw.**
+
+- `render_draw()` now returns **-1** when the mono atlas upload fails *after* one retry that first drops
+  every picture texture (`free_picture_textures()`: the `ImgTex` cache and `fm_tex` — the model still holds
+  those pixels, a glyph has no such backup). New `Render` fields `atlas_upload_fails`,
+  `catlas_upload_fails`, `img_upload_fails`, `fm_upload_fails` feed `log_rate()`, which prints the first
+  failure and then about one per 120 frames, because these paths are retried every frame while the GPU
+  stays full.
+- Color-atlas failure is **not** fatal: the texture id is deleted, `Font.catlas_broken` is set (the emit
+  path in `emit_cell_glyph()` then takes the monochrome fallback that already exists for a box with no
+  color font), the atlas stays dirty, and `Render.catlas_wait` paces the retry to ~1 Hz. The frame that
+  failed is skipped (`return 0`) rather than drawn, because the color quads for it were already emitted
+  with texcoords into the texture that does not exist.
+- `img_tex()` and `fm_preview_tex()` return 0 on a failed upload instead of returning the empty texture.
+  Both callers (`draw_images()`, `draw_fm_preview()`) already treat tex 0 as "skip this picture", and
+  neither cache is updated, so the next frame retries.
+- `redraw()` (src/main.c) turns -1 into `W.fatal = 1; W.running = 0` plus one error line
+  (`kai-term: no video memory for the glyph atlas — exiting`); `main()` now returns 1 in that case and its
+  final log line reads `kai-term exiting — renderer failure`. The shells still get SIGHUP from the normal
+  exit path, so the process leaves an exit status instead of a core dump.
+
+**Verified:** `make -j8` exit 0, `grep -ciE "warning|error"` over the build log -> **0**. Headless counts
+unchanged: `./bin/test_vt` 678 checks / 2 failures (s79's, untouched by this change), `./bin/dbg` MODEL OK,
+`./bin/test_fm` 235/0. **Not yet verified live** — that is step 4, and it needs one real window.
+
+**Next:** step 3, `tests/cli_test.sh` — one preflight launch gates the 15 window-opening checks.
+
+### s81 entry 2 — step 3 done: the CLI suite probes once instead of mapping fifteen windows
+
+`tests/cli_test.sh`: before any window check, ONE probe run (`-d -e true`) decides whether they run.
+- Probe exits non-zero → `win_reason="the probe run exited <rc>: <first error/failed line>"`.
+- Probe never reaches `kai-term exiting` → `win_reason="the probe run never reached its clean exit"`.
+- `KAI_TERM_TEST_NO_WINDOW=1` → skip without mapping even the probe window.
+- No `WAYLAND_DISPLAY` → the old behaviour, now reported through the same `win_reason` variable.
+
+The skip list at the end of the file prints `$win_reason` instead of the hardcoded "no WAYLAND_DISPLAY",
+so a GPU-starved run says so out loud instead of failing 26 checks.
+
+**Verified:** `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh ./bin/kai-term` -> `CLI: 62 checks, 0
+failures, 10 skipped`, rc 0, and **no window was mapped** (10 SKIP lines naming the reason).
+
+**One live launch measured after the code change** (`timeout 15 ./bin/kai-term -d -e true`, GPU at
+11708/12227 MiB): rc **0**, clean run, `configure answered: buffer 1253x1002 attached (grid 154x61)`,
+`mux: the last session is gone, exiting`, `kai-term exiting`. So the atlas upload is NOT being refused at
+this moment — the 17:27 storm happened at 11843/12227 with 20 back-to-back launches. The new failure path
+therefore has to be forced, not waited for: next entry.
+
+### s81 entry 3 — step 4 done: the new failure paths forced in an A/B build, and the suite re-measured
+
+The GPU has room for one window right now, so the refused-upload path cannot be waited for. It was forced,
+the project's A/B way, in `/home/kaida/Project/.scratch/s81/` (throwaway, outside the repo):
+`render_new_forced.c` (current tree) and `render_old_forced.c` (`git archive HEAD` tree) with the mono
+atlas `glTexImage2D` **deleted** and `terr = GL_OUT_OF_MEMORY` — i.e. the texture really has no texels, and
+the error is reported exactly as a real refusal would be. Both built warning-free against the same sources.
+
+- `kt_old -d -e true` -> rc **0**: logs `atlas glTexImage2D failed: 0x505 (512x512)` and **draws anyway**.
+  It did not segfault in this run, so this A/B does NOT re-prove the driver fault — that evidence stays the
+  85 core dumps of 17:27 plus s79's ASan backtrace (`SEGV at 0x4` inside `libnvidia-eglcore`, reached from
+  `draw_quads`). What the A/B does prove is that the old code samples a texture with no texels and calls it
+  a day.
+- `kt_new -d -e true` -> rc **1**: `atlas glTexImage2D failed: 0x505 (512x512) — no video memory for the
+  glyph atlas`, `kai-term: no video memory for the glyph atlas — exiting`, `kai-term exiting — renderer
+  failure`. The session teardown still ran (`mux: the last session is gone, exiting`), so the shell was not
+  orphaned.
+- `sh tests/cli_test.sh ../.scratch/s81/kt_new` -> `CLI: 62 checks, 0 failures, 10 skipped`, and every SKIP
+  line carries the real reason: `the probe run exited 1: kai-term error: atlas glTexImage2D failed: 0x505
+  …`. One probe window, not fifteen.
+- Color-atlas branch, forced the same way (`kt_catlas`, `-e 'printf "😀\n"; sleep 3'`) -> rc **0**, one
+  `color atlas glTexImage2D failed: 0x505 (1024x512) — falling back to monochrome glyphs`, one
+  `swap failed (1 in a row), retrying on the next frame` (the frame deliberately skipped), then a normal
+  run and a clean exit. The terminal survives a refused color atlas.
+
+**Suite state measured after all of this:**
+- `make -j8` -> exit 0, 0 warnings.
+- `make test` -> **rc 2**: `CLI: 94 checks, 0 failures, 0 skipped` (the probe passed, so the window checks
+  ran — 15 short-lived windows, all clean), then `./bin/test_vt` 678 checks / **2 failures** (s79's
+  `term_prompt_line` checks) and make stops there. `./bin/dbg` MODEL OK, `./bin/test_fm` 235/0 when run
+  directly.
+- `make asan` -> stops for the same 2 failures; run directly, `./bin/dbg_asan` MODEL OK and
+  `./bin/test_fm_asan` 235/0 with **no** AddressSanitizer/UBSan/LeakSanitizer report.
+- **Standing rule for this box, learned the hard way:** iterate with
+  `KAI_TERM_TEST_NO_WINDOW=1 make test` (or `sh tests/cli_test.sh ./bin/kai-term` with that env set) unless
+  the window path is the thing under test. `make test` maps a probe window plus ~14 more when the probe
+  passes.
+
+**Next:** step 5 — ISSUES.md (the refused-upload crash as a Fixed entry, the VRAM situation as a
+limitation), README (the exit status and the env var the suite honours), ENVIRONMENT.md (host fact: this GPU
+is shared with a local LLM; never launch a window storm).
+
+### s81 entry 4 — step 5 done: the docs say what the code now does
+
+- `ISSUES.md`: new **Fixed** entry for the driver-fault crash (symptom, the 85 core dumps, the cause at all
+  four upload sites, what each path does now, and exactly how it was verified — forced A/B, not a real GPU
+  exhaustion). The "Open" section no longer claims "None": it states the measured red state (test_vt 678/2,
+  the two `term_prompt_line` checks s79 left) and the green parts. New limitation under "Rendering / input":
+  video memory is shared, and what Kai-Term does at each refused upload.
+- `README.md`: the Build section explains the CLI suite's single probe launch and
+  `KAI_TERM_TEST_NO_WINDOW=1`; a new "Exit status" subsection documents 0 vs 1, including the two log lines
+  a renderer failure ends with.
+- `ENVIRONMENT.md` (outside the repo, host facts): the GPU bullet now records that the user's local LLM holds
+  ~11 GiB of 12.2 GiB, how to check before opening GL windows, and what a full GPU does to a client that
+  draws anyway; a new "Launching real windows in a test" section forbids launch loops, asks for one probe +
+  printed skip reason, and tells the next agent to read `coredumpctl list` at the end of a GUI session.
+- `AGENT.md`: the file-tree counts, the `test_vt`/`test_fm` descriptions, the `cli_test.sh` debugging bullet
+  and Next Steps item 3 are brought in line with what is in the tree now.
+
+**Nothing is committed yet this session** — `git status -sb` will show the s75-s79 work plus s81's
+`src/render.c`, `src/main.c`, `include/kai-term/kai-term.h`, `tests/cli_test.sh` and the three docs.
+Committing is the next action, but the tree is red on 2 checks that are not mine to fix silently.
+
+## Previous Task (s71-s79 — integrated file manager with live previews; s79 unfinished)
 
 **s71 objective (from `/home/kaida/Project/TODO.md`, user request 2026-10-18):** an interactive file
 manager inside the terminal window — left pane browser with a highlighted selection, right pane
@@ -859,6 +1273,601 @@ manager", "`make test` is red on the new fm tests", "27 settings rows"). Replace
 
 **Next action:** the user's live run. Everything the code side can prove is proven and recorded.
 
+### s75 entry 1 — session start: measured the real state; the task is the user's four file-manager fixes
+
+User request: "read and apply the fix in TODO.md". TODO.md (2026-10-19) lists four file-manager items:
+1. while the file manager has focus the terminal must receive NO input — today every key that is not one
+   of the band's bindings is written into the terminal;
+2. Left arrow = go to the parent directory, Right arrow = enter the highlighted entry, and Right must do
+   nothing on a non-directory;
+3. the `cd` follow and the typed path must only go to a terminal whose input line is EMPTY, and the user
+   would like the injected command not to be shown at all ("so it feels more seamless");
+4. a mouse click should open a directory, and the listing should carry a `..` entry at the top so the
+   pointer can go back a directory.
+
+**s75 measured start (before any edit this session):**
+- `git status -sb` -> `main` == `origin/main`, clean tree (no modified, no untracked files). HEAD is the
+  file-manager commit + the AGENT.md sweep; read the hash with `git log --oneline -1`.
+- `make clean && make -j8` -> exit 0, `grep -ciE "warning|error"` over the whole build log -> **0**.
+- `make test` on that fresh tree -> **3 CLI failures** (`-c FILE runs` rc 1, `-c FILE applies font_size`,
+  `combined -c -d -w -e runs`). Re-running the SAME binaries: `make test-cli` -> 92/0/0, then `make test`
+  -> `CLI: 92 checks, 0 failures, 0 skipped`, `test_vt` **613 checks 0 failures**, `dbg` **MODEL OK
+  (0 problems)**, `test_fm` **220 checks 0 failures**, and 5 further `tests/cli_test.sh` runs in a row ->
+  92/0/0 every time. So the tree is green and the 3 failures were a one-off flake in the display-dependent
+  CLI checks; the failing run's own log showed `eglSwapBuffers failed: 0x3000` then `0x3003`, i.e. a window
+  the compositor was not showing. Not reproducible in 6 runs -> not filed (ISSUES.md rule), but watched.
+
+**s75 objective:** fix all four items, keep the build warning-free, extend the headless coverage for
+everything that is testable, and re-verify the interactive half with the existing key-injection harness.
+
+**s75 planned steps (each one: edit -> AGENT.md -> build/test):**
+1. Header: `left`/`right` in `FmKeys`; the `Term` fields + `term_at_prompt()` prototype the empty-line
+   gate needs.
+2. `src/config.c`: `fm_key_left` / `fm_key_right` (defaults `Left` / `Right`) — 2 new settings.
+3. `src/fm.c`: keep `..` as a real first entry of every listing (it is really in `readdir`; only `.` stays
+   dropped), sorted first, never hidden, `lstat` of the parent for its metadata; hidden at `/`.
+4. `src/vt.c`: the empty-prompt gate. Kai-Term cannot know where a prompt ends (the shell's echo arrives as
+   ordinary output), so the rule is a snapshot: at the end of an output burst that started a new line, the
+   cursor's row and column are copied; the line counts as untouched while it still matches. Typing, a
+   history recall or a paste change the row without starting a new line, so they are caught; backspacing
+   everything away or arrowing back to an empty prompt restores the match.
+5. `src/main.c`: swallow every key the band does not use while it owns the keyboard; Left/Right actions;
+   `fm_send_cd()` and `fm_send_path()` refuse when the line is not untouched (and log why); a click on a
+   directory row enters it.
+6. Tests: `test_fm` for the `..` entry (order, visibility, entering it, preview), `test_vt` for
+   `term_at_prompt()` (prompt / typed / recalled / cleared), `cli_test.sh` for the two new config keys.
+7. README (the two new settings, the mouse rule, the `..` entry, the empty-line rule) + ISSUES.md
+   (the echo cannot be suppressed — say so plainly, with the reason) + the live injection run.
+
+**s75 expected outcome:** the four reported behaviours fixed and verified, `make test`/`make asan` green
+with a higher check count, docs that match the tree, and the user's eye on the result.
+
+### s75 entry 2 — items 2 and 4 (partly): Left/Right bindings, and `..` is now a real first row
+
+Edits, in the order made:
+
+1. `include/kai-term/kai-term.h` — `FmKeys` gains `left` and `right` (the struct comment now says
+   fourteen actions, not twelve). Also added, for the empty-line gate that comes next: the `Term` fields
+   `prompt_row` / `prompt_cols` / `prompt_cx` / `prompt_valid` / `prompt_newline` and the
+   `int term_at_prompt(Term *t)` prototype.
+2. `src/config.c` — defaults `fm_key_left = Left`, `fm_key_right = Right` (both unmodified, like every
+   other `fm_key_*`), and the two `apply()` branches `fm_key_left` / `fm_key_right` using
+   `set_fm_keybind()`. That is 2 new settings (49 total).
+3. `src/fm.c` — **`..` is a real entry of every listing except the root's.** It is SYNTHESIZED in
+   `fm_scan_build_n()` (slot 0, before `readdir` runs) rather than taken from `readdir`, so the row is
+   guaranteed on every filesystem and has the same shape; its `stat()` is the parent's own, so the
+   metadata the preview shows for it is real. `entry_cmp()` pins `..` before everything (it is navigation,
+   not content), `hidden` stays 0 so the dotfile filter can never hide it, and at `/` the row is left out
+   because `fm_parent()` refuses that move too — the two must agree.
+   Two follow-on decisions, both because the row is now position 0:
+   - `fm_go()` picks the selection for every navigation (`fm_go_sel`/`fm_parent` no longer set `sel = 0`
+     themselves): entering a directory selects its first REAL row, otherwise the first Right/Enter after
+     a navigation would go straight back out. `fm_install_scan()`'s clamp still lands on `..` in a
+     directory that holds nothing else, which is right.
+   - `fm_entry_path()` returns the parent's own path for `..`, not `"<dir>/.."` text — the preview header
+     prints that string, and `/home/user/src/..` reads worse there.
+4. `tests/test_fm.c` — 21 checks were legitimately moved by the new row and are re-pinned to the new
+   behaviour, plus 11 new checks: `..` is first / is a directory / is never hidden / carries the parent's
+   stat; a capped listing still starts with it; `/` has no `..` row at all (new `has_entry()` helper);
+   Home lands on it and its path is the parent; the directory entered starts with its own `..`; an empty
+   directory still offers the row and Enter on it goes up; a model with NO listing (unreadable directory)
+   is the one that has no selection — that is what the "nothing selected" checks now use. The painting
+   checks now DERIVE the selected row (`1 + sel - top`) instead of hard-coding row 1, which is the same
+   class of mistake as the s72 geometry failure: the painter owns the row layout.
+
+**Measured:** `make -j8` exit 0, 0 warnings. `make test` -> exit 0: `CLI: 92 checks, 0 failures,
+0 skipped`, `test_vt` **613 checks 0 failures**, `dbg` **MODEL OK (0 problems)**, `test_fm` **231 checks
+0 failures** (220 -> 231). Before the test updates the same tree failed exactly 21 `test_fm` checks —
+measured, listed, and every one of them a test expectation about "the first entry", not a defect.
+
+**Next action (step 4):** `src/vt.c` — the prompt snapshot and `term_at_prompt()`, then `src/main.c` for
+the key swallow, the Left/Right actions, the empty-line gate on `cd`/typed path, and click-to-open.
+
+### s76 entry 1 — session start: measured the real state; s75's step 4 is in the tree, RED on 5 checks
+
+User request: "proceed with the Fixes" — the four file-manager items in `/home/kaida/Project/TODO.md`.
+Read AGENT.md + ISSUES.md first, then measured instead of trusting the journal:
+
+- `git status -sb` -> `main` == `origin/main`; modified: `AGENT.md include/kai-term/kai-term.h
+  src/config.c src/fm.c src/vt.c tests/test_fm.c tests/test_vt.c`. So s75's steps 1-3 (header `left`/
+  `right` + the prompt-snapshot fields, `fm_key_left`/`fm_key_right`, the `..` row) AND its step 4
+  (`src/vt.c` prompt snapshot + `term_at_prompt()` + `term_note_input()`, and the new `test_vt.c` checks)
+  are in the tree, uncommitted. `src/main.c` is NOT modified — s75's step 5 (the key swallow, the
+  Left/Right actions, the empty-line gate, click-to-open) was never started. The vt.c half of step 4 is
+  not described by any journal entry: s75 entry 2 ends at "next action: step 4", so treat the vt.c diff as
+  work in progress whose result is known from the run below.
+- `make clean && make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- `make test` -> exit 2: `CLI: 92 checks, 0 failures, 0 skipped`, then `./bin/test_vt` **637 checks,
+  5 failures** — `:2188` "answering DSR leaves no echo window open", `:2205` "back on the main screen the
+  prompt is known again", `:2209` "the session has history to scroll into", `:2213` "back at the live
+  bottom it is", `:2217` "a resize while clean stays clean". `test_fm` on the same tree -> **231 checks,
+  0 failures** (it never runs under `make test` because test_vt fails first).
+
+**Root cause of all five, measured with `.scratch/s76/promptdbg.c`** (the whole check sequence replayed
+against the real `src/vt.c`, printing `at_prompt/valid/cx/cy/prompt_cx/input_pending/resp_len/alt/so/lo`
+after every step): `input_pending` is set by every byte `term_note_input()` is given and cleared only by
+CR/LF/Ctrl+C **in what the terminal itself sent**, so the first arrow key opens an echo window that never
+closes — the trace reads `input_pending=1` from `type Up` to the end of the run. Consequences, in the
+order the trace shows them: (1) the DSR check's precondition was already dirty, so it fails for a reason
+unrelated to DSR; (2) `alt_screen_leave()` sets `prompt_valid = 0` and the end-of-burst snapshot is then
+suppressed forever, so **after vim/less the file manager could never type at the prompt again**; (3) the
+scroll checks cascade from (2) — and the test itself is also wrong there, it feeds 2 newlines into a
+10-row grid that has only 6 rows of content, so `live_off` is still 0 and there is no history to scroll
+into; (4) `term_resize` then correctly reports "was not clean" and keeps the snapshot invalid.
+
+**Decision, and why the freeze is NOT the bug to remove:** keeping the reference row frozen while an echo
+is outstanding is the conservative half of the design — it is what stops a readline redraw (`\r\x1b[Kls -l`
+after Up) from becoming "the prompt". Every real submission (Enter) or discard (Ctrl+C) clears the flag,
+so the freeze only persists while nothing has been submitted, which is exactly when the line is dirty.
+What must be fixed is that the reference can be LOST and never re-taken: leaving the alternate screen
+restores the main grid byte-for-byte, so the row under the restored cursor IS the prompt — `alt_screen_leave`
+must re-take the snapshot, not clear it. Two of the five failures are test-side (the DSR precondition,
+the scrollback setup) and get fixed in the test, not by weakening the model.
+
+**s76 objective:** finish s75's four TODO.md items — (1) no key at all reaches the terminal while the band
+owns the keyboard, (2) Left = parent / Right = enter the highlighted directory and nothing on a file,
+(3) the `cd` follow and the typed path go only to a session sitting at an untouched prompt, (4) a
+double-click opens and the listing carries `..` (already in the tree from s75) — with the model fixed so
+the empty-line rule survives the alternate screen, headless coverage for everything testable, the live
+injection harness re-run for the half no test binary links, and README/ISSUES.md brought in line.
+
+**s76 planned steps (each one: edit -> AGENT.md -> build/test):**
+1. `src/vt.c`: `alt_screen_leave()` re-takes the snapshot instead of clearing it; add `prompt_cy` so a
+   cursor on a DIFFERENT row that happens to look like the remembered one cannot count as the prompt.
+2. `tests/test_vt.c`: fix the two test-side defects (honest precondition for the DSR check; enough output
+   to actually create scrollback) and re-run — 637/0 required.
+3. `src/main.c`: route every INPUT write through one helper that calls `term_note_input()` (keystrokes,
+   paste, the file manager's own `cd`/path) while query answers and SGR mouse reports keep calling
+   `pty_write()` directly; swallow every key the band does not use while it owns the keyboard; the
+   Left/Right actions; `term_at_prompt()` gate on `fm_send_cd()`/`fm_send_path()` with a log line naming
+   the refusal; double-click opens in the band.
+4. Tests: `test_fm` for whatever the model can pin (Right-on-a-file is `fm_go_sel` returning 0),
+   `cli_test.sh` for `fm_key_left`/`fm_key_right`.
+5. README (the two settings, the `..` row, click-to-open, the empty-line rule) + ISSUES.md (the empty-line
+   rule and why the echo cannot be suppressed, the running-command caveat).
+6. `make clean && make`, `make test`, `make asan` with exact counts; the live injection harness
+   (`.scratch/s74/inj_keys.sh` shape) re-run against the new binary for items 1-4; commit.
+
+### s76 entry 2 — steps 1-2 done: the model fix + the test fixes; `make test` is GREEN (645 / 231 / 92)
+
+**`src/vt.c` (one behaviour change, one new field):**
+- `alt_screen_leave()` now calls `prompt_snapshot(t)` instead of `prompt_valid = 0`. Leaving the alternate
+  screen restores the main grid and the cursor byte-for-byte, so the row under that cursor IS the prompt the
+  full-screen app interrupted. Invalidating there was the bug: the end-of-burst snapshot in `term_parse()`
+  is deliberately skipped while an echo is outstanding, and an arrow key pressed before the app ran leaves
+  `input_pending` set with nothing to clear it — so the shell follow would have been dead for the rest of
+  the session after every vim/less run. Nothing a user can type opens a full-screen app without submitting
+  a line first, so that burst is always the application's own output and re-taking there is safe.
+- `prompt_cy` added (header + `prompt_snapshot` + `term_at_prompt`): the row content alone cannot say which
+  row the prompt is, so a cursor parked on a DIFFERENT row that happens to look identical (two blank rows)
+  no longer passes for an untouched prompt. Refusing is the safe direction.
+
+**`tests/test_vt.c` — four test-side defects, one of them a silent compile warning the "0 warnings" line had
+never covered because it is in `make test`, not `make`:**
+1. The DSR check asserted `input_pending == 0` on a state the previous checks had already dirtied (the last
+   thing sent was `x`). Now the line is submitted first, and the check gained a companion that the probe
+   leaves the prompt known.
+2. The scrollback checks fed 2 newlines into a 10-row grid with 6 rows of content — `live_off` was still 0,
+   so "the session has history to scroll into" could never be true. Now a submitted `ls -l\r` followed by
+   12 output lines, which is what actually reaches the bottom margin.
+3. `feed("\x1bc")` is ONE hex escape (`0x1bc`, out of range for a char), not ESC + `c` — the reset check was
+   feeding a single garbage byte and passing by accident. gcc said so
+   (`tests/test_vt.c:2229: warning: hex escape sequence out of range`). Now `"\x1b" "c"`, plus a check that
+   the cursor really went home, which is what distinguishes RIS from a printed byte.
+4. `term_note_input(&T, "cd /tmp\r", 9)` — the literal is 8 bytes, so the 9th byte read was its NUL, which
+   is not a CR and therefore RE-OPENED the echo window the CR had just closed. That is why
+   "the cd it ran leaves the line clean again" failed once the surrounding state was honest. Fixed with a
+   `send_in()` helper that takes `strlen()`; no hand-typed byte count is left in the prompt checks (same
+   class as s72's truncated `wfile(..., 63)` literals).
+
+**Measured (exact commands):** `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> 0.
+`make test` -> exit 0: `CLI: 92 checks, 0 failures, 0 skipped`, `./bin/test_vt` **645 checks, 0 failures**
+(637 -> 645: the DSR companion, the arrow-key echo-window, the alt-screen-with-open-window, the prompt-after-
+output, the two identical rows x3, the reset-is-RIS check), `dbg` **MODEL OK (0 problems)**, `./bin/test_fm`
+**231 checks, 0 failures**, and `grep -niE warning /tmp/t3.log` -> **0** (the hex-escape warning is gone).
+Evidence for the root cause and for every step of the fixed sequence:
+`/home/kaida/Project/.scratch/s76/promptdbg.c` (the s75 sequence, shows `input_pending=1` stuck from the
+first arrow key to the end) and `.scratch/s76/promptdbg2.c` (the fixed sequence, every step reads the
+expected state, including `alt leave -> at=1` with the echo window still open).
+
+### s76 entry 3 — step 3 done: `src/main.c` now enforces all four TODO items (build 0 warnings)
+
+One `edit_file` call, thirteen edits, then a build — no un-journaled change left in the tree.
+
+1. **`input_write(Term *, Pty *, buf, len)`** (prototype in the helpers block because the file manager's
+   `cd`/path are further up the file than its definition; definition next to `send_str`). Every byte Kai-Term
+   sends to the application **as input** goes through it: `send_str` (every keystroke), `paste_flush` (the
+   bracketed-paste delimiters and every 4096-byte chunk), `fm_send_cd`, `fm_send_path`. It calls
+   `term_note_input()` then `pty_write()`. Deliberately NOT used for the two other pty writers, which are
+   the terminal's own output and would open an echo window no keystroke ever closes: `mouse_send()`
+   (SGR/X10 reports) and the queued query answers (`term.resp` — DA1/DA2/DSR/CPR). `grep -n "pty_write(" src/main.c`
+   afterwards -> exactly those two plus `input_write` itself.
+2. **TODO item 1 — the swallow.** In `send_key()`, immediately after the `fm_keys()` gate and before
+   `snap_to_live()`/the PTY paths: `if (g_fm.on && g_fm.focus != FM_FOCUS_TERM) { klog(...); return 0; }`.
+   Before this, any key that was not one of the band's bindings fell through to the shell, which is exactly
+   the reported symptom. Everything matched above it still works while the band has the keyboard — tabs,
+   zoom, `Ctrl+Shift+C/V`, Shift+PageUp scrollback, the band's own toggle/focus/release — because those are
+   window chrome, not text. Returns 0 so a swallowed held key arms no repeat.
+3. **TODO item 2 — Left/Right.** `fm_keys()` gained `left` (parent, same action BackSpace always had) and
+   `right` (descend, and **nothing** on a non-directory: it never types a path, so holding Right through a
+   listing cannot write at the prompt). The "can I enter this" question is answered by the model's own
+   `fm_go_sel()` (it stats a symlink; returns 0 for a plain file or a dangling link) rather than by a second
+   classification invented in main.c. `open` (Return) keeps its type-the-path behaviour, now via
+   **`fm_open_sel()`**, one function shared by the `open` key and the second click of a double-click so the
+   two cannot drift.
+4. **TODO item 3 — the empty-line gate.** `fm_send_cd()` and `fm_send_path()` now refuse unless
+   `term_at_prompt(t)`, each logging its own refusal (`fm: not telling the shell to follow — its input line
+   is not empty` / `fm: not typing the path — the input line is not empty`). `fm_last_cd` is NOT updated on
+   a refusal, so the next navigation still gets through once the line is empty again. The "suppress the
+   echo" half of the request is NOT implemented and the reason is recorded in ISSUES.md: the tty echoes
+   what it is given, and Kai-Term discarding those bytes would leave the screen showing something readline
+   believes is not there — the next redraw (`\r\x1b[K…`) would print the command anyway.
+5. **TODO item 4 — double-click.** `fm_pointer_select(hit, btn, time)`: one click selects (unchanged), a
+   second left click on the SAME view position within `FM_DCLICK_MS` (500) calls `fm_open_sel()`. The pair
+   is reset by a click on the preview, on the header/footer/empty space, on a different row, or after it
+   fires — so a third click cannot re-fire without a fresh pair. `ptr_button` no longer discards `time`.
+   (`..` at the top of the listing was already in the tree from s75.)
+
+**Measured:** `make -j8` -> exit 0, `grep -iE "warning|error"` over the build log -> **0**. `grep -n
+"pty_write(" src/main.c` -> 1320 (`input_write`), 1623 (`mouse_send`), 2594 (query answers).
+
+### s76 entry 4 — step 4 done: the new surface is covered headlessly; 651 / 231 / 94, all green
+
+**`tests/test_vt.c` (config section, +6 checks):** the fourteen `fm_key_*` defaults now include
+`fm_key_left = Left` and `fm_key_right = Right` (both bare, mods 0); a config file that sets
+`fm_key_left = h` / `fm_key_right = l` rebinds them to those bare keys; `fm_key_left = none` unbinds it
+(BackSpace stays the way up); and an unparseable `fm_key_right = Ctrl+Shift+Nope` keeps the Right default
+rather than disabling "enter a directory" — the same rule already pinned for `fm_key_open`.
+
+**`tests/cli_test.sh` (+2 checks, real binary):** `fm_key_right = none` logs its unbind, `fm_key_left = h`
+logs no unbind, and the whole file-manager config block still produces no `unknown key` line.
+
+**`tests/test_fm.c`: no new checks, because the model already pins what the new keys rely on** — verified by
+reading the file rather than by adding duplicates: `fm_go_sel()` on a plain file returns 0 and nothing moves
+(line 581 — that is exactly "Right does nothing on a non-directory"), `fm_go_sel()` on the `..` row goes up
+one level (601-602), `..` is the first entry, is `FMK_DIR`, is never hidden and carries the parent's own stat
+(428-431), `/` has no `..` row (479-480), and the `..` row is painted as the first entry row (772-774). The
+Left/Right *bindings* live in `main.c`, which is in no test binary — that half is covered by the live
+injection run, not here.
+
+**Measured (exact commands):** `make test` -> exit 0: `CLI: 94 checks, 0 failures, 0 skipped`
+(92 -> 94), `./bin/test_vt` **651 checks, 0 failures** (645 -> 651), `dbg` **MODEL OK (0 problems)**,
+`./bin/test_fm` **231 checks, 0 failures**, 0 compile warnings in the whole run.
+
+**Next action (step 5):** README (the two new settings, the `..` row, one click selects / two open, Left and
+Right, the empty-line rule) and ISSUES.md (the empty-line rule, why the echo cannot be suppressed, the
+running-foreground-command caveat, and refresh the "Open" verification counts). Then the live injection run
+for items 1-4, then `make clean && make && make test && make asan` and a commit.
+
+### s77 entry 1 — session start: measured the real state, and a live pty probe found a REAL core bug
+
+User request: "continue to work from previous session on Kai-Term" -> finish the integrated file manager
+(s76's steps 5-6: docs, live verification of the four TODO.md items, clean re-verification, commit).
+Read AGENT.md + ISSUES.md first, then measured instead of trusting the journal:
+
+- `git status -sb` -> `main` == `origin/main`; modified: `AGENT.md ISSUES.md README.md
+  include/kai-term/kai-term.h src/config.c src/fm.c src/main.c src/vt.c tests/cli_test.sh
+  tests/test_fm.c tests/test_vt.c`. Nothing untracked (the file manager is committed since s74).
+- s76's step 5 (README + ISSUES.md) IS in the tree although no journal entry records it: the README diff
+  carries the `..` row, `Left`/`Right`, the double-click rule, the two new settings and the empty-prompt
+  paragraph, and ISSUES.md carries the empty-line rule, the "the echo cannot be suppressed" paragraph and
+  the refreshed counts. Verified the settings claim by set difference, not by eye: the 49 keys `apply()`
+  handles in `src/config.c` and the 49 rows of README's "Available settings" table are the same set.
+- `make clean && make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- `make test` -> exit 0: `CLI: 94 checks, 0 failures, 0 skipped`, `test_vt` **651 checks 0 failures**,
+  `dbg` **MODEL OK (0 problems)**, `test_fm` **231 checks 0 failures**.
+- The s76 session also left an un-journaled live run (`.scratch/s76/inj_s76.sh`, `log`, `rec`). Its byte
+  stream shows the `cd` follow going out **after** the user had typed `rm -rf` at the prompt — i.e. TODO
+  item 3 appeared broken. Its expectations were also wrong (the band opens with the selection on the `..`
+  row, so its first `Right` went UP a level, and the preview of every navigation was built from the
+  previous directory's entry names -> `fm: preview: cannot stat <newdir>/<oldname>` noise).
+
+**Measured from scratch, headless, against the real sources (`.scratch/s77/`):**
+- `gate.c` replays the s76 sequence through the real `term_parse()`/`term_at_prompt()`: with the echo
+  bytes fed in, the model **does** refuse (`at_prompt=0` after `rm -rf`, and `1` again after Enter).
+- `livegate.c` does the same over the real `src/pty.c` — and the tty **echoes nothing at all**. Cause
+  found with `termios_probe.c`: `pty_spawn()` runs `cfmakeraw()` on the **master** fd, and on Linux a pty
+  master and slave share one termios, so the child's terminal starts with `-echo -icanon -isig -iexten
+  -icrnl -opost`. `stty -a` inside a Kai-Term pty proves it.
+- Consequences, each measured, not inferred:
+  - `echochk.c`/`echochk2.c`/`echochk3.c`: interactive **bash** in a Kai-Term pty never echoes what is
+    typed (readline believes the terminal echoes; the terminal does not). fish is fine — it draws its own
+    line (`fishecho.c`: `l` -> `l<CR><ESC>[15C`), which is why the user has never seen this.
+  - `sigchk.c` + A/B (`pty_sane.c` = the same pty.c with the cfmakeraw block removed): Ctrl+C to a plain
+    child does nothing with the shipped pty; with the block removed the tty echoes `^C`.
+  - `sigfish.c` A/B, the user's real workflow: `sleep 30` + Ctrl+C under **fish** -> shipped pty: the
+    command keeps running (no prompt marker returns); pty without cfmakeraw: **the prompt comes back**.
+    Ctrl+D is not EOF either (ICANON off), and `ls` under bash emits a bare `<LF>` because OPOST is off
+    (`lfchk.c`: Kai-Term's parser puts the next line at the SAME column — a staircase).
+  - So the empty-prompt gate is untestable through bash (nothing changes on screen) and works through
+    fish. That is why the s76 live run looked like a broken gate.
+
+**s77 objective:** close the file manager out honestly — (1) make the empty-prompt gate hold even when the
+application does not echo, (2) fix the two file-manager warts the s76 run exposed (the selection opening on
+the `..` row; a navigation previewing a path built from the previous listing), (3) fix the pty raw-mode bug
+that breaks Ctrl+C/Ctrl+D/echo for every child program, (4) re-verify the four TODO items live through the
+user's own shell (fish), (5) docs + clean re-verification + commit.
+
+**s77 planned steps (each one: edit -> AGENT.md -> build/test):**
+1. `src/vt.c`: `term_at_prompt()` also refuses while `input_pending` is set (Kai-Term knows it sent bytes
+   that have not been submitted, even when the application shows nothing), and the end-of-burst rule closes
+   that window when the application shows the remembered prompt row again — so backspacing a line away or
+   an arrow-key redraw re-arms the gate, while a program that never echoes keeps it shut.
+2. `src/fm.c`: the first selection of a directory is its first REAL row (the `..` row is row 0 but must not
+   be what Enter/Right acts on when the band opens); `have_listing` cleared by `fm_go()` so
+   `fm_preview_request()` cannot build `<new dir>/<entry of the old listing>`.
+3. `src/pty.c`: stop putting the child's terminal into raw mode; leave the kernel's cooked defaults.
+4. Tests: `test_vt` for the gate rule, `test_fm` for the selection and the preview path.
+5. Live injection run through fish (`.scratch/s77/inj_fish.sh`, ground truth = the PTY bytes) for TODO
+   items 1-4 plus the gate; then `make clean && make`, `make test`, `make asan`, README/ISSUES, commit.
+
+**s77 expected outcome:** the four TODO items verified through the shell the user actually runs, a file
+manager that never writes at a prompt it cannot prove is empty, Ctrl+C working again for every child
+program, `make test`/`make asan` green with a higher check count, and the user's eye on the band.
+
+### s77 entry 2 — steps 1-2 done: the prompt gate no longer depends on the application echoing; two file-manager warts fixed
+
+**`src/vt.c` — the empty-prompt gate.** `term_at_prompt()` was the row comparison only. That is enough for
+an application that echoes (fish draws its own line) and useless for one that does not (measured: bash in a
+Kai-Term pty returns nothing at all for typed characters). Now:
+- the comparison lives in a new `prompt_row_matches()`;
+- `term_at_prompt()` = `!input_pending && prompt_row_matches()` — Kai-Term knows it sent bytes that have not
+  been submitted, whether or not the application shows them;
+- the end-of-burst rule gained the other half: while an echo window is open, an output burst that leaves the
+  row matching the remembered prompt again CLOSES the window (`\r\x1b[Kprompt$ ` — readline's redraw, an
+  arrow-key recall that comes back to an empty line). An application that shows nothing keeps it shut.
+
+That keeps every documented recovery path working (backspacing a line away, arrowing back to an empty
+prompt, Enter, Ctrl+C) and closes the hole where a non-echoing program made a half-typed command look empty.
+
+**`src/fm.c` — two defects the s76 live run exposed:**
+- `fm_init()` left the selection at 0, which is the `..` row, so the band opened ON the way out: the first
+  `Right`/`Return` went up a level (that is why the s76 harness navigated somewhere it did not intend).
+  New `first_row_of(dir)` helper (row 1, or 0 at the root, which has no `..` row) is now used by both
+  `fm_init()` and `fm_go()` — one rule, so opening and navigating cannot drift.
+- `fm_go()` changed `fm->dir` but left `have_listing` set, so `fm_preview_request()` built a path out of the
+  PREVIOUS directory's entry names: every navigation asked the worker to stat `<new dir>/<old name>` and
+  logged `fm: preview: cannot stat …`. `fm_go()` now clears `have_listing`; the preview falls back to the
+  directory itself until the new listing lands (the old rows stay painted while loading — an empty browser
+  for a moment reads as a broken window — but nothing may build a path out of them).
+
+**Measured:** `make -j8` exit 0, `grep -ciE "warning|error"` over the build log -> 0. `make test` -> exit 0:
+`CLI: 94 checks, 0 failures, 0 skipped`, `test_vt` **656 checks 0 failures** (651 -> 656: typed text with NO
+echo, an empty line is not the remembered prompt, the remembered prompt redrawn closes the window, dirty
+again after that, Ctrl+C re-arms), `dbg` **MODEL OK (0 problems)**, `test_fm` **235 checks 0 failures**
+(231 -> 235: opens on the first real row, `/` opens on row 0, the old listing is not a description of the new
+directory, the preview asked for during a load is the directory itself). One existing check was re-pinned
+honestly rather than left to pass by accident: "back on the main screen the prompt is known again, echo
+window open or not" now also asserts `input_pending == 0` — leaving the alternate screen restores the prompt
+row byte-for-byte, which IS the proof the line is empty, so the window closes there now.
+
+**Next action (step 3):** `src/pty.c` — stop putting the child's terminal into raw mode.
+
+### s78 entry 1 — session start: measured the real state; s77's step 3 (the pty raw-mode bug) is next, and one s77 measurement was wrong
+
+User request: "Continue the work from previous Sessions on Kai-Term" -> finish the file-manager work
+(s77's steps 3-5), i.e. the pty raw-mode bug, the live verification through the user's own shell, the docs,
+and the clean re-verification + commit.
+
+**s78 measured start (before any edit this session):**
+- `git status -sb` -> `main` == `origin/main`; modified: `AGENT.md ISSUES.md README.md
+  include/kai-term/kai-term.h src/config.c src/fm.c src/main.c src/vt.c tests/cli_test.sh
+  tests/test_fm.c tests/test_vt.c`; nothing untracked. So s75/s76/s77's work is in the tree uncommitted,
+  exactly as the journal says. `src/pty.c` is NOT modified -> s77 step 3 was never started.
+- `make clean && make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- `make test` -> exit 0: `CLI: 94 checks, 0 failures, 0 skipped`, `test_vt` **656 checks 0 failures**,
+  `dbg` **MODEL OK (0 problems)**, `test_fm` **235 checks 0 failures** — matches s77 entry 2's counts.
+- `/home/kaida/Project/TODO.md` no longer exists (the four file-manager items it carried were s75's).
+
+**s77's pty claims re-measured myself (`.scratch/s78/`, A/B: the shipped `src/pty.c` vs `pty_sane.c` =
+the same file with the `cfmakeraw()` block deleted, both linked against the current vt.c/img.c/config.c):**
+- `termios` probe: with the shipped pty the child's terminal is `-isig -icanon -iexten -echo -opost
+  -icrnl`; with the block gone it is the kernel default `isig icanon iexten echo opost icrnl`. So the
+  master-side `cfmakeraw()` really does set the CHILD's terminal (one termios per pty pair).
+- `ls` in a Kai-Term pty: shipped -> `... src<LF>ISSUES.md ...` (bare LF); sane -> `<CR><LF>`. Kai-Term's
+  parser does NOT treat a bare LF as CR+LF (`lfchk`: row 1 starts at col 8, row 2 at col 17 — a
+  staircase). So every program that does not set its own termios prints staircases today.
+- Ctrl+C to `sleep 30`: shipped -> the child keeps running, nothing echoed; sane -> the child becomes a
+  zombie (SIGINT landed) and the pty's foreground pgrp goes to 0. Through the user's real shell (fish,
+  `sleep 30` + Ctrl+C): shipped -> the prompt never comes back; sane -> it does.
+- Ctrl+D to `cat`: shipped -> `cat` prints the `^D` byte and keeps running (VEOF needs ICANON);
+  sane -> canonical behaviour (the line is echoed, `hi` then `hi`, and EOF works on an empty line).
+- **One s77 measurement was WRONG and is corrected here:** `.scratch/s77/sigchk.c` wrote `\003` to the
+  master IMMEDIATELY after `pty_spawn()` returned, before the child had run `setsid`/`TIOCSCTTY`, so the
+  pty had no foreground process group yet and NO pty could have signalled anything — it reported
+  "Ctrl+C did nothing" for the SANE build too. `.scratch/s78/sigwhy.c` waits 500 ms first and prints
+  `TIOCGPGRP` + the process tree: sane -> `^C` echoed, child dead, foreground pgrp 0; shipped -> no echo,
+  child alive, foreground pgrp unchanged. The conclusion (raw mode breaks Ctrl+C) stands; the s77 A/B
+  evidence for the plain-child case does not, and the fixed harness is what s78 cites.
+
+**s78 objective:** finish the file-manager integration honestly — fix the pty raw-mode bug (it is the
+reason the empty-prompt gate could not be verified through bash, and it breaks Ctrl+C/Ctrl+D/echo for
+every child program), verify the four TODO.md file-manager items live through the user's own shell (fish),
+bring README/ISSUES.md in line, re-verify from a clean tree and commit.
+
+**s78 planned steps (each one: edit -> AGENT.md -> build/test):**
+1. `src/pty.c`: delete the `cfmakeraw()` block; leave the kernel's cooked defaults, and say why in the
+   comment (one termios per pty pair; applications that want raw mode set it themselves — readline, vim,
+   fish all do).
+2. Re-run the A/B harness against the real binary's pty (the probes now link the shipped pty.c) and record
+   the byte-level evidence: `ls` -> CR+LF, Ctrl+C -> SIGINT, Ctrl+D -> EOF, typed characters echoed.
+3. `make test` + `make asan` — expect no count change (no test links pty.c); record that honestly.
+4. Live injection run through fish (`.scratch/inject` -> niri -> the real window, ground truth = the bytes
+   the PTY received) for the four TODO items + the empty-prompt gate, now that the tty echoes: typing at
+   the prompt must make the gate refuse, Enter must re-arm it.
+5. README (nothing new to document unless behaviour changed — check the "File manager" and "Input" text
+   against the new pty) + ISSUES.md (the echo paragraph is now true by measurement, not by argument).
+6. `make clean && make`, `make test`, `make asan` with exact counts; commit; `git fetch` + push; hand the
+   user the live command for the file-manager visual verdict (still the one open item).
+
+**s78 expected outcome:** Ctrl+C, Ctrl+D and echo work for every child program, `ls` no longer staircases,
+the empty-prompt gate verified through the shell the user actually runs, `make test`/`make asan` green, docs
+that match the tree, one commit on `main`, and the user's eye on the band.
+
+### s78 entry 2 — step 1-3 done: the pty no longer puts every child program into raw mode
+
+`src/pty.c`: deleted the `cfmakeraw()` + `tcsetattr()` block on the master fd (and the now-unused
+`#include <termios.h>`), replacing it with a comment that names each broken flag and the measurement that
+shows it. No other file changed — nothing in Kai-Term reads or writes termios, and nothing else in the tree
+assumed the raw pty (`grep -n "tcset\|cfmake\|termios" src/ include/` -> only that comment).
+
+Why this is the right fix rather than "raw but re-enable ISIG/OPOST": a terminal emulator's job is to give
+the child a normal terminal. Programs that want raw mode set it themselves (readline, vim, fish, less all
+do) and restore it afterwards; that only works if the starting state is the kernel's cooked default. The
+same reasoning is why foot/alacritty/kitty do not touch the pty termios.
+
+**Measured after the change (exact commands, `.scratch/s78/`, probes relinked against the now-fixed
+`src/pty.c`):**
+- `./termios_ship` (child runs `stty -a`): `isig icanon iexten echo opost icrnl` — the kernel defaults,
+  where before the same probe printed `-isig -icanon -iexten -echo -opost -icrnl`.
+- `./bytes_ship 'ls'`: `... build\t src<CR><LF>ISSUES.md ...` — ONLCR is back, so the staircase the
+  `lfchk` probe measured (row 1 at col 8, row 2 at col 17) cannot happen any more.
+- `./sigwhy_ship` (waits for the child to set up, prints `TIOCGPGRP` + the process tree): `^C` echoes as
+  `^C`, the child becomes `Zs sleep <defunct>`, the pty's foreground pgrp goes 155079 -> 0, `waitpid`
+  reaps it. Ctrl+C is a signal again.
+- `./sigfish_sane` (fish, `sleep 30`, Ctrl+C) already showed the prompt coming back; the shipped build now
+  links the same code path.
+- `./bytes_sane 'cat' 'hi' <Ctrl+D>`: `hi` echoed by the tty, then `hi` again from `cat` — canonical mode,
+  which is what makes VEOF work; the shipped build printed the `^D` byte itself and `cat` kept running.
+- `./livegate <tree> cat` and `./livegate <tree> bash` (the real `src/pty.c` + the real `term_parse()` +
+  `term_at_prompt()` after every step) — the empty-prompt gate now holds over a real tty echo, in both
+  shells: after `rm -rf` typed without Enter, `at_prompt=0 pending=1` -> "the cd would be REFUSED"; after
+  Enter, `at_prompt=1 pending=0` -> "the cd WOULD be sent". s77 could not show this for bash at all,
+  because nothing was echoed.
+
+**Measured (project commands, exact):** `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build
+log -> **0**. `make test` -> exit 0: `CLI: 94 checks, 0 failures, 0 skipped`, `test_vt` **656 checks
+0 failures**, `dbg` **MODEL OK (0 problems)**, `test_fm` **235 checks 0 failures**, 0 warnings in the run.
+`make asan` -> exit 0: 656/0 + MODEL OK + 235/0, and `grep -cE
+"AddressSanitizer|runtime error|LeakSanitizer|SUMMARY|ERROR"` over the run -> **0**. The counts did not
+move because no test binary links `src/pty.c` — re-run to prove that, not to claim coverage. The pty change
+is covered by the `.scratch/s78/` A/B harness only.
+
+**Next action (step 4):** the live injection run through the user's own shell (fish) — `.scratch/inject`
+-> niri -> the real `bin/kai-term`, ground truth = the bytes the PTY received — for the four file-manager
+items plus the gate, now that the tty echoes what is typed.
+
+### s78 entry 3 — step 4a: Ctrl+C verified live in the real window, and two harness traps found on the way
+
+Live A/B in the real niri session (`.scratch/s78/inj_loop.sh` + `pgrploop.c`, keys injected through
+uinput): the child is a program with the **default** SIGINT disposition that prints one line every 400 ms
+(and its own pid/pgrp + `TIOCGPGRP`). One injected `Ctrl+Shift+F`-class chord was proven to reach the
+window in the same run (the `fm: opened on …` log line), so "the key arrived" is never assumed.
+
+| binary | the loop's line count before ^C / after 1.6 s / after a 2nd ^C + 1.6 s |
+|---|---|
+| `bin/kai-term` (fixed pty) | 5 -> **7 -> 7** — the program died at the first Ctrl+C |
+| `.scratch/s78/kai-term_old` (the committed `cfmakeraw` pty.c) | 5 -> **12 -> 18** — it kept printing through both |
+
+`kai-term_old` is the current tree's objects linked against `git show HEAD:src/pty.c` — the A/B build the
+project's method calls for, and it is what turns "the comment says it works" into evidence.
+
+Supporting live measurements, all with the fixed binary:
+- `inj_stty.sh` + `stty -a` written to a file from inside the real window: the child's terminal is
+  `isig icanon iexten echo opost icrnl` (the old binary: `-isig -icanon -iexten -echo -opost -icrnl`).
+- `pgrpchk` inside the real window: `fg pgrp = <the shell's pid>`, and the child's own pgrp equals it —
+  so a generated SIGINT has somewhere to go.
+- `sigcatch2` (installs a handler): `start: fg_pgrp=184395 pid=184396 pgrp=184395` then
+  `caught signal 2` — SIGINT reaches a forked child of the shell, not only the pgrp leader.
+- `inj_reckey.sh`: with `stty raw -echo` in the child, the PTY receives `a^Cb` — Kai-Term really writes
+  `\003` for the injected chord.
+
+**Two harness traps, both of which produced a FALSE "Ctrl+C still broken" and both worth remembering:**
+1. **A background job of a non-interactive shell has SIGINT and SIGQUIT set to SIG_IGN**
+   (`SigIgn: 0000000000000006` in `/proc/<pid>/status`), and that disposition is inherited across
+   `fork`+`exec` — so every program inside a terminal started with `binary &` from a script ignores
+   SIGINT, whatever the pty does. `trap - INT` in `sh -c` does NOT undo it (a POSIX shell cannot reset a
+   signal that was ignored on entry). Fix: `.scratch/s78/runfg.c` — `signal(SIGINT, SIG_DFL)` before the
+   exec. Measured: the child's `SigIgn` goes `0x6` -> `0x4` (only SIGQUIT left).
+2. **`sleep 30; echo done > FILE` is not a valid interrupt test**: the shell catches SIGINT
+   (`SigCgt: …00010002`) and aborts the script instead of running the next command, so the marker file
+   never appears even when the signal landed. A program that reports its own state (a loop, or a handler
+   that writes a file) is the honest probe. `sleep` itself was checked separately: inside the terminal its
+   `SigIgn` is 0 and an explicit `kill -INT` kills it (`slept rc=130`).
+
+Also corrected: the s77 `sigchk.c` race (recorded in entry 1) — writing to the master before the child has
+run `setsid`/`TIOCSCTTY` cannot produce a signal for ANY pty, so that A/B proved nothing.
+
+**Next action (step 4b):** the file-manager live run through fish — the four TODO.md items plus the
+empty-prompt gate, with the tty now echoing what is typed.
+
+### s79 entry 1 — session start: measured the real state; NEW USER REQUIREMENT changes the prompt rule
+
+User request, two parts. **Confirmed as-is, no change:** `Return` on a file types the path instead of
+running it, and `fm_follow` sends `cd <dir>` unprompted — both stay. **Changed:** the rule "the `cd` follow
+and the typed path only go to an untouched prompt" is too strict. The user wants
+
+> "it should first empty the prompt, cd into the new dir, then repopulate the prompt with what was in it
+> previously. Basically the prompt part should ALWAYS be in the same directory as the File Manager."
+
+So a navigation must never be refused because the line already has text: Kai-Term clears the line, sends
+the `cd`, and puts the user's text back on the new prompt.
+
+**s79 measured start (before any edit this session):**
+- `git status -sb` -> `main` == `origin/main`; modified: `AGENT.md ISSUES.md README.md
+  include/kai-term/kai-term.h src/config.c src/fm.c src/main.c src/pty.c src/vt.c tests/cli_test.sh
+  tests/test_fm.c tests/test_vt.c`; nothing untracked. s75-s78's work is in the tree uncommitted, as the
+  journal says. HEAD `2985ee4`.
+- `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- The headless suites are green: `./bin/test_vt` **656 checks 0 failures**, `./bin/dbg` **MODEL OK
+  (0 problems)**, `./bin/test_fm` **235 checks 0 failures**.
+- **`make test` is RED — 6 to 11 `cli_test.sh` failures, and the reason is a SEGFAULT, not the display
+  flake s75 recorded.** `./bin/kai-term -e true` -> rc 139, 20/20 runs. The ASan build of the whole
+  binary (`.scratch/s79/kai-term_asan`) reports `SEGV on unknown address 0x4`, READ, inside
+  `libnvidia-eglcore`, called from `draw_quads` (src/render.c:565, the non-instanced `glDrawArrays`)
+  from `redraw` <- `xdg_surface_configure` <- `wayland_setup`. Every crashing run prints
+  `kai-term error: atlas glTexImage2D failed: 0x505 (512x512)` first.
+- **A/B against the committed tree proves it is NOT a regression:** `git archive HEAD` into
+  `.scratch/s79/head/`, built clean, fails 5/5 with the same `atlas glTexImage2D failed: 0x505` line.
+  Cause, measured: `nvidia-smi` -> **11843 / 12227 MiB of GPU memory in use**, one process (pid 4552)
+  holding 9740 MiB. The texture allocation fails and the driver then faults in its own draw path.
+  `niri msg focused-window` answers normally, so the compositor is fine — it is VRAM exhaustion.
+  Two consequences recorded honestly: (a) `tests/cli_test.sh` cannot be trusted while the GPU is full, so
+  the headless counts are the reliable signal this session; (b) Kai-Term **segfaults instead of exiting**
+  when an atlas upload fails — a real robustness gap, but it reproduces only under VRAM pressure, so it
+  goes to ISSUES.md as a limitation with this reproduction rather than being chased as a new bug.
+- `fish 4.6.0` binds `ctrl-u` -> `backward-kill-line` (`fish -c 'bind \cu'`); readline's `C-u` is
+  `unix-line-discard`; zsh emacs mode binds `^U` to `unix-line-discard` too. So `0x15` is the one
+  sequence every line editor on this box uses to erase the line backwards to its start — and it needs no
+  character count, which a `\b`-per-cell approach would (a tab advances several columns, a wide glyph
+  occupies two cells, so cells != keystrokes).
+
+**s79 objective:** make the shell's input line follow the browser unconditionally — clear it, `cd`, put the
+user's text back — without ever running a mangled command and without ever losing what the user typed.
+
+**s79 design (decided before writing code):**
+1. `src/vt.c` — new `int term_prompt_line(Term *t, char *out, size_t cap)`: 1 when the input line can be
+   described EXACTLY as "the remembered prompt, then typed text ending exactly at the cursor", with the
+   text written to `out`; 0 otherwise. It does NOT consult `input_pending` (the row comparison is the
+   evidence, and Kai-Term's own typed path must be describable too). Refuses when the prompt prefix itself
+   changed, when anything right of the cursor differs from the snapshot (the cursor is mid-line), when the
+   view is scrolled back, on the alternate screen, or when the text does not fit in `cap` — never silently
+   truncates a command.
+2. `src/main.c` — `fm_send_cd()` keeps the old fast path (`term_at_prompt()` -> send now) and gains the
+   three-step path: capture the text, send `\x15`, and **defer** the `cd` until the model proves the line
+   is empty again (`term_at_prompt()` becomes true — the end-of-burst rule already closes the echo window
+   when the application puts the remembered prompt row back). Then send `cd <dir>\r` and defer the retype
+   until the NEW prompt has been drawn. A deadline drops a stuck sequence with a log line.
+   **Safety property this buys: the `cd` is never sent unless the erase is proven to have worked**, so the
+   "runs a mangled command" failure mode is closed by construction, not by trusting the key binding.
+3. `fm_send_path()` (Return on a file) stops refusing a line that merely has text: it appends at the
+   cursor, which is exactly what typing does and cannot run anything (no CR is sent). Gate becomes
+   `term_prompt_line()`.
+4. No new config key — the user asked for this to always happen.
+
+**s79 planned steps (each one: edit -> AGENT.md -> build/test):**
+1. Header: `term_prompt_line()` prototype + `FM_LINE_MAX`.
+2. `src/vt.c`: implement it; `tests/test_vt.c` checks (empty line, typed line, cursor mid-line, scrolled
+   back, alt screen, wide glyph + emoji cluster, a line that does not fit).
+3. `src/main.c`: the deferred-cd state machine, the `fm_send_path` gate, reset on `tab_switch()`.
+4. `make`, `make test` (headless counts), `make asan`.
+5. README + ISSUES.md: the new behaviour, its limits, and the VRAM-pressure segfault.
+6. Live run through fish once the GPU has room (ground truth = the bytes the PTY received).
+
+**s79 expected outcome:** navigating with a half-typed command at the prompt leaves the command intact on
+the new prompt in the new directory, `make test`/`make asan` green with a higher check count, and docs
+that describe what actually happens.
+
 (Previous task, s70 — image support close-out; its entry follows.)
 
 ## Old Current Task (s70 — CLOSED: image support done, user-confirmed by eye)
@@ -1453,9 +2462,15 @@ problem with a reproduction.
    graphics bits (4/16/18) to the DA1 answer or by inventing a `TERM` value: measured A/B (s70), advertising
    sixel without implementing it makes the picture vanish entirely, and timg's auto-detect list is hardcoded
    in its binary. Sixel/iTerm2 support would be a NEW feature — only on an explicit request.
-3. **No open bugs.** ISSUES.md "Open" is empty. If a dropped report recurs, file it with a reproduction and
-   start from scratch — for second-instance crash: source + headless harness, not screen. Old wording of
-   those 4 reports: `git show d5afe4a:ISSUES.md`.
+3. **The tree is red on 2 checks, and they are test bugs, not a regression.** `tests/test_vt.c:2410` and
+   `:2416` build their scrolled case with one burst of application output (`feed("p 😀")`), which correctly
+   re-takes the prompt snapshot, so the typed text is `""` and the expected `"😀"` never appears. Fix the
+   setup (`feed("p ")` then `type("😀")`) — do NOT change `vt.c`'s snapshot logic; `.scratch/s82/promptprobe`
+   shows it already answers correctly at the live bottom after a scroll and refuses while scrolled back.
+   The rest of the unfinished work is s79 step 3 onward (the clear -> `cd` -> re-populate machine in
+   `main.c`, the `fm_send_path()` gate, README/ISSUES for the new prompt rule, a live run through fish);
+   the ordered plan with the design and the safety properties is under "Current Task (s82)".
+   The crash s81 fixed (see ISSUES.md "Fixed") is separate and verified.
 4. Housekeeping, none a bug:
    - ASan build of `kai-term` binary itself as a real Makefile target (only tests have one). The
      hand-built one covered mux/layout and found `row[rcap]` overrun; covering Wayland/EGL would pay off
@@ -1498,15 +2513,16 @@ Kai-Term/
 ├── .gitignore                   # bin/, build/, *.o/*.obj/*.d/*.so/*.a, editor leftovers, docs/ARCHITECTURE.md
 ├── LICENSE                      # MIT, "Copyright (c) 2026 Kaida"
 ├── AGENT.md                     # this journal
-├── ISSUES.md                    # open problems (none now) + known limitations
-├── README.md                    # features, deps, build, flags, config keys, shortcuts
+├── ISSUES.md                    # open items (the red test_vt checks) + Fixed + known limitations
+├── README.md                    # features, deps, build, flags, config keys, shortcuts, exit status
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 613 checks (see below)
-├── tests/test_fm.c              # 220 checks: the file-manager model, previews, decoders, band geometry
+├── tests/test_vt.c              # 678 checks, 2 failing (s79's prompt-line work; see Current Status)
+├── tests/test_fm.c              # 235 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
-├── tests/cli_test.sh            # 92 checks driving the REAL bin/kai-term (argv + config keys + log lines)
+├── tests/cli_test.sh            # 94 checks driving the REAL bin/kai-term; ONE probe launch gates the
+│                                # window checks, KAI_TERM_TEST_NO_WINDOW=1 skips them entirely
 ├── bin/                         # kai-term, test_vt, dbg (+ *_asan)          [generated, git-ignored]
 └── build/                       # *.o + generated/xdg-shell-*                [generated, git-ignored]
 ```
@@ -1549,7 +2565,7 @@ Kai-Term/
   `BarItem[]` rects + labels, `PaneGeom[]` rects (each with cols/rows), the file-manager band (`FmGeom`:
   browser rect + preview rect + their cols/rows) and `layout_hit_fm()`, `layout_grid_size()`,
   `layout_initial_size()`.
-- `tests/test_vt.c` — 613 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
+- `tests/test_vt.c` — 678 checks (2 of them failing, see Current Status): parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
   bracketed paste, `term_init` guard, reflow, `term_grid_geometry`, zoom/alt-screen row-shrink,
   `mouse_sgr_button`, the graphics path (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll
   anchoring/id replacement/DA1-DA2-DSR answers), mux, keybind/keymods parsing, multiplexing config keys,
@@ -1847,7 +2863,9 @@ after `ptr_*` hit-tested bar then panes.
   plus one 2-character token per slot (`v` viewport / `s` scrollback, then row's first cell), and asserts
   `row[]` is a NULL-free, duplicate-free permutation.
 - `tests/cli_test.sh` drives real binary — `main()` is in no linked test, so it is the only honest coverage of
-  argv + config keys.
+  argv + config keys. It makes ONE probe launch (`-d -e true`) first: if that cannot draw, every
+  window-opening check is skipped with the probe's reason printed. `KAI_TERM_TEST_NO_WINDOW=1` skips them
+  without mapping any window — use it unless the window path is what is under test.
 - Headless harness: link `src/vt.c` + `src/config.c` (+ `mux.c`, `layout.c`) into a throwaway program in
   `/home/kaida/Project/.scratch/` to exercise logic Wayland input events cannot reach.
 
@@ -1898,3 +2916,21 @@ after `ptr_*` hit-tested bar then panes.
   argument does.** `graphics: N image(s) drawn, M texture(s) held` began counting the file-manager preview
   in `N` while `M` still counted only the application-picture texture cache, so a preview alone logged
   `1 image(s) drawn, 0 texture(s) held`. Count each thing with the counter that owns it (s74).
+- **A refused texture upload is a decision, not a log line.** Every `glTexImage2D` site used to print its
+  error and draw with the texture anyway; on the NVIDIA driver a draw that samples a texture with no
+  storage faults inside `libnvidia-eglcore` (SIGSEGV at 0x4 in `draw_quads`, 85 core dumps in one suite
+  run, s79/s81). The rule now: the glyph atlas is worth exiting over (nothing can be drawn without it —
+  `render_draw()` returns -1 and `main()` exits 1), the color atlas is worth downgrading to mono glyphs, a
+  picture is worth skipping. Retrying an upload is fine; drawing the result is not.
+- **A red check can mean the test's setup is unrepresentative, not that the model is wrong.**
+  `tests/test_vt.c:2410/:2416` looked like "the prompt snapshot breaks after a scroll" and would have
+  invited a change to correct snapshot logic. `.scratch/s82/promptprobe.c` replayed the sequence and printed
+  the state at each step: the test wrote the whole line with `feed()` (application output), and
+  `term_parse()` re-takes the snapshot at the end of every such burst, so the typed text legitimately was
+  `""`. The realistic sequence (`feed("p ")` then `type(...)`) passes at the same scroll position. Print the
+  state before editing the logic a check exercises (s82).
+- **A test that maps a window is a change to the user's desktop.** `tests/cli_test.sh` ran the real binary
+  15 times per `make test`, and s79 looped it 25 more times to sample a failure — that is what filled the
+  user's screen and `coredumpctl`. One probe launch decides whether the window checks run; the rest are
+  skipped with the reason printed, and `KAI_TERM_TEST_NO_WINDOW=1` skips them all. Never loop launches to
+  count failures: diagnose the first one (s81, and ENVIRONMENT.md "Launching real windows in a test").
