@@ -88,6 +88,7 @@ typedef struct Wayland {
                                    path MUST answer with a swap even when nothing else is dirty */
     int dirty;
     int running;
+    int fatal;                  /* the renderer gave up (no video memory): main() exits 1, not 0 */
     int is_fullscreen, is_maximized, is_activated;   /* xdg_toplevel configure states (debug only) */
     int32_t ptr_x, ptr_y;       /* last pointer position in surface coords (px) */
     int ptr_btn;                /* held button mapped to SGR index (0/1/2), or -1 */
@@ -152,6 +153,14 @@ static int fm_worker_up;
    one file manager; a session switch clears it so the newly visible shell is re-synced on the next
    navigation. Declared up here because tab_switch() resets it and fm_send_cd() is further down. */
 static char fm_last_cd[FM_PATH_MAX];
+/* The band's click state. One click selects the entry under the pointer; a SECOND click on the same entry
+   within this many milliseconds opens it, which is what a user means by "double-click to open". Wayland's
+   button `time` is milliseconds on the same clock as the keyboard events, so a plain difference measures
+   the gap; unsigned arithmetic makes a click after the 49-day wrap look like a long gap rather than a
+   double-click. */
+#define FM_DCLICK_MS 500
+static uint32_t fm_click_ms;
+static int fm_click_pos = -1;     /* view position of that click, -1 = no pending first click */
 static pthread_t fm_thr;
 static pthread_mutex_t fm_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fm_cv = PTHREAD_COND_INITIALIZER;
@@ -214,6 +223,9 @@ static void kb_keymap(void *d, struct wl_keyboard *k, uint32_t format, int fd, u
 static void selection_copy(uint32_t serial);
 static void clipboard_paste(void);
 static void update_title(void);
+/* Declared here because the file manager's `cd` and typed path (further up) go through it: it is the one
+   place that tells the model "these bytes are INPUT, expect an echo" (term_note_input, src/vt.c). */
+static void input_write(Term *t, Pty *p, const void *buf, size_t len);
 
 static void wl_flush(void)
 {
@@ -462,7 +474,19 @@ static void redraw(void)
        all set. */
     if (g_fm.on && g_fm.dirty)
         fm_paint(&g_fm, conf.fg, conf.bg);
-    if (!render_draw(&rend, &font, &g_layout, terms, &g_fm)) {
+    int drew = render_draw(&rend, &font, &g_layout, terms, &g_fm);
+    if (drew < 0) {
+        /* The renderer could not put the glyph atlas in GPU memory even after dropping every picture
+           texture, so there is nothing this frame — or any later one — can draw. The alternative is
+           drawing with a texture that has no texels, which faults inside libnvidia-eglcore (that is how
+           85 core dumps got here). Close the window the ordinary way: the shells get SIGHUP from the
+           exit path, and the process leaves an exit status instead of a core dump. */
+        klog(L_ERROR, "kai-term: no video memory for the glyph atlas — exiting");
+        W.fatal = 1;
+        W.running = 0;
+        return;
+    }
+    if (!drew) {
         /* NO buffer was attached, so nothing may be armed on the commit that follows: the done of a
            commit without a buffer can stay pending forever, and every draw path here is gated on "no
            callback in flight" (that is exactly how the fullscreen freeze worked). Keep the frame dirty
@@ -878,13 +902,21 @@ static void fm_send_cd(const char *dir)
         return;
     if (!dir[0] || !strcmp(fm_last_cd, dir))
         return;
+    /* Only at a prompt the user has not typed on. Writing `cd <dir>` into a half-typed command mangles it
+       and then RUNS the mangled result, which is the one thing this feature must never do. The check is
+       the model's (term_at_prompt, src/vt.c); fm_last_cd is deliberately NOT updated on a refusal, so the
+       next navigation still gets through once the line is empty again. */
+    if (!term_at_prompt(t)) {
+        klog(L_DEBUG, "fm: not telling the shell to follow — its input line is not empty");
+        return;
+    }
     char cmd[FM_PATH_MAX + 16];
     size_t n = 0;
     cmd[n++] = 'c'; cmd[n++] = 'd'; cmd[n++] = ' ';
     n += shell_quote(cmd + n, sizeof cmd - n, dir);
     cmd[n++] = '\r';
     cmd[n] = 0;
-    pty_write(p, cmd, n);
+    input_write(t, p, cmd, n);
     snprintf(fm_last_cd, sizeof fm_last_cd, "%s", dir);
     /* Logged AFTER the write, and naming the directory the model actually holds rather than the one some
        caller asked for: a line that printed its own argument could claim a cd the alt-screen gate (or a
@@ -1001,6 +1033,10 @@ static void fm_send_path(void)
     Pty *p = cur_pty();
     if (!t || !p)
         return;
+    if (!term_at_prompt(t)) {          /* same rule as the cd: never write into a line in use */
+        klog(L_DEBUG, "fm: not typing the path — the input line is not empty");
+        return;
+    }
     char path[FM_PATH_MAX];
     if (!fm_entry_path(&g_fm, fm_sel(&g_fm), path, sizeof path))
         return;
@@ -1008,7 +1044,7 @@ static void fm_send_path(void)
     size_t n = shell_quote(cmd, sizeof cmd, path);
     if (!n)
         return;
-    pty_write(p, cmd, n);
+    input_write(t, p, cmd, n);
     klog(L_DEBUG, "fm: typed the selected path at the prompt: %s", path);
 }
 
@@ -1018,6 +1054,23 @@ static void fm_sel_changed(void)
 {
     fm_ask_preview();
     W.dirty = 1;
+}
+
+/* Open the selected entry: descend into a directory, or type a file's quoted path at the prompt. One
+   function because the `open` key and the second click of a double-click must never drift apart. */
+static void fm_open_sel(void)
+{
+    unsigned long seq = 0;
+    const FmEntry *e = fm_sel_entry(&g_fm);
+    /* fm_go_sel() resolves a symlink to a directory with stat() and descends; a dangling link or a plain
+       file returns 0 and nothing moves. The result is taken in its own statement because fm_nav's `seq`
+       argument must be read AFTER fm_go_sel filled it (see the fm_nav comment). */
+    if (e && (e->kind == FMK_DIR || e->kind == FMK_SYMLINK)) {
+        int changed = fm_go_sel(&g_fm, &seq);
+        fm_nav(changed, seq, "open");
+    } else {
+        fm_send_path();
+    }
 }
 
 /* The band's own keys, matched ONLY while the band owns the keyboard. That gate is what makes bare `Up`,
@@ -1045,19 +1098,25 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
     if (bind_match(&k->pagedown, base, mods)) { fm_page(&g_fm, +1); fm_sel_changed(); return 1; }
     if (bind_match(&k->home, base, mods))     { fm_home(&g_fm); fm_sel_changed(); return 1; }
     if (bind_match(&k->end, base, mods))      { fm_end(&g_fm); fm_sel_changed(); return 1; }
-    if (bind_match(&k->open, base, mods)) {
+    /* Left is "up one level" and Right is "into this one" — the two arrows a user reads off any file
+       manager. Right deliberately does NOTHING to a file: unlike `open` it never types a path, so holding
+       it down through a listing cannot write anything at the prompt. fm_go_sel() is the model's own answer
+       to "is this a directory I can enter" (it stats a symlink, and returns 0 for a plain file or a
+       dangling link), so no second classification is invented here. */
+    if (bind_match(&k->left, base, mods)) {
+        int changed = fm_parent(&g_fm, &seq);   /* fills seq — see fm_nav */
+        fm_nav(changed, seq, "parent");
+        return 0;
+    }
+    if (bind_match(&k->right, base, mods)) {
         const FmEntry *e = fm_sel_entry(&g_fm);
-        /* fm_go_sel() resolves a symlink to a directory with stat() and descends; a dangling link or a
-           plain file returns 0 and nothing moves. The result is taken in its own statement because
-           fm_nav's `seq` argument must be read AFTER fm_go_sel filled it (see the fm_nav comment). */
         if (e && (e->kind == FMK_DIR || e->kind == FMK_SYMLINK)) {
-            int changed = fm_go_sel(&g_fm, &seq);
+            int changed = fm_go_sel(&g_fm, &seq);   /* fills seq — see fm_nav */
             fm_nav(changed, seq, "open");
-        } else {
-            fm_send_path();
         }
         return 0;
     }
+    if (bind_match(&k->open, base, mods))     { fm_open_sel(); return 0; }
     if (bind_match(&k->parent, base, mods)) {
         int changed = fm_parent(&g_fm, &seq);   /* fills seq — see fm_nav */
         fm_nav(changed, seq, "parent");
@@ -1074,11 +1133,15 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
 /* A click inside the band. The browser pane selects the entry drawn under the pointer and takes the
    keyboard; the preview pane only takes the keyboard. Row -> entry is fm_row_pos(), which uses the
    painter's own metrics, so a click always lands on the line it lands on — including in a pane too
-   short for its header and footer, where the entries start at row 0. */
-static void fm_pointer_select(int hit)
+   short for its header and footer, where the entries start at row 0.
+   One click selects; a second click on the SAME entry within FM_DCLICK_MS also opens it (a directory is
+   entered, a file behaves exactly as `open` does). Any other click resets the pair, so a click on the
+   header, on the preview, or on a different row cannot be the second half of a double-click. */
+static void fm_pointer_select(int hit, int btn, uint32_t time)
 {
     if (hit == FM_HIT_PREVIEW) {
         fm_focus_set(FM_FOCUS_PREVIEW);
+        fm_click_pos = -1;
         return;
     }
     g_fm.focus = FM_FOCUS_LIST;
@@ -1086,13 +1149,23 @@ static void fm_pointer_select(int hit)
     int row = (W.ptr_y - g_layout.fm.list_y) / ch;
     int pos = fm_row_pos(&g_fm, row);
     if (pos < 0) {          /* the header, the footer, or empty space below the listing */
+        fm_click_pos = -1;
         W.dirty = 1;
         return;
     }
+    int again = (btn == 0 && fm_click_pos >= 0 && pos == fm_click_pos &&
+                 time - fm_click_ms <= FM_DCLICK_MS);
+    fm_click_ms = time;
+    fm_click_pos = pos;
     fm_select(&g_fm, pos);
     fm_sel_changed();
     const FmEntry *e = fm_sel_entry(&g_fm);
     klog(L_DEBUG, "fm: click row %d selects %s", row, e ? e->name : "?");
+    if (!again)
+        return;
+    fm_click_pos = -1;      /* consumed: a third click needs a fresh pair, it does not fire again */
+    klog(L_DEBUG, "fm: double-click opens %s", e ? e->name : "?");
+    fm_open_sel();
 }
 
 /* The wheel over the band walks the listing instead of scrolling the terminal's scrollback. Returns 1
@@ -1245,9 +1318,24 @@ static const struct xdg_toplevel_listener toplevel_listener = {
     .close = toplevel_close,
 };
 
+/* Every byte Kai-Term sends to the application AS INPUT goes through here, so the model knows an echo is
+   coming: that is what lets it tell the shell's own prompt from a prompt plus what the user has typed
+   (term_at_prompt / term_note_input, src/vt.c). A payload holding CR or LF submits the line and so closes
+   the echo window; Ctrl+C discards it and does the same.
+   NOT every write to the pty belongs here: a query answer (DA1/DA2/DSR/CPR) and an SGR mouse report are
+   the terminal's own output, and noting one would open an echo window that no keystroke ever closes. */
+static void input_write(Term *t, Pty *p, const void *buf, size_t len)
+{
+    if (!p)
+        return;
+    if (t)
+        term_note_input(t, buf, len);
+    pty_write(p, buf, len);
+}
+
 static void send_str(const char *s, size_t n)
 {
-    pty_write(cur_pty(), s, n);
+    input_write(cur_term(), cur_pty(), s, n);
 }
 
 /* Translate one key press and act on it. Returns 1 when the press is something the user expects to
@@ -1337,6 +1425,16 @@ static int send_key(uint32_t key, uint32_t serial)
     int fmk = fm_keys(base, kbmods);
     if (fmk >= 0)
         return fmk;
+    /* The band owns the keyboard, so nothing else may reach the shell. Until this, a key that was not one
+       of the band's bindings fell straight through to the PTY: typing with the browser focused wrote into
+       a terminal the user was deliberately not looking at, and `ls<Enter>` there ran a command the user
+       never meant to run in that window. Everything matched ABOVE this point still works — tabs, zoom,
+       copy/paste, scrollback navigation, the band's own toggle and focus keys — because those are window
+       chrome, not text. Returning 0 (not 1) means no key repeat is armed for a swallowed key. */
+    if (g_fm.on && g_fm.focus != FM_FOCUS_TERM) {
+        klog(L_DEBUG, "fm: key swallowed — the file manager has the keyboard");
+        return 0;
+    }
     /* any other key sent to the PTY returns the view to the live bottom */
     snap_to_live(cur_term());
 
@@ -1615,7 +1713,7 @@ static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t 
 static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t time,
                        uint32_t button, uint32_t state)
 {
-    (void)d; (void)p; (void)time;
+    (void)d; (void)p;
     int btn = mouse_sgr_button(button);   /* 0 left, 1 middle, 2 right, 3 other (vt.c) */
     int pressed = state == WL_POINTER_BUTTON_STATE_PRESSED;
 
@@ -1649,7 +1747,7 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         if (hit != FM_HIT_NONE) {
             W.selecting = 0;
             if (pressed)
-                fm_pointer_select(hit);
+                fm_pointer_select(hit, btn, time);
             W.dirty = 1;
             return;
         }
@@ -1975,16 +2073,17 @@ static void paste_flush(void)
         return;
     int bracketed = cur_term()->bracketed_paste && !paste_overflow;
     static const char start[] = PASTE_START, end[] = PASTE_END;
+    Pty *pp = cur_pty();
     if (bracketed)
-        pty_write(cur_pty(), start, sizeof(start) - 1);
+        input_write(cur_term(), pp, start, sizeof(start) - 1);
     size_t off = 0;
     while (off < paste_len) {
         size_t chunk = imin_(paste_len - off, (size_t)4096);
-        pty_write(cur_pty(), paste_buf + off, chunk);
+        input_write(cur_term(), pp, paste_buf + off, chunk);
         off += chunk;
     }
     if (bracketed)
-        pty_write(cur_pty(), end, sizeof(end) - 1);
+        input_write(cur_term(), pp, end, sizeof(end) - 1);
     klog(L_DEBUG, "paste: %zu bytes, bracketed %d%s", paste_len, bracketed,
          paste_overflow ? " (overflow: sent raw)" : "");
     paste_len = 0;
@@ -2663,6 +2762,6 @@ int main(int argc, char **argv)
     if (krfd >= 0)
         close(krfd);
     close(ep);
-    klog(L_INFO, "kai-term exiting");
-    return 0;
+    klog(L_INFO, "kai-term exiting%s", W.fatal ? " — renderer failure" : "");
+    return W.fatal ? 1 : 0;
 }

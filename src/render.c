@@ -478,6 +478,39 @@ static void set_attribs_instanced(Render *r)
 
 #define IMAGE_TEX_MAX 512      /* textures held at once — more than any screen can show */
 #define IMG_VIEW_MAX  64       /* pictures of one pane considered per frame */
+#define CATLAS_RETRY_FRAMES 60 /* frames to wait before re-trying a refused color-atlas upload (~1 s) */
+
+/* A refused texture upload is retried every frame while the GPU stays short of memory, so one error
+   line per frame would bury everything else the log has to say. 1 on the first failure and then about
+   once every two seconds at 60 fps; the caller resets its counter when an upload succeeds. */
+static int log_rate(int *streak)
+{
+    return (++*streak - 1) % 120 == 0;
+}
+
+/* Drop every texture that is not a glyph atlas: the application-picture cache and the file-manager
+   preview. Called when an atlas upload was refused — a picture can be rebuilt from the pixels the model
+   still holds, a glyph cannot. Returns how many textures were dropped. */
+static int free_picture_textures(Render *r)
+{
+    int n = 0;
+    for (int i = 0; i < r->nimgtex; i++)
+        if (r->imgtex[i].tex) {
+            GLuint t = r->imgtex[i].tex;
+            glDeleteTextures(1, &t);
+            n++;
+        }
+    r->nimgtex = 0;          /* the array stays allocated; render_destroy() walks this count */
+    if (r->fm_tex) {
+        GLuint t = r->fm_tex;
+        glDeleteTextures(1, &t);
+        r->fm_tex = 0;
+        r->fm_tex_uid = 0;
+        r->fm_tex_w = r->fm_tex_h = 0;
+        n++;
+    }
+    return n;
+}
 
 /* The texture holding one image's texels: created on first use, re-uploaded when the model bumped
    `version` (an animation frame replaces the pixels). Keyed by KImage.serial, which the model never
@@ -516,8 +549,17 @@ static unsigned img_tex(Render *r, KImage *im, int frame)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, im->w, im->h, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, im->rgba);
         GLenum err = glGetError();
-        if (err != GL_NO_ERROR)
-            klog(L_WARN, "image glTexImage2D failed: 0x%x (%dx%d)", err, im->w, im->h);
+        if (err != GL_NO_ERROR) {
+            /* The texture has NO texels. Returning it anyway is not "the picture is missing": a draw
+               that samples a texture the GPU never allocated faults inside libnvidia-eglcore and takes
+               the process with it. draw_images() skips tex 0, and version/w/h stay at their old values
+               so the next frame tries the upload again. */
+            if (log_rate(&r->img_upload_fails))
+                klog(L_WARN, "image glTexImage2D failed: 0x%x (%dx%d) — the picture is skipped",
+                     err, im->w, im->h);
+            return 0;
+        }
+        r->img_upload_fails = 0;
         /* LINEAR, not NEAREST: a picture is scaled from its own pixel grid to the cell grid, and
            nearest turns that into a mosaic. No mipmaps, so a non-power-of-two size is legal on a
            GL 2.1 context with CLAMP_TO_EDGE. */
@@ -663,7 +705,7 @@ static int emit_cell_glyph(Font *f, const Cell *c, float px, float py, float cw,
     uint32_t seq[CLUSTER_MAX + 1];
     int nseq = 0;
     ColorGlyph *cg = NULL;
-    if (f->color_ok && (c->nextra || cp_is_emoji(c->ch))) {
+    if (f->color_ok && !f->catlas_broken && (c->nextra || cp_is_emoji(c->ch))) {
         nseq = 1;
         seq[0] = c->ch;
         for (int k = 0; k < (int)c->nextra && nseq <= CLUSTER_MAX; k++)
@@ -944,8 +986,16 @@ static unsigned fm_preview_tex(Render *r, const FmPreview *pv)
     glBindTexture(GL_TEXTURE_2D, r->fm_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, pv->w, pv->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, r->fm_px);
     GLenum err = glGetError();
-    if (err != GL_NO_ERROR)
-        klog(L_WARN, "fm preview glTexImage2D failed: 0x%x (%dx%d)", err, pv->w, pv->h);
+    if (err != GL_NO_ERROR) {
+        /* Same rule as every other texture here: never hand back a texture the GPU refused to give
+           storage to. draw_fm_preview() skips tex 0, and the uid/size cache is left untouched so the
+           next frame retries the upload. */
+        if (log_rate(&r->fm_upload_fails))
+            klog(L_WARN, "fm preview glTexImage2D failed: 0x%x (%dx%d) — the preview is skipped",
+                 err, pv->w, pv->h);
+        return 0;
+    }
+    r->fm_upload_fails = 0;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -1371,8 +1421,30 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, f->atlas_w, f->atlas_h, 0,
                      GL_LUMINANCE, GL_UNSIGNED_BYTE, f->atlas);
         GLenum terr = glGetError();
-        if (terr != GL_NO_ERROR)
-            klog(L_ERROR, "atlas glTexImage2D failed: 0x%x (%dx%d)", terr, f->atlas_w, f->atlas_h);
+        if (terr != GL_NO_ERROR) {
+            /* Every glyph of every pane comes out of this one texture, so a refused upload means there
+               is nothing to draw — and drawing anyway is NOT a graceful degradation. A draw that
+               samples a texture the GPU never allocated faults inside libnvidia-eglcore: measured as
+               SIGSEGV at address 0x4 in draw_quads(), 85 core dumps in one run of tests/cli_test.sh on
+               a GPU whose memory was already full. Pictures are the only thing here big enough to help,
+               and the model still holds their pixels, so drop them and try once more; only then give up
+               (main.c turns -1 into a clean exit instead of a crash). */
+            int dropped = free_picture_textures(r);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, f->atlas_w, f->atlas_h, 0,
+                         GL_LUMINANCE, GL_UNSIGNED_BYTE, f->atlas);
+            terr = glGetError();
+            if (terr != GL_NO_ERROR) {
+                if (log_rate(&r->atlas_upload_fails))
+                    klog(L_ERROR, "atlas glTexImage2D failed: 0x%x (%dx%d) — no video memory for the "
+                         "glyph atlas%s", terr, f->atlas_w, f->atlas_h,
+                         dropped ? " (picture textures were dropped first)" : "");
+                return -1;
+            }
+            r->atlas_upload_fails = 0;
+            klog(L_WARN, "atlas glTexImage2D recovered after dropping %d picture texture(s)", dropped);
+        } else {
+            r->atlas_upload_fails = 0;
+        }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -1383,8 +1455,12 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     /* upload the RGBA8 color emoji atlas when new emoji were shaped into it (texture unit 1).
        GL_RGBA is a valid GL 2.1 internal format, so unlike the mono atlas this needs no
        legacy-format workaround. The texels are premultiplied (as FreeType hands them over),
-       which is what the shader's `c + bg*(1-c.a)` composite expects. */
-    if (f->catlas_dirty && f->catlas) {
+       which is what the shader's `c + bg*(1-c.a)` composite expects.
+       While the GPU refuses this atlas `catlas_wait` backs the retry off to about 1 Hz — the upload is
+       what fails, so retrying it 60 times a second buys nothing and floods the log. */
+    if (r->catlas_wait > 0)
+        r->catlas_wait--;
+    if (f->catlas_dirty && f->catlas && r->catlas_wait <= 0) {
         if (!f->catlas_tex)
             glGenTextures(1, &f->catlas_tex);
         glActiveTexture(GL_TEXTURE1);
@@ -1392,9 +1468,26 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, f->catlas_w, f->catlas_h, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, f->catlas);
         GLenum cerr = glGetError();
-        if (cerr != GL_NO_ERROR)
-            klog(L_ERROR, "color atlas glTexImage2D failed: 0x%x (%dx%d)", cerr,
-                 f->catlas_w, f->catlas_h);
+        if (cerr != GL_NO_ERROR) {
+            /* Never draw with a texture the GPU refused — same rule as the mono atlas. Color emoji are
+               expendable: emit_cell_glyph() already has the monochrome fallback it uses on a box with no
+               color font, so say "use that" and skip THIS frame rather than draw the color quads that
+               were emitted a few lines above into the texture that does not exist. The atlas stays
+               dirty, so emoji turn color again on a later frame once memory frees up. */
+            if (log_rate(&r->catlas_upload_fails))
+                klog(L_WARN, "color atlas glTexImage2D failed: 0x%x (%dx%d) — falling back to "
+                     "monochrome glyphs", cerr, f->catlas_w, f->catlas_h);
+            GLuint ct = f->catlas_tex;
+            if (ct)
+                glDeleteTextures(1, &ct);
+            f->catlas_tex = 0;
+            f->catlas_broken = 1;
+            r->catlas_wait = CATLAS_RETRY_FRAMES;
+            return 0;          /* nothing was swapped: main.c keeps the frame dirty and retries */
+        }
+        r->catlas_upload_fails = 0;
+        r->catlas_wait = 0;
+        f->catlas_broken = 0;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/ioctl.h>
-#include <termios.h>
 #include <unistd.h>
 
 int pty_spawn(Pty *p, const char *cmd, int rows, int cols, const char *dir)
@@ -29,12 +28,17 @@ int pty_spawn(Pty *p, const char *cmd, int rows, int cols, const char *dir)
         return -1;
     }
 
-    /* raw mode on the master side: no local echo, no CR/LF translation */
-    struct termios tio;
-    if (tcgetattr(p->mfd, &tio) == 0) {
-        cfmakeraw(&tio);
-        tcsetattr(p->mfd, TCSANOW, &tio);
-    }
+    /* Leave the pty's termios at the kernel's defaults. On Linux a pty master and its slave share ONE
+       termios, so anything set here is also the CHILD's terminal. An earlier version called
+       cfmakeraw() on the master, which gave every program in the terminal a raw terminal: ISIG off made
+       Ctrl+C an ordinary byte instead of SIGINT, ICANON off made Ctrl+D an ordinary byte instead of EOF,
+       ECHO off meant a program that relies on the tty echoing showed nothing it was typed, and OPOST off
+       made every `printf("\n")` arrive as a bare LF, which the VT parser correctly does not treat as a
+       newline — the output staircases. Measured 2026-10-19 (`.scratch/s78/`, A/B against a copy of this
+       file with the cfmakeraw block deleted): `ls` emits `<LF>` with the raw pty and `<CR><LF>` without
+       it; `sleep 30` + Ctrl+C survives with it and is killed by SIGINT without it (in fish too); Ctrl+D
+       is not EOF with it. Programs that want raw mode set it themselves — readline, vim, fish and less
+       all do — so leaving the defaults alone is what a terminal emulator must do. */
     pty_setsize(p, rows, cols);
     p->rows = rows;
     p->cols = cols;

@@ -71,6 +71,27 @@ else
     have_display=0
 fi
 
+# A window-opening launch is not free. It maps a real surface on the user's desktop and asks the GPU for
+# two glyph atlases; on a box whose video memory is already spoken for (this one runs a local LLM that
+# holds ~11 GiB of 12.2 GiB) the atlas upload is refused and EVERY window check below fails for that one
+# reason — after putting a dozen windows in front of the user. So ONE probe decides whether the window
+# checks run at all: one window instead of fifteen, and the reason is printed instead of guessed at.
+# KAI_TERM_TEST_NO_WINDOW=1 skips them on request, without mapping even the probe window.
+win_reason=""
+if [ "$have_display" != 1 ]; then
+    win_reason="no WAYLAND_DISPLAY"
+elif [ "${KAI_TERM_TEST_NO_WINDOW:-0}" = 1 ]; then
+    win_reason="KAI_TERM_TEST_NO_WINDOW=1"
+else
+    run -d -e true
+    if [ "$rc" != 0 ]; then
+        win_reason="the probe run exited $rc: $(printf '%s\n' "$out" | grep -m1 -iE 'error|failed')"
+    elif ! printf '%s\n' "$out" | grep -q 'kai-term exiting'; then
+        win_reason="the probe run never reached its clean exit"
+    fi
+fi
+[ -n "$win_reason" ] && have_display=0
+
 # ---------------- help / version (no display needed) ----------------
 run_split -h
 ck "$rc" 0 "-h exit status"
@@ -170,14 +191,16 @@ if [ "$have_display" = 1 ]; then
 
     # the in-window file manager: its config keys must be known, and its bindings must be unbindable.
     # Off by default, so the plain run above must not mention a file manager at all.
-    printf 'file_manager = on\nfm_rows = 8\nfm_preview = off\nfm_show_hidden = on\nfm_follow = off\nkey_file_manager = Alt+F\nkey_fm_focus = none\nfm_key_up = k\nfm_key_down = j\nfm_key_open = none\n' > "$tmp/fmconf"
+    printf 'file_manager = on\nfm_rows = 8\nfm_preview = off\nfm_show_hidden = on\nfm_follow = off\nkey_file_manager = Alt+F\nkey_fm_focus = none\nfm_key_up = k\nfm_key_down = j\nfm_key_open = none\nfm_key_left = h\nfm_key_right = none\n' > "$tmp/fmconf"
     run -c "$tmp/fmconf" -d -e true
     ck "$rc" 0 "a config with the file manager keys runs"
     ck "$(printf '%s\n' "$out" | grep -c 'unknown key')" 0 "the file manager config keys are known"
     ck "$(printf '%s\n' "$out" | grep -c 'config: key_fm_focus unbound')" 1 "key_fm_focus = none unbinds the focus switch"
     ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_open unbound')" 1 "fm_key_open = none unbinds that key"
+    ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_right unbound')" 1 "fm_key_right = none unbinds the enter-directory key"
     run -c "$tmp/fmconf" -d -e true
     ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_up unbound')" 0 "fm_key_up = k is a binding, not an unbind"
+    ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_left unbound')" 0 "fm_key_left = h is a binding, not an unbind"
     run -d -e true
     ck "$(printf '%s\n' "$out" | grep -c 'file manager')" 0 "the file manager is off by default: the layout line does not mention it"
 
@@ -189,7 +212,7 @@ if [ "$have_display" = 1 ]; then
 else
     for name in "-c FILE" "--config FILE" "--config=FILE" "-d overrides log" "-w DIR" "-e COMMAND" \
                 "multiplexing keys" "display keys (tab_bar/split_max)" "file manager keys" "combined flags"; do
-        skip "$name" "no WAYLAND_DISPLAY"
+        skip "$name" "$win_reason"
     done
 fi
 
