@@ -19,11 +19,11 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
 
 ## Current Status (re-measured 2026-10-20, s93 — build and every suite green; shell integration (s90-s92) is implemented, wired and verified headless against real fish + real bash, and has never been seen in the user's window)
 
-- **The whole s90-s92 shell-integration work sits in the working tree, uncommitted at the start of s93**
-  (`src/shellint.c` untracked; `Makefile`, header, `config.c`, `main.c`, `mux.c`, `vt.c`, `test_vt.c` and the
-  three docs modified). s89's follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`,
-  both in `src/vt.c`, 20 checks) IS committed and pushed and the user confirmed it in their own window
-  (2026-10-20). Read the remote state with `git status -sb` / `git log --oneline origin/main -1`.
+- **s90-s93 are all committed on `main`; the working tree is clean.** `git status -sb` says `main` is AHEAD of
+  `origin/main` — the push is the user's call (ask, then `git fetch` first). s89's follow fix
+  (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks) was
+  confirmed by the user in their own window (2026-10-20). Read the remote state with `git status -sb` /
+  `git log --oneline origin/main -1`.
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
   -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **803 checks, 0 failures**,
   `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **247 checks, 0 failures**;
@@ -47,9 +47,9 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   The live key-injection harness was NOT re-run: the user is at this machine and asked not to be disturbed
   (s86, and the pitfall in Key Decisions) — the confirmation came from them running it, which is the better
   evidence anyway.
-- `git status -sb` shows the s90-s92 work uncommitted (see the first bullet); `main` itself equals
-  `origin/main`. Read the remote state with `git status -sb` / `git log --oneline origin/main -1`, never from
-  a hash written here. The follow lives in `src/main.c` (the state machine + the quiet-period step),
+- `git status -sb` -> clean tree, `main` ahead of `origin/main` (see the first bullet). Read the remote state with
+  `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. The follow lives in
+  `src/main.c` (the state machine + the quiet-period step),
   `src/vt.c` (the echo window needs a transition; a height-only resize keeps a dirty prompt snapshot),
   `include/kai-term/kai-term.h` (`term_prompt_line*`), `tests/test_vt.c`.
 - The file manager IS reachable from the UI (`Ctrl+Shift+F`) and its band is drawn. Its input routing
@@ -98,7 +98,7 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s93 — OPEN: a codebase cleanliness pass, asked for by the user: "We need to check to make sure we have a clean codebase" — first finish/verify s92, then clean what the audit finds.)
+## Current Task (s93 — CLOSED: a codebase cleanliness pass, asked for by the user: "We need to check to make sure we have a clean codebase". s92 finished and committed; the audit's three findings fixed; the docs re-diffed. See s93 entries 1-5.)
 
 **Audit already run (read-only, before touching anything) — what was measured and what it said:**
 - `make clean && make -j8` exit 0, 0 warning lines; `./bin/test_vt` 803 checks / 0 failures; `./bin/dbg`
@@ -219,6 +219,35 @@ option rows vs `usage()`'s six; ISSUES.md's re-measurement line already carries 
 no-markers claim, both re-verified this session.
 
 **Next action:** the full verification set one more time, then the s93 commit.
+
+### s93 entry 5 — verification re-run from a clean tree, and both commits; two things left for the user
+
+**Every command, run in this order, with its result:**
+1. `make clean && make -j8` -> exit 0, **0** warning/error lines.
+2. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`, `803 checks,
+   0 failures`, `MODEL OK (0 problems)`, `247 checks, 0 failures`.
+3. `make asan` -> exit 0: the same 803 / MODEL OK / 247, no sanitizer or UBSan report.
+4. Strict clang pass over all of `src/*.c` + `tests/*.c` (`-Wcast-qual -Wmissing-prototypes
+   -Wstrict-prototypes -Wold-style-definition -Wundef -Wunused-macros -Wextra-semi` on top of `WARN`) -> the
+   single documented zlib `next_in` cast, nothing else in our sources.
+5. `CC=clang make -j8` (full build) -> no warning in any file of ours.
+6. README settings rows vs `apply()`'s keys by set difference -> 50 == 50, `diff` empty.
+7. Marker grep (`TODO|FIXME|XXX:|HACK|TEMPORARY|PROBE|EXPERIMENT`) over `src/ include/ tests/` -> empty.
+
+**Committed:** the s90-s92 shell-integration work (it had never been committed — `src/shellint.c` was untracked),
+then the s93 cleanup. `git status -sb` -> clean tree, `main` ahead of `origin/main`. **NOT pushed** — the user
+has not been asked this session.
+
+**Left for the user, both decisions rather than work:**
+- Push these two commits? (`git fetch` first — they also commit on GitHub.)
+- `/home/kaida/Project/.scratch/` holds 171 MB of probes, and AGENT.md/ISSUES.md cite paths in it (`s90b/intgate.c`,
+  `s86/follow2.c`, `s74/inj_keys.sh`, …) that a fresh clone of the repo cannot run. Either prune the binaries and
+  logs of closed sessions, or move the real regression gates into `tests/`. Nothing outside the repo was touched —
+  the standing rule is to ask first.
+
+**No unfinished work in the repo.** The only genuinely unverified code path in the tree is the zsh integration
+script (no zsh on this box) and the shell integration has still never been seen in the user's own window — both
+recorded in ISSUES.md "Shell integration" and Next Steps item 2, not hidden.
 
 ## Previous Task (s92 — CLOSED: two defects in the shell integration, reported by the user from their own window: (1) starting another shell at the prompt dropped the session into the typed-`cd` fallback instead of integrating the new shell; (2) the integration's `cd` worked but the visible prompt kept the OLD directory until the line was submitted. Both fixed and measured — see s92 entries 1-4.)
 

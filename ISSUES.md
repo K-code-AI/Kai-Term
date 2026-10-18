@@ -6,7 +6,7 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Re-measured 2026-10-20 (s92):
+**No open bug.** Re-measured 2026-10-20 (s93, after the cleanup commit):
 `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **803 checks, 0 failures**; `./bin/dbg` **MODEL OK
 (0 problems)**; `./bin/test_fm` **247 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
