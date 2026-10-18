@@ -83,7 +83,7 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s88 — file manager: the band takes a configurable share of the window (default 75%), and metadata must never be painted over an image preview)
+## Current Task (s88 — CLOSED: the band takes a configurable share (`fm_size`, default 75%, `fm_rows` gone from the whole tree) and the preview's metadata can no longer be painted across its picture; committed and pushed)
 
 **User request (2026-10-19):** "Would it be possible for the File manager part to occupy more space? like 75%
 per default and make it configurable in the config file. Also the metadata sometimes get written on the image
@@ -310,75 +310,32 @@ machine, so no window was mapped. That is the user's to look at.
 
 **Next action:** commit the source + tests + docs as one change and push (`git fetch origin` first).
 
-## Current Task (s87 — CLOSED: AGENT.md cut from 3579 to 838 lines; no rule, invariant or pitfall removed)
+### s88 entry 6 — done: committed and pushed, working tree clean
 
-**User request (2026-10-19):** "a massive cleanup of AGENT.md … get rid of everything that we don't need for
-further development."
+`git fetch origin` first (nothing on GitHub to integrate), then one commit with all 11 changed files (header,
+config.c, layout.c, main.c, fm.c, the three test files, README, ISSUES, this journal). `git push origin main`
+exit 0; re-fetched and verified: `git status -sb` shows `main...origin/main` with no ahead/behind marker and
+`git diff main origin/main` is empty; `git status --short` is empty. No hash or ahead-count is written here —
+the commit recording it makes that wrong; read the truth with `git status -sb` / `git log --oneline
+origin/main -1`.
 
-**s87 measured start (measured this session, not inherited):**
-- `wc AGENT.md` -> **3579 lines / 45481 words / 295384 bytes**. The standing sections an agent needs
-  (Current Status, Progress Journal, Next Steps, Project Files, Architecture & Invariants, Debugging,
-  Key Decisions) are lines 2798-3579 = **782 lines**; the rest (~2700 lines) is s68-s86 session
-  blow-by-blow — plans, per-step entries, "measured start" blocks, expected outcomes.
-- `git status -sb` -> `main` == `origin/main`, **one modified file: `AGENT.md`** (the s86 close-out — the
-  user's "I confirm it works" for the prompt follow). Nothing else outstanding.
-- `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**; `make -j8 bin/test_vt
-  bin/dbg bin/test_fm` -> 0 warnings; `./bin/test_vt` **719 checks, 0 failures**, `./bin/dbg` **MODEL OK
-  (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0
-  (`CLI: 62 checks, 0 failures, 10 skipped` + those three), 0 warnings.
-- `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` -> **0**. README's
-  "Available settings" table (49 rows) and the 49 keys `apply()` in `src/config.c` compares -> `diff` empty
-  both ways.
-- `nvidia-smi` -> **11785 / 12227 MiB** — the user's LLM owns the GPU: no window may be mapped, every run
-  stays headless (ENVIRONMENT.md / s81 rule).
+**Completed in s88:** the 8 planned steps — header, layout.c (percent + inverse), config.c, main.c, fm.c (the
+shared preview row budget), test_vt.c (719 -> 726), test_fm.c (235 -> 247, with the A/B against the old
+fm.c), cli_test.sh + README + ISSUES.md + this journal, then the full green run and the push.
 
-**s87 objective:** make AGENT.md the smallest file that still lets another agent resume the project without
-conversation history — keep every rule, invariant, pitfall, debug entry point and file description, drop the
-per-session narrative, and re-point any citation that stops resolving.
+**Unfinished / owed to the user, not to the code:** they have not seen either change in their own window —
+whether 75% is the share they want (it is one config number: `fm_size`) and whether the preview metadata now
+sits where they want it. The CLI suite's window-opening group, including the new band-share check, also has
+not run here (no free video memory, user at the machine).
 
-### s87 entry 1 — done: the narrative is out, the standing sections are intact, the tree is still green
+### s88 entry 7 — journal maintenance: the closed s87 task block is out
 
-**What was cut** (one `python3` line-range deletion, boundaries asserted before writing, so nothing outside
-the intended block could move): every "Current Task / Previous Task / entry N" block for s68-s86 — the plans,
-"measured start" blocks, per-step logs and expected outcomes — 2719 lines. The Progress Journal's own s63-s67
-entries were then rewritten to the same era level and the s68-s86 work was written back as six era entries
-(images, file manager, the file manager's fixes + the pty bug, the refused-texture work, the prompt follow,
-this cleanup). `git diff --stat` for the session: **196 insertions, 2961 deletions**.
-
-**What was kept, deliberately:** Project Overview, Current Status (re-measured this session), Next Steps,
-Project Files & Facts, Architecture & Invariants, Debugging this project, Key Decisions & Pitfalls. Those are
-what a change must not break — not history. Every pitfall the deleted sessions produced was already stated
-there, so nothing was lost by deleting the narrative that discovered it.
-
-**Accuracy fixes made while cutting** (each one a claim that had gone stale, not a style edit):
-- Current Status re-measured and re-headed to s87; the "As of s70 everything is pushed" line deleted — it is
-  exactly the kind of claim the bullet below it forbids writing here.
-- ISSUES.md: the follow's "Fixed" entry said "not yet re-run in the user's window" and the file manager's
-  "appearance has not been confirmed by a human eye". Both are now false — the user ran both in their own
-  window on 2026-10-19 ("I confirm it works"). Rewritten to what is actually still open: no verdict on how
-  the band LOOKS.
-- Next Steps 1 and 3 rewritten from "go ask the user to run it" to the diagnosis recipe, since both features
-  are now confirmed by them.
-- Every `sNN entry N` citation that no longer resolves was repointed at the era entry or at the section that
-  holds the rule; bare session labels (`s74`, `s81`, `s86`) still resolve to the era entries.
-
-**Measured after the change (docs only — re-run to prove the counts did not move):**
-- `wc AGENT.md` -> **838 lines / 11005 words / 73684 bytes** (was 3579 / 45481 / 295384 — 75% smaller).
-- `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`, `./bin/test_vt`
-  **719 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks,
-  0 failures**, 0 warnings. (No window mapped — the GPU is at 11785/12227 MiB and the user works here.)
-- `make asan` -> exit 0: 719/0 + MODEL OK + 235/0, and `grep -cE
-  "AddressSanitizer|runtime error|LeakSanitizer|SUMMARY|ERROR"` over the run -> **0**.
-
-**Unfinished / next:** nothing owed by this session. The deleted narrative is in git history (the commit
-before this one holds the whole 3579-line file). If a future session needs why a rule exists, the rule names
-its session; the blow-by-blow is `git log --follow AGENT.md`.
-
-**Committed** `AGENT.md` + `ISSUES.md` as one docs commit; `git fetch origin` first (nothing on GitHub to
-integrate), so `git push origin main` was a fast-forward (exit 0). Re-fetched and verified: `git status -sb`
-shows `main...origin/main` with no ahead/behind marker and `git diff main origin/main` is empty. No hash or
-ahead-count is written here — the commit recording it makes that wrong; read the truth with
-`git status -sb` / `git log --oneline origin/main -1`.
+The s87 "Current Task" block (70 lines of plans, measured-start and per-step log) is deleted: that session is
+closed, its durable outcome is the Progress Journal's s87 era entry, and nothing anywhere cited `s87 entry 1`.
+Same rule s87 applied to s68-s86, and the text is in git history. AGENT.md 1132 -> 1062 lines (14145 words,
+92.7 KB). The s88 block stays for now — it is this session's record; the next session folds it into its era
+entry the same way. Docs-only change; `KAI_TERM_TEST_NO_WINDOW=1 make test` re-run after it: exit 0,
+`CLI: 62 checks, 0 failures, 10 skipped`, 726 / MODEL OK / 247, 0 warnings.
 
 ## Progress Journal (root causes of fixed bugs: git history)
 
@@ -529,6 +486,23 @@ ahead-count is written here — the commit recording it makes that wrong; read t
   Facts, Next Steps and the verified Current Status are kept, and the deleted narrative is in git history — the
   same rule ISSUES.md has followed since s66. Session labels (`s74`, `s81`, `s86`) still resolve to the era
   entries above; the per-entry citations that no longer exist were repointed.
+- **2026-10-19/20, s88 — the band became a SHARE, and the preview's rows got one owner.** User request: the
+  file manager should take ~75% of the window and be configurable, and "the metadata sometimes get written on
+  the image preview" — with the explicit instruction "don't keep fm_rows we don't need it". So `fm_rows` is
+  gone everywhere (key, fields, `FM_ROWS_MAX`, docs, checks) and `fm_size` (percent of the grid area, default
+  75, clamped 10–95 at parse time AND in layout.c) decides the band: `band_h = grid_h * pct / 100` then
+  clamped to the terminal's floor, and `layout_initial_size()` solves the inverse
+  `grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))` — the startup round trip is what proves that
+  arithmetic, for the band on, off, with a bar, and with no padding or gap. The preview overlap was two
+  hardcoded numbers, not a renderer problem: the header's size was a literal 3 in `paint_preview()` and
+  `fm_image_fit()` independently, and the 8 metadata lines an image preview carries were counted in neither,
+  so lines from row 3 down were painted into the picture's box (glyphs are emitted in the batch AFTER the
+  picture). Now `preview_head_rows()` + `preview_meta_rows()` are the single owner, called by both, and the
+  picture always keeps a row. Rule this produced: **a check that passes on the buggy code pins nothing** — the
+  first version (a small centred 8x8 picture) passed against the old fm.c by luck; the case that actually
+  overlapped is a picture whose box starts at the top of the picture area, and the A/B (`.scratch/s88/`, old
+  `src/fm.c` from git against the new test file: 8 failures) is what found that. Tests 719 -> 726 and
+  235 -> 247, all green, asan clean, committed and pushed.
 
 ## Next Steps
 
@@ -1089,3 +1063,9 @@ after `ptr_*` hit-tested bar then panes.
   user's screen and `coredumpctl`. One probe launch decides whether the window checks run; the rest are
   skipped with the reason printed, and `KAI_TERM_TEST_NO_WINDOW=1` skips them all. Never loop launches to
   count failures: diagnose the first one (s81, and ENVIRONMENT.md "Launching real windows in a test").
+- **A check that passes on the buggy code pins nothing.** `ink_in_box()` — "no glyph may sit inside the box the
+  picture is drawn into" — passed against the pre-fix `src/fm.c` when it was written around a small centred
+  8x8 preview: that picture happened to land below the metadata. The overlap needs a picture whose box starts
+  at the TOP of the picture area (one big enough to fill it), and only the A/B — the new test file against
+  `git show HEAD:src/fm.c` — showed that. When a check is written to pin a bug, run it against the code that
+  had the bug and report the failure count (s88: 8 failures there, 0 here).
