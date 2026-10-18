@@ -211,10 +211,13 @@ static const char SCRIPT_BASH[] =
     "fi\n"
     "printf '\\033_K;kai-term;integration;bash\\033\\\\'\n";
 
-/* NOT VERIFIED: zsh is not installed on the development box, so this script has never been run. It follows
-   the same shape as the other two (ZLE widget + bindkey + the same APC messages), and Kai-Term only ever
-   uses the integration path after the script announces itself — so if the binding does not take, zsh simply
-   keeps the typed-`cd` path it had before. Do not describe zsh support as tested until it has been run. */
+/* VERIFIED 2026-10-20 (s94): the user confirmed zsh in their own window, and the integration gate now runs zsh
+   5.9 headless — the script announces, `C-x C-]` fires the ZLE widget, the ack comes back in 54 ms, the typed
+   line is byte-identical and `zle reset-prompt` repaints the prompt so it names the new directory. What is still
+   NOT measured for zsh is what those two bytes do in a zsh that has NO binding (the inertness that protects an
+   unwrapped nested shell) — it was measured for fish and bash only. Kai-Term only ever uses the integration path
+   after the script announces itself, so if a future zsh stops taking the binding the ack never arrives and the
+   typed-`cd` path runs: the safe direction to be wrong in. */
 static const char SCRIPT_ZSH[] =
     "# Kai-Term shell integration for zsh. Written by Kai-Term at startup; zsh is started with\n"
     "# ZDOTDIR pointing at a directory holding this file as .zshrc, and it sources the user's real .zshrc\n"
@@ -325,8 +328,10 @@ const char *shellint_seq(int kind, size_t *len)
        is inert, but bash binds it to character-search, so it would steal a working key), and C-\ (0x1c:
        inert and unbound in both shells, but `stty -a` on a pty reports `quit = ^\` — VQUIT would kill
        whatever owns the tty whenever the shell is not reading it, which is far worse than a stray byte).
-       zsh is NOT verified here (no zsh on this box); it gets the same bytes, and if its ZLE does not take
-       them the ack never arrives and the typed path runs, which is the safe direction to be wrong in. */
+       zsh gets the same bytes, and since s94 they are MEASURED there too: the gate's zsh run gets the handler
+       running and the ack back in 54 ms. (What has never been measured in zsh is the inert-when-unbound case —
+       that was tested in fish and bash only. If a zsh ever does not take these bytes, the ack never arrives and
+       the typed path runs, which is the safe direction to be wrong in.) */
     static const char SEQ[] = "\x18\x1d";      /* C-x C-] */
     if (kind == SHELLINT_NONE) {
         if (len)

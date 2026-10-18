@@ -3118,7 +3118,7 @@ int main(void)
         CHECK(bseq && blen == 2 && memcmp(bseq, "\x18\x1d", 2) == 0,
               "integration: bash is asked with the SAME bytes (measured: readline runs the handler, inserts nothing)");
         CHECK(zseq && zl == 2 && memcmp(zseq, fseq, 2) == 0,
-              "integration: zsh gets the same bytes (NOT verified — no zsh on this box)");
+              "integration: zsh gets the same bytes (they fire there too — measured, AGENT.md s94)");
         CHECK(shellint_seq(SHELLINT_NONE, &zl) == NULL && zl == 0,
               "integration: an unsupported shell has no sequence at all");
         /* The rule that rules out C-\ (0x1c), which otherwise passes every shell test: `stty -a` on a pty
@@ -3192,7 +3192,7 @@ int main(void)
             CHECK(strstr(btxt, "commandline -f repaint") == NULL,
                   "integration: and bash does NOT pretend to repaint (readline cannot; measured, AGENT.md s92)");
             CHECK(strstr(ztxt, "zle reset-prompt") != NULL && strstr(ztxt, "precmd_functions+=") != NULL,
-                  "integration: the zsh script repaints and re-announces (UNVERIFIED — no zsh on this box)");
+                  "integration: the zsh script repaints and re-announces (verified in zsh 5.9, AGENT.md s94)");
             CHECK(strstr(ftxt, "$KAI_TERM_INT_DIR") != NULL && strstr(btxt, "$KAI_TERM_INT_DIR") != NULL &&
                   strstr(ztxt, "$KAI_TERM_INT_DIR") != NULL,
                   "integration: every script can name the others (the nested-shell wrappers pass these paths)");

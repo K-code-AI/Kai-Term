@@ -33,15 +33,15 @@ entries in AGENT.md. The user has run the band in their own window and confirmed
 (2026-10-19); **no verdict has been given on how it LOOKS** — that is the one open item, and it belongs to
 the user. Its limits are under "Known limitations" — "File manager".
 
-**Shell integration (2026-10-20, s91-s92) is implemented and verified headless, not yet in the user's window.** A
-file-manager navigation in a fish or bash started by Kai-Term now asks the SHELL to change its own directory:
+**Shell integration (s90-s92) is implemented, wired, and CONFIRMED BY THE USER IN THEIR OWN WINDOW for fish, bash
+and zsh** ("I verified the shell integration, Fish Bash and Zsh are working as expected now. Perfect",
+2026-10-20). A file-manager navigation in a shell Kai-Term started asks the SHELL to change its own directory:
 no erase, no re-type, no visible `cd`, and the user's half-typed line is byte-identical before and after
-(`.scratch/s90b/intgate.c`: ack in 52-74 ms, `pwd` prints the new directory). Two defects the user reported
-from their own window on 2026-10-20 are fixed and measured: a shell started at the prompt is integrated too
-(see "Known limitations" — "Shell integration"), and in fish the prompt is repainted so it names the new
-directory (in bash it cannot be, and that is documented rather than hacked). Every other shell — and every
-shell the user starts in a way the wrapper cannot see — keeps the typed path unchanged. **No human eye has seen
-either fix yet.**
+(`.scratch/s90b/intgate.c`: ack in 54-76 ms, `pwd` prints the new directory). zsh 5.9 joined that gate on
+2026-10-20 — its script had never been run anywhere before that. The two defects the user reported on
+2026-10-20 are fixed and now user-confirmed: see "Fixed" below. Every other shell — and any shell the user starts
+in a way the wrapper cannot see — keeps the typed path unchanged. Its limits are under "Known limitations" —
+"Shell integration".
 
 Image support is confirmed by eye in the user's window (`timg -p k <file.png>`, 2026-10-17) as well as by
 the model tests and the `graphics: N image(s) drawn` log line. Its limits are listed under
@@ -51,6 +51,22 @@ To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` log
 not filed; it is not a bug until it reproduces.
 
 ## Fixed
+
+**A shell started at the prompt fell back to the typed `cd`, and the prompt kept showing the OLD directory
+(2026-10-20).** Symptom, reported by the user: "changing shell in the prompt make it go in fallback mode instead
+of using the right shell integration", and "The dir change works as expected, but we have a visual bug, If I
+navigate from /home/kaida to /home/kaida/test/ in the file manager, then the prompt still show /home/kaida … is
+there a way to refresh the prompt when navigating using the filemanager to not have that wrong visual?" Cause and
+fix: (1) `Tab.int_dead` was one-way and a shell the user started at the prompt never loaded the script at all —
+the three scripts now wrap a bare `fish`/`bash`/`zsh` (never over a name the user defined, never with any argument
+present) and re-announce after every command, and `Term.shell_int_gen` + `Tab.int_gen` make an announcement an
+EVENT that revives an integration the session had given up on; (2) fish and zsh now repaint the prompt from inside
+the handler (`commandline -f repaint`, `zle reset-prompt`), so it names the directory the shell is really in —
+**bash cannot and nothing is pretended**: readline expands the prompt once per `readline()` call, `C-l` leaves the
+old directory and printing `${PS1@P}` over the line garbles it (both measured), so bash is documented and the
+prompt catches up on the next Enter. Verified: 14 new checks in `tests/test_vt.c` (789 -> 803, 0 failures), the
+gate's `nested` / `dead` / `off` modes over real fish and bash, and **the user's own confirmation in their window
+for all three shells (2026-10-20)**.
 
 **A BackSpace on an empty prompt disabled the shell follow for the rest of the session (2026-10-20).**
 Symptom, reported by the user: after pressing BackSpace at an empty prompt, browsing into a directory no
@@ -350,14 +366,18 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   `fm: a shell announced again — the integration is used for this session again`, then an ack in 74 ms). A
   heartbeat was checked not to leak into a command substitution (`.scratch/s92/hbcheck.c`: `set x (echo hi)`
   gives `x` = `hi`, 2 bytes).
-- **zsh support is written but UNVERIFIED.** zsh is not installed on the development box, so its script (a ZLE
-  widget + `bindkey '^X^]'`, the wrappers, `precmd_functions`) has never been run. If its line editor does not
-  take the binding, the ack never arrives and the typed path runs — the safe direction to be wrong in. Do not
-  describe zsh as tested.
+- **zsh is verified, but only since 2026-10-20, and not by `make test`.** Its script (a ZLE widget +
+  `bindkey '^X^]'`, the wrappers, `precmd_functions`) had never been run anywhere until the user tried it in
+  their own window and confirmed it; the headless gate then ran it on zsh 5.9 (announce, ack in 54 ms, line
+  byte-identical, prompt repainted). What is still unmeasured is what `C-x C-]` does in a zsh that has NO binding
+  — the inertness that protects an unwrapped nested shell was measured in fish and bash only. And no zsh check
+  lives in `make test` beyond the script-on-disk pins, so a zsh regression would show up as the ack timing out and
+  the typed path taking over, not as a failing check. The safe direction to be wrong in, and the reason zsh must
+  not be described as covered by the suite.
 - **The prompt is repainted where the shell can be asked to repaint it.** fish: `commandline -f repaint` at the
   end of the handler, measured to re-expand the prompt (the user's report: "the prompt still show /home/kaida
   but it's only visual") — the prompt row then names the new directory and the typed text is byte-identical.
-  zsh: `zle reset-prompt` (unverified, no zsh here). **bash: it cannot be done, and nothing is pretended** —
+  zsh: `zle reset-prompt` (verified in zsh 5.9, 2026-10-20). **bash: it cannot be done, and nothing is pretended** —
   readline expands the prompt once per `readline()` call, so `C-l` leaves the old directory (measured) and
   printing `${PS1@P}` over the line garbles it (measured: readline's cached cursor position goes wrong and the
   old prompt text survives). The only thing that refreshes a bash prompt is submitting a line, which is not

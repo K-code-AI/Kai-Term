@@ -17,7 +17,7 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s93 — build and every suite green; shell integration (s90-s92) is implemented, wired and verified headless against real fish + real bash, and has never been seen in the user's window)
+## Current Status (re-measured 2026-10-20, s94 — build and every suite green; shell integration (s90-s92) is implemented, wired, measured headless AND confirmed by the user's own eye in their window for fish, bash and zsh)
 
 - **s90-s93 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
   the push: `git status -sb` shows no ahead/behind and `git diff main origin/main` is empty). s89's follow fix
@@ -29,15 +29,18 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **247 checks, 0 failures**;
   `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
   `make asan` exit 0 with the same counts and 0 sanitizer reports.
-- **Shell integration (s90-s92) is implemented, wired and verified headless — NOT yet seen by a human eye.**
-  `.scratch/s90b/intgate.c` runs the machine copied verbatim from `src/main.c` over the real pty + real
-  `term_parse()` + the SHIPPED `src/shellint.c`, with real fish 4.6 and real bash 5.3: the shell announces,
-  Kai-Term writes the request file and sends `C-x C-]`, the ack comes back in **52-55 ms**, the user's line is
-  byte-identical before and after (`Some text ` still there, no `cd` ever visible), and the shell's own `pwd`
-  prints the new directory. The nested case (a plain `bash` inside the integrated fish) times out at 400 ms,
-  logs `fm: no integration ack from fish — using the typed path`, marks the session's integration dead and runs
-  the old machine — the text survives and **no stray character lands on the line**; the next navigation there
-  skips the integration entirely. With `shell_integration = 0` (bare fish) the behaviour is exactly the old one.
+- **Shell integration (s90-s92) is implemented, wired, and CONFIRMED BY THE USER IN THEIR OWN WINDOW for all
+  three shells (2026-10-20): "I verified the shell integration, Fish Bash and Zsh are working as expected now.
+  Perfect"** — that closes the one thing s92/s93 owed, including zsh, whose script had never been run anywhere
+  before. It is also still proven headless: `.scratch/s90b/intgate.c` runs the machine copied verbatim from
+  `src/main.c` over the real pty + real `term_parse()` + the SHIPPED `src/shellint.c`, with real fish 4.6, bash
+  5.3 and (s94) zsh 5.9: the shell announces, Kai-Term writes the request file and sends `C-x C-]`, the ack comes
+  back in **54-76 ms**, the user's line is byte-identical before and after (`Some text ` still there, no `cd` ever
+  visible), and the shell's own `pwd` prints the new directory. The nested case (a plain `bash` inside the
+  integrated fish) times out at 400 ms, logs `fm: no integration ack from fish — using the typed path`, marks the
+  session's integration dead and runs the old machine — the text survives and **no stray character lands on the
+  line**; the next navigation there skips the integration entirely. With `shell_integration = 0` (bare fish) the
+  behaviour is exactly the old one. Re-running every mode after the s93 cleanup reproduced all of it (s94 entry 1).
 - **The follow is user-confirmed in their own window (2026-10-19): "I confirm it works"** — after the s86
   fix, running `./bin/kai-term -d` with fish. It is also proven headless: `.scratch/s86/follow2.c` runs the
   machine from `src/main.c` over the real `src/pty.c` + real `term_parse()`; two navigations on top of each
@@ -98,7 +101,115 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s93 — CLOSED: a codebase cleanliness pass, asked for by the user: "We need to check to make sure we have a clean codebase". s92 finished and committed; the audit's three findings fixed; the docs re-diffed. See s93 entries 1-5.)
+## Current Task (s94 — CLOSED: the user's verdict on the shell integration. "I verified the shell integration, Fish Bash and Zsh are working as expected now. Perfect" — plus the headless zsh run that had never been possible before, because zsh is now installed here. See s94 entries 1-2.)
+
+**What the user reported (2026-10-20):** all three shells — fish, bash and zsh — behave as expected in their own
+window. No new defect, no new symptom, nothing to reproduce. The work was therefore to make the documentation
+honest about what is now known, and to close the one gap their message implied: **zsh 5.9 is on this box now**
+(`command -v zsh` -> `/usr/bin/zsh`), so the "UNVERIFIED: no zsh here" note that ISSUES.md, README and AGENT.md
+all carried is no longer true and had to be replaced with a measurement.
+
+**Done:**
+1. Ran the integration gate against **zsh** for the first time (a copy of `.scratch/s90b/intgate.c` in `/tmp/s94/`
+   with a `zsh` mode added — `.scratch/` itself untouched, per the user's standing instruction). Result in
+   s94 entry 1: announced zsh, ack **54 ms**, typed line byte-identical, prompt repainted, `pwd` prints the target.
+2. Re-ran every other gate mode (fish, bash, nested, dead, off) to prove the s93 cleanup changed no behaviour.
+3. README, ISSUES.md and AGENT.md updated: zsh is verified, not "written but untested"; the shell integration is
+   user-confirmed by eye.
+
+**Next action:** none pending. Two optional offers to the user, both recorded in Next Steps: give the zsh-mode gate
+a durable home (`.scratch/s90b/` needs their permission; `/tmp` does not survive), and — only if they want it — a
+`tests/` check that runs `fish -n` / `bash -n` / `zsh -n` over the generated scripts, skipping when a shell is
+absent.
+
+### s94 entry 1 — zsh run for real for the first time, and every gate mode re-run after the cleanup
+
+**The user's verdict, recorded verbatim because it is the evidence:** "I verified the shell integration, Fish Bash
+and Zsh are working as expected now. Perfect" (2026-10-20). That is the project's highest evidence class — their
+eye in their own window — and it retires the sentence "no human eye has seen this yet" from the shell-integration
+status everywhere (Current Status, ISSUES.md Open, README).
+
+**What their message changed in the environment:** zsh is installed now — `command -v zsh` -> `/usr/bin/zsh`,
+`zsh --version` -> `zsh 5.9 (x86_64-pc-linux-gnu)`. Every earlier session wrote "zsh is NOT installed on this box,
+so its script has never been run"; that is no longer true, and an unverified claim in the docs is a bug.
+
+**Measured, headless, the SHIPPED scripts (no window).** `.scratch/s90b/intgate.c` was COPIED to `/tmp/s94/` and a
+`zsh` mode added there — `.scratch/` itself was not touched, per the user's standing "don't touch .scratch for
+now". Built against the current `build/*.o`, so it runs the machine copied from `main.c` over the real `src/pty.c`,
+real `term_parse()`, real `mux.c` and the scripts `shellint_prepare()` writes:
+- `zsh /tmp/s94test`: `announced kind = 3 (zsh)` -> `fm: shell integration (zsh) asked to cd into /tmp/s94test` ->
+  `fm: the shell's integration changed directory to /tmp/s94test — the line was not touched`, ack in **54 ms**.
+  Line before `[~/Project/Kai-Term> Some text]`, after `[/tmp/s94test> Some text]` — the typed text is
+  byte-identical and **the prompt names the target: YES (repainted)**, which is `zle reset-prompt` working. The
+  shell's own `pwd` printed `/tmp/s94test`. `fm_last_cd` matches -> FOLLOW CONFIRMED.
+- The other modes, re-run to prove the s93 cleanup (static, format attribute, comments) changed no behaviour:
+  `fish` ack 56 ms + repainted; `bash` ack 55 ms, line intact, prompt **stale by design** (documented readline
+  limit); `nested` (fish -> wrapped `bash`) `announced bash, gen 3, int_dead=0`, nested round trip 55 ms, the
+  nested line holds `half typed` with no stray character; `dead` (fish -> `env bash`) `no integration ack from
+  fish — using the typed path`, `int_dead=1`, second navigation 202 ms with no ack wait, then after `exit`
+  `fm: a shell announced again — the integration is used for this session again` and the next navigation lands in
+  **75 ms**, final `VERDICT: cwd is /tmp/s94test -> MATCH`; `off` (`shell_integration = 0`, bare fish) announces
+  nothing and runs the old machine (225 ms, text survives). Every number matches the s91/s92 record.
+
+**One harness bug of my own, caught by printing the state (the s91 lesson again):** the first zsh run reported the
+line as `SSome text` — a doubled `S`. Cause was my patch, not Kai-Term: I wrote
+`input_write(..., "PS1='%~> '\n", 13)` where the literal is 11 bytes, so the pty also got the NUL and the next
+byte of `.rodata`, which happens to be the `S` of the following literal `"Some text "`. With `strlen()` the line
+reads `Some text` and the run is clean. **A hand-counted byte length in a harness sends whatever follows the
+literal in memory** — count with `strlen`, or the probe invents characters and they get blamed on the terminal.
+
+**Also learned while patching the gate:** the gate asks the SCREEN whether the prompt names the target, and zsh's
+built-in prompt (`%m%#`) shows no path at all, so a correct repaint would have been reported as stale. The zsh mode
+sets `PS1='%~> '` first — the same trick `.scratch/s92/repaint.c` used with `fish_prompt` and `PS1='\w\$ '`.
+A harness that asserts on the screen must control what the screen is supposed to say.
+
+### s94 entry 2 — documentation made honest about zsh (README, ISSUES.md, AGENT.md)
+
+**Changed:**
+- `README.md`: the follow section said "fish and bash are verified on this box; zsh … is untested rather than
+  proven". It now says all three are verified, and the `shell_integration` settings row is unchanged (the default
+  and the behaviour did not change).
+- `ISSUES.md`: the Open section's shell-integration paragraph ("No human eye has seen either fix yet") now records
+  the user's confirmation for fish, bash and zsh; the "zsh support is written but UNVERIFIED" limitation is
+  replaced by what is actually known — verified in the user's window and headless on zsh 5.9, with the ack
+  measured at 54 ms — while keeping the part that is still true: the zsh path has no check in `make test` beyond
+  the script-on-disk pins, so a zsh regression would still be caught by the ack timeout falling back to the typed
+  path rather than by a failing check.
+- `AGENT.md`: this journal, the Current Status bullet, and Next Steps item 2 (the "user's eye" item is closed).
+
+**Next action:** the same claim also lives in source comments and check names — entry 3.
+
+**Verified after the doc edits:** `make -j8` exit 0 with 0 warnings; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+(`CLI: 62 checks, 0 failures, 10 skipped`, `803 checks, 0 failures`, `MODEL OK (0 problems)`,
+`247 checks, 0 failures`). No source file changed, so the counts are expected to be identical — and they are.
+
+**Correction to that last sentence, because it was wrong when written:** entry 3 of this session DID touch source
+files (comments and check messages in `src/shellint.c`, `include/kai-term/kai-term.h`, `tests/test_vt.c`), so the
+suites were rebuilt and re-run, and the full set including `make asan` is recorded there. "Docs only" was true of
+entries 1-2 and stopped being true the moment the stale zsh claims in the code were found.
+
+### s94 entry 3 — the stale zsh claims were not only in the .md files
+
+`grep -rn "no zsh|UNVERIFIED|unverified" src/ include/ tests/ README.md ISSUES.md` found **seven** places, four of
+them inside the code, which is where a future agent reads them first:
+- `src/shellint.c` — the block above `SCRIPT_ZSH` ("NOT VERIFIED: zsh is not installed on the development box, so
+  this script has never been run … Do not describe zsh support as tested") and the note inside `shellint_seq()`'
+  measurement list. Both now record what s94 measured and, precisely, what is still unmeasured: **the
+  inert-when-unbound property was only ever tested in fish and bash**, so a zsh with no binding is the one case
+  nobody has observed. (It is also the case the ack timeout is designed to survive.)
+- `include/kai-term/kai-term.h` — the `shellint_seq()` contract, same correction.
+- `tests/test_vt.c` — two check MESSAGES said "NOT verified — no zsh on this box" / "UNVERIFIED — no zsh on this
+  box". The checks themselves are unchanged (they pin the bytes and the script text); only the wording now points
+  at s94. A check message that misstates the evidence is worse than no message, because the next agent trusts it.
+
+**Measured after these edits — the full set, from a clean tree:** `make clean && make -j8` exit 0, 0 warning lines;
+`./bin/test_vt` **803 checks, 0 failures** (the count is unchanged: no check was added or removed, only two
+messages reworded); `./bin/dbg` MODEL OK; `./bin/test_fm` 247 / 0; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+(`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0 with the same counts and no sanitizer report.
+
+**Next action:** none pending in the repo.
+
+## Previous Task (s93 — CLOSED: a codebase cleanliness pass, asked for by the user: "We need to check to make sure we have a clean codebase". s92 finished and committed; the audit's three findings fixed; the docs re-diffed. See s93 entries 1-6.)
 
 **Audit already run (read-only, before touching anything) — what was measured and what it said:**
 - `make clean && make -j8` exit 0, 0 warning lines; `./bin/test_vt` 803 checks / 0 failures; `./bin/dbg`
@@ -245,9 +356,10 @@ has not been asked this session.
   logs of closed sessions, or move the real regression gates into `tests/`. Nothing outside the repo was touched —
   the standing rule is to ask first.
 
-**No unfinished work in the repo.** The only genuinely unverified code path in the tree is the zsh integration
-script (no zsh on this box) and the shell integration has still never been seen in the user's own window — both
-recorded in ISSUES.md "Shell integration" and Next Steps item 2, not hidden.
+**No unfinished work in the repo.** [As written at the time:] the only genuinely unverified code path in the tree
+was the zsh integration script (no zsh on this box) and the shell integration had still never been seen in the
+user's own window. **Superseded by s94 the same day:** zsh 5.9 is installed, its script has been run headless and
+confirmed by the user in their window, and the integration is user-confirmed for all three shells.
 
 ### s93 entry 6 — the user's two answers: push (done, verified) and `.scratch/` (leave it alone)
 
@@ -902,17 +1014,18 @@ one verified change and push.
    shader. Two decisions they may want to revisit, both flagged, both one-line changes with different safety
    implications: `Return` on a file types its path instead of running it, and `fm_follow` sends `cd <path>`
    unprompted.
-2. **Shell integration (s90-s92) is wired, green and measured headless — the open item is the user's eye and one
-   unverified shell.** The two defects the user reported on 2026-10-20 are fixed and measured (a shell started at
-   the prompt is integrated; fish repaints its prompt), but **no human has seen either in their own window yet**.
-   If they report the prompt not following, start with `./bin/kai-term -d`: the line must be
+2. **Shell integration (s90-s92) is done: wired, green, measured headless AND confirmed by the user's eye in
+   their own window for fish, bash and zsh (2026-10-20).** Nothing is owed here but a diagnosis if a report ever
+   arrives. The recipe: run `./bin/kai-term -d`, browse into a directory with the band open, and read the log —
    `fm: shell integration (<kind>) asked to cd into <dir>` followed by
    `fm: the shell's integration changed directory to <dir> — the line was not touched`. `no integration ack` means
    the reader was not an integrated shell (expected for `env bash`, `sudo bash`, `/usr/bin/bash`); `shell
    integration: off for this run` means the script directory could not be created. In **bash** a stale prompt
-   string is expected behaviour, not a bug (ISSUES.md "Shell integration"). The one genuinely untested path is
-   **zsh** — no zsh on this box, so its script has never run; installing zsh and re-running
-   `.scratch/s90b/intgate.c` is the only way to close it, and it is a new dependency for the dev box, so ask.
+   string is expected behaviour, not a bug (ISSUES.md "Shell integration"). Two optional improvements, both the
+   user's call, neither a defect: (a) the zsh-mode gate lives in `/tmp/s94/` and will not survive a reboot — it
+   belongs in `.scratch/s90b/` (needs their permission, .scratch is off-limits for now) or in `tests/`; (b) a
+   `tests/` check running `fish -n` / `bash -n` / `zsh -n` over the generated scripts would catch a script that no
+   shell can parse, but it makes the suite depend on external shells unless it skips when one is missing.
 3. **Image support is done and confirmed by eye** (2026-10-17), and the user has settled its scope:
    "The goal was image support, Not auto-detection by timg so it work fine using `-p k`". So `-p k` IS the
    supported way to show a picture and nothing more is wanted here. Do NOT "improve" this by re-adding the
@@ -1323,7 +1436,8 @@ after `ptr_*` hit-tested bar then panes.
   checked not to leak into a command substitution before it shipped (`.scratch/s92/hbcheck.c`).
 - **The prompt is repainted only where the shell can be asked to.** fish: `commandline -f repaint` at the end of
   the handler (measured to re-expand the prompt with the typed text byte-identical). zsh: `zle reset-prompt`
-  (unverified — no zsh on this box). bash: NOTHING is attempted, because readline expands the prompt once per
+  (verified in zsh 5.9 since s94, 2026-10-20 — the gate's zsh run repaints and answers in 54 ms; what has never
+  been measured in zsh is the inert-when-unbound case). bash: NOTHING is attempted, because readline expands the prompt once per
   `readline()` call — `C-l` leaves the old directory and printing `${PS1@P}` over the line garbles it (both
   measured). Do not "fix" bash by pressing Enter for the user or by writing over the prompt line.
 
@@ -1530,6 +1644,11 @@ after `ptr_*` hit-tested bar then panes.
   prompt snapshot at the end of each. The state machine left that step on a BLANK row, typed the user's text
   there and could never confirm it. Where the evidence is "the application has FINISHED printing", wait for
   silence (`FMCD_QUIET_MS`, driven from the frame timer) — no further burst is coming to trigger it.
+- **A harness that counts bytes by hand sends whatever follows the literal in memory.** `input_write(t, p,
+  "PS1='%~> '\n", 13)` on an 11-byte literal also wrote the NUL and the next byte of `.rodata` — which happened to
+  be the `S` of the following string literal, so the zsh prompt appeared to hold `SSome text` and the terminal
+  looked like it was duplicating a keystroke. It was the probe. Always `strlen()` (or `sizeof(x)-1`) for a literal,
+  and when a harness reports a character nobody typed, suspect the harness first (s94).
 - **Never run the live key-injection or window-mapping harnesses while the user is at the machine, and never
   assume a red screen came from your own test.** The user was disturbed mid-session (2026-10-19). Measured
   after the fact rather than guessed: no `bin/kai-term` of mine was alive, no `.scratch/inject` process, no

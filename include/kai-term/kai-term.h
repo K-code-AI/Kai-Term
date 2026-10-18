@@ -858,7 +858,8 @@ int shellint_kind_for(const char *shell_path);
    control characters — `stty -a` on a pty reports `quit = ^\`, so a sequence containing 0x1c would SIGQUIT
    whatever owns the terminal whenever the shell is not reading it. C-x C-] (0x18 0x1d) satisfies all four in
    fish and bash, so there is ONE sequence, not a per-shell table; `kind` is kept because a future shell may
-   need its own. zsh gets the same bytes but is NOT verified (no zsh on this box). */
+   need its own. zsh gets the same bytes and they fire there too (measured 2026-10-20, s94 — zsh 5.9 in the
+   integration gate, ack in 54 ms); its inert-when-unbound behaviour has never been measured. */
 const char *shellint_seq(int kind, size_t *len);
 /* Create the private directory and write every script into it. `dir` receives the path. Returns 0 on
    success; on any failure nothing is created and the caller must run without integration. */
