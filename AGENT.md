@@ -282,9 +282,12 @@ commit and push, then hand the user the command to confirm it themselves.
   "AddressSanitizer|runtime error|LeakSanitizer|SUMMARY|ERROR"` over the run -> **0**.
 
 **Committed** the seven files (`src/main.c`, `src/vt.c`, `include/kai-term/kai-term.h`, `tests/test_vt.c`,
-`README.md`, `ISSUES.md`, `AGENT.md`); `bin/` and `build/` stay git-ignored. `git fetch` before pushing, then
-push; re-fetch and confirm `main` == `origin/main`. Read the truth with `git status -sb` /
-`git log --oneline origin/main -1` — no hash or ahead-count is written here.
+`README.md`, `ISSUES.md`, `AGENT.md`) as one commit naming the s84/s85 work it carries; `bin/` and `build/`
+confirmed git-ignored (`git check-ignore bin build` -> both). `git fetch origin` first -> nothing on GitHub to
+integrate, so `git push origin main` was a fast-forward (exit 0). Re-fetched and verified: `git status -sb`
+shows `main...origin/main` with no ahead/behind marker and `git diff main origin/main` is empty.
+Read the truth with `git status -sb` / `git log --oneline origin/main -1` — no hash or ahead-count is written
+here, because the commit recording it makes it wrong.
 
 **STILL OPEN — the one thing this session cannot do:** the follow has not been seen working in the user's own
 window, and the file manager's appearance has never been confirmed by a human eye. Both belong to the user.
