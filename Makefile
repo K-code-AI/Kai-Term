@@ -7,9 +7,11 @@ CC      ?= cc
 # libjpeg + libwebp are added for the file manager's image previews (src/img.c decodes PNG, JPEG, WebP
 # and — in-tree, no library — GIF). See README "Requirements".
 PKG     := wayland-client wayland-cursor wayland-egl egl gl xkbcommon freetype2 fontconfig harfbuzz libpng zlib libjpeg libwebp
-# The whole tree (src/ and tests/) is warning-free under this set. -Wcast-qual is deliberately NOT
-# enabled: the wayland-scanner-generated xdg-shell bindings in build/generated/ trigger it, and that
-# file is not ours to fix.
+# The whole tree (src/ and tests/) is warning-free under this set, on gcc 15 and on clang 22. -Wcast-qual is
+# deliberately NOT enabled: the wayland-scanner-generated xdg-shell bindings in build/generated/ trigger it, and
+# that file is not ours to fix. Measured with clang 22 (s93): the only hit in OUR sources is zinflate()'s
+# `zs.next_in = (Bytef *)in` in src/vt.c, which is zlib's own signature (see the comment there), so enabling the
+# flag would mean silencing one line to gain nothing else.
 WARN    := -Wall -Wextra -Wshadow -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers
 CFLAGS  ?= -O2 -std=gnu11 $(WARN)
 CFLAGS  += -D_GNU_SOURCE $(shell pkg-config --cflags $(PKG)) -Iinclude/kai-term -Ibuild/generated

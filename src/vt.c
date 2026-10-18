@@ -2119,6 +2119,10 @@ static uint8_t *zinflate(const uint8_t *in, size_t n, size_t *outlen)
             free(buf);
             return NULL;
         }
+        /* The cast away from const is zlib's signature, not a dropped guarantee: `next_in` is `Bytef *` unless
+           zlib was built with ZLIB_CONST, and inflate() only ever reads these bytes. This is also the one place
+           in our own tree that -Wcast-qual would flag (measured with clang 22) — the flag stays out of WARN for
+           the generated xdg-shell bindings, and saying so here keeps it from looking like an oversight. */
         zs.next_in = (Bytef *)in;
         zs.avail_in = (uInt)n;
         zs.next_out = buf;
@@ -2748,7 +2752,10 @@ static void kitty_apc(Term *t, const char *s)
    `cd` request actually reached a shell that was listening, which is what makes the request safe to prefer
    over typing at the prompt: if it does not arrive, main.c falls back to the typed path. Nothing here is
    trusted beyond "a shell of this kind is listening": the directory in an ack is compared with the one
-   Kai-Term asked for, never used as an instruction. */
+   Kai-Term asked for, never used as an instruction.
+   The two functions below are the whole of that channel — the clear main.c calls before asking, and the
+   parser's entry point for what comes back. */
+
 /* The shell's `cd` ack is one slot, so it answers for exactly one request. main.c clears it before sending a
    new request; without that, a navigation back to a directory the shell entered earlier would be "confirmed"
    by the old ack and the follow would believe a request nobody answered. */

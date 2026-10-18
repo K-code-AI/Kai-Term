@@ -13,7 +13,17 @@
 /* ---------- logging ---------- */
 enum { L_ERROR = 0, L_WARN, L_INFO, L_DEBUG };
 extern int kai_term_loglevel;
-void klog(int level, const char *fmt, ...);
+/* The printf attribute is not decoration: it is what makes the compiler check every klog() call site against
+   its format string, and a log line is exactly the code nobody reads until the argument list is wrong. Checked
+   before adding it (a copy of the tree, gcc 15 and clang 22): with the attribute in place BOTH compilers still
+   report 0 warnings over src/ and tests/, so every existing call site is already format-correct and this costs
+   nothing — it is a net for the next one. Guarded because it is a compiler extension: a compiler without it
+   compiles the same code, it just checks less. */
+void klog(int level, const char *fmt, ...)
+#if defined(__GNUC__)
+    __attribute__((format(printf, 2, 3)))
+#endif
+    ;
 
 /* ---------- colors & cell attributes ---------- */
 #define DEF_FG      0xffe5e5e5u   /* ARGB */

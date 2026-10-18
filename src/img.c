@@ -350,7 +350,10 @@ static int gif_interlaced_row(int srow, int ih)
     return srow * 2 + 1;
 }
 
-uint8_t *img_decode_gif(const uint8_t *mem, size_t n, int *w, int *h)
+/* GIF is the one format decoded here that no other module asks for: the graphics path receives PNG (and raw
+   f=24/32) and the preview path reaches this through img_decode_mem(), so it stays file-local — a name with
+   external linkage that nothing declares is a name a future file could collide with for no benefit. */
+static uint8_t *img_decode_gif(const uint8_t *mem, size_t n, int *w, int *h)
 {
     GifRd r = { mem, n, 0 };
     if (n < 13 || memcmp(mem, "GIF8", 4) != 0 || (mem[4] != '7' && mem[4] != '9') || mem[5] != 'a') {
