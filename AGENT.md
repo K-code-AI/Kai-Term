@@ -19,8 +19,8 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
 
 ## Current Status (re-measured 2026-10-20, s93 — build and every suite green; shell integration (s90-s92) is implemented, wired and verified headless against real fish + real bash, and has never been seen in the user's window)
 
-- **s90-s93 are all committed on `main`; the working tree is clean.** `git status -sb` says `main` is AHEAD of
-  `origin/main` — the push is the user's call (ask, then `git fetch` first). s89's follow fix
+- **s90-s93 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
+  the push: `git status -sb` shows no ahead/behind and `git diff main origin/main` is empty). s89's follow fix
   (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks) was
   confirmed by the user in their own window (2026-10-20). Read the remote state with `git status -sb` /
   `git log --oneline origin/main -1`.
@@ -47,7 +47,7 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   The live key-injection harness was NOT re-run: the user is at this machine and asked not to be disturbed
   (s86, and the pitfall in Key Decisions) — the confirmation came from them running it, which is the better
   evidence anyway.
-- `git status -sb` -> clean tree, `main` ahead of `origin/main` (see the first bullet). Read the remote state with
+- `git status -sb` -> clean tree, `main` == `origin/main` (see the first bullet). Read the remote state with
   `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. The follow lives in
   `src/main.c` (the state machine + the quiet-period step),
   `src/vt.c` (the echo window needs a transition; a height-only resize keeps a dirty prompt snapshot),
@@ -248,6 +248,22 @@ has not been asked this session.
 **No unfinished work in the repo.** The only genuinely unverified code path in the tree is the zsh integration
 script (no zsh on this box) and the shell integration has still never been seen in the user's own window — both
 recorded in ISSUES.md "Shell integration" and Next Steps item 2, not hidden.
+
+### s93 entry 6 — the user's two answers: push (done, verified) and `.scratch/` (leave it alone)
+
+- **Pushed, on the user's explicit "Yes".** `git fetch` first (nothing new upstream — the user had not committed on
+  GitHub since the last session), then `git push origin main` -> exit 0, `b958117..506c7e1`.
+  **Verified after:** `git status -sb` -> `## main...origin/main` with no ahead/behind, and
+  `git diff --stat main origin/main` -> empty, so local and remote hold the same tree.
+- **`.scratch/` — the user said "don't touch .scratch for now" (2026-10-20).** So the 171 MB of probes, binaries
+  and logs stays exactly where it is, and the harnesses AGENT.md and ISSUES.md cite remain runnable in place.
+  Do NOT prune it in a future session without asking again: "for now" is a decision with an expiry the user
+  controls, not a standing permission. If it is ever revisited, the two options already written down are (a) delete
+  the binaries/logs of closed sessions and keep the `.c`/`.sh` harnesses, or (b) move the real regression gates
+  into `tests/` so they survive a fresh clone.
+
+**Nothing is in progress. Next action:** none pending in the repo — the open items are the user's eye on the shell
+integration in their own window and, if they want it, installing zsh to verify that script (Next Steps item 2).
 
 ## Previous Task (s92 — CLOSED: two defects in the shell integration, reported by the user from their own window: (1) starting another shell at the prompt dropped the session into the typed-`cd` fallback instead of integrating the new shell; (2) the integration's `cd` worked but the visible prompt kept the OLD directory until the line was submitted. Both fixed and measured — see s92 entries 1-4.)
 
@@ -936,18 +952,17 @@ one verified change and push.
 7. Emoji paths that exist but have NEVER run here: SCALABLE color font branch (`FT_IS_SCALABLE` ->
    `FT_Set_Pixel_Sizes` + `hb_ft_font_changed` on zoom) — this box has only a bitmap-only Noto CBDT font; and a
    cluster HarfBuzz renders as >1 glyph, deliberately rejected (`ng == 1`), falls back to mono.
-8. Scratch cleanup: throwaway probes live in `/home/kaida/Project/.scratch/` (outside project, 171 MB of it —
-   mostly binaries and logs of closed sessions). Worth keeping as regression harnesses: `s70/timg_gate.c`
-   (end-to-end image), `s74/inj_keys.sh` (the file-manager input routing gate — the only coverage `make test`
-   does not have), `s86/follow2.c` (the prompt follow over a real pty), `s89/follow3` + `s89/bstoprobe` (the
-   echo-window transition, old-vs-new A/B), `s90b/intgate.c` (the shell-integration gate: the machine copied
-   from `main.c` over real fish/bash — re-diff it against `main.c` before trusting it, see the s92 pitfall),
-   `s92/repaint.c` + `s92/nested.c` + `s92/hbcheck.c` (the three measurements behind the s92 fixes),
-   `s45_old/` + `s47_before/` (A/B trees for a suspected draw-path regression). `s61/` +
-   `s61_apinject*` and the one-off probes of closed sessions need no longer be kept. **Nothing outside the repo
-   has been deleted — the rule is to ask first, and the user has not been asked yet.** Note that AGENT.md and
-   ISSUES.md cite these paths: a fresh clone of the repo cannot re-run them, so anything that is a real
-   regression gate belongs in `tests/` or must stay where it is.
+8. Scratch: throwaway probes live in `/home/kaida/Project/.scratch/` (outside project, 171 MB of it — mostly
+   binaries and logs of closed sessions). **The user's standing answer as of 2026-10-20 is "don't touch .scratch
+   for now" — do not prune or move anything there without asking again.** Worth keeping as regression harnesses if
+   it is ever revisited: `s70/timg_gate.c` (end-to-end image), `s74/inj_keys.sh` (the file-manager input
+   routing gate — the only coverage `make test` does not have), `s86/follow2.c` (the prompt follow over a real
+   pty), `s89/follow3` + `s89/bstoprobe` (the echo-window transition, old-vs-new A/B), `s90b/intgate.c` (the
+   shell-integration gate: the machine copied from `main.c` over real fish/bash — re-diff it against `main.c`
+   before trusting it, see the s92 pitfall), `s92/repaint.c` + `s92/nested.c` + `s92/hbcheck.c` (the three
+   measurements behind the s92 fixes), `s45_old/` + `s47_before/` (A/B trees for a suspected draw-path
+   regression). One fact to keep in mind either way: AGENT.md and ISSUES.md cite these paths, and a fresh clone of
+   the repo cannot run them — so anything that is a real regression gate belongs in `tests/` eventually.
 9. Git: keep committing verified work; `git fetch` before pushing.
 
 ## Project Files & Facts
