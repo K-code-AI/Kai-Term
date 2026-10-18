@@ -6,13 +6,12 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Re-measured 2026-10-19 (s88):
-`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **726 checks, 0 failures**; `./bin/dbg` **MODEL OK
+**No open bug.** Re-measured 2026-10-20 (s89):
+`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **746 checks, 0 failures**; `./bin/dbg` **MODEL OK
 (0 problems)**; `./bin/test_fm` **247 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
-sanitizer report; `tests/cli_test.sh` 95 checks / 0 failures / 0 skipped when the probe launch can draw (one
-check was added this session; the window-opening group is skipped on a box whose video memory is spoken for,
-so it was not re-run here).
+sanitizer report; `tests/cli_test.sh` 95 checks / 0 failures / 0 skipped when the probe launch can draw (the
+window-opening group is skipped on a box whose video memory is spoken for, so it was not re-run here).
 No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 **Fixed and confirmed by the user in their own window (2026-10-19):** a second file-manager navigation on top
@@ -42,6 +41,28 @@ To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` log
 not filed; it is not a bug until it reproduces.
 
 ## Fixed
+
+**A BackSpace on an empty prompt disabled the shell follow for the rest of the session (2026-10-20).**
+Symptom, reported by the user: after pressing BackSpace at an empty prompt, browsing into a directory no
+longer moved the shell — the log said `fm: dropped the follow while erasing (the wait ran out)` and nothing
+was written, until Enter was pressed. Cause: every byte Kai-Term sent opened the "an echo may still be on its
+way" window, and that window closes only on output seen to CHANGE the row back into the remembered prompt.
+Measured with `.scratch/s89/bstoprobe` (real shells in a real Kai-Term pty): bash and sh answer BackSpace at
+an empty prompt with nothing but a bell (`0x07`) and fish answers NOT AT ALL, so no burst ever proved the line
+empty and the window stayed shut. Now a payload that cannot put a character on the line — cursor movement
+(Left/Right/Home/End, Ctrl+A/B/E/F), deletion (BackSpace, Delete, Ctrl+D/K/U/W), Ctrl+L, a bare Escape — does
+not open the window **when the line is already provably the bare prompt**; everything else (text, Tab,
+Up/Down, Ctrl+R/S/T/V/Y/_, Insert, PageUp/PageDown, F-keys, any unknown or truncated sequence) opens it
+exactly as before, because any of those can insert characters the screen may never show. Fixing that exposed a
+second, older hole that had been covered by accident: the remembered prompt's CURSOR position is where the
+cursor sits when the line is EMPTY, and a movement key used to leave `input_pending` set, which is what kept
+the snapshot from being re-taken at the moved cursor. `prompt_snapshot()` now leaves the snapshot alone when
+the row is cell-for-cell the remembered prompt and only the cursor moved, so a cursor parked inside the
+prompt text still answers "do not write here". Verified: 20 new checks in `tests/test_vt.c` (726 -> 746, 0
+failures) and an A/B of the real follow machine over real fish (`.scratch/s89/follow3{,_old}`) — the old code
+drops both navigations, the new one takes the fast path twice; with text on the line both navigations still
+end with the prompt holding the directory and the text once, and the documented mid-command-cursor refusal is
+unchanged. The user confirmed the behaviour in their own window (2026-10-20).
 
 **The file manager's metadata was painted across its own image preview (2026-10-19).** Symptom, reported by
 the user: "the metadata sometimes get written on the image preview". Cause, in the model, not in the shader:
@@ -229,7 +250,10 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   Ctrl+U erases backwards from the cursor, the right half would survive and the `cd` would run in front of it,
   so the proof fails and the sequence is dropped (the captured text goes to the log). A shell's autosuggestion
   ghost right of the cursor is deliberately NOT in that group: it is ignored, and the navigation goes through.
-  Pressing Enter or Ctrl+C in the terminal re-arms the gate. `Return` on a file (which types a path at the
+  Submitting the line (Enter) or discarding it (Ctrl+C) re-arms the gate, and so does any key that cannot put
+  a character on the line — BackSpace, Delete, an arrow key — while the line is provably empty (see "Fixed",
+  2026-10-20). A key that CAN insert characters (Tab, Up/Down, Ctrl+R, Ctrl+Y) keeps the gate shut until the
+  shell proves the line empty again. `Return` on a file (which types a path at the
   cursor and sends no newline) asks the same question and refuses on the same evidence — `-d` logs
   `fm: not typing the path — the input line is not one I can describe`.
 - **The injected command cannot be hidden from the screen.** The tty echoes what Kai-Term writes, and

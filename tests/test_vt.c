@@ -2246,16 +2246,90 @@ int main(void)
           "prompt: a cursor moved off the prompt position does not count as empty");
     type("\x1b[C");
     CHECK(term_at_prompt(&T) == 1, "prompt: and moving it back does");
+    /* The anchor rule this depends on, stated: prompt_cx/prompt_cy are where the cursor sits when the line is
+       EMPTY, and a burst that only moves the cursor must not redefine them. Before the input whitelist a
+       movement key set input_pending and so kept the snapshot still by accident; now the rule is explicit and
+       these checks say what happens if it is dropped. (CSI G moves the cursor WITHIN the row, which is the
+       case here; CSI H would also move it to another row, and SS3 `ESC O H` / `ESC [ 1 ~` are not cursor keys
+       in this parser at all — measured 2026-10-20, so a check must not lean on them.) */
+    type("\x1b[1G");                        /* column 1: the row is untouched, the cursor is inside it */
+    CHECK(T.cx == 0 && T.prompt_cx == 8 && T.prompt_cy == T.cy,
+          "prompt: moving the cursor does not move the remembered cursor anchor");
+    CHECK(term_at_prompt(&T) == 0, "prompt: and a cursor at column 1 of that prompt is not at the prompt");
+    type("\x1b[9G");                        /* CSI G: back to the column the empty prompt ends at */
+    CHECK(T.cx == 8 && term_at_prompt(&T) == 1, "prompt: and putting the cursor back restores it");
+    /* A prompt that really IS redrawn still re-takes the anchor, cursor included — otherwise every later
+       check on this row would compare against a stale column. */
+    press("\r", "\r\n");
+    feed("longer-prompt-here ");
+    CHECK(T.prompt_cx == 19 && term_at_prompt(&T) == 1,
+          "prompt: a genuinely new prompt re-takes the anchor at its own cursor column");
+    type("\x1b[1G");
+    CHECK(T.prompt_cx == 19 && term_at_prompt(&T) == 0,
+          "prompt: and Home on the new prompt keeps the new anchor, not the old one");
+    type("\x1b[20G");
+    CHECK(term_at_prompt(&T) == 1, "prompt: the cursor back at the end of the new prompt is at the prompt");
+    feed("\r\x1b[Kprompt$ ");
+    CHECK(T.prompt_cx == 8 && term_at_prompt(&T) == 1,
+          "prompt: a redrawn shorter prompt re-takes the anchor too");
     type("x");
     feed("\r\x1b[K\x1b[31mprompt$ \x1b[0m"); /* the same text redrawn in another colour */
     CHECK(term_at_prompt(&T) == 0, "prompt: the same text in another colour counts as changed");
     feed("\r\x1b[Kprompt$ ");
     CHECK(term_at_prompt(&T) == 1, "prompt: redrawn exactly as remembered, it counts as unchanged");
 
+    /* The user's report, 2026-10-20: BackSpace on an EMPTY prompt killed the file manager's `cd` follow for
+       the rest of the session. Measured (`.scratch/s89/bstoprobe`, real shells in a real Kai-Term pty): bash
+       and sh answer such a key with nothing but a bell (0x07) and fish answers NOT AT ALL, so no burst was
+       ever seen to prove the line empty and the echo window stayed shut. A movement or erase key cannot put
+       text on a line that is already provably the bare prompt, so it does not open the window. */
+    type("\x7f");                         /* BackSpace on an empty line */
+    CHECK(T.input_pending == 0 && term_at_prompt(&T) == 1,
+          "prompt: BackSpace on an EMPTY prompt leaves the line known (the user's report, 2026-10-20)");
+    feed("\a");                           /* exactly what bash and sh send back: a bell, nothing else */
+    CHECK(term_at_prompt(&T) == 1, "prompt: and that bell reply changes nothing");
+    type("\x1b[3~");                      /* Delete */
+    CHECK(T.input_pending == 0 && term_at_prompt(&T) == 1, "prompt: Delete on an empty prompt likewise");
+    type("\x01");                         /* Ctrl+A: beginning of line */
+    CHECK(T.input_pending == 0, "prompt: Ctrl+A is movement, not typing");
+    feed("\r\x1b[Kprompt$ ");             /* readline repaints the line after it */
+    CHECK(term_at_prompt(&T) == 1, "prompt: and the repaint after it leaves the line known");
+    type("\x1b[1;5D");                    /* Ctrl+Left: the same movement key, in its modified form */
+    CHECK(T.input_pending == 0, "prompt: a movement key with modifiers is still just movement");
+    feed("\r\x1b[Kprompt$ ");
+    CHECK(term_at_prompt(&T) == 1, "prompt: and the line is known again after that repaint");
+
+    /* The whitelist stops exactly where a key could put characters on a line the application may not be
+       showing — that is the s77 hazard (an application that does not echo at all), and it must stay shut. */
+    type("\t");                           /* completion inserts text, or inserts nothing and shows nothing */
+    CHECK(T.input_pending == 1,
+          "prompt: Tab still opens the echo window — completion can insert text the row never shows");
+    press("\r", "\r\n");
+    feed("prompt$ ");
+    type("\x19");                         /* Ctrl+Y yanks the kill buffer back onto the line */
+    CHECK(T.input_pending == 1, "prompt: Ctrl+Y still opens it (yank inserts)");
+    press("\r", "\r\n");
+    feed("prompt$ ");
+    type("\x12");                         /* Ctrl+R: history search, which redraws the line */
+    CHECK(T.input_pending == 1, "prompt: Ctrl+R still opens it (search recalls a command)");
+    press("\r", "\r\n");
+    feed("prompt$ ");
+    type("\x1b[");                        /* a truncated sequence: assume the worst */
+    CHECK(T.input_pending == 1, "prompt: a truncated escape sequence opens it too");
+    press("\r", "\r\n");
+    feed("prompt$ ");
+    type("rm");                           /* text first: the window is open, and a later erase key must not
+                                             launder it — the row comparison alone would say "empty" */
+    CHECK(T.input_pending == 1 && term_at_prompt(&T) == 0, "prompt: typed text opens it as before");
+    type("\x7f");
+    CHECK(T.input_pending == 1 && term_at_prompt(&T) == 0,
+          "prompt: BackSpace AFTER typed text does not close the window the typing opened");
+
     /* A query answer is output, not typing: DA1/DSR/CPR go out through the pty but must not open an
        echo window, or every probe would stop the prompt being remembered. The line has to be submitted
-       first: the checks above left an echo window open (the last thing sent was `x`), and asserting
-       `input_pending == 0` on top of that would test a state the program cannot be in. */
+       first: the checks above left an echo window open (the last thing typed was `rm`, and the erase key after
+       it may not close one), and asserting `input_pending == 0` on top of that would test a state the program
+       cannot be in. */
     press("\r", "\r\n");                    /* Enter submits — that is what closes the window */
     feed("prompt$ ");
     CHECK(term_at_prompt(&T) == 1 && T.input_pending == 0,

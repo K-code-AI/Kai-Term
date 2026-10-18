@@ -751,18 +751,80 @@ void term_grid_geometry(int win_w, int win_h, int cell_w, int cell_h, int pad,
    that was sent contains CR/LF/Ctrl+C (submitted or discarded), or an output burst leaves the row matching
    the remembered prompt again, which is the application PROVING the line is empty (readline's `\b \b`
    erase, an arrow-key redraw). An application that shows nothing keeps the window shut, which is the safe
-   direction to be wrong in. */
+   direction to be wrong in.
+
+   OPENING it, though, has to mean something. Measured 2026-10-20 (`.scratch/s89/bstoprobe`, real shells in a
+   real Kai-Term pty): BackSpace on an EMPTY prompt makes bash and sh answer with nothing but a bell (0x07)
+   and makes fish answer NOT AT ALL, so no burst ever proved the line empty — the window stayed shut for the
+   rest of the session and the file manager's `cd` follow died until the user pressed Enter (the user's
+   report, 2026-10-20). So a payload that can only MOVE the cursor or DELETE from the line does not open the
+   window when the line is already provably the bare prompt: it cannot turn an empty prompt into a prompt
+   holding text, and the row comparison re-checks the rest on every call, so a key that DOES change the row
+   or move the cursor still makes term_at_prompt() answer "no". Everything else — text, Tab, Up/Down, the
+   history and search bindings, an unknown or truncated sequence — opens it exactly as before, because any of
+   those can put characters on a line the application may not be showing. That is what keeps the s86 hole
+   shut: the echo of text Kai-Term typed itself may still be on its way. */
+
+/* Can this payload NOT put a character on the shell's input line? A whitelist, so the answer is "it can" for
+   anything not recognised: text bytes, UTF-8, a bracketed paste, Tab (completion), Up/Down (history recall),
+   Ctrl+R/S (history search), Ctrl+T (transpose), Ctrl+V (quoted insert), Ctrl+Y (yank), Ctrl+_ (readline's
+   undo), Insert, PageUp/PageDown (fish binds them to history search), F-keys (user-bindable) and any
+   truncated or unrecognised escape sequence all count as able to insert. What does NOT: cursor movement
+   (Left/Right/Home/End, in both CSI and SS3 form, with or without modifiers, plus Ctrl+A/B/E/F), deletion
+   (BackSpace, Ctrl+H, Delete, Ctrl+D, Ctrl+K/U/W), Ctrl+L (repaint), and a bare Escape. CR/LF/Ctrl+C are
+   listed because the caller treats them as submit/discard — they neither open nor close anything here. */
+static int payload_cannot_insert(const unsigned char *p, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = p[i];
+        if (c == 0x7f || c == 0x08 || c == 0x01 || c == 0x02 || c == 0x04 || c == 0x05 || c == 0x06 ||
+            c == 0x0b || c == 0x0c || c == 0x15 || c == 0x17 ||
+            c == '\r' || c == '\n' || c == 0x03)
+            continue;
+        if (c != 0x1b)
+            return 0;                                   /* a character the application inserts */
+        if (i + 1 >= len)
+            continue;                                   /* the Escape key on its own */
+        unsigned char intro = p[i + 1];
+        if (intro != '[' && intro != 'O')
+            return 0;                                   /* Alt+key, or a sequence we do not know */
+        size_t j = i + 2;
+        while (j < len && p[j] >= 0x30 && p[j] <= 0x3f)   /* parameter bytes */
+            j++;
+        while (j < len && p[j] >= 0x20 && p[j] <= 0x2f)   /* intermediate bytes */
+            j++;
+        if (j >= len || p[j] < 0x40 || p[j] > 0x7e)
+            return 0;                                   /* truncated: assume it inserts */
+        unsigned char final = p[j];
+        if (final == 'D' || final == 'C' || final == 'H' || final == 'F') {
+            i = j;
+            continue;                                   /* Left / Right / Home / End */
+        }
+        if (final == '~' && j == i + 3 && p[i + 2] == '3') {
+            i = j;
+            continue;                                   /* ESC [ 3 ~ = Delete, and nothing else */
+        }
+        return 0;                                       /* Up, Down, F-keys, Insert, PageUp/Down, ... */
+    }
+    return 1;
+}
 
 void term_note_input(Term *t, const void *buf, size_t len)
 {
     if (!t)
         return;
     const unsigned char *p = (const unsigned char *)buf;
+    /* Read once, before the loop can change it: "the window is shut AND the row is provably the remembered
+       prompt". A movement or erase key arriving in that state leaves nothing that could show up later. */
+    int clean_before = term_at_prompt(t);
+    int harmless = payload_cannot_insert(p, len);
     for (size_t i = 0; i < len; i++) {
         /* CR or LF submits the line; Ctrl+C discards it. Both end the echo window: what the
            application prints next is output, not an echo of what is on the line. */
         if (p[i] == '\r' || p[i] == '\n' || p[i] == 0x03)
             t->input_pending = 0;
+        else if (harmless && clean_before)
+            ;                  /* movement/erase on a provably-empty line: nothing to wait for */
         else
             t->input_pending = 1;
     }
@@ -789,6 +851,7 @@ static int prompt_cell_same(const Cell *a, const Cell *b)
 
 /* Remember the row the cursor is on. The parser's cy is a live-view row and main.c snaps the view to
    live_off before every parse, which is the same row grid_vprow() names. */
+static int prompt_row_same_cells(Term *t);     /* defined below with prompt_row_matches() */
 static void prompt_snapshot(Term *t)
 {
     int cols = t->g.cols;
@@ -815,6 +878,18 @@ static void prompt_snapshot(Term *t)
         t->prompt_valid = 0;
         return;
     }
+    /* The cursor part of the snapshot means "where the cursor sits when the line is EMPTY" — it is the
+       anchor term_prompt_line() measures typed text from and the position term_at_prompt() insists on. So a
+       burst that changed the row NOT AT ALL and only moved the cursor must not redefine it: taking the
+       snapshot there would make the cursor equal its own anchor again, and a cursor parked INSIDE the
+       remembered prompt text would then answer "safe to write here" (and the line would be described from
+       the wrong column). Before the s89 input whitelist that case was covered by accident — a movement key
+       set input_pending, which kept the snapshot still — and the check at tests/test_vt.c:2245 is what says
+       so. The row itself is still re-compared cell for cell, so a burst that really rewrote the prompt (a
+       different prompt, a repaint in other colours, a shell that moved its own prompt row) re-takes the
+       whole snapshot, anchor included, exactly as before. */
+    if (prompt_row_same_cells(t))
+        return;
     for (int x = 0; x < cols; x++)
         t->prompt_row[x] = row[x];
     t->prompt_cx = t->cx;
@@ -822,24 +897,36 @@ static void prompt_snapshot(Term *t)
     t->prompt_valid = 1;
 }
 
-/* Does the row under the cursor still look exactly like the prompt that was last remembered? This says
-   nothing about whether bytes are outstanding — that is term_at_prompt()'s job. */
-static int prompt_row_matches(Term *t)
+/* Is the row under the cursor cell-for-cell the remembered prompt, WITHOUT any word about where the cursor
+   is? This is the half that means "the text is the prompt"; prompt_row_matches() adds the cursor half. */
+static int prompt_row_same_cells(Term *t)
 {
     if (!t || t->g.valid != GRID_VALID || t->alt_screen)
         return 0;                       /* a full-screen app owns the screen, not the prompt */
     if (!t->prompt_valid || !t->prompt_row || t->prompt_cols < t->g.cols)
         return 0;                       /* unknown: refuse to write at a line we cannot describe */
-    if (t->g.scroll_off != t->g.live_off)
-        return 0;                       /* the user is looking at history, not at the prompt */
-    if (t->cx != t->prompt_cx || t->cy != t->prompt_cy || t->cy < 0 || t->cy >= t->g.rows)
-        return 0;
+    if (t->cy < 0 || t->cy >= t->g.rows || t->cy != t->prompt_cy)
+        return 0;                       /* the prompt row is not the row under the cursor */
     const Cell *row = grid_vprow(&t->g, t->cy);
     if (!row)
         return 0;
     for (int x = 0; x < t->g.cols; x++)
         if (!prompt_cell_same(&row[x], &t->prompt_row[x]))
             return 0;
+    return 1;
+}
+
+/* Does the row under the cursor still look exactly like the prompt that was last remembered, AND is the
+   cursor back where that prompt left it? This says nothing about whether bytes are outstanding — that is
+   term_at_prompt()'s job. */
+static int prompt_row_matches(Term *t)
+{
+    if (!prompt_row_same_cells(t))
+        return 0;
+    if (t->g.scroll_off != t->g.live_off)
+        return 0;                       /* the user is looking at history, not at the prompt */
+    if (t->cx != t->prompt_cx)
+        return 0;                       /* the cursor is inside the prompt text, or past it */
     return 1;
 }
 

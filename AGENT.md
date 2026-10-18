@@ -17,10 +17,13 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-19, s88 — build and every suite green; the band now takes a configurable share (`fm_size`, default 75%) and its preview's rows have one owner; what is open is the user's eye on both)
+## Current Status (re-measured 2026-10-20, s89 — build and every suite green; the file manager's `cd` follow survives a BackSpace on an empty prompt (user-confirmed in their window), and the prompt snapshot's cursor anchor is now an explicit rule instead of an accident)
 
+- **s89's follow fix is committed and pushed; the tree is clean.** `payload_cannot_insert()` + the anchor rule
+  in `prompt_snapshot()`, both in `src/vt.c`, with 20 new checks; the user confirmed the behaviour in their own
+  window (2026-10-20). Read the remote state with `git status -sb` / `git log --oneline origin/main -1`.
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **726 checks, 0 failures**,
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **746 checks, 0 failures**,
   `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **247 checks, 0 failures**;
   `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
   `make asan` exit 0 with the same counts and 0 sanitizer reports.
@@ -83,261 +86,74 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s88 — CLOSED: the band takes a configurable share (`fm_size`, default 75%, `fm_rows` gone from the whole tree) and the preview's metadata can no longer be painted across its picture; committed and pushed)
+## Current Task (s89 — CLOSED: a BackSpace on an empty prompt no longer kills the file manager's `cd` follow, and the prompt snapshot's cursor anchor is an explicit rule; committed and pushed)
 
-**User request (2026-10-19):** "Would it be possible for the File manager part to occupy more space? like 75%
-per default and make it configurable in the config file. Also the metadata sometimes get written on the image
-preview, can we make sure this doesn't happen?" — and, on the shape of the setting: **"don't keep fm_rows we
-don't need it"**, so `fm_rows` (a cell-row count) is REMOVED, not kept alongside a new key.
+**User report (2026-10-20):** after pressing BackSpace at an empty prompt, browsing into a directory stopped
+moving the shell (`fm: dropped the follow while erasing (the wait ran out)`) until Enter was pressed.
 
-**s88 measured start (measured this session, not inherited):**
-- `git status -sb` -> `main` == `origin/main`, clean (the s87 docs commits are pushed).
-- `make -j8` -> exit 0, 0 warnings; `./bin/test_vt` **719 checks, 0 failures**, `./bin/dbg` **MODEL OK (0
-  problems)**, `./bin/test_fm` **235 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
-  (`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0, same counts, 0 sanitizer reports.
-- `fm_rows` appears in 24 places: `src/config.c` (default 12 + the `apply()` branch), `src/layout.c`
-  (the band split + `layout_initial_size`), `src/main.c` (2 call sites), the header (`Config.fm_rows`,
-  `LayoutReq.fm_rows`, `FM_ROWS_MIN/MAX`), `tests/test_vt.c` (6 config checks + 5 layout checks),
-  `tests/cli_test.sh`, README, ISSUES.md, AGENT.md. That is the full list of what has to change.
-- **The overlap is real and its cause is two hardcoded numbers, not the renderer.** `paint_preview()`
-  (src/fm.c:1658) paints the image's meta lines starting at the row after the header, while
-  `fm_image_fit()` (src/fm.c:1675) reserves `fm->prev.rows - 3` rows for the picture and starts its box at
-  row 3 — the header's size is written down twice, and the meta lines are not counted at all. Glyphs are
-  emitted in batch B, AFTER the picture, so any meta cell inside the picture box is drawn on top of it. The
-  image preview carries one meta line (`format: <fmt> image, WxH px`, src/fm.c:863), which is exactly the
-  "metadata sometimes written on the image" the user sees.
+**What was found and done** (all of it measured, the step-by-step log is `s89 entry 1` below):
+- The session resumed with `src/vt.c` + `tests/test_vt.c` modified and **no journal entry at all** — the
+  interrupted session had recorded nothing. Its intent was recoverable only from the code comments and
+  `.scratch/s89/`. Lesson: the journal is what makes an interrupted session resumable; a modified file with no
+  entry costs the next session a full re-derivation.
+- The cure (`payload_cannot_insert()` + a `harmless && clean_before` branch in `term_note_input()`) was already
+  written and already cured the bug in the harness; what was left was the one check it turned RED.
+- The red check was a real invariant, not a test to relax: the snapshot's cursor anchor had been kept still by
+  accident. Fixed in `prompt_snapshot()` (see invariant 4) rather than by narrowing the whitelist, which would
+  have left Left/Right/Home/End broken for the user.
+- Verified: 746 / MODEL OK / 247 checks, 0 failures; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+  (`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0, 0 sanitizer reports; the A/B harnesses
+  re-run against the final code (2 drops -> 2 fast paths; the s86 text-preserving path and the documented
+  mid-cursor refusal unchanged).
 
-**s88 objective:** one config key that says how much of the window the file manager gets (percent, default
-75), with `fm_rows` gone everywhere; and one shared row budget for the preview pane, so the picture and the
-text can never occupy the same cell.
+**Owed to the user, not to the code:** nothing for this fix — they confirmed it in their own window.
 
-**s88 design (decided before writing code):**
-1. `fm_size` = percent of the grid area's HEIGHT the band asks for. Default **75**, clamped to 10–95 at parse
-   time and again in layout.c (the project's rule: layout owns the real clamp). `FM_ROWS_MIN` 3 stays as the
-   layout's minimum usable band and `FM_TERM_MIN_ROWS` 3 as the terminal's floor — both are floors, not config
-   values; `FM_ROWS_MAX` goes away with `fm_rows` (a percent cannot ask for 600 rows).
-2. `layout_compute()`: `band_h = grid_h * pct / 100`, then clamped to `grid_h - gap - FM_TERM_MIN_ROWS * ch`.
-   The "terminal wins" rule is unchanged in shape, only in where the request comes from.
-3. `layout_initial_size()` is the inverse, so it must solve for the percent instead of adding rows:
-   `grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))`. The round-trip check in `tests/test_vt.c` is what
-   proves that arithmetic, with the band on and off.
-4. The preview pane gets ONE row budget, computed in one place and used by the painter AND by
-   `fm_image_fit()`: header rows (2, +1 when there is an error line), then the meta rows that fit
-   (`min(nmeta, rows - head - 1)`, so the picture always keeps at least one row), then the picture box starts
-   after both. The header's size stops being a literal 3 in two functions.
+### s89 entry 1 — the red check is green: the prompt snapshot's CURSOR ANCHOR is now honest (739 -> 746 checks)
 
-**s88 planned steps (each one: edit -> AGENT.md -> build/test; never commit red):**
-1. Header: `fm_size` in `Config`/`LayoutReq`, `FM_SIZE_MIN/MAX/DEF`, drop `fm_rows` + `FM_ROWS_MAX`.
-2. `src/layout.c`: percent band + the inverse in `layout_initial_size()`.
-3. `src/config.c`: the `fm_size` key and its default.
-4. `src/main.c`: the two call sites.
-5. `src/fm.c`: the shared preview row budget; the picture box starts below the meta lines.
-6. Tests: `test_vt` config (default 75, read, both clamps) + layout (share of the grid, terminal floor,
-   round trip); `test_fm` — no cell inside `fm_image_fit()`'s box holds a painted glyph, and a short pane
-   drops meta rather than overlapping.
-7. `tests/cli_test.sh`, README, ISSUES.md, AGENT.md's invariants + debugging lines.
-8. `make test` (`KAI_TERM_TEST_NO_WINDOW=1` — the GPU is full) + `make asan`, exact counts; commit, push.
+**What was red:** `tests/test_vt.c:2245 prompt: a cursor moved off the prompt position does not count as
+empty`. Cause, measured with `.scratch/s89/leftprobe{,_old}` (prints `at/pending/cx/cy/prompt_cx/prompt_cy`
+per step): the new input whitelist keeps `input_pending` at 0 for a movement key, so the end-of-burst
+`prompt_snapshot()` ran and re-took the snapshot **including `prompt_cx`** (8 -> 7). `prompt_row_matches()`
+then compared the cursor with its own fresh anchor and answered "safe to write" with the cursor sitting
+INSIDE the remembered prompt text, and `term_prompt_line()` would have described the line from the wrong
+column. The old code held that invariant only by accident — `input_pending` was what kept the snapshot still.
 
-**s88 expected outcome:** `fm_rows` appears nowhere in the tree; `fm_size = 75` by default and honoured from
-the config file; the band takes ~75% of the grid area with the terminal keeping its floor; a picture preview
-shows its metadata above the image, never across it, pinned by a check that scans the picture's own cells.
+**Chosen fix (not the whitelist narrowing):** `src/vt.c` — split `prompt_row_matches()` into
+`prompt_row_same_cells()` (the row is cell-for-cell the remembered prompt, cursor says nothing) plus the
+cursor test, and have `prompt_snapshot()` RETURN WITHOUT TOUCHING ANYTHING when `prompt_row_same_cells()` is
+true. Meaning stated in code: `prompt_cx`/`prompt_cy` are where the cursor sits **when the line is EMPTY** —
+the anchor `term_prompt_line()` measures typed text from and the column `term_at_prompt()` insists on. A
+burst that rewrote the prompt (different text, other colours, a moved prompt row) still re-takes the whole
+snapshot, anchor included.
 
-### s88 entry 1 — steps 1-5 done: `fm_size` replaces `fm_rows` in the code, and the preview's rows now have one owner
+**New checks (739 -> 746, all in the `term_at_prompt()` group):** moving the cursor within the prompt row
+leaves the anchor alone and `term_at_prompt()` says no; putting it back says yes; a genuinely new prompt
+re-takes the anchor at its own column; a redrawn shorter prompt re-takes it too. **A probe caught two wrong
+assumptions in my first version of these checks** (`.scratch/s89_ss3.c`): `CSI H` moves the cursor to
+another ROW (it is not a Home key), and `ESC O H` / `ESC [ 1 ~` are not cursor keys in this parser at all —
+`ESC O H` prints a literal `H`. The checks now use `CSI G`, which moves within the row. Do not write a
+prompt check that leans on SS3 or on `CSI H`.
 
-Five edits, in dependency order (header -> layout.c -> config.c -> main.c -> fm.c), then a build.
+**Measured, this session, after the change:**
+- `make -j8` exit 0, 0 warning/error lines; `./bin/test_vt` **746 checks, 0 failures**; `./bin/dbg` **MODEL OK
+  (0 problems)**; `./bin/test_fm` **247 checks, 0 failures**;
+  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
+  `make asan` exit 0, same three counts, 0 sanitizer reports.
+- **A/B of the user's report, re-run against the final code** (`.scratch/s89/follow3{,_old}`, real fish over
+  the real pty, no window): BackSpace on an empty prompt then two navigations — OLD: `captured the line: []`
+  + `DROPPED the follow while erasing (the wait ran out)` twice. NEW: `FAST PATH (term_at_prompt says the line
+  is EMPTY)` + `told the shell to follow: cd …` twice, and the line holds `[]`.
+- **No regression in the s86 behaviour:** with `Some text ` on the line, both navigations end
+  `DONE — the prompt holds the dir and what you had typed` and the line holds `Some text `.
+- **The documented mid-command-cursor limitation is unchanged** (Left×2 with `Some text `): `captured the
+  line: [Some tex] -> DROPPED the follow while erasing … — LOST the text`, identical in OLD and NEW.
 
-**1. `include/kai-term/kai-term.h`** — `Config.fm_rows` -> `Config.fm_size`, `LayoutReq.fm_rows` ->
-`fm_size`, `layout_initial_size()`'s parameter renamed. `FM_ROWS_MAX` (64) is **gone**; added
-`FM_SIZE_DEF 75`, `FM_SIZE_MIN 10`, `FM_SIZE_MAX 95`. `FM_ROWS_MIN` 3 stays — it is the smallest band worth
-drawing, a layout floor, not a config value — and `FM_TERM_MIN_ROWS` 3 stays as the terminal's floor.
-
-**2. `src/layout.c`** — the band is now `band_h = grid_h * pct / 100` (long long multiply, so a 4K window
-cannot overflow), then clamped to `grid_h - gap - FM_TERM_MIN_ROWS * ch` exactly as before. The "terminal
-wins / band dropped" rules are untouched. `layout_initial_size()` can no longer ADD a fixed height — it
-solves the inverse: `grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))`, then adds the padding and, for
-`tab_bar = always`, the bar's row + gap. Proof that the floor-rounding of `band_h` cannot steal the
-terminal's row: `grid_h - floor(grid_h*pct/100) = ceil(grid_h*(100-pct)/100) >= need` by construction, and
-the round-trip check in `tests/test_vt.c` pins it for real numbers.
-
-**3. `src/config.c`** — default `c->fm_size = FM_SIZE_DEF`; the `fm_rows` key is replaced by `fm_size`
-(clamped to `FM_SIZE_MIN..FM_SIZE_MAX` at parse time, as every other numeric key is).
-
-**4. `src/main.c`** — the two call sites (`rq.fm_size`, `layout_initial_size(..., conf.fm_size, ...)`).
-
-**5. `src/fm.c` — the metadata-over-image fix.** Two new statics, `preview_head_rows()` (2 rows, +1 when the
-preview has an error line) and `preview_meta_rows()` (for `FMP_IMAGE` only: `min(nmeta,
-prev.rows - head - 1)`, so the picture always keeps a row). `paint_preview()` now paints at most
-`preview_meta_rows()` meta lines, and `fm_image_fit()` places the picture box at
-`head + preview_meta_rows()` instead of the literal 3 it used to share with nothing. The header's size was
-written down as `3` in two functions and the meta rows were counted in neither — that is what let the
-`format: png image, 64x40 px` line sit inside the picture's box, where batch B draws it over the image.
-`paint_preview_meta()` gained a `max_lines` argument (the non-image call passes `FM_META_LINES`, i.e.
-unchanged behaviour).
-
-**Measured:** `make -j8` -> exit 0, `grep -iE "warning|error"` over the build log -> **0 hits**.
-The test binaries have NOT been rebuilt/run yet — `tests/test_vt.c` still names `fm_rows` and `FM_ROWS_MAX`,
-so it cannot compile until step 6 rewrites those checks. That is the next action, not a regression.
-
-**Next action (step 6):** `tests/test_vt.c` — the 6 config checks (default 75, read from file, clamps at both
-ends) and the 5 layout checks (the band takes the requested share, the terminal keeps its floor, an oversized
-request is clamped, a tiny window drops the band, the startup round trip). Then `tests/test_fm.c`: after
-painting an image preview, every cell inside the box `fm_image_fit()` reports must be blank — the direct pin
-of "metadata never lands on the picture" — plus a short pane that drops the meta line instead of overlapping.
-
-### s88 entry 2 — step 6a done: `tests/test_vt.c` compiles again and pins the percent (719 -> 726 checks)
-
-**Config checks (already in place when this session resumed — `git status` showed `tests/test_vt.c` modified):**
-default `fm_size == 75`, read from a file (`fm_size = 40`), clamped at both ends (`0` -> `FM_SIZE_MIN`,
-`99999` -> `FM_SIZE_MAX`). No change was needed; they were verified by running the suite, not by reading them.
-
-**Layout checks rewritten to the percent** (same window as before: 936x1002 px, 8x17 cells, padding 8, gap 8,
-one session, bar auto -> grid area 920 x 986 px):
-* band height is now `986 * 75 / 100` = 739 px, not `12 * 17`; the pane cols/rows, the terminal pane's `y`
-  and `h`, and `layout_grid_size()` are all expressed from that share instead of from a row count.
-* new: `fm_size = FM_SIZE_MAX` still leaves the terminal `FM_TERM_MIN_ROWS` rows (the second clamp, in
-  layout.c, is what does that — the config clamp alone would not);
-* new: `fm_size = FM_SIZE_MIN` is still drawn, at `986 * 10 / 100` px;
-* new — the reason a percent exists at all: `win_h` 1002 -> 1502 gives the band `1486 * 75 / 100` px (the
-  share grows with the window), and `cell_h` 17 -> 34 (a zoom) keeps the SAME pixel share and hands back
-  fewer rows. A row-count key could not do either.
-* the oversized-request check now asks for `fm_size = 100000` and expects the same clamp as `FM_SIZE_MAX`;
-* the tiny-window check (`win_h = 120`) is unchanged in shape: 75% of 104 px is 78 px, the room rule cuts it
-  to 45 px, which is under `FM_ROWS_MIN * ch`, so the band is dropped and the terminal gets the whole area.
-* the startup round trip is now THREE round trips, because `layout_initial_size()` solves instead of adds:
-  `fm_size = 75` -> window 2088 px and the check pins that number AND that the band took `2072 * 75 / 100`
-  of it; `BAR_ALWAYS` + `fm_size = 40`; and padding 0 / gap 0 / square cell + `fm_size = 50`. All three must
-  give the terminal pane back exactly 80x30.
-
-**Measured:** `make -j8` exit 0, 0 warning/error lines in the build log; `make -j8 bin/test_vt bin/dbg
-bin/test_fm` exit 0, 0 warnings; `./bin/test_vt` -> **726 checks, 0 failures** (was 719; +7).
-
-**Next action (step 6b):** `tests/test_fm.c` — after painting an image preview, every cell inside the box
-`fm_image_fit()` reports must hold no glyph (the direct pin of "metadata never lands on the picture"), plus a
-pane short enough that the meta line is dropped rather than overlapping. Then `tests/cli_test.sh:194` (its
-config file still writes `fm_rows = 8`), README, ISSUES.md.
-
-### s88 entry 3 — step 6b done: the metadata-over-image bug is pinned by checks that FAIL on the old fm.c
-
-**Two new helpers in `tests/test_fm.c`:** `ink_in_box()` (glyphs the painter put inside the box
-`fm_image_fit()` reports) and `ink_rows(from,to)` (how many rows in a range hold a glyph, i.e. how many meta
-lines were really drawn). Both read the same `Cell` array the renderer reads.
-
-**New/updated checks in `test_fit()`** (243 -> **247 checks**):
-* the 8x8 `img.png` preview in a 40x20 pane now centres at row **14**, not 11 — 2 header rows + its **8**
-  metadata lines (path, type, size, mode, owner, group, modified, format) come first;
-* a fabricated preview that carries those 8 real meta lines AND reports 1000x500 px — the shape that
-  actually overlapped, because its box starts at the TOP of the picture area. It takes rows 10..19 across
-  all 40 columns, and `ink_in_box()` must be 0;
-* a 5-row pane: 2 header + 2 meta + 1 picture row, box at row 4, nothing painted in it;
-* a 3-row pane: every meta line dropped, picture keeps row 2;
-* a 2-row pane: `fm_image_fit()` reports no box at all (so nothing can overlap);
-* the fabricated no-metadata previews now get one more row than before (the picture area starts at row 2,
-  not at the literal 3), so the tall-picture expectation moved from 27x271 px to **28x287** px and
-  `r >= 3` became `r >= 2`.
-
-**A/B proof the checks are real, not tautological** (the rule: never claim a check pins a bug without running
-it against the buggy code): `git show HEAD:src/fm.c` -> `/home/kaida/Project/.scratch/s88/fm_old.c`, compiled
-with the project's own flags against the NEW `tests/test_fm.c` (the header change touches nothing fm.c uses).
-Result: **247 checks, 8 failures**, including `fit: a picture that fills the area has no metadata line drawn
-across it` and `fit: a short pane still paints no glyph across the picture`. Against the fixed `src/fm.c`:
-**247 checks, 0 failures**. The first version of this check (8x8 picture only) PASSED on the old code — the
-small centred picture happened to land below the meta lines — which is why the fills-the-pane case was added.
-
-**Measured:** `make -j8 bin/test_fm` exit 0, 0 warnings; `./bin/test_fm` -> 247 checks, 0 failures.
-
-**Next action (step 7):** `tests/cli_test.sh:194` writes `fm_rows = 8` into its config probe (an unknown key
-now — it must become `fm_size`), README's settings table row and its File manager section, ISSUES.md's
-"The band costs the terminal rows" limitation, then AGENT.md's own invariants/debugging lines (the
-`grid resized to …` note still says the band is `fm_rows` rows smaller). Then step 8: full `make test` +
-`make asan`, exact counts, commit, push.
-
-### s88 entry 4 — step 7a: `tests/cli_test.sh` speaks `fm_size`, and gained a band-share check
-
-* Its file-manager config file wrote `fm_rows = 8`; that key no longer exists, so the suite's
-  `the file manager config keys are known` check (which greps for `unknown key`) would have failed. It now
-  writes `fm_size = 40`.
-* New helper `grid_rows()` — the R of the last `layout: … grid CxR per session` line — and one new check:
-  the same window with `file_manager = off` must give the sessions MORE rows than with
-  `file_manager = on, fm_size = 50`. It compares two runs of the real binary instead of hard-coding a row
-  count, so it cannot go stale when the default window size or the font changes, and an empty capture is
-  reported as a failure rather than passing silently.
-* Verified what could be verified headless: `sh -n tests/cli_test.sh` -> clean, and `grid_rows()` was run
-  against real-shaped log lines in `/home/kaida/Project/.scratch/s88/gridrows.sh` (last layout line's rows ->
-  `56`; no layout line -> empty). The check itself runs only in the window-opening group, which
-  `KAI_TERM_TEST_NO_WINDOW=1` skips on this box — so its count is reported below as skipped, not as passed.
-
-**Next action (step 7b):** README (the `fm_rows` settings row, the File manager section's band wording) and
-ISSUES.md (the "The band costs the terminal rows, and the terminal wins" limitation says `fm_rows` (3–64)),
-then AGENT.md's own invariants + debugging lines.
-
-### s88 entry 5 — steps 7b + 8 done: docs match the code, and the whole tree is green again
-
-**README** — the settings table row `fm_rows | 12 | Cell rows …` became `fm_size | 75 | Percent of the
-window's text area …`; the File manager section gained a paragraph (three quarters by default, keeps that
-share through resize and zoom, the terminal's floor and the drop rule); the image-preview row now says the
-metadata sits in the rows above the picture and that a too-short pane drops the lines that do not fit.
-Re-checked by set difference, not by eye: the 49 keys `apply()` in `src/config.c` compares and the 49 rows of
-the "Available settings" table are the same set (`diff` empty both ways).
-
-**ISSUES.md** — two entries added to `Fixed`, each stating exactly what was verified and what was not (neither
-has been seen in the user's window): the metadata-across-the-preview bug with its root cause and the A/B
-result, and the `fm_rows` -> `fm_size` change as a user-requested behaviour change. The "band costs the
-terminal rows" limitation was rewritten for the percent, and a new limitation records the row budget (a 3-row
-preview pane shows the image with no metadata; 2 rows show no box). The Open section's re-measured line now
-carries this session's counts, and says plainly that the CLI suite's window group was NOT re-run here.
-
-**AGENT.md** — Current Status re-headed to s88 with the new counts and a bullet saying plainly that no human
-eye has seen the new band size or the preview fix; Next Steps 1 re-worded the same way; Project Files counts
-and the two test descriptions updated; the "File manager band" invariants now state the percent rule (and why
-a share beats a row count) plus a new invariant: **the preview pane's rows have ONE owner**; the Debugging
-section's band-size hint no longer refers to `fm_rows`.
-
-**Measured (this session, after every change):**
-- `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
-- `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`,
-  `./bin/test_vt` **726 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm`
-  **247 checks, 0 failures**, 0 warnings.
-- `make asan` -> exit 0: same three counts, and `grep -cE
-  "AddressSanitizer|runtime error|LeakSanitizer|SUMMARY:|ERROR:"` over the run -> **0**.
-- `sh -n tests/cli_test.sh` -> clean; `grid_rows()` unit-checked in `.scratch/s88/gridrows.sh`.
-- `grep -rn "fm_rows\|FM_ROWS_MAX" src include tests README.md ISSUES.md Makefile` -> **no code, test, build
-  or user-facing setting names the removed key.** The only hits are history prose: ISSUES.md's `Fixed` entry
-  naming what was removed, and this journal.
-
-**Not verified (stated, not hidden):** the CLI suite's window-opening group (including the new `fm_size`
-band-share check) and the two visual changes themselves — the GPU is spoken for and the user works at this
-machine, so no window was mapped. That is the user's to look at.
-
-**Next action:** commit the source + tests + docs as one change and push (`git fetch origin` first).
-
-### s88 entry 6 — done: committed and pushed, working tree clean
-
-`git fetch origin` first (nothing on GitHub to integrate), then one commit with all 11 changed files (header,
-config.c, layout.c, main.c, fm.c, the three test files, README, ISSUES, this journal). `git push origin main`
-exit 0; re-fetched and verified: `git status -sb` shows `main...origin/main` with no ahead/behind marker and
-`git diff main origin/main` is empty; `git status --short` is empty. No hash or ahead-count is written here —
-the commit recording it makes that wrong; read the truth with `git status -sb` / `git log --oneline
-origin/main -1`.
-
-**Completed in s88:** the 8 planned steps — header, layout.c (percent + inverse), config.c, main.c, fm.c (the
-shared preview row budget), test_vt.c (719 -> 726), test_fm.c (235 -> 247, with the A/B against the old
-fm.c), cli_test.sh + README + ISSUES.md + this journal, then the full green run and the push.
-
-**Unfinished / owed to the user, not to the code:** they have not seen either change in their own window —
-whether 75% is the share they want (it is one config number: `fm_size`) and whether the preview metadata now
-sits where they want it. The CLI suite's window-opening group, including the new band-share check, also has
-not run here (no free video memory, user at the machine).
-
-### s88 entry 7 — journal maintenance: the closed s87 task block is out
-
-The s87 "Current Task" block (70 lines of plans, measured-start and per-step log) is deleted: that session is
-closed, its durable outcome is the Progress Journal's s87 era entry, and nothing anywhere cited `s87 entry 1`.
-Same rule s87 applied to s68-s86, and the text is in git history. AGENT.md 1132 -> 1062 lines (14145 words,
-92.7 KB). The s88 block stays for now — it is this session's record; the next session folds it into its era
-entry the same way. Docs-only change; `KAI_TERM_TEST_NO_WINDOW=1 make test` re-run after it: exit 0,
-`CLI: 62 checks, 0 failures, 10 skipped`, 726 / MODEL OK / 247, 0 warnings.
+**Next action:** docs (ISSUES.md `Fixed` entry + its follow limitation, which still says Enter/Ctrl+C is the
+only re-arm; README's follow paragraph if needed; this journal's invariants + pitfalls), then commit this as
+one verified change and push.
 
 ## Progress Journal (root causes of fixed bugs: git history)
+
 
 - **2026-10-12/14, s1-12** — scaffold; first build. vt.c grid -> rotation permutation (`row[]` always valid);
   CSI params; event loop -> `prepare_read -> epoll_wait -> read_events`; EGL/FreeType init; render fixes
@@ -834,6 +650,19 @@ after `ptr_*` hit-tested bar then panes.
      (`FMCD_QUIET_MS` 150, advanced from the frame timer) before believing the new prompt is drawn: fish
      answers a `cd` with the echo, a continuation row and prompt chrome in separate bursts, each of which
      re-takes the snapshot.
+  4. **The snapshot's cursor anchor means "where the cursor sits when the line is EMPTY".** `prompt_cx`/
+     `prompt_cy` are the column `term_at_prompt()` insists on AND the column `term_prompt_line()` measures
+     typed text from, so `prompt_snapshot()` must not re-take them when the row is cell-for-cell the
+     remembered prompt and only the cursor moved. `prompt_row_same_cells()` is that test and also the row half
+     of `prompt_row_matches()` — one comparison, two callers. Before s89 a movement key kept `input_pending`
+     set, which froze the snapshot by accident; the `CSI G` checks in `tests/test_vt.c` pin the rule now.
+  5. **Opening the echo window has to mean something.** `term_note_input()` opens it for any payload that can
+     put a character on the line (text, Tab, Up/Down, Ctrl+R/S/T/V/Y/_, Insert, PageUp/PageDown, F-keys, an
+     unknown or truncated sequence) and — only when the line is already provably the bare prompt — not for one
+     that cannot (cursor movement, deletion, Ctrl+L, a bare Escape). Measured (s89): bash/sh answer BackSpace
+     at an empty prompt with a bell only and fish with nothing, so no burst ever re-proved the line empty and
+     the follow stayed dead until Enter. The row comparison still re-checks everything on every call, so a key
+     that really moves the cursor or rewrites the row still makes `term_at_prompt()` answer "no".
   The three description predicates must not be confused: `term_at_prompt()` = "safe to WRITE here"; strict
   `term_prompt_line()` = "I can describe this line and nothing survives an erase"; `term_prompt_line_typed()`
   / `term_prompt_line_is()` = "ignore the shell's ghost text right of the cursor", legal only for the capture
@@ -1063,6 +892,19 @@ after `ptr_*` hit-tested bar then panes.
   user's screen and `coredumpctl`. One probe launch decides whether the window checks run; the rest are
   skipped with the reason printed, and `KAI_TERM_TEST_NO_WINDOW=1` skips them all. Never loop launches to
   count failures: diagnose the first one (s81, and ENVIRONMENT.md "Launching real windows in a test").
+- **An invariant held by accident is invisible until something else changes.** "A cursor moved off the prompt
+  column means the line is not empty" was true for months because EVERY key Kai-Term sent set
+  `input_pending`, and that is what stopped `prompt_snapshot()` from re-taking the anchor at the moved cursor.
+  Making movement keys stop opening the echo window (the s89 BackSpace fix) turned the pinned check red and
+  would otherwise have made a cursor sitting INSIDE the prompt text answer "safe to write here". When a change
+  flips a check that has been green for ages, find the mechanism that was really holding the property —
+  `.scratch/s89/leftprobe{,_old}` prints `at/pending/cx/cy/prompt_cx/prompt_cy` per step and shows it in one
+  run — and state it explicitly instead of restoring the accident.
+- **Never write a check around an escape sequence without measuring what THIS parser does with it.** Assumed
+  "Home"/"End", got three realities (`.scratch/s89_ss3.c`): `CSI H` moves the cursor to another ROW (not a
+  Home key), `ESC O H` prints a literal `H` (SS3 is not implemented here), `ESC [ 1 ~` is ignored, and `CSI G`
+  is the one that moves within the row. Same class of mistake in the probe itself: `"\\e[H"` in C sends a
+  backslash and an `e`, which read for two minutes like a parser bug.
 - **A check that passes on the buggy code pins nothing.** `ink_in_box()` — "no glyph may sit inside the box the
   picture is drawn into" — passed against the pre-fix `src/fm.c` when it was written around a small centred
   8x8 preview: that picture happened to land below the metadata. The overlap needs a picture whose box starts
