@@ -17,16 +17,27 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s89 — build and every suite green; the file manager's `cd` follow survives a BackSpace on an empty prompt (user-confirmed in their window), and the prompt snapshot's cursor anchor is now an explicit rule instead of an accident)
+## Current Status (re-measured 2026-10-20, s93 — build and every suite green; shell integration (s90-s92) is implemented, wired and verified headless against real fish + real bash, and has never been seen in the user's window)
 
-- **s89's follow fix is committed and pushed; the tree is clean.** `payload_cannot_insert()` + the anchor rule
-  in `prompt_snapshot()`, both in `src/vt.c`, with 20 new checks; the user confirmed the behaviour in their own
-  window (2026-10-20). Read the remote state with `git status -sb` / `git log --oneline origin/main -1`.
+- **The whole s90-s92 shell-integration work sits in the working tree, uncommitted at the start of s93**
+  (`src/shellint.c` untracked; `Makefile`, header, `config.c`, `main.c`, `mux.c`, `vt.c`, `test_vt.c` and the
+  three docs modified). s89's follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`,
+  both in `src/vt.c`, 20 checks) IS committed and pushed and the user confirmed it in their own window
+  (2026-10-20). Read the remote state with `git status -sb` / `git log --oneline origin/main -1`.
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **746 checks, 0 failures**,
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **803 checks, 0 failures**,
   `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **247 checks, 0 failures**;
   `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
   `make asan` exit 0 with the same counts and 0 sanitizer reports.
+- **Shell integration (s90-s92) is implemented, wired and verified headless — NOT yet seen by a human eye.**
+  `.scratch/s90b/intgate.c` runs the machine copied verbatim from `src/main.c` over the real pty + real
+  `term_parse()` + the SHIPPED `src/shellint.c`, with real fish 4.6 and real bash 5.3: the shell announces,
+  Kai-Term writes the request file and sends `C-x C-]`, the ack comes back in **52-55 ms**, the user's line is
+  byte-identical before and after (`Some text ` still there, no `cd` ever visible), and the shell's own `pwd`
+  prints the new directory. The nested case (a plain `bash` inside the integrated fish) times out at 400 ms,
+  logs `fm: no integration ack from fish — using the typed path`, marks the session's integration dead and runs
+  the old machine — the text survives and **no stray character lands on the line**; the next navigation there
+  skips the integration entirely. With `shell_integration = 0` (bare fish) the behaviour is exactly the old one.
 - **The follow is user-confirmed in their own window (2026-10-19): "I confirm it works"** — after the s86
   fix, running `./bin/kai-term -d` with fish. It is also proven headless: `.scratch/s86/follow2.c` runs the
   machine from `src/main.c` over the real `src/pty.c` + real `term_parse()`; two navigations on top of each
@@ -36,8 +47,8 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   The live key-injection harness was NOT re-run: the user is at this machine and asked not to be disturbed
   (s86, and the pitfall in Key Decisions) — the confirmation came from them running it, which is the better
   evidence anyway.
-- `git status -sb` -> `main` == `origin/main`, nothing uncommitted except this journal while a docs session
-  is in progress. Read the remote state with `git status -sb` / `git log --oneline origin/main -1`, never from
+- `git status -sb` shows the s90-s92 work uncommitted (see the first bullet); `main` itself equals
+  `origin/main`. Read the remote state with `git status -sb` / `git log --oneline origin/main -1`, never from
   a hash written here. The follow lives in `src/main.c` (the state machine + the quiet-period step),
   `src/vt.c` (the echo window needs a transition; a height-only resize keeps a dirty prompt snapshot),
   `include/kai-term/kai-term.h` (`term_prompt_line*`), `tests/test_vt.c`.
@@ -53,7 +64,7 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   resize and a zoom. And the preview pane's rows now have ONE owner (`preview_head_rows()` +
   `preview_meta_rows()` in fm.c, used by both `paint_preview()` and `fm_image_fit()`), which is what stops
   the metadata lines being drawn across the picture — the user's "the metadata sometimes get written on the
-  image preview". Both are pinned by checks (726 + 247, 0 failures) and the preview one by an A/B against the
+  image preview". Both are pinned by checks (803 + 247, 0 failures) and the preview one by an A/B against the
   previous `src/fm.c` (8 failures there). Nothing here has been looked at in the user's window.
 - **Image support (kitty graphics protocol) is in the tree and user-confirmed by eye** ("The image display
   properly. The feature works as expected", 2026-10-17, session 70, `timg -p k` with a PNG): APC/DCS parser
@@ -64,11 +75,12 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   (`graphics: 1 image(s) drawn, 1 texture(s) held`, no GL warning).
 - No probe/experiment left in tree: `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` ->
   empty (the s85 RETYPING probe was removed in s86).
-- README's flag table (`-e -w -c -d -v -h`) and its **49** settings rows match `src/main.c` / `src/config.c`
-  exactly — re-checked by set difference, not by eye, this session: the 49 keys `apply()` in `src/config.c`
-  compares (`!strcmp(key, …)`, `font` included) and the 49 rows of its "Available settings" table are the same
-  set, `diff` empty both ways. README also carries the "File manager" usage section, the 20 file-manager
-  settings rows, the shortcut tables and libjpeg + libwebp in Requirements.
+- README's flag table (`-e -w -c -d -v -h`) and its **50** settings rows match `src/main.c` / `src/config.c`
+  exactly — re-checked by set difference, not by eye, in s93: the 50 keys `apply()` in `src/config.c`
+  compares (`!strcmp(key, …)`, `font` included) and the 50 rows of its "Available settings" table are the same
+  set, `diff` empty both ways. `usage()`'s six options and README's option table are the same six. README also
+  carries the "File manager" usage section, the file-manager settings rows, the shortcut tables and libjpeg +
+  libwebp in Requirements.
 - **No open issues.** The 4 reports that used to be in ISSUES.md were unproven (never reproduced here) and
   were dropped entirely on 2026-10-17 — they are not in "Fixed" either, since no fix was ever verified.
   Recoverable with `git show d5afe4a:ISSUES.md`; recurrence -> file a new Open item with a reproduction.
@@ -86,27 +98,477 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s89 — CLOSED: a BackSpace on an empty prompt no longer kills the file manager's `cd` follow, and the prompt snapshot's cursor anchor is an explicit rule; committed and pushed)
+## Current Task (s93 — OPEN: a codebase cleanliness pass, asked for by the user: "We need to check to make sure we have a clean codebase" — first finish/verify s92, then clean what the audit finds.)
 
-**User report (2026-10-20):** after pressing BackSpace at an empty prompt, browsing into a directory stopped
-moving the shell (`fm: dropped the follow while erasing (the wait ran out)`) until Enter was pressed.
+**Audit already run (read-only, before touching anything) — what was measured and what it said:**
+- `make clean && make -j8` exit 0, 0 warning lines; `./bin/test_vt` 803 checks / 0 failures; `./bin/dbg`
+  MODEL OK (0 problems); `./bin/test_fm` 247 / 0; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+  (CLI 62 / 0 / 10 skipped); `make asan` exit 0, same counts, no sanitizer report. s92's code and docs are
+  complete — only the commit was missing.
+- Tree hygiene: no trailing whitespace (`grep -P "[ \t]+$"` -> 0 lines), no tabs, no CR, every text file ends
+  with a newline, `bin/` + `build/` are the only untracked directories and both are gitignored. The only
+  untracked project file is `src/shellint.c` — the s90 module was never committed.
+- No dead code: every `#define` in the tree is used (70 checked), every struct field of the 14 header structs
+  is read or written through `.`/`->` somewhere, and every header-declared function is called.
+- No `TODO`/`FIXME`/`XXX`/`HACK`/probe markers in `src/`, `include/`, `tests/` (the two `XXX` hits are
+  `mkdtemp`'s template and test data).
+- Docs vs code, by set difference: 50 config keys in `apply()` == 50 README settings rows (`diff` empty both
+  ways); `usage()`'s six options == README's six option rows.
+- A stricter second-compiler pass (clang 22, the project `WARN` set plus `-Wcast-qual -Wmissing-prototypes
+  -Wstrict-prototypes -Wold-style-definition -Wundef -Wunused-macros -Wextra-semi`) found exactly three things
+  in OUR code: `img_decode_gif` has external linkage but is used only inside `src/img.c` and is not declared
+  anywhere; `klog` has no `format(printf)` attribute; one `-Wcast-qual` at `src/vt.c:2122` which is zlib's
+  non-const `next_in` field — correct as written, worth a comment. Everything else that pass reported is in
+  the wayland-scanner-generated `xdg-shell-client-protocol.h`, which is why `-Wcast-qual` stays out of `WARN`.
 
-**What was found and done** (all of it measured, the step-by-step log is `s89 entry 1` below):
-- The session resumed with `src/vt.c` + `tests/test_vt.c` modified and **no journal entry at all** — the
-  interrupted session had recorded nothing. Its intent was recoverable only from the code comments and
-  `.scratch/s89/`. Lesson: the journal is what makes an interrupted session resumable; a modified file with no
-  entry costs the next session a full re-derivation.
-- The cure (`payload_cannot_insert()` + a `harmless && clean_before` branch in `term_note_input()`) was already
-  written and already cured the bug in the harness; what was left was the one check it turned RED.
-- The red check was a real invariant, not a test to relax: the snapshot's cursor anchor had been kept still by
-  accident. Fixed in `prompt_snapshot()` (see invariant 4) rather than by narrowing the whitelist, which would
-  have left Left/Right/Home/End broken for the user.
-- Verified: 746 / MODEL OK / 247 checks, 0 failures; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
-  (`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0, 0 sanitizer reports; the A/B harnesses
-  re-run against the final code (2 drops -> 2 fast paths; the s86 text-preserving path and the documented
-  mid-cursor refusal unchanged).
+**Objective:** commit s92, then remove those three findings and every stale statement the s90-s92 work left in
+the documentation, without changing any behaviour.
 
-**Owed to the user, not to the code:** nothing for this fix — they confirmed it in their own window.
+**Planned steps (each: edit -> AGENT.md -> build/test; never commit red):**
+1. Commit the s90-s92 work (it is green and documented; `src/shellint.c` must be added).
+2. `src/img.c`: `img_decode_gif` -> `static` (nothing outside the file can or does call it).
+3. `include/kai-term/kai-term.h`: give `klog` `__attribute__((format(printf, 2, 3)))` under `__GNUC__`.
+   Verified in a copy of the tree first (`/tmp/kaifmt`): gcc AND clang then report **0** new warnings, so every
+   existing call site is already format-correct and this is a free net against a future wrong `%`.
+4. `src/vt.c`: the Kai-Term APC channel comment sits above `term_shell_cd_ack_clear()` instead of above
+   `kai_apc()`, which reads as if it described the clear; move it. Add the zlib `next_in` cast comment.
+5. Documentation sweep for stale numbers/claims (AGENT.md's own file tree says `tests/test_vt.c` = 726 checks
+   and omits `src/shellint.c`; the s90/s91 journal entries carry "not yet wired" statements that s92 closed).
+6. Re-run the whole verification set, record the exact commands and counts, commit.
+
+**Expected outcome:** the same suites, the same counts, the same behaviour, with the three compiler findings
+ gone, no stale number anywhere in the three docs, and the s90-s92 work in history rather than in the tree.
+
+## Previous Task (s92 — CLOSED: two defects in the shell integration, reported by the user from their own window: (1) starting another shell at the prompt dropped the session into the typed-`cd` fallback instead of integrating the new shell; (2) the integration's `cd` worked but the visible prompt kept the OLD directory until the line was submitted. Both fixed and measured — see s92 entries 1-4.)
+
+**User report (2026-10-20):** "changing shell in the prompt make it go in fallback mode instead of using the
+right shell integration" and "The dir change works as expected, but we have a visual bug, If I navigate from
+/home/kaida to /home/kaida/test/ in the file manager, then the prompt still show /home/kaida but it's only
+visual, If I do `ls` it will show files from /home/kaida/test/ … is there a way to refresh the prompt when
+navigating using the filemanager to not have that wrong visual?"
+
+So report 2 is the s91 "cosmetic, measured" note (see s91 entry 1, last bullet) becoming a user-visible
+complaint: the shell's cwd really changes and the ack proves it, but fish/bash do not re-expand the prompt
+until the line is next redrawn. Report 1 is the nested-shell case the s91 design *accepted* (ISSUES.md
+"A nested shell falls back, and the first attempt costs 400 ms") — the user does not accept it: a shell they
+start themselves should be integrated too.
+
+**Objective:** (a) a shell the user starts at an integrated prompt (fish -> `bash`, bash -> `fish`, …) loads
+Kai-Term's script, announces itself, and gets the integration path instead of the typed fallback — and the
+session stops being marked `int_dead` for good the moment any shell announces again; (b) after an integrated
+`cd` the visible prompt shows the new directory wherever the shell can be asked to redraw it, and the
+limitation is documented where it cannot.
+
+**Planned steps (each: edit -> AGENT.md -> build/test; never commit red):**
+1. Measure first (`.scratch/s92/`): does fish's line editor re-expand the prompt for `commandline -f repaint`
+   inside a bound handler? What does bash's readline do — does `C-l` re-expand `PS1` (expected: no, readline
+   expands the prompt once per `readline()` call)? Can a wrapper function named `bash`/`fish`/`zsh` defined by
+   the integration script start a nested shell that loads the script, without recursion and without shadowing
+   something the user defined?
+2. `src/shellint.c`: the nested-shell wrappers + the repaint, per shell, with the measurements in comments.
+3. `src/vt.c` + header: an announcement must be able to REVIVE an integration that was marked dead — the model
+   needs to say "a shell announced again" (a generation counter), not just "a shell of kind X is listening".
+4. `src/main.c`: clear `Tab.int_dead` when that generation changes.
+5. Tests: `tests/test_vt.c` for the re-announce/revive rule and for the scripts on disk containing the new
+   lines; the `.scratch/s90b/intgate.c` gate extended with the nested case now expected to SUCCEED.
+6. Docs: README (the follow section), ISSUES.md (the nested-shell limitation changes shape; the stale-prompt
+   limitation gets its exception), AGENT.md invariants + journal.
+
+**Expected outcome:** fish -> `bash` at the prompt ends with `fm: shell integration (bash) asked to cd into …`
+and an ack, the user's line untouched; after a navigation the prompt row reads the new directory in fish (and
+in bash, if measurement says readline can be made to redraw without submitting the line — otherwise the log
+and the docs say so plainly).
+
+## Previous Task (s91 — CLOSED: shell integration — the file manager asks fish/bash/zsh to `cd` instead of Kai-Term typing `cd` at the prompt; the user asked for it explicitly, with the old injection kept as the fallback. Steps 1-4 done and green; s91 changed the control sequence, see s91 entry 1)
+
+**User request (2026-10-20):** "can we use shell integration to change directories without disturbing the
+user's pending input instead … Fish: use its command-line editing functions to save and restore the current
+buffer. Bash: use Readline integration to preserve the current editing buffer. Zsh: use ZLE widgets … The
+file manager would request a directory change through Kai-Term integration layer rather than injecting cd
+into the visible prompt. My recommendation: implement shell-specific integration for Fish, Bash, and Zsh,
+with a fallback for unsupported shells."
+
+**Measured first (`.scratch/s90/probe.c` + `int.fish` + `int.bash`, real shells in a real Kai-Term pty, no
+window) — every number below is an observation, not a guess:**
+- **fish 4.6 works end to end.** A function bound to a byte sequence the reader parses as one key runs
+  *inside* the line editor: the user's line held `Some text ` before and after, nothing was inserted, and the
+  shell's cwd really changed (the next prompt showed `/etc`). Announce and ack arrive as APC:
+  `ESC _ K ; kai-term ; integration ; fish ST` and `ESC _ K ; kai-term ; cd ; /etc ST`.
+- **bash 5.3 works the same way** with `bind -x '"\C-xq": fn'` (readline runs the function, `$READLINE_LINE`
+  untouched — the line still held `Some text `, the next prompt showed `/etc`). `bash --rcfile <our file>`
+  still loads the user's own `~/.bashrc` when our file sources it, so the user's prompt/aliases survive.
+- **Which sequence, measured per shell — this is the safety-critical part.** Unbound damage (what lands on
+  the user's line if the integration is NOT loaded): `ESC [ 2 6 ~` (F14) → fish inserts nothing, bash inserts
+  `~`; `ESC [ 9 0 0 1 u` → fish inserts `?`, bash inserts `001u`; `ESC [ ? 9 0 0 1 ; 9 0 0 1 Q` → fish nothing,
+  bash inserts `9001;9001Q`; `C-x q` → bash inserts nothing, fish inserts `q`. So: **fish binds `ESC [ 2 6 ~`,
+  bash binds `C-x q`** — each is inert in its own shell when unbound. No single sequence is inert in both,
+  which is why the per-shell table and the ack/timeout below are not optional.
+- **`ESC [ 9 0 0 1 ~` does NOT fire in fish** even though `bind` accepts it (fish parses input as keys, not as
+  literal bytes) — the first attempt failed exactly this way. A sequence must be one the shell's reader
+  parses as a key.
+- **zsh is NOT installed on this box** (`command -v zsh` -> absent; dash absent). The zsh variant can be
+  written (ZLE widget + `bindkey`) but CANNOT be verified here, and must be documented as unverified.
+
+**Objective:** when the shell announced its integration, a file-manager navigation changes the shell's
+directory with a control sequence + an out-of-band request file, so the user's half-typed line is never
+erased, never re-typed and never sees a `cd`. The existing capture -> Ctrl+U -> `cd` -> re-type machine
+stays as the fallback for every other shell, unchanged.
+
+**Design (decided from the measurements, before writing code):**
+1. **Channel.** The terminal has exactly one channel to the shell — the pty input stream — so "not injecting
+   into the visible prompt" is achieved by making the shell's *line editor* consume the bytes as a binding
+   (never inserted, never echoed), and by sending the path **out of band** in a per-session file
+   (`<integration dir>/s<N>/cd-request`). The path is never part of the sequence, so a stray sequence can
+   never run a path.
+2. **Handshake.** Kai-Term uses the fast path only after that session's shell sent
+   `ESC _ K ; kai-term ; integration ; <kind> ST`. APC kind `K` is new; the parser already collects APC and
+   dispatches on the kind byte (`G` = graphics), so this is one more branch in `apc_end()`.
+3. **Confirmation.** The shell answers `ESC _ K ; kai-term ; cd ; <dir> ST`. No ack within
+   `FM_INT_ACK_MS` (400) -> log it, mark the session's integration dead (so nothing is sprayed at a nested
+   shell over and over) and run the legacy machine for that navigation. This is what bounds the damage of
+   the per-shell sequence table.
+4. **Startup.** `src/shellint.c` holds the three scripts as string constants and writes them into a
+   per-instance dir (`$XDG_RUNTIME_DIR` else `/tmp`, mode 0700, removed at exit); `pty_spawn`'s cmd string
+   gets the per-session env + the shell's load flag: `fish -C "source DIR/fish.fish"`,
+   `bash --rcfile DIR/bash.bash` (which sources the user's own rcfile first), `ZDOTDIR=DIR zsh` with our
+   `.zshrc` sourcing the user's. Only for a recognised shell and only when `shell_integration = 1`.
+5. **The echo window must not be opened by the control sequence.** `term_note_input()` is for bytes whose
+   echo may appear on the line; the integration sequence has no echo — the ack is the evidence — so the
+   integration write goes through `pty_write()` alone. Getting this wrong would close the follow behind the
+   s89 whitelist for no reason.
+
+**Planned steps (each: edit -> AGENT.md -> build/test; never commit red):**
+1. `include/kai-term/kai-term.h` + `src/vt.c`: APC kind `K` -> `Term.shell_int` (kind + announced flag) and a
+   one-slot ack (`Term.shell_cd_ack`); `term_apc_kai()` helper. Tests in `tests/test_vt.c` (announce, ack,
+   unknown kind still dropped, oversized payload, a `clear`/RIS re-arm).
+2. `src/shellint.c` (new): the scripts, the dir, the per-session request write, the sequence table, cleanup.
+   `Makefile` picks it up automatically (`src/*.c`); add it to the test link lines if a test needs it.
+3. `src/config.c` + header: `shell_integration` (default 1) + `DEF_*`; README settings table row.
+4. `src/main.c`: `fm_send_cd()` tries the integration path first (write request -> `pty_write(seq)` -> wait
+   for ack), falls back to the existing machine; `-d` logs `fm: shell integration: fish (announced)` /
+   `fm: shell integration asked to cd into <dir>` / `fm: no integration ack from <kind> — using the typed
+   path`; the integration dir is created at startup and removed at exit.
+5. Harness: extend `.scratch/s90/probe.c` into `intgate.c` — announce, typed text, navigation, ack, and the
+   nested-shell case (a plain `bash` inside the integrated fish must NOT get a stray `~`: the ack times out
+   and the legacy path runs).
+6. Docs: README (the follow section + the new setting + Requirements note that integration is opt-out),
+   ISSUES.md (the limitation that says the injected command cannot be hidden — it now CAN be, for integrated
+   shells; and the new limitations: nested shells, unverified zsh), AGENT.md invariants + this journal.
+
+**Expected outcome:** with fish or bash, a navigation leaves the user's line exactly as it was (no erase, no
+re-type, no visible `cd`), the shell's prompt shows the new directory, and the ack line proves it; with any
+other shell the behaviour is exactly today's, verified by the existing 746 checks staying green.
+
+### s92 entry 4 — close-out: re-measured from a clean tree, and the commit that was missing
+
+**What was still open when s93 started:** steps 1-6 of the s92 plan are all DONE (measurements, `shellint.c`
+wrappers + repaint, the `Term.shell_int_gen` counter, `main.c`'s revive, the extended gate, README + ISSUES.md),
+but **none of the s90-s92 work had ever been committed** — `git status` showed 10 modified files and
+`src/shellint.c` untracked. That is what this entry closes.
+
+**Re-measured from scratch (`make clean` first), every command and its result:**
+- `make clean && make -j8` -> exit 0, **0 warning/error lines**.
+- `./bin/test_vt` -> **803 checks, 0 failures**; `./bin/dbg` -> **MODEL OK (0 problems)**;
+  `./bin/test_fm` -> **247 checks, 0 failures**.
+- `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0, `CLI: 62 checks, 0 failures, 10 skipped` (the 10 skips are
+  the window-opening group, which needs a Wayland session — same as every earlier session).
+- `make asan` -> exit 0, the same 803 / MODEL OK / 247 counts, **no sanitizer report**.
+- Docs re-diffed by set difference, not by eye: 50 keys in `apply()` == 50 README settings rows; `usage()`'s
+  six options == README's six option rows.
+
+**Not re-run here, and still owed a human eye:** the live key-injection harness (the user is at this machine and
+asked not to be disturbed — Key Decisions), and `.scratch/s90b/intgate.c` (its last run is s92 entry 3: fish ack
+73 ms + prompt repainted, bash ack 55 ms + prompt stale by design, nested bash integrated in 55 ms, `env bash`
+falls back then revives in 74 ms). Nothing in s93 changes the integration's behaviour, so those numbers still
+stand as the last measurement.
+
+**Next action:** the s93 cleanup steps 2-5 below the audit, then a second verification run and a second commit.
+
+### s92 entry 3 — the announcement becomes an event: `Term.shell_int_gen` + `Tab.int_gen`
+
+**Changed:** `include/kai-term/kai-term.h` (`Term.shell_int_gen`, `Tab.int_gen`), `src/vt.c` (`kai_apc()`
+increments on every accepted announcement; the `ESC c` handler preserves the counter next to the
+announcement), `src/mux.c` (`mux_open()` clears it), `src/main.c` (`tab_spawn()` clears it; `fm_int_try()`
+compares it with the Tab's copy and clears `int_dead` when they differ, logging
+`fm: a shell announced again — the integration is used for this session again`), `src/shellint.c` (a
+heartbeat in all three scripts: fish `--on-event fish_postexec`, bash `PROMPT_COMMAND` — prepended, both the
+string and the array form handled, guarded by a NON-exported variable so a nested bash still installs its
+own —, zsh `precmd_functions+=`).
+
+**Why a counter and not the kind:** `int_dead` was one-way, so the first shell that failed to answer kept the
+whole session on the typed path even after an integrated shell was reading the line again. The kind cannot
+detect that (fish -> nested fish -> fish announces three times, one kind).
+
+**Measured, before shipping the heartbeat:** a `fish_postexec` function does NOT leak into a command
+substitution — `.scratch/s92/hbcheck.c` (real pty + real `term_parse()`, which answers the queries fish
+waits for; a raw python pty driver stalls fish and proves nothing): `set x (echo hi)` then `od -c` of `$x`
+prints `h i`, 2 bytes, and 4 announcements were seen. `bash -n` and `fish -n` accept the generated scripts.
+
+**Gate (`.scratch/s90b/intgate.c`, the machine copied from main.c + the SHIPPED scripts, real shells):**
+- `fish /tmp/s92test`: ack 73 ms, typed text INTACT, **prompt names the target: YES (repainted)**.
+- `bash /tmp/s92test`: ack 55 ms, typed text INTACT, prompt names the target: **NO (stale)** — the documented
+  readline limit, now recorded by the gate instead of by memory.
+- `nested` (fish -> `bash`, wrapped): `shell integration: bash announced itself`, then
+  `fm: shell integration (bash) asked to cd into /var`, ack in **55 ms**, `int_dead=0`, line INTACT. This is
+  the user's report 1, fixed.
+- `dead` (fish -> `env bash`, a start the wrapper cannot see): no ack -> typed path (capture, Ctrl+U, `cd`,
+  re-type), line INTACT; second navigation goes straight to the typed path (202 ms, no 400 ms wait);
+  after `exit` the fish heartbeat re-announces -> `fm: a shell announced again …` -> integration again in
+  **74 ms**. This mode is only possible because the gate mirrors main.c — it did not at first, and the revive
+  silently did not happen there (see the pitfall below).
+- `off` (`shell_integration = 0`, bare fish): no announcement, exactly the old machine, line INTACT.
+
+**Two harness bugs found while measuring, both worth remembering:** (1) the gate's copy of `fm_int_try()`
+had not been updated with main.c's, so the revive path was never exercised there — a gate that copies the
+machine must be re-diffed against it whenever the machine changes; (2) the gate's own `printf`s were
+block-buffered while `klog` writes to stderr, so a log line appeared to happen before a step it happened
+after — `setvbuf(stdout, NULL, _IONBF, 0)` fixes the reading of every future run. Also: "is the prompt
+repainted" must be asked of the WHOLE screen (starship's prompt is two rows and the cursor sits on the
+second), and the round-trip timer must stop before the trailing drain, which was worth 900 ms of fake latency.
+
+**Measured, the suites:** `make -j8` 0 warnings; `./bin/test_vt` **803 checks, 0 failures** (789 -> 803: the
+generation counter — countable, same-kind re-announce counts, an unknown kind does not count, a reset keeps
+the count — plus the script-on-disk pins: fish repaints, fish/bash wrap a bare shell, fish/bash re-announce,
+bash does NOT pretend to repaint, zsh repaints and re-announces, every script names `$KAI_TERM_INT_DIR`, and
+every `shellint_argv()` carries `KAI_TERM_INT_DIR=`); `./bin/dbg` MODEL OK; `./bin/test_fm` 247;
+`KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0,
+same counts, no sanitizer report.
+
+**Not done yet:** README + ISSUES.md (the nested-shell limitation changes shape, the stale-prompt one gains a
+fish exception, and the new visible fact is that Kai-Term defines `fish`/`bash`/`zsh` functions), then commit.
+
+### s92 entry 2 — `src/shellint.c`: the fish repaint, and the nested-shell wrappers
+
+**Changed:** the three script constants, and `shellint_argv()` now exports `KAI_TERM_INT_DIR`.
+- `SCRIPT_FISH`: `commandline -f repaint` at the end of `kai_term_cd`, then `kai_term_nested` + a
+  `fish`/`bash`/`zsh` wrapper each guarded by `functions -q <name>`, and `KAI_TERM_INT_DIR` (from the
+  environment, with a `string replace -r` fallback — `Path` is not a fish 4.6 builtin).
+- `SCRIPT_BASH`: the same wrappers (`type -t` guard, so a function or alias the user defined wins), plus a
+  comment stating why no repaint is attempted and what was measured instead.
+- `SCRIPT_ZSH`: the same shape (`$+functions[...]` guard); `zle reset-prompt` was already there. Still
+  UNVERIFIED — no zsh on this box.
+- A wrapper only adds the integration flags when it is called with NO arguments; with any argument the
+  command runs exactly as the user typed it. After the nested shell exits, the wrapper re-announces its own
+  kind, so the model names the shell that is reading the line again.
+
+**Measured:** `make -j8` 0 warnings; `./bin/test_vt` 789 checks, 0 failures (the existing script-on-disk
+checks still pass — the bind needles are unchanged). `.scratch/s90b/intgate fish /tmp/s92test` with the
+SHIPPED script: ack in 74 ms, `fm_last_cd` confirmed, and the starship prompt row now reads
+`kaida in k-gentoo:/tmp/s92test` — the user's report 2 is fixed for fish, in the real prompt, not only in a
+test one. The harness's `line before/after` line now says LINE CHANGED because the whole row is compared and
+starship's clock ticks; the typed text (`Some text`) is intact. The harness must assert on the typed part and
+on the prompt naming the target — that is the next thing to fix, before the nested case is judged.
+
+**Not yet done:** the re-announce cannot REVIVE a dead integration yet (`Tab.int_dead` is one-way), so a
+session whose first nested shell did not answer stays on the typed path. That is the vt.c generation counter
+(step 3) and main.c (step 4).
+
+### s92 entry 1 — MEASURED: what can and cannot be fixed, before writing any code
+
+**Harness:** `.scratch/s92/repaint.c` (prompt row + a full non-blank-row dump before/after, plus optional
+extra bytes and a second typed string) and `.scratch/s92/nested.c` (type a command that starts another
+shell, then run one navigation). Both use the real `src/pty.c`, the real `term_parse()` and the SHIPPED
+`src/shellint.c` scripts (`.scratch/s92/mkint.c` runs `shellint_prepare()` and copies them out, so the
+baseline is the shipped text, not a hand-written copy). No window. Prompts in the probes are deterministic
+(`fish_prompt` -> `$PWD> `, `PS1='\w\$ '`) so "did the prompt change" is not a guess.
+
+**Report 2 — the stale prompt. Measured per shell:**
+- **fish: `commandline -f repaint` inside the bound handler fixes it.** Before: `/home/kaida/Project/.scratch/s92> Some text`;
+after: `/tmp/s92test> Some text` — the prompt re-expands, the user's line is byte-identical, the ack is
+unchanged. This is the whole fix for the user's own shell (`$SHELL=/bin/fish`, and their real prompt is
+starship, which is a function, so it re-renders the same way).
+- **bash: readline does NOT re-expand `PS1` for `C-l`.** Sending `0x0c` after the ack leaves
+  `~/Project/.scratch/s92$ Some text` exactly as it was — readline expands the prompt once per `readline()`
+  call, so no readline command can refresh it mid-line.
+- **bash: overwriting the prompt line from the handler garbles it.** `printf '\r\033[K%s' "${PS1@P}"` gives
+  `/tmp/s92test$ ~/Project/.scratch/s92$ Some text` — readline does not know the line was cleared, so its
+  cached cursor position is now wrong and the old prompt text survives. REJECTED.
+- **bash: the only thing that refreshes it is submitting a line.** With an EMPTY line, a `CR` gives
+  `~/Project/.scratch/s92$` on one row and `/tmp/s92test$` on the next. NOT implemented: it means Kai-Term
+  presses Enter, it leaves a blank prompt line, and with text on the line it would run that text. Documented
+  instead — the prompt corrects itself the next time the user submits anything.
+- zsh already calls `zle reset-prompt` in its handler (still UNVERIFIED: no zsh on this box).
+
+**Report 1 — the nested shell. Measured:**
+- Baseline (the shipped script): fish announces, the user types `bash`, the model still says `fish`, the ack
+  never arrives -> `int_dead` -> the typed path. That is the user's report, reproduced.
+- **A wrapper function defined by the integration script fixes it.** The fish script defines `bash` (and
+  `fish`, `zsh`) as a function that runs `command bash --rcfile "$KAI_TERM_INT_DIR/bash.bash"` when called
+  with NO arguments and `command bash $argv` otherwise. Result: `announced bash`, `ACK OK`, the line intact,
+  and the nested shell's own `pwd` prints `/tmp/s92test`. The guard is `functions -q <name>` — a function the
+  user defined (in fish an alias IS a function) is never replaced.
+- **`Path` is not a builtin in fish 4.6** (`fish -c 'Path /a/b.fish'` -> "Unknown command", exit 127). The
+  script must not depend on it: main.c puts `KAI_TERM_INT_DIR` in the environment, and the script's fallback
+  is `string replace -r '/[^/]*$' '' (status current-filename)` (measured: gives `/a`).
+- A wrapper whose `--rcfile` points at a file that does not exist is silent: bash just starts without the
+  integration (that is how the first candidate run failed — no error, no announcement). So the request-file
+  and script paths must be checked by a test, not trusted.
+
+**Decisions this produces:** (1) repaint in the fish handler; zsh keeps `zle reset-prompt`; bash is
+documented, not hacked. (2) nested-shell wrappers in all three scripts, with `KAI_TERM_INT_DIR` exported by
+`shellint_argv()` so no script has to find its own path. (3) an announcement must REVIVE a dead integration:
+`Term` needs a generation counter, `Tab` remembers the last one it saw, and `fm_int_try()` clears `int_dead`
+when they differ — otherwise the first nested shell that does not answer marks the session dead for the rest
+of the run, even after an integrated one announces.
+
+### s91 entry 1 — IN PROGRESS: resuming at step 3; the sequence table collapses to ONE measured-safe sequence
+
+**Objective:** finish the wiring so a file-manager navigation in an integrated fish/bash changes the shell's
+directory without touching the user's line, with the existing typed-`cd` machine as the fallback. Immediate
+steps: (a) re-measure the control sequence, (b) `shell_integration` config key, (c) `main.c`: integration dir
+lifecycle + per-session shell command line + `fm_send_cd()` choosing the integration path with an ack timeout.
+**Expected outcome:** fish/bash navigation leaves the line byte-identical and the shell's cwd changes; every
+other shell behaves exactly as today; all suites green.
+
+**Measured first (`.scratch/s90b/inert.c` + `fire.c` + `try.sh`, real fish 4.6 / bash 5.3 in a real Kai-Term
+pty, no window). This SUPERSEDES s90's "no single sequence is inert in both" conclusion:**
+- `C-x C-]` (`0x18 0x1d`) is **inert when unbound in fish AND in bash** (with `--norc` and with the user's own
+  `~/.bashrc`), **fires when bound in both** (ack `/etc` came back, the line still held `Some text `), and is
+  **unbound by default in both** (`bind -p` has no `\C-x\C-]`; `fish -c 'bind'` reports no binding), so it
+  steals nothing. It is therefore the ONE sequence for all three shells — the per-shell table's nested-shell
+  damage (a stray `~` in a bash-inside-fish, a stray `q` in a fish-inside-bash) disappears.
+- Why the s90 candidates are worse: `ESC [ 2 6 ~` (F14) inserts `~` in bash, `C-x q` inserts `q` in fish.
+- **A byte that looks ideal must be rejected on the line discipline, not on the shell:** `C-\` (`0x1c`) is
+  inert in fish and bash and unbound in both, but `stty -a` on a pty says `quit = ^\` — VQUIT — so sending it
+  while any program with ISIG on owns the tty (cat, ssh, a build) SIGQUITs it. Same class for `^C ^Z ^Q ^S ^V
+  ^O ^U ^W ^R ^D ^?`. `0x18`/`0x1d` are not special (`swtch = <undef>`). Check `stty -a` before adding a byte
+  to the table.
+- `C-]` alone (`0x1d`) also fires+inert in both, but bash binds it to `character-search` — rejected for
+  stealing a default binding. `C-^` (`0x1e`) fires+inert and is unbound in bash; kept as the fallback choice
+  if `C-x C-]` ever proves problematic.
+- **Cosmetic, measured:** after the integration `cd` the visible prompt is NOT repainted (fish and bash both
+  still show the OLD directory in the prompt text while the line holds text; the shell's cwd really changed —
+  the ack proves it). The typed path repaints the prompt because it ends with CR. Not fixed here; document it.
+
+**Planned steps (each: edit -> AGENT.md -> build/test; never commit red):**
+1. `src/shellint.c`: one universal sequence + the three scripts' bind lines + the measurements above in the
+   comments. `tests/test_vt.c`: the sequence checks change (fish is no longer F14).
+2. `src/config.c` + header + README: `shell_integration = 1`.
+3. `src/main.c`: create the integration dir at startup / remove at exit; per-session command line via
+   `shellint_argv()`; `Tab` carries its request path + an "integration did not answer" flag; `fm_send_cd()`
+   tries write-request -> `pty_write(seq)` (NO `term_note_input`) -> wait for `shell_cd_ack`, falls back to the
+   existing machine on timeout.
+4. Harness `.scratch/s90b/intgate.c` built on the SHIPPED `shellint_prepare()/shellint_argv()/shellint_seq()`
+   (not hand-written scripts): announce, typed text, request, sequence, ack, cwd really changed, line intact,
+   plus the nested-shell case and the ack latency (which sets `FM_INT_ACK_MS`).
+5. Docs: README (the follow section + the new setting), ISSUES.md (the "cannot be hidden" limitation now has an
+   integrated-shell exception; new limitations: nested shells, unverified zsh, stale prompt text), AGENT.md.
+
+**Step 1 done — `src/shellint.c` + `include/kai-term/kai-term.h` + `tests/test_vt.c`.** One sequence
+(`\x18\x1d`) for every kind; the three scripts now bind `bind (printf '\030\035')` (fish),
+`bind -x '"\C-x\C-]"'` (bash), `bindkey '^X^]'` (zsh). The header's `shellint_seq()` contract now states the
+four measured requirements (parses as one key / inert in EVERY shell when unbound / unbound by default / no tty
+special character) and the header's `shellint_kind_for()` comment was corrected — a login shell's leading dash
+IS accepted (the check for `-zsh` already pinned that; the comment said the opposite).
+**Measured:** `make -j8` 0 warnings; `./bin/test_vt` **781 checks, 0 failures** (777 -> 781: fish/bash/zsh now
+share the bytes, no tty special character, and the fish + bash scripts on disk are read back and must bind
+exactly what `shellint_seq()` returns — that pair is what stops the table and the scripts drifting, and it also
+pins that bash's script still sources the user's `~/.bashrc` first); `./bin/dbg` MODEL OK; `./bin/test_fm` 247;
+`KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0.
+**A check of my own writing was wrong first and the failure said so:** the bash needle ended in `'` where the
+script has `"` (`bind -x '"…"'`), so it failed with 1 failure — the byte dump (`/tmp/dump2.c`) showed the file
+and the needle differing at that one byte. Do not "fix" a failing string check by loosening the needle; print
+both byte by byte.
+
+**Step 2 done — the `shell_integration` config key** (`include/kai-term/kai-term.h` Config field, `src/config.c`
+default 1 + `apply()` branch, README settings row). README's settings table and `apply()`'s key list were
+re-diffed by set difference, not by eye: 50 keys, 50 rows, `diff` empty both ways (the table is lines 262-323
+of README; comparing the whole file's `| \`` rows pulls in the flag/key/make tables and is meaningless).
+**Measured:** `./bin/test_vt` 786 checks, 0 failures (+5 for the key: default on, `= 0`, `= off`, `= yes`).
+
+**Step 3 done — the wiring.** `src/main.c`: `g_intdir` (created at startup, `shellint_cleanup()` on the way
+out), `g_int_seq` (session ids for the request files — a counter, NOT the tab index, because `mux_close()` 
+shifts the array and a freed index is reused: two live sessions sharing one request file is how one shell ends
+up in another session's directory), `tab_spawn()` builds the shell's command line through `shellint_argv()` for
+a recognised shell and never for `-e COMMAND`, `fm_int_try()` (write request -> clear the ack -> `pty_write`
+the sequence with NO `term_note_input` -> `FMCD_INTEGRATION` + `FM_INT_ACK_MS` 400 ms), the ack case in
+`fm_cd_advance()` (the ONLY evidence is `shell_cd_ack` naming this navigation's directory), and
+`fm_int_failed()` (no ack -> remember `int_dead` for the session -> run the typed machine for that navigation).
+`Tab` gained `cd_req` + `int_dead` (they must travel with the struct through a shift); `mux_open()` clears them;
+`vt.c` gained `term_shell_cd_ack_clear()` (one ack answers one request).
+`src/shellint.c`: `shellint_cleanup()` now SCANS the directory for `cd-request*` instead of enumerating
+`0..TAB_MAX-1`, because the ids are a counter and grow past `TAB_MAX` in a long session.
+**Measured:** `make -j8` 0 warnings (one `-Wshadow` from a loop-local `p` — renamed, not silenced);
+`./bin/test_vt` **789 checks, 0 failures** (+3: the ack clear, a request file with an id past `TAB_MAX`, and
+cleanup finding it); `./bin/dbg` MODEL OK; `./bin/test_fm` 247; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0.
+**A new check broke three old ones and the reason was mine:** clearing the ack mid-group left the later checks
+without their precondition (they assert the ack still reads `/etc`). The fix was to re-feed the ack with a
+comment saying why, not to relax those checks.
+
+**Step 4 done — the end-to-end gate `.scratch/s90b/intgate.c`** (kept as a regression harness): the machine
+copied verbatim from `src/main.c` driving a REAL fish / bash through the real `src/pty.c`, real `term_parse()`,
+real `mux.c` and the SHIPPED `shellint_prepare()/shellint_argv()/shellint_seq()`. No window. Four modes:
+- `fish /etc`: announced -> `fm: shell integration (fish) asked to cd into /etc` -> ack in **55 ms** ->
+  `fm: the shell's integration changed directory to /etc — the line was not touched`; the row text is
+  byte-identical before/after (`Some text` still there) and the shell's own `pwd` prints `/etc`.
+- `bash /var`: same, ack in **52 ms**, line untouched, `pwd` prints `/var`.
+- `nested` (a plain `bash` started inside the integrated fish): no ack -> `fm: no integration ack from fish —
+  using the typed path` -> `int_dead=1` -> the legacy machine captures `half typed `, erases, `cd '/var'`,
+  re-types it, and the nested prompt reads `/var $ half typed` — **no stray character from the sequence**;
+  a SECOND navigation there goes straight to the typed path (no `asked to cd` line, no 400 ms wait).
+- `off` (`shell_integration = 0`, bare fish): no announcement at all, and the behaviour is exactly the old one
+  (capture -> Ctrl+U -> `cd` -> re-type), text survives, `pwd` prints the target.
+**Two harness bugs that made a case pass without testing it** (both fixed, both worth remembering): typing
+`bash` while the line still held `Some text ` made fish try to run `Some text bash`, so the "nested" case never
+nested and the integration path "passed"; and reading only the CURSOR row for the `pwd` answer reported a false
+NO MATCH because the answer sits on the row above the new prompt. A harness must assert on the state it thinks
+it created — print it.
+
+### s90 entry 1 — steps 1-2 done: the APC channel, `src/shellint.c`, and 31 checks (746 -> 777)
+
+**Files changed:** `include/kai-term/kai-term.h` (`FM_PATH_MAX` moved above `Term`, `SHELLINT_*` enum,
+`Term.shell_int` + `Term.shell_cd_ack`, the shellint API), `src/vt.c` (`kai_apc()` + the `apc_end()` branch +
+the `ESC c` reset preserving the announcement), `src/shellint.c` (NEW), `Makefile` (SRCS + all four test link
+lines + both asan rules), `tests/test_vt.c` (new group + `<sys/stat.h>`).
+
+**What the model now knows.** A shell integration script announces itself with
+`ESC _ K ; kai-term ; integration ; <kind> ST` and confirms a directory change with
+`ESC _ K ; kai-term ; cd ; <dir> ST`. `apc_end()` already dispatched on the APC kind byte (`G` = graphics),
+so `K` is one more branch — no new parser state. `Term.shell_int` says which shell is listening;
+`Term.shell_cd_ack` is the last directory the shell said it entered, which is the only evidence main.c gets
+that the request landed.
+
+**A reset (`ESC c`) memsets `Term`, and the announcement must survive it** — the script announces ONCE, at
+shell startup, so losing it would silently drop the feature for the rest of the session after any program sent
+`ESC c`. The `case 'c'` handler now saves/restores `shell_int` + `shell_cd_ack` around `term_init()`. The
+prompt snapshot is deliberately NOT preserved (a reset really does invalidate it).
+
+**`src/shellint.c`** — three scripts as string constants (fish `-C`, bash `--rcfile` which sources the user's
+own `~/.bashrc` first, zsh `ZDOTDIR` + a `.zshrc` that sources the user's real one), a private per-instance
+directory (`mkdtemp` under `$XDG_RUNTIME_DIR` else `/tmp`, `chmod 0700`, refused if the name contains a `'`
+because the command line quotes with `'`), one request file per session (`cd-request.<N>`, written temp +
+`rename()` so the shell can never read a half path), the per-shell sequence table, and the command line for
+`pty_spawn` (`/bin/sh -c`, so the per-session env rides in the string: `KAI_TERM_CD_REQUEST='...' fish -C
+'source …/fish.fish'`).
+
+**Four mistakes caught by building/measuring rather than assuming:**
+1. **The APC kind byte is not part of the payload.** The parser consumes `K`, so the payload arrives as
+   `;kai-term;integration;fish` and my `strncmp(p, "kai-term;", 9)` matched nothing — every announcement was
+   silently ignored (10 failing checks). `kai_apc()` now skips a leading `;`.
+2. **`` followed by a hex digit is one escape in C**: `"c"` is `0x1bc` ("hex escape out of range") and
+   `"_K"` is `0x1bK`. Both had to be split (`"" "c"`). This is the same class as the s89 probe lesson.
+3. **`shellint_cleanup()` did not remove the request files**, so `rmdir` failed and a stale
+   `cd-request.<N>` would have outlived its session — a later shell would `cd` somewhere the user never
+   chose. It now unlinks every `cd-request.<0..TAB_MAX-1>` and its `.tmp`.
+4. **A check of the form "X is 0 after a reset" was vacuous twice over**: nothing had been snapshotted before
+   the reset, and after a reset the parser legitimately re-snapshots the BLANK row (`prompt_valid` is 1, the
+   anchor moves to column 0). The check now pins the anchor moving, which is the actual evidence.
+
+**Measured:** `make -j8` exit 0, 0 warning/error lines; `./bin/test_vt` **777 checks, 0 failures** (was 746,
++31: 13 for the APC channel, 18 for the pure shellint functions — kind table, sequence bytes, directory
+mode 0700, scripts on disk, request round trip, the three command lines, cleanup); `./bin/dbg` MODEL OK;
+`./bin/test_fm` 247, 0 failures; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures,
+10 skipped`).
+
+**Not yet wired:** nothing in `main.c` uses any of this yet, so the feature does not exist for the user — the
+file manager still types `cd`. That is step 3-4 next: the `shell_integration` config key, then `fm_send_cd()`
+choosing the integration path with the ack timeout and the legacy fallback.
+
+**Next action (step 3):** `src/config.c` + `DEF_*` + README's settings table: `shell_integration = 1`. Then
+step 4 in `src/main.c`: create the directory at startup (and remove it at exit), build the shell command line
+per session, and make `fm_send_cd()` prefer the integration path — write the request, `pty_write()` the
+sequence WITHOUT `term_note_input()` (there is no echo to wait for; the ack is the evidence), then wait for
+`shell_cd_ack` to name the requested directory, falling back to the existing machine if it does not.
 
 ### s89 entry 1 — the red check is green: the prompt snapshot's CURSOR ANCHOR is now honest (739 -> 746 checks)
 
@@ -153,6 +615,7 @@ only re-arm; README's follow paragraph if needed; this journal's invariants + pi
 one verified change and push.
 
 ## Progress Journal (root causes of fixed bugs: git history)
+
 
 
 - **2026-10-12/14, s1-12** — scaffold; first build. vt.c grid -> rotation permutation (`row[]` always valid);
@@ -669,6 +1132,45 @@ after `ptr_*` hit-tested bar then panes.
   (which is followed by the proof) and for confirming Kai-Term's own typing. `input_pending` is deliberately
   NOT consulted by the description predicates — the row comparison is the evidence, and Kai-Term's own typed
   path sets that flag while leaving a perfectly describable line behind.
+
+**Shell integration (shellint.c + the `K` APC channel in vt.c + main.c).**
+
+- **One channel, so the data never rides with the control.** The pty input stream is the only thing Kai-Term can
+  write to the shell, and a key binding is a fixed byte sequence — anything appended would land on the user's
+  line. So the sequence carries NO data and the directory travels in a per-session file (`cd-request.<id>`,
+  written as a temp + `rename()`d so the shell can never read a half path). A stray sequence can therefore never
+  run a path, and no path can ever be smuggled into a sequence.
+- **The fast path is used only after THIS session's shell announced itself** (`ESC _ K ; kai-term ; integration ;
+  <kind> ST`, dispatched by `kai_apc()` — one more branch on the APC kind byte, no new parser state), and a
+  navigation is believed only by the matching ack (`ESC _ K ; kai-term ; cd ; <dir> ST`). No ack inside
+  `FM_INT_ACK_MS` (400 ms) -> `fm_int_failed()`: mark `Tab.int_dead`, log, and run the typed machine for that
+  navigation. The ack is cleared (`term_shell_cd_ack_clear()`) before every request — one slot answers one
+  request, or a navigation back to an old directory is "confirmed" by an ack nobody owed it.
+- **The sequence is one measured byte pair for every shell: `C-x C-]` (0x18 0x1d).** Four requirements, each
+  measured (s91): parses as ONE key in the shell's reader (fish ignores literal byte sequences it cannot parse
+  as a key), inert in EVERY supported shell when unbound (that is what bounds the damage when a nested shell is
+  the one reading), unbound by default (Kai-Term steals nothing), and free of the tty's own special characters.
+  The last one is the trap: `C-\` (0x1c) is inert and unbound in both shells but `stty -a` reports `quit = ^\`,
+  so it would SIGQUIT whatever owns the terminal whenever the shell is not reading. Check `stty -a` before
+  adding a byte; `0x18`/`0x1d` are clean (`swtch = <undef>`).
+- **The integration write never opens the echo window.** `term_note_input()` is for bytes whose echo may appear
+  on the line; these are consumed by the line editor, so the write goes through `pty_write()` alone. Opening the
+  window would make `term_at_prompt()` answer "not empty" for no reason and hold the typed fallback shut behind
+  the s89 whitelist. The ack, not the echo, is the evidence for this path.
+- **Per-session state lives in `Tab` (`cd_req`, `int_dead`), not in an array indexed by tab number.**
+  `mux_close()` shifts the array and a freed index is reused, so an index-keyed side array would give two live
+  sessions the same request file — one shell then cds into a directory the other asked for. `g_int_seq` numbers
+  the files and never repeats within a run, which is why `shellint_cleanup()` SCANS the directory for
+  `cd-request*` instead of enumerating `0..TAB_MAX-1`.
+- **The scripts must not replace the user's configuration:** fish gets `-C "source …"` (evaluated after the
+  user's config), bash gets `--rcfile <ours>` which sources `~/.bashrc` first, zsh gets `ZDOTDIR=<ours>` with a
+  `.zshrc` that sources the user's real one first (`KAI_TERM_REAL_ZDOTDIR` remembers where that was). `-e
+  COMMAND` is never wrapped — that command line is what the user asked to run. The private directory is
+  `mkdtemp` under `$XDG_RUNTIME_DIR` else `/tmp`, `chmod 0700`, refused if the name contains a `'` (the command
+  line quotes with `'`), and removed at exit.
+- **`ESC c` (RIS) memsets `Term`, and the announcement must survive it** — the script announces once, at shell
+  startup, so losing it would silently drop the feature for the rest of the session. The prompt snapshot is
+  deliberately NOT preserved (a reset really does invalidate it).
 
 **Geometry: one helper decides a grid's size AND its origin.**
 

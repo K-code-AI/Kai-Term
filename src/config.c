@@ -40,6 +40,11 @@ void config_default(Config *c)
     c->cursor_color = CURSOR_COL;
     c->opacity = 1.0f;
     c->shell[0] = 0;           /* empty => $SHELL */
+    /* The integration script is handed to a recognised shell only (fish/bash/zsh). On by default: it changes
+       nothing a user sees until the file manager follows a navigation, and it is the only way to move the
+       shell without touching the user's half-typed line. shell_integration = 0 starts every shell exactly as
+       earlier sessions did. */
+    c->shell_integration = 1;
     c->working_dir[0] = 0;     /* empty => $HOME */
     /* xdg-shell app_id: window rules and taskbar grouping key off it, so the default
        reads like the display name. DEF_APP_ID in kai-term.h is the single source (see below). */
@@ -365,6 +370,10 @@ static void apply(Config *c, const char *key, char *val)
         c->opacity = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
     } else if (!strcmp(key, "shell")) {
         snprintf(c->shell, sizeof(c->shell), "%s", val);
+    } else if (!strcmp(key, "shell_integration")) {
+        /* Start a recognised shell (fish/bash/zsh) with Kai-Term's integration script. Off = the shell is
+           started exactly as before and the file manager can only ever type `cd` at the prompt. */
+        c->shell_integration = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "working_dir")) {
         expand_tilde(val, c->working_dir, sizeof(c->working_dir));
     } else if (!strcmp(key, "app_id")) {

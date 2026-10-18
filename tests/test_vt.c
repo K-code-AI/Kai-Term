@@ -1,6 +1,9 @@
 /* Kai-Term — unit tests for VT parser + grid (no display needed). */
 #include "kai-term.h"
 
+#include <sys/stat.h>        /* the shell-integration directory: created, 0700, removed again */
+#include <unistd.h>          /* access() on a request file that must or must not exist */
+
 static Term T;
 static int fails, checks;
 
@@ -1464,6 +1467,40 @@ int main(void)
             config_load(&c, path);
             CHECK(c.copy_on_release == 0, "config: copy_on_release = off is off");
             CHECK(c.clear_scrollback == 1, "config: clear_scrollback = true is on");
+            remove(path);
+        }
+    }
+
+    /* --- config: shell_integration ------------------------------------------------------------
+       On by default: a recognised shell is started with Kai-Term's integration script, which is the only way
+       the file manager can move the shell without touching the user's half-typed line. Off must mean "start
+       the shell exactly as before", so this is the switch a user pulls if they never want Kai-Term to touch
+       how their shell starts. */
+    {
+        Config c;
+        const char *path = "/tmp/kterm_test_config_shellint.conf";
+        config_default(&c);
+        CHECK(c.shell_integration == 1, "config: shell integration is on by default");
+        FILE *f = fopen(path, "w");
+        CHECK(f != NULL, "config: temp config file writable (shell_integration)");
+        if (f) {
+            fputs("shell_integration = 0\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.shell_integration == 0, "config: shell_integration = 0 turns it off");
+            f = fopen(path, "w");
+            fputs("shell_integration = off\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.shell_integration == 0, "config: shell_integration = off turns it off too");
+            f = fopen(path, "w");
+            fputs("shell_integration = yes\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.shell_integration == 1, "config: shell_integration = yes turns it on");
             remove(path);
         }
     }
@@ -2993,6 +3030,237 @@ int main(void)
           "graphics: two pictures are alive for term_destroy to free (the reflow one and this one)");
 
     term_destroy(&T);
+
+    /* ---------- shell integration: Kai-Term's APC channel + src/shellint.c ----------
+       The file manager can ask the shell to change its OWN directory instead of Kai-Term typing `cd` at the
+       prompt. Kai-Term only prefers that path once THIS session's shell announced itself, and only believes
+       it worked when the shell confirms the directory it entered. These checks pin the model half; the
+       end-to-end half (a real fish and a real bash in a real pty) is the harness in .scratch/s90/. */
+    term_init(&T, 10, 20, 100);
+    CHECK(T.shell_int == SHELLINT_NONE && T.shell_cd_ack[0] == 0,
+          "integration: nothing is known about the shell until it announces itself");
+    feed("\x1b_K;kai-term;integration;fish\x1b\\");
+    CHECK(T.shell_int == SHELLINT_FISH, "integration: fish's announcement is believed");
+    feed("\x1b_K;kai-term;cd;/etc\x1b\\");
+    CHECK(strcmp(T.shell_cd_ack, "/etc") == 0, "integration: the cd ack is kept for main.c to compare");
+    term_shell_cd_ack_clear(&T);
+    CHECK(T.shell_cd_ack[0] == 0,
+          "integration: the ack is cleared before a new request, or an old ack answers for it");
+    feed("\x1b_K;kai-term;cd;/etc\x1b\\");   /* put it back: the three checks below need an ack to exist */
+    feed("\x1b_K;kai-term;integration;bash\x1b\\");
+    CHECK(T.shell_int == SHELLINT_BASH, "integration: a second announcement replaces the kind");
+    feed("\x1b_K;kai-term;integration;zsh\x1b\\");
+    CHECK(T.shell_int == SHELLINT_ZSH, "integration: zsh is a known kind");
+    feed("\x1b_K;kai-term;integration;tcsh\x1b\\");
+    CHECK(T.shell_int == SHELLINT_ZSH,
+          "integration: an unknown kind changes nothing — the typed path is still what runs");
+    feed("\x1b_K;kai-term;nothing\x1b\\");
+    CHECK(T.shell_int == SHELLINT_ZSH && strcmp(T.shell_cd_ack, "/etc") == 0,
+          "integration: an unknown message is ignored, not guessed at");
+    feed("\x1b" "_Knot-for-us;kai-term;cd;/tmp\x1b\\");
+    CHECK(strcmp(T.shell_cd_ack, "/etc") == 0,
+          "integration: another program's APC that starts with 'K' is not read as ours");
+    feed("\x1b_Gi=1,a=T,q=2,f=32,s=4,r=1,m=0;\x1b\\");
+    CHECK(T.shell_int == SHELLINT_ZSH,
+          "integration: the graphics APC (kind G) still goes to the graphics path");
+    /* A reset memsets Term. The announcement happens ONCE, at shell startup, so it must survive — losing it
+       would silently drop the feature for the rest of the session after any program sent ESC c. The prompt
+       snapshot right next to it must NOT survive, so the two are checked together, with a real snapshot
+       taken first (checking prompt_valid on a session that never printed a prompt would prove nothing). */
+    feed("prompt$ ");
+    CHECK(T.prompt_valid == 1 && T.shell_int == SHELLINT_ZSH,
+          "integration: a prompt is snapshotted while the announcement is live");
+    feed("\x1b" "c");        /* split so the C compiler does not read \x1bc as one hex escape */
+    CHECK(T.shell_int == SHELLINT_ZSH && strcmp(T.shell_cd_ack, "/etc") == 0,
+          "integration: a reset (ESC c) keeps the announcement, unlike the prompt snapshot");
+    /* What "invalidates" means here: the reset throws the remembered `prompt$ ` row away, and the
+       end-of-burst snapshot then legitimately re-takes the BLANK row the reset left behind. So the anchor
+       moving to column 0 of a cleared screen is the evidence, not prompt_valid == 0 — which would be wrong
+       to expect, since a blank row is a perfectly describable prompt. */
+    CHECK(T.prompt_valid == 1 && T.prompt_cx == 0 && T.cx == 0,
+          "integration: and a reset replaces the remembered prompt with the blank row it left");
+    /* An announcement is an EVENT, not only a kind. The user can put another shell in front of us at the
+       prompt (the scripts wrap a bare `fish`/`bash`/`zsh`) and the outer one announces again when that one
+       exits; main.c has to see it happen, because it is what revives an integration the session had given up
+       on. The kind alone cannot say it: fish -> a nested fish -> back to fish announces three times, one kind. */
+    CHECK(T.shell_int_gen > 0, "integration: an announcement is countable, not just a kind");
+    int gen_before = T.shell_int_gen;
+    feed("\x1b_K;kai-term;integration;fish\x1b\\");
+    CHECK(T.shell_int == SHELLINT_FISH && T.shell_int_gen == gen_before + 1,
+          "integration: the same shell announcing again is still a new announcement");
+    gen_before = T.shell_int_gen;
+    feed("\x1b_K;kai-term;integration;tcsh\x1b\\");
+    CHECK(T.shell_int_gen == gen_before,
+          "integration: an unknown kind is not an announcement — nothing is revived for an unsupported shell");
+    feed("\x1b" "c");
+    CHECK(T.shell_int_gen == gen_before && T.shell_int == SHELLINT_FISH,
+          "integration: a reset keeps the announcement count, so main.c's own copy stays comparable");
+    term_destroy(&T);
+
+    /* The pure parts of src/shellint.c: which shell, which sequence, which command line. */
+    CHECK(shellint_kind_for("/usr/bin/fish") == SHELLINT_FISH &&
+          shellint_kind_for("bash") == SHELLINT_BASH &&
+          shellint_kind_for("-zsh") == SHELLINT_ZSH,
+          "integration: a shell path (and a login shell's leading dash) maps to its kind");
+    CHECK(shellint_kind_for("/bin/sh") == SHELLINT_NONE && shellint_kind_for("") == SHELLINT_NONE &&
+          shellint_kind_for(NULL) == SHELLINT_NONE,
+          "integration: sh, an empty path and a NULL path get no integration — they keep the typed path");
+    {
+        size_t flen = 0, blen = 0, zl = 0;
+        const char *fseq = shellint_seq(SHELLINT_FISH, &flen);
+        const char *bseq = shellint_seq(SHELLINT_BASH, &blen);
+        const char *zseq = shellint_seq(SHELLINT_ZSH, &zl);
+        /* Measured (AGENT.md s91): C-x C-] fires in fish 4.6 AND bash 5.3, is inert in both when unbound, and
+           is unbound by default in both. One sequence, so a nested shell that never announced can never be
+           handed a byte that damages its line (F14 inserts `~` in bash; C-x q inserts `q` in fish). */
+        CHECK(fseq && flen == 2 && memcmp(fseq, "\x18\x1d", 2) == 0,
+              "integration: fish is asked with C-x C-] (measured: one key to fish, inert when unbound)");
+        CHECK(bseq && blen == 2 && memcmp(bseq, "\x18\x1d", 2) == 0,
+              "integration: bash is asked with the SAME bytes (measured: readline runs the handler, inserts nothing)");
+        CHECK(zseq && zl == 2 && memcmp(zseq, fseq, 2) == 0,
+              "integration: zsh gets the same bytes (NOT verified — no zsh on this box)");
+        CHECK(shellint_seq(SHELLINT_NONE, &zl) == NULL && zl == 0,
+              "integration: an unsupported shell has no sequence at all");
+        /* The rule that rules out C-\ (0x1c), which otherwise passes every shell test: `stty -a` on a pty
+           reports it as VQUIT, so a stray write would SIGQUIT whatever owns the terminal. Same for every
+           other control character the line discipline claims. */
+        static const char *special = "\x03\x1c\x7f\x15\x04\x11\x13\x1a\x12\x17\x16\x0f";
+        int clean = 1;
+        for (size_t i = 0; i < flen; i++)
+            for (const char *q = special; *q; q++)
+                if (fseq[i] == *q)
+                    clean = 0;
+        CHECK(clean, "integration: the sequence holds no tty special character (no SIGQUIT, no ^Z, no ^D)");
+    }
+    {
+        char dir[FM_PATH_MAX], req[FM_PATH_MAX + 64], cmd[FM_PATH_MAX * 2];
+        CHECK(shellint_prepare(dir, sizeof dir) == 0 && dir[0] == '/',
+              "integration: the script directory is created and absolute");
+        {
+            struct stat st;
+            char p[FM_PATH_MAX + 64];
+            snprintf(p, sizeof p, "%s/fish.fish", dir);
+            CHECK(stat(p, &st) == 0 && st.st_size > 0, "integration: the fish script is on disk");
+            snprintf(p, sizeof p, "%s/bash.bash", dir);
+            CHECK(stat(p, &st) == 0 && st.st_size > 0, "integration: the bash script is on disk");
+            snprintf(p, sizeof p, "%s/zsh/.zshrc", dir);
+            CHECK(stat(p, &st) == 0 && st.st_size > 0, "integration: the zsh script is on disk");
+            /* The script and shellint_seq() must agree, or Kai-Term sends bytes nobody listens for. Read the
+               files back rather than trusting the constants: this is the only check that catches the two
+               halves drifting apart. */
+            static char ftxt[16384], btxt[16384], ztxt[16384];
+            struct { const char *rel; char *txt; size_t cap; } scripts[3] = {
+                { "fish.fish",  ftxt, sizeof ftxt },
+                { "bash.bash",  btxt, sizeof btxt },
+                { "zsh/.zshrc", ztxt, sizeof ztxt },
+            };
+            int scripts_fit = 1;
+            for (int si = 0; si < 3; si++) {
+                snprintf(p, sizeof p, "%s/%s", dir, scripts[si].rel);
+                FILE *sf = fopen(p, "r");
+                size_t rd = sf ? fread(scripts[si].txt, 1, scripts[si].cap - 1, sf) : 0;
+                if (sf)
+                    fclose(sf);
+                scripts[si].txt[rd] = 0;
+                if (rd == 0 || rd >= scripts[si].cap - 1)
+                    scripts_fit = 0;      /* empty or truncated: the content checks below would be lies */
+            }
+            CHECK(scripts_fit, "integration: every script was read back whole (a truncated read pins nothing)");
+            char *txt = ftxt;             /* the two pre-existing checks keep their shape */
+            size_t rd = strlen(ftxt);
+            CHECK(rd > 0 && strstr(txt, "bind (printf '\\030\\035')") != NULL,
+                  "integration: the fish script binds the bytes shellint_seq() sends");
+            txt = btxt;
+            rd = strlen(btxt);
+            CHECK(rd > 0 && strstr(txt, "bind -x '\"\\C-x\\C-]\"") != NULL,
+                  "integration: the bash script binds the bytes shellint_seq() sends");
+            CHECK(rd > 0 && strstr(txt, "if [ -f \"$HOME/.bashrc\" ]") != NULL,
+                  "integration: the bash script loads the user's own ~/.bashrc first");
+            /* The two things the user asked for on 2026-10-20, pinned in the text that actually ships. No
+               other check sees these: they live in a string the C code never runs, and losing one silently
+               loses the feature (the .scratch/s92 gate proves they work, but only while it is run). */
+            CHECK(strstr(ftxt, "commandline -f repaint") != NULL,
+                  "integration: the fish script repaints the prompt after the cd (measured: it then names the new directory)");
+            CHECK(strstr(ftxt, "functions -q bash") != NULL && strstr(ftxt, "kai_term_nested bash") != NULL,
+                  "integration: the fish script wraps a bare `bash` — and only when the user has no such function");
+            CHECK(strstr(ftxt, "--on-event fish_postexec") != NULL,
+                  "integration: the fish script re-announces after every command (that is what revives a dead one)");
+            CHECK(strstr(btxt, "kai_term_nested bash") != NULL && strstr(btxt, "kai_term_announce") != NULL,
+                  "integration: the bash script wraps the shells and re-announces too");
+            CHECK(strstr(btxt, "PROMPT_COMMAND=") != NULL,
+                  "integration: the bash heartbeat hooks PROMPT_COMMAND — bash's only per-prompt hook");
+            CHECK(strstr(btxt, "commandline -f repaint") == NULL,
+                  "integration: and bash does NOT pretend to repaint (readline cannot; measured, AGENT.md s92)");
+            CHECK(strstr(ztxt, "zle reset-prompt") != NULL && strstr(ztxt, "precmd_functions+=") != NULL,
+                  "integration: the zsh script repaints and re-announces (UNVERIFIED — no zsh on this box)");
+            CHECK(strstr(ftxt, "$KAI_TERM_INT_DIR") != NULL && strstr(btxt, "$KAI_TERM_INT_DIR") != NULL &&
+                  strstr(ztxt, "$KAI_TERM_INT_DIR") != NULL,
+                  "integration: every script can name the others (the nested-shell wrappers pass these paths)");
+            CHECK(stat(dir, &st) == 0 && (st.st_mode & 0777) == 0700,
+                  "integration: the directory is private (0700) — it holds a path the shell will cd into");
+        }
+        shellint_request_path(dir, 3, req, sizeof req);
+        CHECK(strstr(req, "cd-request.3") != NULL,
+              "integration: every session gets its own request file (one band, N shells)");
+        /* main.c numbers sessions with a counter, not the tab index (a freed index is reused, and two live
+           sessions sharing a request file is how one shell ends up in another session's directory). So the id
+           grows past TAB_MAX in a long session and cleanup must still find the file — it scans the directory
+           instead of enumerating indices. */
+        {
+            char big[FM_PATH_MAX + 64];
+            shellint_request_path(dir, 5000, big, sizeof big);
+            CHECK(shellint_write_request(big, "/tmp/far") == 0 && access(big, F_OK) == 0,
+                  "integration: a request file with an id past TAB_MAX can be written");
+        }
+        CHECK(shellint_write_request(req, "/tmp/some dir/with spaces") == 0,
+              "integration: a request path is written even with spaces");
+        {
+            FILE *f = fopen(req, "r");
+            char got[512] = "";
+            if (f) {
+                size_t rd = fread(got, 1, sizeof(got) - 1, f);
+                got[rd] = 0;
+                fclose(f);
+            }
+            CHECK(strcmp(got, "/tmp/some dir/with spaces") == 0,
+                  "integration: what the shell reads is exactly what was asked for, no temp suffix left");
+        }
+        CHECK(shellint_argv(SHELLINT_FISH, dir, req, cmd, sizeof cmd) == 0 &&
+              strstr(cmd, "fish -C 'source") && strstr(cmd, req),
+              "integration: fish is started with -C, which loads the script AFTER the user's config");
+        CHECK(shellint_argv(SHELLINT_BASH, dir, req, cmd, sizeof cmd) == 0 &&
+              strstr(cmd, "bash --rcfile"),
+              "integration: bash is started with --rcfile (our file sources ~/.bashrc first)");
+        CHECK(shellint_argv(SHELLINT_ZSH, dir, req, cmd, sizeof cmd) == 0 &&
+              strstr(cmd, "ZDOTDIR=") && strstr(cmd, "zsh"),
+              "integration: zsh is started with ZDOTDIR at our directory");
+        /* The nested-shell wrappers run `command bash --rcfile $KAI_TERM_INT_DIR/bash.bash`, so every kind
+           must be handed the directory in its environment — a wrapper that cannot find the other scripts
+           starts a shell with NO integration, silently (measured that way in .scratch/s92: no error, no
+           announcement, just a fallback). */
+        int intdir_ok = 1;
+        for (int k = SHELLINT_FISH; k <= SHELLINT_ZSH; k++) {
+            if (shellint_argv(k, dir, req, cmd, sizeof cmd) != 0)
+                intdir_ok = 0;
+            else if (!strstr(cmd, "KAI_TERM_INT_DIR='") || !strstr(cmd, dir))
+                intdir_ok = 0;
+        }
+        CHECK(intdir_ok, "integration: every integrated shell is told where the scripts live");
+        CHECK(shellint_argv(SHELLINT_NONE, dir, req, cmd, sizeof cmd) != 0,
+              "integration: no command line for an unsupported shell — main.c starts it unchanged");
+        shellint_cleanup(dir);
+        {
+            struct stat st;
+            char p[FM_PATH_MAX + 64];
+            snprintf(p, sizeof p, "%s/fish.fish", dir);
+            CHECK(stat(p, &st) != 0 && stat(dir, &st) != 0,
+                  "integration: cleanup removes the scripts AND the request file this test wrote, so "
+                  "nothing is left behind (a stale request file would name a dead session's directory)");
+            snprintf(p, sizeof p, "%s/cd-request.5000", dir);
+            CHECK(stat(p, &st) != 0,
+                  "integration: cleanup scans the directory, so a request file with any id is removed");
+        }
+    }
 
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;

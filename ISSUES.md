@@ -6,8 +6,8 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Re-measured 2026-10-20 (s89):
-`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **746 checks, 0 failures**; `./bin/dbg` **MODEL OK
+**No open bug.** Re-measured 2026-10-20 (s92):
+`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **803 checks, 0 failures**; `./bin/dbg` **MODEL OK
 (0 problems)**; `./bin/test_fm` **247 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
 sanitizer report; `tests/cli_test.sh` 95 checks / 0 failures / 0 skipped when the probe launch can draw (the
@@ -24,14 +24,24 @@ The behaviour the user asked for on 2026-10-19 — clear the prompt, `cd`, put t
 
 Everything else below is current behaviour, not a bug.
 
-The integrated file manager (README "File manager") is built, wired into the window and covered by 235
-model/layout/config checks plus the 719 passing ones in the VT/config suite; its input routing was verified
+The integrated file manager (README "File manager") is built, wired into the window and covered by 247
+model/layout/config checks plus the 803 passing ones in the VT/config suite; its input routing was verified
 live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
 file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
 at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s71-s79 journal
 entries in AGENT.md. The user has run the band in their own window and confirmed its behaviour
 (2026-10-19); **no verdict has been given on how it LOOKS** — that is the one open item, and it belongs to
 the user. Its limits are under "Known limitations" — "File manager".
+
+**Shell integration (2026-10-20, s91-s92) is implemented and verified headless, not yet in the user's window.** A
+file-manager navigation in a fish or bash started by Kai-Term now asks the SHELL to change its own directory:
+no erase, no re-type, no visible `cd`, and the user's half-typed line is byte-identical before and after
+(`.scratch/s90b/intgate.c`: ack in 52-74 ms, `pwd` prints the new directory). Two defects the user reported
+from their own window on 2026-10-20 are fixed and measured: a shell started at the prompt is integrated too
+(see "Known limitations" — "Shell integration"), and in fish the prompt is repainted so it names the new
+directory (in bash it cannot be, and that is documented rather than hacked). Every other shell — and every
+shell the user starts in a way the wrapper cannot see — keeps the typed path unchanged. **No human eye has seen
+either fix yet.**
 
 Image support is confirmed by eye in the user's window (`timg -p k <file.png>`, 2026-10-17) as well as by
 the model tests and the `graphics: N image(s) drawn` log line. Its limits are listed under
@@ -256,16 +266,20 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   shell proves the line empty again. `Return` on a file (which types a path at the
   cursor and sends no newline) asks the same question and refuses on the same evidence — `-d` logs
   `fm: not typing the path — the input line is not one I can describe`.
-- **The injected command cannot be hidden from the screen.** The tty echoes what Kai-Term writes, and
-  discarding those bytes would leave the screen showing something readline believes is not there — its next
-  redraw (`\r\x1b[K…`) would print the command anyway, and everything in between would be a lie. So `cd
-  '<dir>'` appears at your prompt and runs, exactly as if you had typed it. Suppressing it would need the
-  shell's cooperation, not the terminal's.
-- **While a foreground command is running, the follow line waits in the tty input buffer.** Kai-Term cannot
-  tell a shell at a prompt from a shell running `sleep`, so the line is queued: it becomes the next command
-  when that program exits, or is consumed as stdin by one that reads stdin (`cat`, `dc`, …). Browsing while a
-  command that reads stdin is in front of you is the one case where the line can land somewhere unexpected —
-  `fm_follow = 0` avoids it.
+- **The typed `cd` cannot be hidden from the screen — but for an integrated shell there is no typed `cd` at
+  all.** For fish, bash and zsh started by Kai-Term (see "Shell integration" below) the directory change runs
+  inside the shell's own line editor, so nothing is echoed and nothing is typed. For every other shell the old
+  rule still holds: the tty echoes what Kai-Term writes, and discarding those bytes would leave the screen
+  showing something readline believes is not there — its next redraw (`\r\x1b[K…`) would print the command
+  anyway, and everything in between would be a lie. So `cd '<dir>'` appears at your prompt and runs, exactly as
+  if you had typed it. Suppressing it needs the shell's cooperation, which is exactly what the integration is.
+- **The follow only runs when the shell is at its prompt.** Kai-Term cannot tell a shell at a prompt from a
+  shell running `sleep`, so with the typed path the line is queued in the tty input buffer: it becomes the next
+  command when that program exits, or is consumed as stdin by one that reads stdin (`cat`, `dc`, …). Browsing
+  while a command that reads stdin is in front of you is the one case where the line can land somewhere
+  unexpected — `fm_follow = 0` avoids it. The integration path is safer here (its bytes are inert for anything
+  that is not the integrated shell's line editor) but not free: the request is answered only by that shell, so
+  a navigation during another program simply times out and falls back to the typed path.
 - **Kai-Term never opens a file.** `Return` on a file types its quoted path at the prompt and stops there;
   there is no "default application", no shell-out, and no confirmation dialog. Opening things is a decision
   deliberately left to the user.
@@ -302,6 +316,57 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
 - **The band is not part of the terminal's grid.** It is drawn from its own `Cell` arrays through the same
   renderer passes, so it uses the same font, colours and wide-glyph rules — but the terminal's selection,
   scrollback and mouse reporting do not reach it, and text in the preview pane cannot be selected.
+
+**Shell integration (`shell_integration = 1`, the default)**
+
+- **Only a shell Kai-Term started is integrated, and only three kinds are recognised:** fish, bash, zsh, by the
+  program's name (`$SHELL`, or `shell =` in the config; a login shell's leading `-` is ignored). `-e COMMAND`
+  is never wrapped — that command line is what the user asked to run. `sh`, `dash`, `csh`, a `shell =` value
+  carrying arguments, and any shell you start yourself keep the typed path exactly as before.
+- **Kai-Term takes one key sequence: `Ctrl+x Ctrl+]`.** It is unbound by default in fish and in bash (measured:
+  `bind` reports nothing, `bind -p` has no `\C-x\C-]`), inert in both when nothing is bound to it, and free of
+  the tty's own control characters — `C-\` would have been just as inert but `stty -a` reports `quit = ^\`, so a
+  stray write would SIGQUIT whatever owns the terminal. If you bind that pair yourself, Kai-Term's script binds
+  it last and wins; `shell_integration = 0` gives it back.
+- **Kai-Term also defines `fish`, `bash` and `zsh` as shell functions** in an integrated shell, so a bare
+  `bash` typed at an integrated prompt starts an integrated bash (the user asked for this on 2026-10-20:
+  "changing shell in the prompt make it go in fallback mode instead of using the right shell integration").
+  That is visible: `type bash` says it is a function. It is narrow — a command with ANY argument runs exactly
+  as typed (`bash script.sh`, `fish -c …`), and a name the user already defined as a function or alias is
+  never replaced — but `shell_integration = 0` is the way to have none of it. Measured
+  (`.scratch/s90b/intgate nested`): the nested shell announces, the ack arrives in 55 ms, the user's line is
+  untouched, and `pwd` prints the directory the browser moved into.
+- **A shell started where the wrapper cannot see it (`env bash`, `/usr/bin/bash`, `sudo bash`) falls back, and
+  the first attempt costs 400 ms.** It inherits the environment but not the key binding, so it never answers:
+  Kai-Term waits `FM_INT_ACK_MS` (400 ms), logs `fm: no integration ack from … — using the typed path`, marks
+  that session's integration dead, and runs the capture -> Ctrl+U -> `cd` -> re-type machine for that
+  navigation. Later navigations there go straight to the typed path. Measured (`.scratch/s90b/intgate dead`):
+  the user's text survives and the nested prompt reads `/var $ half typed` — no stray character from the
+  sequence, which is what the one-inert-everywhere sequence buys.
+- **A dead integration is revived by the next announcement, not remembered forever.** Each integrated shell
+  re-announces after every command (fish `fish_postexec`, bash `PROMPT_COMMAND`, zsh `precmd_functions`), and
+  the wrapper re-announces when a nested shell exits; `Term.shell_int_gen` counts those announcements and
+  `Tab.int_gen` is what main.c last saw, so leaving the unwrapped shell puts the integration back (measured:
+  `fm: a shell announced again — the integration is used for this session again`, then an ack in 74 ms). A
+  heartbeat was checked not to leak into a command substitution (`.scratch/s92/hbcheck.c`: `set x (echo hi)`
+  gives `x` = `hi`, 2 bytes).
+- **zsh support is written but UNVERIFIED.** zsh is not installed on the development box, so its script (a ZLE
+  widget + `bindkey '^X^]'`, the wrappers, `precmd_functions`) has never been run. If its line editor does not
+  take the binding, the ack never arrives and the typed path runs — the safe direction to be wrong in. Do not
+  describe zsh as tested.
+- **The prompt is repainted where the shell can be asked to repaint it.** fish: `commandline -f repaint` at the
+  end of the handler, measured to re-expand the prompt (the user's report: "the prompt still show /home/kaida
+  but it's only visual") — the prompt row then names the new directory and the typed text is byte-identical.
+  zsh: `zle reset-prompt` (unverified, no zsh here). **bash: it cannot be done, and nothing is pretended** —
+  readline expands the prompt once per `readline()` call, so `C-l` leaves the old directory (measured) and
+  printing `${PS1@P}` over the line garbles it (measured: readline's cached cursor position goes wrong and the
+  old prompt text survives). The only thing that refreshes a bash prompt is submitting a line, which is not
+  Kai-Term's to press. The shell's own directory is correct immediately in every shell (the ack proves it, and
+  `pwd` says so); in bash the prompt string catches up on the next Enter.
+- **The scripts and the request files live in a private directory** (`$XDG_RUNTIME_DIR` else `/tmp`,
+  `mkdtemp`, mode 0700, removed at exit; one `cd-request.<id>` per session, written as a temp file and
+  `rename()`d so the shell can never read a half path). The directory is NEVER part of the control sequence, so
+  a stray sequence can never run a path, and a path can never be guessed into a sequence.
 
 **Rendering / input**
 

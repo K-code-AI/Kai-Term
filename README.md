@@ -37,9 +37,14 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   the same font, colours and cells as the terminal. It shows the directory contents, an image preview
   (PNG, JPEG, WebP, GIF), syntax-highlighted text, or the type, size, dates, owner and permissions of
   anything else, and the shell below follows the directory you browse into, keeping whatever you had already
-  typed at the prompt. The listing starts with a `..`
-  row, one click selects and a double-click opens. One shortcut shows it, another moves the keyboard
-  between the browser and the terminal.
+  typed at the prompt. The listing starts with a `..` row, one click selects and a double-click opens. One
+  shortcut shows it, another moves the keyboard between the browser and the terminal.
+- **Shell integration** — A fish, bash or zsh that Kai-Term starts is loaded with a small script of its own,
+  which lets the file manager ask the shell to change its **own** working directory: your half-typed command is
+  never erased, never re-typed and never sees a `cd`, and the shell confirms the directory it entered. A shell
+  you start at the prompt (`bash` inside fish) is loaded with it too. Any other
+  shell keeps the typed path (capture, erase, `cd`, re-type), and `shell_integration = 0` turns the script off
+  entirely.
 - **Font zoom** — Increase or decrease the font size without resizing the window.
 - **System clipboard** — Copy and paste use the standard Wayland clipboard, so text copied in Kai-Term
   pastes into other applications and text copied anywhere else pastes into Kai-Term.
@@ -214,23 +219,50 @@ either side, because they belong to the window and not to the text. The moment t
 those same keys go to the shell unchanged, so `Up` is still history recall. A thin border marks which region
 has the keyboard.
 
-By default, browsing into a directory also sends `cd '<that directory>'` to the shell, so the prompt lands
-where you are looking (`fm_follow = 0` turns that off). Kai-Term never runs a file for you: `Return` on a
-file only types its path, and you add the command.
+By default, browsing into a directory also moves the shell there, so the prompt lands where you are looking
+(`fm_follow = 0` turns that off). Kai-Term never runs a file for you: `Return` on a file only types its path,
+and you add the command.
 
-**If your line already holds text, the file manager moves it rather than dropping it.** On a navigation it
-captures what you had typed, erases the line, sends the `cd`, and types your text back onto the new prompt —
-so the prompt always ends up in the directory the browser is showing, with your half-typed command intact in
-front of it. Doing that in one write would be unsafe, so each step waits for proof from the shell: the `cd` is
-sent only once the line is seen to be empty, and your text is typed back only after the new prompt has been
-drawn (the shell has gone quiet). Nothing is ever submitted for you — the re-typed text arrives without a
-newline, so it can never run by itself. Repeating the navigation does the same thing again: the text Kai-Term
-put back is erased and put back again, never appended to. `-d` logs each step
-(`fm: clearing the shell's input line to follow the browser into …`, `fm: told the shell to follow: …`,
-`fm: re-typing what was on the line: …`, `fm: the prompt now holds the browser's directory and what you had
-typed`).
+**With fish or bash, the shell does the changing and your line is never touched.** Kai-Term starts a recognised
+shell (fish, bash, zsh) with a small integration script — your own configuration is loaded first, nothing of
+yours is replaced or reordered — and on a navigation it asks that shell to change its **own** directory. The
+request is one key sequence the shell's line editor consumes (`Ctrl+x Ctrl+]`, which fish and bash leave
+unbound by default) and the directory arrives out of band in a private file, so nothing is typed at your prompt,
+nothing is echoed, and your half-typed command stays exactly where it was. The shell then confirms the directory
+it entered, and that confirmation is the only thing Kai-Term believes: `-d` logs
+`fm: shell integration (fish) asked to cd into …` followed by
+`fm: the shell's integration changed directory to … — the line was not touched`. Two things to know: fish
+repaints your prompt, so it names the new directory straight away, while bash cannot (readline expands the
+prompt once per line and no readline command re-expands it mid-line), so in bash the directory in your prompt
+string stays the old one until you press Enter — the shell's working directory has already changed, and `pwd`
+says so; and `shell_integration = 0` turns the whole thing off, which
+starts every shell exactly as before and gives that key sequence back to you. fish and bash are verified on this
+box; zsh uses the same shape (a ZLE widget) but no zsh is installed here, so it is untested rather than proven.
 
-Two cases it will not write through, and in both the browser still moves and your line is left alone:
+**A shell you start at the prompt is integrated too.** The script defines `fish`, `bash` and `zsh` as functions
+that start the real program with the integration loaded, so typing `bash` at an integrated fish prompt gives
+you an integrated bash, and the file manager keeps working inside it without touching your line. Only a bare
+`bash`/`fish`/`zsh` is affected — `bash script.sh` and `fish -c …` run exactly as you typed them — and a name
+you already defined as a function or an alias is never replaced. When that shell exits, the shell underneath
+announces itself again, so the file manager knows which one it is talking to. If you would rather `type bash`
+reported the plain program, `shell_integration = 0` gives you that back.
+
+**Every other shell — and any shell you start yourself — gets the typed path.** With an empty
+line Kai-Term types `cd '<that directory>'` and Enter. **If your line already holds text, the
+file manager moves it rather than dropping it:** on a navigation it captures what you had
+typed, erases the line, sends the `cd`, and types your text back onto the new prompt — so the
+prompt always ends up in the directory the browser is showing, with your half-typed command
+intact in front of it. Doing that in one write would be unsafe, so each step waits for proof
+from the shell: the `cd` is sent only once the line is seen to be empty, and your text is typed
+back only after the new prompt has been drawn (the shell has gone quiet). Nothing is ever
+submitted for you — the re-typed text arrives without a newline, so it can never run by itself.
+Repeating the navigation does the same thing again: the text Kai-Term put back is erased and
+put back again, never appended to. `-d` logs each step (`fm: clearing the shell's input line to
+follow the browser into …`, `fm: told the shell to follow: …`, `fm: re-typing what was on the
+line: …`, `fm: the prompt now holds the browser's directory and what you had typed`).
+
+Two cases the typed path will not write through, and in both the browser still moves and your line is left
+alone:
 
 - A line Kai-Term cannot describe — a command that has wrapped onto a second row, a view scrolled back into
   history, a full-screen program in front, a prompt the shell redrew with different colours, or text too long
@@ -243,6 +275,14 @@ Two cases it will not write through, and in both the browser still moves and you
 
 If a sequence cannot finish within two seconds it is dropped rather than left hanging, and the log says which
 step it stopped at and what had been captured.
+
+A shell started in a way the script cannot see (`env bash`, `/usr/bin/bash`, `sudo bash`) has the environment
+but not the key binding, so it never answers: Kai-Term waits 400 ms, logs
+`fm: no integration ack from … — using the typed path`, and falls back to the typed path for that navigation.
+Later navigations in that same shell go straight to the typed path, and as soon as an integrated shell is back
+at the prompt the integration is used again — every integrated shell repeats its announcement after each
+command, which is what tells Kai-Term who is reading the line. The sequence is inert in every supported
+shell, so a shell that is not listening simply ignores it — nothing lands on your line.
 
 To have the band up from startup, set `file_manager = 1` in the configuration file.
 
@@ -273,6 +313,7 @@ Settings use a simple `key = value` format.
 | `opacity` | `1.0` | Window opacity |
 | `padding` | `8` | Pixels of margin between the window edge and the first/last row and column (`0` puts the text flush against the edge). Applied on all four sides; pixels left over by whole cells still go to the bottom and right |
 | `shell` | Empty | Shell to run; defaults to `$SHELL` |
+| `shell_integration` | `1` | Start a recognised shell (fish, bash, zsh) with Kai-Term's integration script, so the file manager can ask the shell to change its own directory instead of typing `cd` at your prompt, and so a bare `bash`/`fish`/`zsh` you run at the prompt is integrated as well (`0` starts every shell exactly as before) |
 | `working_dir` | Empty | Startup directory; defaults to the home directory |
 | `app_id` | `Kai-Term` | Wayland app ID reported to the compositor (window rules, taskbar grouping) |
 | `clear_scrollback` | `1` | Clear history when `clear` is used |

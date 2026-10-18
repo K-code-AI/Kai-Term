@@ -114,6 +114,15 @@ static Config conf;
 static const char *opt_cmd = NULL;   /* -e/--exec: argv storage lives until exit, so const is fine */
 static const char *g_cmd = NULL;     /* what every session runs (opt_cmd, config shell, or NULL) */
 static char g_wdir[4096];            /* resolved startup directory, reused by every new tab */
+/* Shell integration (src/shellint.c): the private per-instance directory holding the three shell scripts.
+   Created once at startup when shell_integration = 1, removed on the way out. Empty means "running without
+   integration", which is exactly how every session behaved before the feature existed — every code path that
+   could use it checks this first. */
+static char g_intdir[FM_PATH_MAX];
+/* Session ids for the request files. A counter, deliberately NOT the tab index: mux_close() shifts the array
+   down and a new tab reuses the freed index, so two live sessions could otherwise share one request file and
+   one of them would cd into a directory the other asked for. */
+static int g_int_seq;
 static int base_font_size;      /* configured size, restored by Ctrl+0 */
 
 /* How this window's pixels are shared: the tab-bar strip, one rect per session, and the grid size every
@@ -168,8 +177,8 @@ static char fm_last_cd[FM_PATH_MAX];
    SAFETY PROPERTY: the `cd` is sent only from ERASING/CDING, and only when term_at_prompt() says the line
    is empty, so "runs a mangled command" is closed by construction rather than by trusting a key binding.
    One per window, because one window has one file manager. */
-enum { FMCD_IDLE = 0, FMCD_ERASING, FMCD_CDING, FMCD_RETYPING };
-static const char *const fm_cd_state_name[] = { "idle", "erasing", "cd", "re-typing" };
+enum { FMCD_IDLE = 0, FMCD_INTEGRATION, FMCD_ERASING, FMCD_CDING, FMCD_RETYPING };
+static const char *const fm_cd_state_name[] = { "idle", "integration", "erasing", "cd", "re-typing" };
 static int fm_cd_state = FMCD_IDLE;
 static int fm_cd_tab = -1;              /* the session the sequence belongs to */
 static char fm_cd_line[FM_LINE_MAX];    /* what the user had typed, captured before the erase */
@@ -196,6 +205,12 @@ static uint64_t fm_cd_last_burst;       /* CLOCK_MONOTONIC ms of the last output
    shell is at its prompt when it has finished printing; after this much silence the snapshot the model
    holds IS the prompt, by construction. */
 #define FMCD_QUIET_MS 150
+/* How long to wait for an integrated shell to confirm the directory it entered. Measured (s91, real fish 4.6
+   and bash 5.3 in a real pty): the ack comes back within tens of milliseconds of the request. 400 ms is far
+   above that and still short enough that a shell which never answers — a nested shell, a script the user
+   overrode, an old script — falls back to the typed path well inside one keystroke of patience. The wait
+   costs nothing the user sees: no erase, no re-type, and the fallback runs by itself. */
+#define FM_INT_ACK_MS 400
 static void fm_cd_abort(const char *why);
 
 static uint64_t mono_ms(void)
@@ -639,7 +654,12 @@ static int tab_for_child(pid_t pid)
 }
 
 /* Start a session's shell and put its master in epoll. Shared by the first tab (spawned during
-   startup) and every later one (key_new_tab). */
+   startup) and every later one (key_new_tab).
+
+   With shell_integration = 1 a recognised shell is started through shellint_argv() instead of bare: the
+   command line carries the session's request file in the environment and tells the shell to load Kai-Term's
+   script, which is what lets a later navigation ask the shell to change its OWN directory. Everything else
+   (an unsupported shell, `-e COMMAND`, integration off, no script directory) is spawned exactly as before. */
 static int tab_spawn(Tab *tb)
 {
     /* The cell size goes into the Pty BEFORE the spawn. pty_spawn's first TIOCSWINSZ is the geometry
@@ -650,7 +670,32 @@ static int tab_spawn(Tab *tb)
        here: it re-issues an ioctl and there is no master fd yet. */
     tb->pty.cell_w = font.cell_w > 0 ? font.cell_w : 0;
     tb->pty.cell_h = font.cell_h > 0 ? font.cell_h : 0;
-    if (pty_spawn(&tb->pty, g_cmd, tb->term.g.rows, tb->term.g.cols, g_wdir) < 0)
+
+    const char *cmd = g_cmd;
+    tb->int_dead = 0;
+    tb->int_gen = 0;          /* the fresh Term has seen no announcement either */
+    if (conf.shell_integration && g_intdir[0] && !(opt_cmd && opt_cmd[0])) {
+        /* `-e COMMAND` is not a shell we can integrate with: it is whatever the user asked to run, and
+           wrapping it in a shell that loads our script would change what they asked for. */
+        const char *sh = conf.shell[0] ? conf.shell : getenv("SHELL");
+        int kind = shellint_kind_for(sh);
+        if (kind != SHELLINT_NONE) {
+            char line[FM_PATH_MAX * 2 + 256];
+            int id = g_int_seq++;
+            shellint_request_path(g_intdir, id, tb->cd_req, sizeof tb->cd_req);
+            if (shellint_argv(kind, g_intdir, tb->cd_req, line, sizeof line) == 0) {
+                cmd = line;      /* lives on the stack until pty_spawn() is done with it (the child gets a
+                                    copy across fork, and the parent only reads it before exec) */
+                klog(L_INFO, "shell integration: session %d runs %s with the Kai-Term script (request file %s)",
+                     id, shellint_name(kind), tb->cd_req);
+            } else {
+                tb->cd_req[0] = 0;
+                klog(L_WARN, "shell integration: no command line for %s — this session keeps the typed path",
+                     shellint_name(kind));
+            }
+        }
+    }
+    if (pty_spawn(&tb->pty, cmd, tb->term.g.rows, tb->term.g.cols, g_wdir) < 0)
         return -1;
     struct epoll_event ev = { .events = EPOLLIN, .data.fd = tb->pty.mfd };
     if (g_ep >= 0 && epoll_ctl(g_ep, EPOLL_CTL_ADD, tb->pty.mfd, &ev) != 0) {
@@ -987,6 +1032,59 @@ static void fm_cd_write(Term *t, Pty *p, const char *dir)
     klog(L_DEBUG, "fm: told the shell to follow: cd %s", dir);
 }
 
+/* Ask the shell to change its OWN directory — the path that leaves the user's line completely alone.
+   The directory travels in this session's request file and the sequence carries no data at all, so a stray
+   sequence can never run a path and a path can never be guessed into a sequence. Nothing is used from the
+   shell's reply except a comparison with what was asked for. Returns 1 when the request was sent (the ack
+   decides the rest, in fm_cd_advance), 0 when this session must have the typed path instead. */
+static int fm_int_try(Tab *tb, Term *t, Pty *p, const char *dir)
+{
+    if (!conf.shell_integration || !g_intdir[0] || !tb || !tb->cd_req[0])
+        return 0;
+    /* A shell that announces is a shell that listens, and the user can put a different one in front of us at
+       any moment: the scripts wrap a bare `fish`/`bash`/`zsh`, so a nested shell announces when it starts and
+       the outer one announces again when it exits. Either way Term.shell_int_gen moves, and that REVIVES an
+       integration this session had given up on — int_dead describes the shell that was reading the line then,
+       not the session forever. The kind alone cannot say this (fish -> a nested fish -> back to fish announces
+       three times with the same kind). */
+    if (t->shell_int_gen != tb->int_gen) {
+        if (tb->int_dead)
+            klog(L_DEBUG, "fm: a shell announced again — the integration is used for this session again");
+        tb->int_dead = 0;
+        tb->int_gen = t->shell_int_gen;
+    }
+    /* Two ways this session has no working integration: its shell never announced (an unsupported shell, or
+       one started before the script existed), and one that announced and then stopped answering — which is
+       what a nested shell looks like (a plain bash started inside an integrated fish has the environment but
+       not the key binding). The second is remembered so the bytes are not sprayed at the same reader on every
+       later navigation; the sequence is inert, so the cost of being wrong that way is a delay, not damage. */
+    if (t->shell_int == SHELLINT_NONE || tb->int_dead)
+        return 0;
+    size_t len = 0;
+    const char *seq = shellint_seq(t->shell_int, &len);
+    if (!seq || !len)
+        return 0;
+    if (shellint_write_request(tb->cd_req, dir) != 0) {
+        tb->int_dead = 1;          /* the channel itself is broken; stop using it for this session */
+        klog(L_WARN, "fm: shell integration could not be asked for %s — using the typed path", dir);
+        return 0;
+    }
+    /* Deliberately NOT input_write()/term_note_input(): those open the echo window, which is for bytes whose
+       echo may appear on the user's line. These bytes are consumed by the shell's line editor and never
+       echoed, so opening the window would only make term_at_prompt() answer "not empty" for no reason and
+       hold the follow shut behind that proof. The ack is the evidence here, not the echo. */
+    term_shell_cd_ack_clear(t);
+    pty_write(p, seq, len);
+    fm_cd_state = FMCD_INTEGRATION;
+    fm_cd_tab = mux_active(&mux);
+    snprintf(fm_cd_dir, sizeof fm_cd_dir, "%s", dir);
+    fm_cd_line[0] = 0;                  /* nothing was captured — there is nothing to put back */
+    fm_cd_docrow = -1;
+    fm_cd_deadline = mono_ms() + FM_INT_ACK_MS;
+    klog(L_DEBUG, "fm: shell integration (%s) asked to cd into %s", shellint_name(t->shell_int), dir);
+    return 1;
+}
+
 static void fm_send_cd(const char *dir)
 {
     Term *t = cur_term();
@@ -1011,6 +1109,12 @@ static void fm_send_cd(const char *dir)
         return;
     }
     if (!strcmp(fm_last_cd, dir))
+        return;
+    /* Integration first: when THIS session's shell announced Kai-Term's script, ask IT to move. Nothing is
+       typed, so the user's half-typed line is never captured, never erased and never re-typed — that is the
+       whole reason this path exists. Everything else (no announcement, integration off, a dead integration,
+       an unwritable request file) falls through to the machine below, which is unchanged. */
+    if (fm_int_try(mux_cur(&mux), t, p, dir))
         return;
     /* Fast path: the line is provably empty, so nothing has to be erased first. */
     if (term_at_prompt(t)) {
@@ -1075,6 +1179,28 @@ static void fm_cd_abort(const char *why)
     fm_cd_docrow = -1;
 }
 
+/* The integrated shell never confirmed the directory. Stop believing the integration for this session — a
+   nested shell (a plain bash started inside an integrated fish) has the environment but not the key binding,
+   and asking it again on every navigation would only add a delay — and run the machine that types, which is
+   what handled this navigation before integration existed. Nothing was erased and nothing was captured, so
+   there is nothing to lose here; the user's line is exactly as they left it either way. */
+static void fm_int_failed(void)
+{
+    int ti = fm_cd_tab;
+    char dir[FM_PATH_MAX];
+    snprintf(dir, sizeof dir, "%s", fm_cd_dir);
+    const char *kind = "the shell";
+    if (ti >= 0 && ti < mux_count(&mux)) {
+        kind = shellint_name(mux.tab[ti].term.shell_int);
+        mux.tab[ti].int_dead = 1;
+    }
+    klog(L_DEBUG, "fm: no integration ack from %s — using the typed path", kind);
+    fm_cd_state = FMCD_IDLE;
+    fm_cd_tab = -1;
+    fm_cd_dir[0] = 0;
+    fm_send_cd(dir);
+}
+
 /* Advance the sequence after one burst of that session's output. This is where it moves, because the only
    evidence that an erase or a `cd` landed is what the shell printed next. Called for every session; a
    sequence belongs to exactly one of them. `burst` says whether this call was caused by that output (1) or
@@ -1091,7 +1217,10 @@ static void fm_cd_advance(int ti, int burst)
         fm_cd_last_burst = mono_ms();
 
     if (mono_ms() >= fm_cd_deadline) {
-        fm_cd_abort("the wait ran out");
+        if (fm_cd_state == FMCD_INTEGRATION)
+            fm_int_failed();
+        else
+            fm_cd_abort("the wait ran out");
         return;
     }
     if (t->alt_screen) {
@@ -1099,6 +1228,20 @@ static void fm_cd_advance(int ti, int burst)
         return;
     }
     switch (fm_cd_state) {
+    case FMCD_INTEGRATION:
+        /* The ONLY evidence is the shell's own ack naming the directory it entered. What it printed around
+           the request says nothing: a prompt redraw is not proof of a cd, and the request produced no echo to
+           wait for. Until the ack names THIS navigation's directory there is nothing to do — the deadline
+           turns the silence into the typed path. */
+        if (!t->shell_cd_ack[0] || strcmp(t->shell_cd_ack, fm_cd_dir))
+            return;
+        snprintf(fm_last_cd, sizeof fm_last_cd, "%s", fm_cd_dir);
+        fm_cd_state = FMCD_IDLE;
+        fm_cd_tab = -1;
+        fm_cd_dir[0] = 0;
+        klog(L_DEBUG, "fm: the shell's integration changed directory to %s — the line was not touched",
+             fm_last_cd);
+        return;
     case FMCD_ERASING:
         /* term_at_prompt() here is not a convenience: it is the PROOF that the line is empty again — the
            row matches the remembered prompt and no bytes of ours are outstanding. Until then the `cd`
@@ -1180,7 +1323,10 @@ static void fm_cd_tick(void)
     if (fm_cd_state == FMCD_IDLE)
         return;
     if (mono_ms() >= fm_cd_deadline) {
-        fm_cd_abort("the wait ran out");
+        if (fm_cd_state == FMCD_INTEGRATION)
+            fm_int_failed();
+        else
+            fm_cd_abort("the wait ran out");
         return;
     }
     if (fm_cd_state == FMCD_CDING && mono_ms() - fm_cd_last_burst >= FMCD_QUIET_MS)
@@ -2722,6 +2868,17 @@ int main(int argc, char **argv)
     mux_init(&mux, conf.max_tabs);
     g_cmd = opt_cmd && opt_cmd[0] ? opt_cmd : (conf.shell[0] ? conf.shell : NULL);
     snprintf(g_wdir, sizeof(g_wdir), "%s", wdir);
+    /* The integration scripts exist before the first shell starts, because the command line that loads them
+       is built per session in tab_spawn(). A failure here is not fatal and not retried: g_intdir stays empty
+       and every session is spawned exactly as it was before this feature. */
+    if (conf.shell_integration) {
+        if (shellint_prepare(g_intdir, sizeof g_intdir) == 0)
+            klog(L_INFO, "shell integration: scripts written to %s (fish, bash, zsh)", g_intdir);
+        else
+            klog(L_WARN, "shell integration: off for this run — the script directory could not be created");
+    } else {
+        klog(L_INFO, "shell integration: off (shell_integration = 0)");
+    }
     if (mux_open(&mux, conf.rows, conf.cols, conf.scrollback) < 0)
         return 1;
     cur_term()->pen.bg = conf.bg;
@@ -3041,6 +3198,9 @@ int main(int argc, char **argv)
     }
     font_destroy(&font);
     fm_shutdown();
+    /* The scripts and every request file go with the process: a leftover request file would let a later
+       shell cd into a directory someone asked for in a session that no longer exists. */
+    shellint_cleanup(g_intdir);
     close(tfd);
     close(sfd);
     if (pwfd >= 0)

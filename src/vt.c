@@ -2741,6 +2741,56 @@ static void kitty_apc(Term *t, const char *s)
 
 /* ---------- APC / DCS parser states ---------- */
 
+/* Kai-Term's own APC channel: `ESC _ K ; kai-term ; <what> [ ; <text> ] ST`, written by the shell
+   integration script (src/shellint.c) to its own stdout, which is this session's pty. Two messages:
+   `integration;<kind>` — "this shell loaded the script, the fast path is available" — and `cd;<dir>` —
+   "I, the shell, changed my own directory to <dir>". The second is the only evidence Kai-Term gets that a
+   `cd` request actually reached a shell that was listening, which is what makes the request safe to prefer
+   over typing at the prompt: if it does not arrive, main.c falls back to the typed path. Nothing here is
+   trusted beyond "a shell of this kind is listening": the directory in an ack is compared with the one
+   Kai-Term asked for, never used as an instruction. */
+/* The shell's `cd` ack is one slot, so it answers for exactly one request. main.c clears it before sending a
+   new request; without that, a navigation back to a directory the shell entered earlier would be "confirmed"
+   by the old ack and the follow would believe a request nobody answered. */
+void term_shell_cd_ack_clear(Term *t)
+{
+    t->shell_cd_ack[0] = 0;
+}
+
+static void kai_apc(Term *t, const char *p)
+{
+    /* The kind byte ('K') is consumed by the parser and is NOT part of the payload, so the payload of
+       `ESC _ K ; kai-term ; cd ; /etc ST` arrives as `;kai-term;cd;/etc`. */
+    if (p[0] == ';')
+        p++;
+    if (strncmp(p, "kai-term;", 9) != 0)
+        return;                       /* some other program's APC that happens to start with 'K' */
+    p += 9;
+    if (strncmp(p, "integration;", 12) == 0) {
+        const char *kind = p + 12;
+        int k = SHELLINT_NONE;
+        if (!strcmp(kind, "fish"))       k = SHELLINT_FISH;
+        else if (!strcmp(kind, "bash"))  k = SHELLINT_BASH;
+        else if (!strcmp(kind, "zsh"))   k = SHELLINT_ZSH;
+        if (k == SHELLINT_NONE) {
+            klog(L_WARN, "shell integration: a shell announced an unknown kind '%s', ignoring it", kind);
+            return;
+        }
+        if (t->shell_int != k)
+            klog(L_INFO, "shell integration: %s announced itself", shellint_name(k));
+        t->shell_int = k;
+        /* Every announcement is an event main.c must be able to see, even when the kind does not change
+           (fish -> a nested fish -> back to fish): that is how a session whose integration had stopped
+           answering learns that a shell is listening again. See Tab.int_gen. */
+        t->shell_int_gen++;
+        return;
+    }
+    if (strncmp(p, "cd;", 3) == 0) {
+        snprintf(t->shell_cd_ack, sizeof(t->shell_cd_ack), "%s", p + 3);
+        return;
+    }
+}
+
 static void apc_end(Parser *ps)
 {
     Term *t = ps->t;
@@ -2750,6 +2800,8 @@ static void apc_end(Parser *ps)
         klog(L_WARN, "graphics: APC payload over %u bytes, discarded", APC_BYTES_MAX);
     } else if (ps->apc_kind == 'G' && ps->apc_len) {
         kitty_apc(t, ps->apc);
+    } else if (ps->apc_kind == 'K' && ps->apc_len) {
+        kai_apc(t, ps->apc);
     }
     ps->apc_len = 0;
     ps->apc_drop = 0;
@@ -2881,7 +2933,22 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
             case 'E': linefeed(t); t->cx = 0; break;
             case '7': t->save_cx = t->cx; t->save_cy = t->cy; break;
             case '8': set_cursor_pos(t, t->save_cy, t->save_cx); break;
-            case 'c': term_init(t, t->g.rows, t->g.cols, t->g.scrollback_max); break;
+            case 'c': {
+                /* A reset rebuilds Term from scratch. The shell integration announcement is the one piece
+                   of state that must survive it: the script announces ONCE, at shell startup, so dropping it
+                   here would silently disable the integration path for the rest of the session after a
+                   `reset` (or any program that sends ESC c). Everything else about the shell's line is
+                   genuinely invalidated by a reset and is dropped, as it should be. */
+                int saved_int = t->shell_int;
+                int saved_gen = t->shell_int_gen;
+                char saved_ack[FM_PATH_MAX];
+                memcpy(saved_ack, t->shell_cd_ack, sizeof(saved_ack));
+                term_init(t, t->g.rows, t->g.cols, t->g.scrollback_max);
+                t->shell_int = saved_int;
+                t->shell_int_gen = saved_gen;   /* main.c's Tab.int_gen is still the one it saw */
+                memcpy(t->shell_cd_ack, saved_ack, sizeof(saved_ack));
+                break;
+            }
             case '(': case ')': case '*': case '+': ps->state = PS_IGNORE; break;
             default: break;
             }

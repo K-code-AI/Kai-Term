@@ -58,6 +58,12 @@ int mux_open(Mux *m, int rows, int cols, int scrollback)
     t->pty.rows = rows;
     t->pty.cols = cols;
     t->attention = 0;
+    /* Shell integration belongs to the session, not to the slot: main.c fills these when it spawns the shell.
+       A reused slot must not inherit the previous session's request path — a stale path would have the new
+       shell read a directory someone else asked for. */
+    t->cd_req[0] = 0;
+    t->int_dead = 0;
+    t->int_gen = 0;        /* matches the fresh Term's shell_int_gen = 0: nothing announced yet */
     m->active = i;      /* a new tab is the one the user is looking at */
     return i;
 }

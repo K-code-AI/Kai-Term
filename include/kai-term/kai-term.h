@@ -221,6 +221,15 @@ typedef struct Grid {
 
 #define GRID_VALID 0x67726964   /* 'g','r','i','d' */
 
+/* Sizes and kinds a struct below needs before the section that introduced them appears. FM_PATH_MAX is the
+   cap for every path in the program — the file manager's, the shell integration's, a session's remembered
+   shell directory — so it lives here rather than in the file-manager block, which comes later. */
+#define FM_PATH_MAX   4096            /* a directory or file path (matches Config.working_dir) */
+
+/* Shell integration kinds: the shell announces one of these over Kai-Term's APC channel and Term.shell_int
+   holds it (see the Term fields and src/shellint.c). */
+enum { SHELLINT_NONE = 0, SHELLINT_FISH, SHELLINT_BASH, SHELLINT_ZSH };
+
 typedef struct Term {
     Grid g;
     int cx, cy;            /* cursor, viewport coords (0-based) */
@@ -283,11 +292,32 @@ typedef struct Term {
        src/vt.c. */
     Cell *prompt_row;
     int   prompt_cols, prompt_cx, prompt_cy, prompt_valid, input_pending;
+    /* Shell integration (src/shellint.c): a shell that loaded Kai-Term's integration script announces
+       itself over Kai-Term's own APC channel (`ESC _ K ; kai-term ; integration ; <kind> ST`), and Kai-Term
+       then asks IT to change directory instead of typing `cd` at the prompt. shell_int is 0 until that
+       announcement arrives for THIS session, so an un-integrated shell keeps the old typed path. It is
+       deliberately preserved across a reset (ESC c), which memsets Term: the script announces once, at
+       shell startup, and a `reset` must not silently drop the feature. shell_cd_ack holds the directory the
+       integration last confirmed it entered ('' = nothing confirmed yet) — main.c compares it with the
+       directory it asked for, which is the only evidence that the control sequence really reached a shell
+       that was listening. */
+    int  shell_int;                 /* SHELLINT_NONE / _FISH / _BASH / _ZSH */
+    char shell_cd_ack[FM_PATH_MAX];
+    /* Counts the announcements this session has made. A shell that starts inside another one announces too
+       (the scripts wrap a bare `fish`/`bash`/`zsh`), and so does the outer one when the nested shell exits,
+       so "a shell announced" is an EVENT, not just a kind — main.c needs it to REVIVE an integration it had
+       given up on (`Tab.int_dead`), which a kind alone cannot express (fish -> fish announces twice with the
+       same kind). It survives a reset with the announcement itself: both are one fact about the shell. */
+    int  shell_int_gen;
     /* Terminal query responses (CPR, DA1, DA2) queued for the PTY. */
     char resp[256];
     int resp_len;
 } Term;
 
+/* The last directory the shell said it entered (its `cd` ack). main.c compares this with the directory the
+   file manager asked for; that comparison is the only evidence the integration has. Clear it before asking
+   for a new directory, or the previous navigation's ack answers for this one. */
+void term_shell_cd_ack_clear(Term *t);
 /* grid */
 void grid_init(Grid *g, int rows, int cols, int scrollback);
 /* Resize the viewport. A column-count change REFLOWS: soft-wrapped rows are joined back into their
@@ -521,6 +551,11 @@ typedef struct Config {
     uint32_t fg, bg, cursor_color;
     float opacity;         /* 0..1 */
     char shell[256];
+    /* 1 (default): a recognised shell (fish, bash, zsh) is started with Kai-Term's integration script, which
+       gives the file manager a way to ask the SHELL to change its own directory instead of Kai-Term typing
+       `cd` at the prompt (src/shellint.c). 0 = every shell is started exactly as it was before this feature
+       and the file manager only ever types. An unrecognised shell is never given the script either. */
+    int  shell_integration;
     char working_dir[4096]; /* shell's starting directory; empty => $HOME */
     char app_id[128];       /* xdg-shell app_id the compositor uses to identify/match the window */
     int  clear_scrollback; /* 1 (default): CSI 3 J erases the scrollback buffer */
@@ -616,6 +651,21 @@ typedef struct Tab {
        while hidden is findable. src/main.c only sets it for a session that is NOT drawn at all — a pane the
        user can see needs no mark. */
     int  attention;
+    /* Shell integration (src/shellint.c), per session because one window has N shells and each was started
+       with its own request file: `cd_req` is the file THIS session's shell reads the wanted directory from
+       (empty = this session was started without integration — an unsupported shell, `-e COMMAND`, or
+       shell_integration = 0), and `int_dead` records that the announced integration stopped answering, which
+       is what a nested shell (a plain bash started inside an integrated fish) looks like from here. Both
+       travel with the Tab struct when mux_close() shifts the array, which is why they live here and not in a
+       side array indexed by tab number — the index a session had at spawn time is not the index it has after
+       an earlier tab closes. */
+    char cd_req[FM_PATH_MAX];
+    int  int_dead;
+    /* The last `Term.shell_int_gen` this session saw. main.c compares the two: a new announcement means a
+       different shell is now reading the line (the user started one, or a nested one just exited), and that
+       revives `int_dead` — without it, the first shell that failed to answer would keep the whole session on
+       the typed path even after an integrated one announced. Travels with the Tab like the two above. */
+    int  int_gen;
 } Tab;
 
 typedef struct Mux {
@@ -774,6 +824,48 @@ void layout_grid_size(const Layout *l, int *cols, int *rows);
 void layout_initial_size(int cols, int rows, int cell_w, int cell_h, int pad, int gap, int bar,
                          int fm_on, int fm_size, int *win_w, int *win_h);
 
+/* ---------- shell integration (src/shellint.c) ----------
+   Kai-Term has exactly one channel to the shell: the pty's input stream. So "change the shell's directory
+   without disturbing what the user is typing" cannot mean a side channel — it means the shell's OWN line
+   editor must consume the bytes as a key binding (nothing is inserted, nothing is echoed) and the directory
+   must travel out of band, in a file. shellint_prepare() writes one script per supported shell into a
+   private per-instance directory; shellint_argv() builds the command line that starts the shell so it loads
+   that script without replacing the user's own configuration; the script announces itself over Kai-Term's
+   APC channel (see kai_apc in src/vt.c), which is what lets main.c prefer this path and fall back to typing
+   `cd` at the prompt for every shell that never announced. The directory is NEVER part of the sequence, so a
+   stray sequence can never run a path. */
+
+/* "fish" / "bash" / "zsh" / "none" — for logs and for the APC announcement. */
+const char *shellint_name(int kind);
+/* Which integration a shell path supports (basename match, and a login shell's leading dash is ignored).
+   SHELLINT_NONE for anything else, including sh, dash, csh, and a full command line given with -e. */
+int shellint_kind_for(const char *shell_path);
+/* The control sequence that triggers the shell's handler, as bytes. Measured (AGENT.md s90 + s91): it must be
+   (a) something the shell's reader parses as ONE key — fish does not match arbitrary literal byte sequences —
+   (b) inert in EVERY supported shell when the binding is absent, so a stray write cannot type garbage at the
+   user's prompt (this is what bounds the damage when a nested shell, which never announced, is the one
+   reading), (c) unbound by default, so Kai-Term takes a key from nobody, and (d) free of the tty's special
+   control characters — `stty -a` on a pty reports `quit = ^\`, so a sequence containing 0x1c would SIGQUIT
+   whatever owns the terminal whenever the shell is not reading it. C-x C-] (0x18 0x1d) satisfies all four in
+   fish and bash, so there is ONE sequence, not a per-shell table; `kind` is kept because a future shell may
+   need its own. zsh gets the same bytes but is NOT verified (no zsh on this box). */
+const char *shellint_seq(int kind, size_t *len);
+/* Create the private directory and write every script into it. `dir` receives the path. Returns 0 on
+   success; on any failure nothing is created and the caller must run without integration. */
+int shellint_prepare(char *dir, size_t cap);
+/* Remove what shellint_prepare() made. Safe to call with an empty or already-removed path. */
+void shellint_cleanup(const char *dir);
+/* The request file for one session: the shell reads the directory to enter from here. `session` is an id that
+   must never repeat within one run — NOT the tab index, which is reused when a tab closes and the array
+   shifts. */
+void shellint_request_path(const char *dir, int session, char *out, size_t cap);
+/* Write `path` into that session's request file (atomically: temp + rename, so the shell can never read a
+   half-written path). 0 on success. */
+int shellint_write_request(const char *req_path, const char *path);
+/* The command line to hand pty_spawn() (which runs it through /bin/sh -c) so the shell loads the
+   integration. Returns 0 and fills `cmd` when `kind` is supported. */
+int shellint_argv(int kind, const char *dir, const char *req_path, char *cmd, size_t cap);
+
 /* ---------- file manager (src/fm.c) ----------
    An in-window browser: a listing of one directory, a context-sensitive preview of the selected entry,
    and the ordinary terminal below them. fm.c is MODEL ONLY — no Wayland, no EGL, no threads, no
@@ -784,7 +876,6 @@ void layout_initial_size(int cols, int rows, int cell_w, int cell_h, int pad, in
    grids, which is what makes them read as part of the terminal: the renderer draws them with the same
    font, colours and passes it uses for a session's grid. */
 
-#define FM_PATH_MAX   4096            /* a directory or file path (matches Config.working_dir) */
 #define FM_NAME_MAX   256             /* one entry's name (NAME_MAX is 255 on Linux) */
 #define FM_ERR_MAX    256             /* one human-readable error line */
 #define FM_ENTRIES_MAX 8192           /* entries one listing keeps; the rest are dropped with a warning */
