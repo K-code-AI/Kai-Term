@@ -36,7 +36,8 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
 - **File manager** — A browser and a live preview pane can be split into the top of the window, drawn with
   the same font, colours and cells as the terminal. It shows the directory contents, an image preview
   (PNG, JPEG, WebP, GIF), syntax-highlighted text, or the type, size, dates, owner and permissions of
-  anything else, and the shell below follows the directory you browse into. The listing starts with a `..`
+  anything else, and the shell below follows the directory you browse into, keeping whatever you had already
+  typed at the prompt. The listing starts with a `..`
   row, one click selects and a double-click opens. One shortcut shows it, another moves the keyboard
   between the browser and the terminal.
 - **Font zoom** — Increase or decrease the font size without resizing the window.
@@ -212,10 +213,31 @@ By default, browsing into a directory also sends `cd '<that directory>'` to the 
 where you are looking (`fm_follow = 0` turns that off). Kai-Term never runs a file for you: `Return` on a
 file only types its path, and you add the command.
 
-**Neither of those two lines is sent unless the terminal is sitting at an untouched prompt.** If you have
-started typing a command, recalled one from history or pasted something, the file manager leaves your line
-alone and logs why (`fm: not telling the shell to follow — its input line is not empty`). Clear the line,
-or press Enter, and the next navigation goes through again.
+**If your line already holds text, the file manager moves it rather than dropping it.** On a navigation it
+captures what you had typed, erases the line, sends the `cd`, and types your text back onto the new prompt —
+so the prompt always ends up in the directory the browser is showing, with your half-typed command intact in
+front of it. Doing that in one write would be unsafe, so each step waits for proof from the shell: the `cd` is
+sent only once the line is seen to be empty, and your text is typed back only after the new prompt has been
+drawn (the shell has gone quiet). Nothing is ever submitted for you — the re-typed text arrives without a
+newline, so it can never run by itself. Repeating the navigation does the same thing again: the text Kai-Term
+put back is erased and put back again, never appended to. `-d` logs each step
+(`fm: clearing the shell's input line to follow the browser into …`, `fm: told the shell to follow: …`,
+`fm: re-typing what was on the line: …`, `fm: the prompt now holds the browser's directory and what you had
+typed`).
+
+Two cases it will not write through, and in both the browser still moves and your line is left alone:
+
+- A line Kai-Term cannot describe — a command that has wrapped onto a second row, a view scrolled back into
+  history, a full-screen program in front, a prompt the shell redrew with different colours, or text too long
+  to hold. It logs `fm: not telling the shell to follow — its input line is not one I can describe`.
+- A cursor parked in the **middle** of a command. The erase is Ctrl+U, which erases backwards from the cursor,
+  so the text right of it would survive and the `cd` would run in front of it. Kai-Term then proves the line
+  empty, fails, and drops the sequence instead of writing; the captured text is printed in the log so you can
+  put it back by hand. A shell's autosuggestion ghost (fish's grey suggestion right of the cursor) is *not*
+  one of these — it is ignored, and the navigation goes through.
+
+If a sequence cannot finish within two seconds it is dropped rather than left hanging, and the log says which
+step it stopped at and what had been captured.
 
 To have the band up from startup, set `file_manager = 1` in the configuration file.
 

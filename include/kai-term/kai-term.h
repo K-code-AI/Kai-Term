@@ -371,6 +371,31 @@ void term_note_input(Term *t, const void *buf, size_t len);
    answer is 0: losing half of the user's command is worse than not following the browser. */
 int term_prompt_line(Term *t, char *out, size_t cap);
 
+/* The same description, WITHOUT the requirement that the cells right of the cursor match the snapshot:
+   it returns the text between the end of the remembered prompt and the cursor, and ignores whatever the
+   shell paints from the cursor onwards (fish's grey autosuggestion ghost — see term_prompt_line_is()).
+   Use it only when the caller is about to ERASE the whole line and will PROVE the erase worked before it
+   writes anything else: the erase is Ctrl+U, which erases backwards from the cursor, so if the user parked
+   the cursor in the middle of a command the right half survives, the proof (the whole row equal to the
+   remembered prompt) fails, and the caller drops its sequence and logs what it had captured instead of
+   writing. That is the price of following the browser across a ghost: in the mid-line case the left half of
+   the command is erased and only recoverable from the log. What can never happen is a `cd` typed in front of
+   text and RUN — the proof gates every write. */
+int term_prompt_line_typed(Term *t, char *out, size_t cap);
+
+/* Does the input line read as the remembered prompt followed by EXACTLY `text`, ending at the cursor?
+   Same question as term_prompt_line(), asked for the one string a caller already holds, and with ONE
+   difference: it does not require the cells right of the cursor to match the snapshot.
+   WHY THAT MATTERS: a shell decorates the line. fish paints a grey autosuggestion immediately right of
+   the cursor (measured 2026-10-19: typing `git com` puts `mit -m "Initial commit"` on the row, typing
+   `ls -la /tmp` puts a `/` there), and those cells are not part of the command line — pressing Right
+   accepts one, BackSpace never has to delete one. A caller that is about to ERASE the line must still
+   refuse them (term_prompt_line()), because it cannot tell that ghost from the right half of a command
+   the user parked the cursor in front of. A caller that only wants to know whether text IT typed has
+   landed must not be fooled by them, and that is this function: the text it compares is between the end
+   of the prompt and the cursor, which is exactly where typed text goes and never where a ghost is drawn. */
+int term_prompt_line_is(Term *t, const char *text);
+
 /* selection */
 typedef struct {
     int r0, c0, f0;   /* start: row, column, offset within that column (0..1000) */

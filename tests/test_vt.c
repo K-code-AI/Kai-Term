@@ -2341,6 +2341,31 @@ int main(void)
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "rm -rf su"),
           "line: describable again once the cursor is back at the end of the text");
 
+    /* A shell that DECORATES the line: fish paints a grey autosuggestion immediately right of the cursor
+       and puts the cursor back where it was (measured live 2026-10-19 with .scratch/s84/pdiag — typing
+       `git com` draws `mit -m "Initial commit"` on the row, `ls -la /tmp` draws a `/`). Those cells are
+       not part of the command line, and at the cell level they are indistinguishable from the right half of
+       a command the user parked the cursor in front of — so the strict description must keep refusing
+       (a caller about to erase the line cannot tell the two apart) while the question "did the text I typed
+       land?" must still be answered yes (that caller erased nothing; its own text is by definition left of
+       the cursor). This is why FMCD_RETYPING uses term_prompt_line_is() and FMCD_ERASING does not. */
+    feed("\x1b[90mmit\x1b[0m\x1b[3D");     /* ghost painted, cursor moved back to the end of the typing */
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
+          "ghost: text right of the cursor makes the strict description refuse, ghost or not");
+    CHECK(term_at_prompt(&T) == 0, "ghost: and the line is still not an untouched prompt");
+    CHECK(term_prompt_line_is(&T, "rm -rf su") == 1,
+          "ghost: term_prompt_line_is() still sees exactly what was typed — the ghost is right of the "
+          "cursor, typed text never is");
+    CHECK(term_prompt_line_is(&T, "rm -rf sumit") == 0,
+          "ghost: the ghost text is never read as part of the typed text");
+    CHECK(term_prompt_line_is(&T, "rm -rf") == 0,
+          "ghost: a prefix of what is on the line is not a match either");
+    type("\x1b[D");                        /* Left: a REAL character is now right of the cursor */
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 0 && term_prompt_line_is(&T, "rm -rf su") == 0,
+          "ghost: a cursor parked mid-line still refuses both — the difference between a ghost and the "
+          "right half of a command is not knowable, so the erasing caller refuses both");
+    type("\x1b[C");
+
     /* input_pending is deliberately NOT a reason to refuse here: the row comparison is the evidence, and
        the path Kai-Term typed itself leaves a perfectly describable line behind. */
     send_in("'/tmp/x'");
@@ -2431,6 +2456,170 @@ int main(void)
           "line: an output burst with nothing outstanding re-takes the snapshot at its own end");
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && pline[0] == 0,
           "line: so that row is describable and the typed text on it is empty — correctly");
+
+    /* ---------- the clear -> `cd` -> re-populate sequence, as the model sees it ----------
+       src/main.c is in no test binary, so the machine itself is covered by the live key-injection harness,
+       not here. What IS testable — and what the machine is built entirely out of — is the pair of questions
+       it asks the model at every step. These replay its exact writes (Ctrl+U, `cd <dir>\r`, the captured
+       text with no CR) against the real parser, so a change to the snapshot rules that would break the
+       feature fails a check instead of breaking it silently. */
+    term_destroy(&T);
+    term_init(&T, 10, 40, 100);
+    char cap[FM_LINE_MAX];
+    feed("prompt$ ");
+    type("git com");                       /* the user is mid-command when they navigate the browser */
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 1 && !strcmp(cap, "git com"),
+          "seq: the text to put back is captured BEFORE anything is erased");
+    CHECK(term_at_prompt(&T) == 0,
+          "seq: and the line is not empty, so the cd cannot be written yet");
+    send_in("\025");                        /* fm_send_cd(): Ctrl+U, erase backwards to the start */
+    CHECK(T.input_pending == 1 && term_at_prompt(&T) == 0,
+          "seq: Ctrl+U opens an echo window — the erase is not believed until the shell shows it");
+    feed("\r\x1b[Kprompt$ ");               /* readline/fish erasing the line, on the SAME row */
+    CHECK(T.input_pending == 0,
+          "seq: the burst that puts the remembered prompt back CLOSES the window — that is the proof");
+    CHECK(term_at_prompt(&T) == 1,
+          "seq: the erase is proven, so the machine may now write the cd");
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 1 && cap[0] == 0,
+          "seq: and the line really is empty now");
+    send_in("cd /tmp/x\r");                 /* fm_cd_write() */
+    CHECK(T.input_pending == 0,
+          "seq: the CR in the cd submits the line, so it leaves no echo window open behind it");
+    feed("cd /tmp/x\r\nnewprompt$ ");       /* the tty echo, then the new prompt */
+    CHECK(term_at_prompt(&T) == 1,
+          "seq: after the shell's next burst the new prompt is the known line again");
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 1 && cap[0] == 0,
+          "seq: the new prompt holds nothing, so the re-type starts from a clean line");
+    send_in("git com");                     /* FMCD_RETYPING: the captured text, and NO CR */
+    CHECK(term_at_prompt(&T) == 0,
+          "seq: while the re-typed text is outstanding the line is not empty again");
+    feed("git com");
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 1 && !strcmp(cap, "git com"),
+          "seq: the finished line reads exactly as it did before — the user's text is back, nothing ran");
+
+    /* THE BUG THESE PIN (user report, 2026-10-19): a SECOND navigation on top of the text Kai-Term had just
+       re-typed did not erase it — the prompt ended up `Some text cd '/'` and fish ran it. Cause, measured
+       with real fish (`.scratch/s86/follow2`): the burst right after the re-type painted NOTHING on the
+       input row (fish repainting prompt chrome — OSC 7, OSC 0, DECSET), so the row still equalled the
+       snapshot, and the end-of-burst rule read that STEADY STATE as "the application put the prompt back,
+       the line is provably empty". It closed the echo window over bytes that had not been echoed yet, and
+       every later burst then RE-TOOK the snapshot — including the one carrying the echo of Kai-Term's own
+       text — so a row holding `git com` began answering term_at_prompt() as EMPTY and the next navigation
+       took the fast path. A match that was already a match is not evidence. */
+    feed("\x1b]7;file://host/dir\x07\x1b[?2004h\x1b[?2031h");   /* chrome only: the row is untouched */
+    CHECK(T.input_pending == 1,
+          "seq: a burst that paints NOTHING on the input row does not close the echo window");
+    CHECK(T.prompt_cx < T.cx && term_prompt_line(&T, cap, sizeof cap) == 1 && !strcmp(cap, "git com"),
+          "seq: and the snapshot is not re-taken over the echo — the typed text is still describable");
+    CHECK(term_at_prompt(&T) == 0,
+          "seq: so the line still reads as NOT empty, which is what stops the next navigation appending");
+    send_in("\025");                        /* the SECOND navigation erases what was just re-typed */
+    CHECK(T.input_pending == 1,
+          "seq: and that second erase opens an echo window of its own");
+    feed("\r\x1b[Knewprompt$ ");
+    CHECK(T.input_pending == 0 && term_at_prompt(&T) == 1,
+          "seq: the burst that repaints the remembered prompt proves it — the follow is idempotent");
+
+    /* fish decorates the line: an autosuggestion is painted in grey immediately right of the cursor and is
+       NOT part of the command line. Measured with real fish 2026-10-19 — `git com` gets
+       `mit -m "Initial commit"` drawn there, `ls -la /tmp` gets a `/`. The user's ruling (2026-10-19) is to
+       follow the browser through it, which is safe because the write is gated on the erase PROOF, not on
+       the capture. */
+    term_destroy(&T);
+    term_init(&T, 10, 40, 100);
+    feed("prompt$ ");
+    type("git com");
+    feed("\x1b[90mmit\x1b[0m\x1b[3D");       /* the ghost, then the cursor back where the user left it */
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 0,
+          "ghost: the strict description still refuses a ghosted row — at cell level that ghost is "
+          "indistinguishable from the right half of a command the cursor was parked in front of");
+    CHECK(term_prompt_line_typed(&T, cap, sizeof cap) == 1 && !strcmp(cap, "git com"),
+          "ghost: the capture for the erase takes the typed text and ignores the ghost");
+    CHECK(term_prompt_line_is(&T, "git com") == 1,
+          "ghost: and the re-type confirmation is not fooled by it either");
+    send_in("\025");
+    feed("\r\x1b[Kprompt$ ");               /* fish's Ctrl+U kills the buffer; the ghost goes with it */
+    CHECK(T.input_pending == 0 && term_at_prompt(&T) == 1,
+          "ghost: the erase is still PROVEN before any cd may be written — that is what makes following "
+          "a ghost safe");
+
+    /* THE PRICE of it, pinned so nobody pretends otherwise: a cursor parked in the middle of a command.
+       Ctrl+U erases backwards from the cursor, so the right half survives, the whole-row proof fails, and
+       the machine drops the sequence (logging what it had captured) instead of writing. Measured against
+       real fish the same way (`.scratch/s86/follow2`, `m.log`). */
+    term_destroy(&T);
+    term_init(&T, 10, 40, 100);
+    feed("prompt$ ");
+    type("git commit -m x");
+    type("\x1b[D");                          /* Left: the cursor is now between the space and the x */
+    CHECK(term_prompt_line_typed(&T, cap, sizeof cap) == 1 && !strcmp(cap, "git commit -m "),
+          "mid-line: the capture sees only the text left of the cursor");
+    send_in("\025");
+    feed("\r\x1b[Kprompt$ x");              /* the right half is all that is left on the line */
+    CHECK(T.input_pending == 1 && term_at_prompt(&T) == 0,
+          "mid-line: the whole-row proof fails, so the machine drops the sequence — a cd is never written "
+          "in front of the half that survived");
+
+    /* The flow STARTS by opening the band, and the band costs the terminal its rows (measured live:
+       154x61 -> 154x49). A resize used to throw the description of a DIRTY line away, which made the whole
+       sequence impossible — so a resize that re-broke nothing must keep it, and only that one. */
+    term_destroy(&T);
+    term_init(&T, 10, 40, 100);
+    feed("prompt$ ");
+    type("git com");
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 1 && !strcmp(cap, "git com"),
+          "seq: the line is describable before the band opens");
+    term_resize(&T, 6, 40);                 /* same width, fewer rows: exactly what opening the band does */
+    CHECK(T.prompt_valid == 1 && T.prompt_cy == T.cy,
+          "seq: a height-only resize moves the snapshot with its row instead of discarding it");
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 1 && !strcmp(cap, "git com"),
+          "seq: and the typed text is still exactly describable after it");
+    term_resize(&T, 6, 30);                 /* a width change re-wraps lines: nothing honest survives */
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 0,
+          "seq: a WIDTH change still invalidates the description of a dirty line — refusing is correct");
+    term_destroy(&T);
+    term_init(&T, 10, 20, 100);
+    feed("prompt$ ");
+    type("a long command that wraps onto row two");
+    CHECK(T.cy != T.prompt_cy, "seq: the setup wrapped the typed text onto another row");
+    term_resize(&T, 6, 20);
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 0,
+          "seq: a wrapped input line stays refused across a resize — the cursor was not on the snapshot row");
+
+    /* THE SAFETY PROPERTY, headless: if the erase does not happen, the `cd` is never sent. A line editor
+       that binds Ctrl+U to something else, or an application that shows nothing, leaves the echo window
+       open and the row unmatched, so every gate the machine waits behind stays false. */
+    term_destroy(&T);
+    term_init(&T, 10, 40, 100);
+    feed("prompt$ ");
+    type("git com");
+    send_in("\025");
+    feed("\r\x1b[Kprompt$ git ");           /* a PARTIAL erase (delete-word), not erase-to-start */
+    CHECK(T.input_pending == 1 && term_at_prompt(&T) == 0,
+          "seq: a partial erase keeps the window open and the line not empty — no cd is ever sent");
+    CHECK(term_prompt_line(&T, cap, sizeof cap) == 1 && !strcmp(cap, "git "),
+          "seq: the half-erased line IS describable, which is exactly why the cd is gated on "
+          "term_at_prompt() and never on term_prompt_line()");
+    feed("\r\x1b[Kprompt$ ");               /* and a shell that never answers at all */
+    CHECK(T.input_pending == 0 && term_at_prompt(&T) == 1,
+          "seq: the prompt redrawn is what finally proves the line empty (the machine's deadline "
+          "covers the case where it never is)");
+
+    /* The one thing that DOES break the proof, pinned so it is documented rather than discovered: the
+       snapshot names a ROW. If the shell prints a line of its own between the erase and its next prompt
+       (a background job finishing, a SIGCHLD notice), the redrawn prompt sits on another row, the model
+       cannot prove the line is empty, and the machine times out and drops the sequence — logging what was
+       on the line. Failing that way is the safe direction; it is not a licence to guess. */
+    term_destroy(&T);
+    term_init(&T, 10, 40, 100);
+    feed("prompt$ ");
+    type("git com");
+    send_in("\025");
+    feed("[1] done\r\n\r\x1b[Kprompt$ ");   /* a message, then the prompt redrawn on the NEW row */
+    CHECK(T.g.scroll_off == T.g.live_off && T.cy != T.prompt_cy,
+          "seq: the setup moved the prompt to another row (the snapshot still names the old one)");
+    CHECK(T.input_pending == 1 && term_at_prompt(&T) == 0,
+          "seq: so the erase is NOT proven and the machine will drop the sequence rather than send a cd");
 
     /* ---------- graphics: the kitty image protocol (src/vt.c) ----------
        Headless on purpose: the decoded PIXELS live in the model, so the parser, the chunk assembly,

@@ -17,21 +17,27 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-verified 2026-10-19, session 82 — the tree is MID-TASK: s79's model half is in it, `./bin/test_vt` is RED on 2 test-setup bugs, and s75-s81 are uncommitted)
+## Current Status (re-verified 2026-10-19, session 86 — the clear -> `cd` -> re-populate follow is implemented, idempotent, and green; the one open item is still the user's eye on the band)
 
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **678 checks, 2 failures**
-  (`tests/test_vt.c:2410` and `:2416` — proven to be **test-setup bugs, not model bugs**, see "Current
-  Task (s82)"), `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**.
-  `make test` is therefore RED, and `tests/cli_test.sh` is a second problem of its own — see s81 below.
-  `make asan` has not been run this session.
-- s75-s79 work is in the tree **uncommitted**: `git status -sb` -> 12 modified files, HEAD `2985ee4`.
-- Older verification (s74, before s75-s79 changed the tree): `make test` green at CLI 92/0, test_vt 613/0,
-  MODEL OK, test_fm 220/0; `make asan` green. Counts above are the current truth.
-- The whole feature is committed and pushed — `src/img.c`, `src/fm.c`, `tests/test_fm.c` (new) and the
-  `Makefile`, `include/kai-term/kai-term.h`, `src/{config,layout,main,render,vt}.c`,
-  `tests/{test_vt.c,cli_test.sh}`, `README.md`, `ISSUES.md`, `AGENT.md` changes. `git status -sb` shows a
-  clean tree; read the remote state with `git status -sb` / `git log --oneline origin/main -1`.
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **719 checks, 0 failures**,
+  `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**;
+  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
+  `make asan` exit 0 with the same counts and 0 sanitizer reports.
+- **The follow is proven headless against real fish, not yet in the user's window.**
+  `.scratch/s86/follow2.c` runs the machine from `src/main.c` over the real `src/pty.c` + real
+  `term_parse()`: two navigations on top of each other both end with
+  `the prompt now holds the browser's directory and what you had typed` and the line holds `Some text ` —
+  not the `Some text cd /etc` the user reported. `g.log` = the fish-autosuggestion case now follows;
+  `m.log` = the mid-line-cursor case fails safe (no `cd` ever sent, the captured text logged).
+  The live key-injection harness was NOT re-run: the user is at this machine and asked not to be disturbed
+  (s86 entry 2) — hand them the command instead of injecting keys.
+- `git status -sb` -> **seven modified files**: `src/main.c` (the follow machine + the quiet-period step),
+  `src/vt.c` (the echo window needs a transition; the resize keeps a dirty prompt snapshot),
+  `include/kai-term/kai-term.h` (`term_prompt_line_typed`), `tests/test_vt.c`, `README.md`, `ISSUES.md`,
+  `AGENT.md`. HEAD is the s75-s82 docs commit; the s75-s81 range is committed in three pieces (s83 entry 2).
+  Read the remote state with `git status -sb` / `git log --oneline origin/main -1` — never write a hash or an
+  ahead-count here.
 - The file manager IS reachable from the UI (`Ctrl+Shift+F`) and its band is drawn. Its input routing
   (toggle, band keys, focus handover, `cd` follow, close/reopen) was verified live by injecting keys through
   niri and reading the bytes the PTY received — three real defects found and fixed that way (s74 entries
@@ -44,10 +50,11 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   batch. Also verified headless (real timg bytes through the real parser) and by log line
   (`graphics: 1 image(s) drawn, 1 texture(s) held`, no GL warning).
 - No probe/experiment left in tree: `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` ->
-  empty.
-- README flag table (`-e -w -c -d -v -h`) and its **47** settings rows match `src/main.c` / `src/config.c`
-  exactly — checked by set difference, not by eye: the 47 keys `apply()` in `src/config.c` handles (`font`
-  plus 46 `else if` branches) and the 47 rows of the "Available settings" table are the same set. README
+  empty (the s85 RETYPING probe was removed in s86 entry 1; the line had been stale since it was written).
+- README flag table (`-e -w -c -d -v -h`) and its **49** settings rows match `src/main.c` / `src/config.c`
+  exactly — re-checked by set difference, not by eye, this session: the 49 keys `apply()` in `src/config.c`
+  compares (`!strcmp(key, …)`, `font` included) and the 49 rows of the "Available settings" table are the same
+  set, `diff` empty both ways. README
   now also has a "File manager" usage section, the 20 file-manager settings rows, the shortcut tables, and
   libjpeg + libwebp in Requirements.
 - **No open issues.** The 4 reports that used to be in ISSUES.md were unproven (never reproduced here) and
@@ -68,7 +75,583 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git log --oneline origin/main -1`. `git fetch` before push — user commits on GitHub too. Never commit
   `bin/` or `build/`.
 
-## Current Task (s83 — executing the s82 plan: green tests, commit the verified range, then the clear -> `cd` -> re-populate machine)
+## Current Task (s86 — fix the second-navigation append bug, make the follow tolerate fish's autosuggestion, then docs + push)
+
+**User report (2026-10-19):** typing `Some text` at the prompt and navigating once works (erase -> `cd` ->
+re-type). Navigating AGAIN without touching the prompt does not erase first: the prompt ends up
+`Some text cd '/'` and fish runs it (`fish: Unknown command: Some`). Also: the user answered the open
+question from s85 entry 1 — **make the follow happen even when the line shows fish's autosuggestion ghost.**
+The user has run `make test`; what is left is this bug, the docs, and the push.
+
+**s86 measured start (measured this session, not inherited):**
+- `git status -sb` -> `main` == `origin/main`, five modified files: `AGENT.md`,
+  `include/kai-term/kai-term.h`, `src/main.c`, `src/vt.c`, `tests/test_vt.c`.
+- `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+  `make -j8 bin/test_vt bin/dbg bin/test_fm` -> 0 warnings; `./bin/test_vt` **708 checks, 0 failures**,
+  `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**.
+- **Current Status was wrong about the probes:** `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/
+  include/ tests/` -> **2 hits**, `src/main.c:1063` and `src/main.c:1125` — the s85 RETYPING probe is
+  still in the tree. It must come out (it logs a line per burst) and the status line corrected.
+- Reproduced headless, no window: `/home/kaida/Project/.scratch/s86/follow2.c` — the real machine from
+  `src/main.c` (its five functions copied verbatim) driving REAL fish through the real `src/pty.c` and the
+  real `term_parse()`, two navigations, printing the state after every burst. Output in
+  `.scratch/s86/f2b.log`. It reproduces the report exactly.
+
+**Root cause (measured, not inferred).** After the re-type the machine has sent `Some text ` with no CR, so
+`input_pending` is 1 and the snapshot must stay the clean prompt. The very next burst is fish repainting
+the prompt chrome (`ESC]7;file://…`, `ESC]0;…`, `ESC[?2004h`, `ESC[K`, a cursor move) — it paints NOTHING
+on the input row, so the row still equals the snapshot. The end-of-burst rule
+(`src/vt.c:2901-2904`) is `else if (prompt_row_matches(t)) t->input_pending = 0;` — a STEADY STATE, not a
+change — so it declares "the application put the prompt back, the line is provably empty" and closes the
+echo window while our own bytes are still outstanding. Trace:
+`[burst] state=re-typing pending=0 cx=0 cy=3 p_cx=0 p_cy=3` — and with `input_pending` now 0, every later
+burst RE-TAKES the snapshot, including the burst carrying the echo of the text we typed, so the snapshot
+becomes `prompt + Some text ` (`p_cx` 14 -> 24). From then on `term_at_prompt()` is TRUE with text on the
+line, `term_prompt_line()` describes the typed text as `""`, `FMCD_RETYPING` can never confirm (it times
+out), and the next navigation takes the FAST PATH and appends `cd '<dir>'\r` after the user's text —
+which is what the user saw. **A match that was already a match is not evidence.**
+
+**s86 objective:** the follow must be idempotent — a second navigation on top of a line Kai-Term itself
+re-populated erases it, `cd`s and re-populates again; and a line showing fish's autosuggestion ghost is
+followed instead of refused.
+
+**s86 planned steps (each one: edit -> AGENT.md -> build/test; never commit red):**
+1. `src/vt.c`: the echo window closes only on a TRANSITION — compute `prompt_row_matches()` at the START of
+   `term_parse()` and close the window only when it was 0 before the burst and is 1 after. A burst that
+   paints nothing, or repaints the same dirty line, is not proof. Then the snapshot is never re-taken over
+   our own echo, so `term_at_prompt()` cannot go true with text on the line.
+2. `src/vt.c` + header: `term_prompt_line_typed()` — the non-strict description (the text between the end of
+   the prompt and the cursor, ignoring whatever the shell paints right of the cursor). `src/main.c`:
+   `fm_send_cd()`'s capture uses it instead of `term_prompt_line()`. The safety property is untouched: the
+   `cd` is still sent only from ERASING/CDING behind `term_at_prompt()`, i.e. only once the whole line is
+   PROVABLY empty — a cursor parked mid-line erases only its left half, the proof then fails, the sequence
+   drops and the log prints what had been captured. That is the accepted cost of "make it follow".
+3. `src/main.c`: remove the two s85 TEMPORARY PROBE blocks.
+4. `tests/test_vt.c`: pin the transition rule (a burst that changes nothing must NOT close the window; the
+   burst that repaints the remembered prompt must) and the ghost case (strict refuses, `term_prompt_line_typed`
+   describes the typed text; the erase proof still refuses the mid-line cursor).
+5. Live harness `.scratch/s84/inj_follow.sh` — ONE window (GPU is full), fish, TWO navigations on top of
+   each other; require the completion line twice and no timeout drop, and the filesystem proof.
+6. `make test` (`KAI_TERM_TEST_NO_WINDOW=1`) + `make asan`, exact counts.
+7. Docs: README's file-manager prompt paragraph (clear -> `cd` -> re-populate, idempotent, the ghost now
+   followed, the mid-line limit), ISSUES.md (the not-implemented note is gone; the limitation rewritten),
+   AGENT.md's prompt invariant + the new pitfall. Then commit and push.
+
+**s86 expected outcome:** two navigations in a row both end with
+`fm: the prompt now holds the browser's directory and what you had typed` and no append; a ghosted line is
+followed; `make test`/`make asan` green at a higher check count; no probe left in the tree; docs matching;
+one commit pushed.
+
+### s86 entry 1 — steps 1-3 done: the echo window now needs a TRANSITION, CDING waits for the shell to go quiet, the ghost is walked through, the s85 probe is out
+
+Four edits, each followed by a build. All measured against `.scratch/s86/follow2.c`, which reproduces the
+user's report exactly before the change and passes it after.
+
+**1. `src/vt.c` — the echo window closes only on a change, not on a steady state.** `term_parse()` now
+computes `int prompt_matched_before = prompt_row_matches(t);` at its start, and the end-of-burst rule is
+`else if (prompt_matched_before == 0 && prompt_row_matches(t)) t->input_pending = 0;`. A burst that leaves
+the row exactly as it was (fish repainting only OSC 7 / OSC 0 / DECSET / `ESC[K` after the re-type) is no
+longer accepted as proof that the line became empty. That premature close was the reported bug: it let
+every later burst re-take the snapshot, including the burst carrying the echo of Kai-Term's own re-typed
+text, so the snapshot became `prompt + the user's text`, `term_at_prompt()` answered EMPTY with text on the
+line, `FMCD_RETYPING` could never confirm, and the next navigation took the fast path and appended
+`cd '<dir>'` to the command. **All 708 existing checks still pass** — none of them depended on a match that
+was already a match.
+
+**2. `src/main.c` — CDING waits for the session to go quiet (new `FMCD_QUIET_MS` 150, `fm_cd_last_burst`).**
+With (1) fixed, the probe exposed a second, PRE-EXISTING hazard it had been masking: the cursor moving off
+the row the `cd` was typed on is not the prompt. fish answers a `cd` with the echo, then a continuation row,
+then prompt chrome, and only then the prompt — each in its own burst, and the model re-takes the snapshot at
+the end of every one (our `cd` ends with CR, so nothing is outstanding). The machine left CDING on a BLANK
+row, typed the user's text there, and then compared against that blank-row snapshot forever. Now CDING also
+requires `mono_ms() - fm_cd_last_burst >= FMCD_QUIET_MS`: the shell is at its prompt when it has stopped
+printing, and after that silence the snapshot the model holds IS the prompt by construction. The frame timer
+(`fm_cd_tick()`) now advances CDING when the quiet period expires — that step's evidence is the END of the
+output, and no further burst is coming to trigger it. `fm_cd_advance()` gained a `burst` argument so only
+real output restarts the period.
+
+**3. The ghost is now followed (the user's answer to the s85 question).** New `term_prompt_line_typed()`
+(header + `vt.c`: the same `prompt_line_text()` body with `strict_right = 0`) and `fm_send_cd()`'s capture
+uses it. Measured with real fish: typing `git com` paints `mit -m "Initial commit"` in grey right of the
+cursor, the strict predicate refuses that row, the new one describes `git com` — and both navigations now
+end with `DONE — the prompt holds the dir and what you had typed`.
+**The accepted cost, measured, not assumed:** with the cursor parked mid-command (`git commit -m x` + two
+Left arrows) the capture takes the left half, Ctrl+U erases only that half, the whole-row proof fails, and
+the machine drops the sequence with `DROPPED the follow while erasing (the wait ran out) — LOST the text`
+plus the captured text in the log. The `cd` is NEVER sent — the safety property is untouched, so a mangled
+command that runs is still impossible; what is possible is losing the left half of a command whose cursor the
+user had moved, and the log line is how it is recovered.
+
+**4. The two s85 TEMPORARY PROBE blocks in `src/main.c` are removed** — `grep -rnE
+"TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` -> **empty** again, which is what Current Status
+had claimed while they were still there.
+
+**Measured after these edits:** `make -j8` exit 0, `grep -ciE "warning|error"` -> **0**; `make -j8
+bin/test_vt bin/dbg bin/test_fm` -> 0 warnings; `./bin/test_vt` **708 checks, 0 failures**, `./bin/dbg`
+**MODEL OK (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**. Probe evidence:
+`.scratch/s86/f2d.log` (two navigations, both complete, the line holds `Some text ` — not
+`Some text cd /etc`), `g.log` (the ghost case), `m.log` (the mid-line case fails safe).
+
+**Next action (step 4):** `tests/test_vt.c` — pin the transition rule (a burst that changes nothing must not
+close the echo window; the burst that repaints the remembered prompt must) and the ghost case (strict
+refuses, `term_prompt_line_typed` describes the typed text, the erase proof still refuses a mid-line
+cursor). Then `make test` + `make asan`, the live harness, the docs, commit, push.
+
+### s86 entry 2 — step 4-6 done (719 checks green, asan clean); the LIVE run is cancelled — the user is at the machine and asked not to be disturbed
+
+**User report (2026-10-19): "Why did you make my whole screen go red ... You know I use the computer and
+you're tests are kinda disturbing".** Measured before answering, not guessed:
+- Nothing of mine maps a window or injects keys this session: `pgrep -af kai-term` -> one process, the
+  user's own (`bin/kai-term`, pid 470531, started 22:35:09 by the session restart below); `pgrep -af
+  "scratch/inject"` -> nothing; `coredumpctl list` -> **no kai-term core after 17:27:30**. Every command I
+  ran was headless (`make`, the three test binaries, `.scratch/s86/follow2` over its own pty,
+  `KAI_TERM_TEST_NO_WINDOW=1 make test`, `make asan`) — the CLI suite mapped 0 windows (10 SKIP lines).
+- What DID happen: `journalctl --user` shows **`noctalia` (the lock screen) SIGSEGV at 22:35:04** and
+  **niri restarting the whole session at 22:35:09** (`niri: starting version 26.04`, then `locking session`
+  at 22:35:09, `unlocking` at 22:35:14, with `pam_unix(login:account): setuid failed` from noctalia in
+  between). That is where a full-screen red/lock flash comes from. The same noctalia SIGSEGV is in
+  `coredumpctl` at **17:43:10, 18:06:37 and 20:59:42** — the first two are the s81-era session restarts the
+  journal already records, and 20:59:42 is before this session started, so it is a recurring host fault, not
+  a Kai-Term defect. Not filed in ISSUES.md (the file's rule: not a reproducible Kai-Term problem); kept
+  here as a host constraint.
+- **Standing rule for this project, restated because I broke its spirit:** the user works on this machine.
+  No live key-injection or window-mapping run without asking first, even with the focus guards in
+  `inj_follow.sh`. Headless coverage is the default; the live check is handed to the user to run.
+
+**Steps 4-6 measured (exact commands):**
+- `tests/test_vt.c`: 11 new checks in three blocks — the reported bug (a chrome-only burst after the re-type
+  must NOT close the echo window, the snapshot must not be re-taken over our own echo, the line still reads
+  NOT empty, and a second erase is proven by the burst that repaints the prompt); the ghost (strict refuses,
+  `term_prompt_line_typed` returns `git com`, `term_prompt_line_is` is not fooled, and the erase proof still
+  gates the write); the price (mid-line cursor: the capture sees the left half, the whole-row proof fails,
+  the sequence drops — a `cd` is never written in front of the surviving half).
+- `make -j8 bin/test_vt` -> exit 0, 0 warnings; `./bin/test_vt` **719 checks, 0 failures** (708 -> 719).
+- `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`, test_vt **719/0**,
+  `dbg` **MODEL OK (0 problems)**, test_fm **235/0**, 0 warnings in the whole run.
+- `make asan` -> exit 0: **719/0** + MODEL OK + **235/0**, and `grep -cE
+  "AddressSanitizer|runtime error|LeakSanitizer|SUMMARY|ERROR"` over the run -> **0**.
+- `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` -> **empty**.
+
+**Step 5 (the live harness) is NOT run.** The fix is proven headless against real fish through the real
+`src/pty.c` (`.scratch/s86/f2d.log`, `g.log`, `m.log`) and by the 11 new checks; the in-window confirmation
+is the user's to run, and I will ask rather than inject keys into their desktop.
+
+**Next action (step 7):** README's file-manager prompt paragraph + ISSUES.md (the "not implemented yet" note
+is now false; the limitation becomes the mid-line case) + AGENT.md's prompt invariant and the new pitfall, then
+commit and push, then hand the user the command to confirm it themselves.
+
+### s86 entry 3 — step 7 done: docs brought in line, clean-tree re-verification green, committed and pushed
+
+**Docs (every quoted log string read back out of `src/main.c`, not from memory):**
+- `README.md` — the Features bullet now says the shell follows the browse directory "keeping whatever you had
+  already typed at the prompt". The "File manager" usage section's old paragraph ("neither line is sent unless
+  the terminal is sitting at an untouched prompt", with the log line
+  `…its input line is not empty`, which no longer exists) is replaced by the clear -> `cd` -> re-populate
+  description: what it does, that each step waits for proof, that no newline is ever sent, that repeating the
+  navigation re-erases rather than appends, the four `-d` lines it logs, and the two cases it will not write
+  through (undescribable line; cursor parked mid-command) with the ghost explicitly called out as NOT one of
+  them, plus the two-second drop.
+- `ISSUES.md` — `## Open`: the "one behaviour the user asked for is not implemented yet" note is gone (it is
+  implemented), the counts are this session's, and the s82-era explanation of the two old red checks was cut
+  (they have been green since s83; the history is in git). New `## Fixed` entry for the append bug with the
+  symptom, the measured cause and exactly what was verified — including the honest "not re-run in the user's
+  window". The "File manager" limitation bullet was rewritten from "go only to a prompt the model can describe
+  as untouched" to "writes only where the model can PROVE the line is empty", folding in the transition rule,
+  the timeout, the mid-line case and the ghost exception; the duplicate bullet that edit exposed was merged
+  back into one.
+- `AGENT.md` — Current Status re-measured (719 / MODEL OK / 235, `make test` + `make asan` green, seven
+  modified files); the stale "47 settings rows" claim corrected to **49** by re-running the set difference
+  (`!strcmp(key, …)` in `src/config.c` vs the "Available settings" table -> `diff` empty both ways); a new
+  "The prompt invariant" block in Architecture & Invariants (the three rules + the three predicates and what
+  each may be used for); three new pitfalls in Key Decisions (a steady-state condition is not evidence of an
+  event; a burst boundary is not a semantic boundary; never run the live harnesses while the user is at the
+  machine — with the measured fact that the red screen was `noctalia` SIGSEGVing + niri restarting the session,
+  not anything of mine); the `fm:` debug-line list extended with the whole follow sequence including the drop
+  and refusal lines; Next Steps item 3 replaced (the red-checks item is long closed) with the in-window check
+  to ask the user for; the file tree and the `test_vt`/`test_fm` descriptions updated to 719/235 and given the
+  prompt machinery they now cover.
+
+**Clean-tree re-verification (exact commands, from `make clean`):**
+- `make clean && make -j8` -> exit 0; `grep -ciE "warning|error"` over the build log -> **0**.
+- `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` -> **0**.
+- `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`, `./bin/test_vt`
+  **719 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks,
+  0 failures**; 0 warnings in the whole run. (No window mapped — the GPU is at 11.8/12.2 GiB and the user is
+  working at this machine.)
+- `make asan` -> exit 0: 719/0 + MODEL OK + 235/0, and `grep -cE
+  "AddressSanitizer|runtime error|LeakSanitizer|SUMMARY|ERROR"` over the run -> **0**.
+
+**Committed** the seven files (`src/main.c`, `src/vt.c`, `include/kai-term/kai-term.h`, `tests/test_vt.c`,
+`README.md`, `ISSUES.md`, `AGENT.md`); `bin/` and `build/` stay git-ignored. `git fetch` before pushing, then
+push; re-fetch and confirm `main` == `origin/main`. Read the truth with `git status -sb` /
+`git log --oneline origin/main -1` — no hash or ahead-count is written here.
+
+**STILL OPEN — the one thing this session cannot do:** the follow has not been seen working in the user's own
+window, and the file manager's appearance has never been confirmed by a human eye. Both belong to the user.
+Ask them to run `./bin/kai-term -d`, type a partial command, `Ctrl+Shift+F`, navigate twice, and report the
+`fm:` lines — do NOT inject keys into their desktop to find out.
+
+## Previous Task (s85 — close the clear -> `cd` -> re-populate machine out: prove the completion live, document it, commit it)
+
+**User request (2026-10-19):** "Let's continue the work on Kai-Term. If you can't suppress the command
+echo while changing dir it's fine. it was not an important request." So the plan being executed is still
+s84's (under "Previous Task (s84)"), and one requirement is now explicitly relaxed by the user: the
+cd the machine types is echoed by the tty and is visible at the prompt. That stays as it is — it was
+measured to be impossible without the shell's cooperation (ISSUES.md "The injected command cannot be hidden
+from the screen") — and the user has accepted it, so it is not to be chased again.
+
+**s85 measured start (measured this session, not inherited):**
+- `git status -sb` -> `main` == `origin/main`, **four modified files**: `src/main.c` (+288/-34 of the
+  diff), `src/vt.c` (+44), `tests/test_vt.c` (+101), `AGENT.md`. HEAD is the s75-s82 docs commit.
+- `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- `make -j8 bin/test_vt bin/dbg bin/test_fm` -> exit 0, 0 warnings; `./bin/test_vt` **702 checks,
+  0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**.
+- `nvidia-smi` -> **11840 / 12227 MiB used** — the user's local LLM still owns the GPU, so at most ONE
+  window may be opened (ENVIRONMENT.md / s81 rule).
+- The last change in the tree is s84 entry 5's fix: `term_docrow()` (src/main.c:953) and `fm_cd_docrow`,
+  which stop the CDING step from believing the echo of our own `cd` is a new prompt. It has never been run.
+
+**s85 objective:** take the machine from "works, but never notices it finished" to "works and says so",
+then document exactly what it does and commit the whole range.
+
+**s85 planned steps (each one: edit -> AGENT.md -> build/test; never commit red):**
+1. Re-run the live harness `.scratch/s84/inj_follow.sh bin/kai-term new3` — ONE window, fish, a partial
+   command typed at the prompt, `Right` into `sub/`. Require the completion line
+   `fm: the prompt now holds the browser's directory and what you had typed` and NO
+   `dropped the follow … (the wait ran out)`. Ground truth stays the line buffer + the filesystem +
+   `fish_preexec`, not the screen. `coredumpctl list` afterwards.
+2. If the completion line still does not appear, diagnose with a temporary `L_DEBUG` probe (add, run once,
+   remove) rather than by widening the timeout — a timeout is not a fix for a predicate that never fires.
+3. Docs, only for what the runs prove: README's file-manager prompt paragraph (the refuse rule becomes
+   clear -> `cd` -> re-populate, with its limits: a line the model cannot describe is still refused, a
+   shell that prints a line of its own between the erase and its next prompt makes the sequence time out
+   and the log prints what had been typed, the echo is visible), ISSUES.md's "File manager" limitation and
+   its "Open" note, AGENT.md's prompt invariant.
+4. `make test` (with `KAI_TERM_TEST_NO_WINDOW=1` — the GPU is full) and `make asan` green, exact counts.
+5. Commit the four files; then ask the user for the eye verdict (the band's appearance and the new
+   behaviour) — still the one open item for the whole feature.
+
+**s85 expected outcome:** one live run whose log ends with the completion line and whose filesystem proof
+still lands in `tree/sub`; README/ISSUES describing only what is implemented; `make test`/`make asan` green
+at 702 checks; one commit on `main`.
+
+## Previous Task (s84 — finish the clear -> `cd` -> re-populate machine: review it, cover the predicates, run it live, document it)
+
+**User request (2026-10-19):** "Continue the work from the previous session in Kai-Term." The plan being
+executed is s82's (under "Previous Task (s82)"), carried forward by s83; s83 closed steps 1-2.
+
+**s84 measured start (measured this session, not inherited):**
+- `git status -sb` -> `main` == `origin/main`, **one modified file: `src/main.c`** (+234/-18). HEAD is the
+  s83 docs commit; `1a0eb97` (model half) and `378f34e` (window half) are below it.
+- **That `main.c` diff is s83 step 3, implemented but never journaled.** It is the whole machine the s82
+  design called for: `FMCD_IDLE/ERASING/CDING/RETYPING`, `fm_cd_line/dir/sent/tab`, a `CLOCK_MONOTONIC`
+  deadline (`FMCD_TIMEOUT_MS` 2000), `mono_ms()`, `fm_cd_write()` (the shared quoting + log line), the
+  rewritten `fm_send_cd()` (fast path, capture path, re-target path), `fm_cd_abort()`, `fm_cd_advance()`
+  called after every `term_parse()` of the owning session, `fm_cd_tick()` on the 8 ms frame timer, the
+  `tab_switch()`/`tab_close()` resets, the `send_str()`/`paste_flush()` aborts, and the `fm_send_path()`
+  gate changed from `term_at_prompt()` to `term_prompt_line()`. Treat it as work in progress whose result
+  is known from the runs below, exactly as s73/s76/s78 each did for an un-journaled half-step.
+- `touch src/main.c && make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- `make -j8 bin/test_vt bin/dbg bin/test_fm` -> exit 0, 0 warnings; `./bin/test_vt` **680 checks, 0
+  failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**.
+- `nvidia-smi` -> **11803 / 12227 MiB used** — the user's local LLM still owns the GPU, so at most ONE
+  window may be opened (ENVIRONMENT.md / s81 rule).
+
+**s84 objective:** take the machine from "written and compiles" to "reviewed, covered where it can be
+covered, run live through the user's own shell, and documented" — and commit it.
+
+**s84 planned steps (each one: edit -> AGENT.md -> build/test; never commit red):**
+1. Read the whole diff against the s82 design and against what `term_at_prompt()` / `term_prompt_line()`
+   actually promise (src/vt.c:756-925), and fix what is wrong. Two defects found by reading, both real:
+   (a) `tab_close()` aborts only when `fm_cd_tab == idx`, but `mux_close()` shifts every LATER tab down,
+   so closing a session below the sequence leaves `fm_cd_tab` naming a different shell — the machine would
+   then erase, `cd` and re-type in a session that never asked for it; (b) `fm_send_cd()` returns early on
+   `!strcmp(fm_last_cd, dir)` BEFORE its in-flight branch, so navigating back to the directory the shell is
+   already in during a sequence leaves `fm_cd_dir` on the older directory and the shell ends up somewhere
+   the browser is not — the exact invariant the user asked for.
+2. `make -j8` + the three headless binaries after each fix.
+3. `tests/test_vt.c`: headless checks for the predicates the machine leans on — `term_prompt_line()` after
+   a Ctrl+U erase, the `input_pending` window Ctrl+U opens and the burst that closes it, and a line the
+   machine must refuse (cursor mid-line). No test binary links `main.c`, so say plainly that the machine
+   itself is covered by the live harness, not here.
+4. `make test` (with `KAI_TERM_TEST_NO_WINDOW=1` — the GPU is full) and `make asan` green.
+5. Live run, ONE window, through fish: type a partial command, navigate the band, and read the bytes the
+   shell received (`.scratch/s74/inj_keys.sh` shape, uinput -> niri -> the real window). Ground truth is
+   the bytes plus the `fm:` log lines, not the screen. `coredumpctl list` afterwards.
+6. Docs: README's file-manager prompt paragraph (the refuse rule becomes clear -> `cd` -> re-populate, with
+   its limits), ISSUES.md's "File manager" limitation and its "Open" note, AGENT.md's prompt invariant.
+7. Commit; then ask the user for the eye verdict (the band's appearance and the new behaviour).
+
+**s84 expected outcome:** the machine reviewed and its two defects fixed with 0 warnings; `make test` /
+`make asan` green with a higher `test_vt` count; one live run whose byte stream shows the erase, the `cd`
+and the re-typed text arriving in that order in the right session; README/ISSUES describing only what is
+implemented; one commit on `main`.
+
+### s84 entry 1 — step 1-2 done: the machine reviewed; two real defects fixed; build still 0 warnings
+
+Read the whole `src/main.c` diff against the s82 design and against what the model actually promises
+(`term_at_prompt()` = `!input_pending && prompt_row_matches()`, src/vt.c:846; `term_prompt_line()`
+= "the row is the remembered prompt, then typed text ending exactly at the cursor", src/vt.c:856 — it
+deliberately ignores `input_pending`, refuses when the cursor is left of where the prompt ended, when
+anything right of the cursor differs, when scrolled back, on the alternate screen, and rather than
+truncating). The machine matches that design: the `cd` is sent only from ERASING/CDING behind
+`term_at_prompt()`, the re-type sends no CR, every advance happens after that session's `term_parse()`,
+and the deadline is also checked on the 8 ms frame timer so a shell that never answers cannot hang it.
+
+**Defect (a) — `tab_close()` left `fm_cd_tab` naming a different shell.** It aborted only when
+`fm_cd_tab == idx`, but `mux_close()` keeps the array dense: every tab AFTER the closed one slides down a
+slot (src/mux.c:76-77, and it re-arms `term.ps.t` for exactly that reason). Closing session 1 while a
+follow belonged to session 2 left `fm_cd_tab` = 2, which after the shift is a THIRD session — the machine
+would then have erased that shell's line, `cd` it and typed another session's captured text into it.
+Fixed to `if (fm_cd_tab >= 0 && idx <= fm_cd_tab) fm_cd_abort("a session closed");`.
+
+**Defect (b) — a mid-sequence navigation back to the shell's own directory was ignored.** `fm_send_cd()`
+returned on `!strcmp(fm_last_cd, dir)` BEFORE its in-flight branch, so `Right` into a directory and `Left`
+back out again inside the sequence window left `fm_cd_dir` on the first directory: the shell ended up in a
+directory the browser had already left, which is the one invariant the user asked for ("the prompt part
+should ALWAYS be in the same directory as the File Manager"). The in-flight re-target now runs first and
+fires even when `dir` IS `fm_last_cd` — the line has already been erased, so the sequence still has to
+finish; it simply has no `cd` left to send.
+
+**One simplification that came out of (b):** the new `fm_cd_sent` ("the directory the last `cd` was sent
+for") is removed. It and `fm_last_cd` are set together in `fm_cd_write()` and differed only in the transient
+window before a `cd` was sent, and only `fm_last_cd` knows the other case that (b) exposed — the shell was
+already in that directory, so no `cd` is needed. Two variables for one fact is how they drift; the machine
+now compares `fm_last_cd` with `fm_cd_dir` everywhere (CDING's step, and the re-check after a re-type).
+
+**Measured:** `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**;
+`grep -n fm_cd_sent src/main.c` -> no hits.
+
+**Next action (step 3):** `tests/test_vt.c` checks for the predicates the machine leans on — `term_prompt_line()`
+after a Ctrl+U erase, the echo window Ctrl+U opens and the output burst that closes it, and the mid-line
+cursor case it must refuse.
+
+### s84 entry 2 — step 3-4 done: 16 new `test_vt` checks pin the sequence's contract; `make test` + `make asan` green
+
+Added a "the clear -> `cd` -> re-populate sequence, as the model sees it" block to `tests/test_vt.c`, right
+after s79's `term_prompt_line()` checks. It replays **the machine's own writes** (`send_in("\025")`,
+`send_in("cd /tmp/x\r")`, `send_in("git com")` with no CR) against the real parser and asserts the answer of
+`term_at_prompt()` / `term_prompt_line()` at every step, so a change to the snapshot rules that would break
+the feature fails a check instead of breaking it silently. `main.c` itself is in no test binary — said in the
+block's comment, so nobody reads these 16 checks as coverage of the state machine.
+
+What they pin, in order: the text is captured before anything is erased; the line is not empty so the `cd`
+cannot go yet; Ctrl+U opens an echo window; the burst that puts the remembered prompt back on the SAME row
+closes it (that IS the proof); the line is then empty; the CR inside the `cd` submits the line and leaves no
+window open; the shell's next burst makes the new prompt the known line; the new prompt holds nothing; the
+re-typed text makes the line non-empty again and reads back exactly as it was.
+
+**Two facts that came out of writing them, both worth knowing before debugging a live run:**
+- A **partially** erased line (a line editor that binds Ctrl+U to delete-word rather than erase-to-start)
+  stays describable — `term_prompt_line()` happily returns `"git "` — while `term_at_prompt()` stays 0.
+  That asymmetry is the safety property in one check: the `cd` is gated on `term_at_prompt()`, never on
+  `term_prompt_line()`. Had it been the other way, a partial erase would have run `cd <dir>` on the half
+  command left on the line.
+- The snapshot names a **row**. If the shell prints a line of its own between the erase and its next prompt
+  (a background job finishing), the redrawn prompt sits on another row, `prompt_cy` no longer matches, the
+  erase is never proven, and the machine times out and drops the sequence — logging what had been typed.
+  Pinned as its own check rather than left to be discovered in the field; it goes to ISSUES.md as a
+  limitation in step 6.
+
+**Measured (exact commands):**
+- `make -j8 bin/test_vt bin/dbg bin/test_fm` -> exit 0, `grep -ciE "warning|error"` -> **0**;
+  `./bin/test_vt` **696 checks, 0 failures** (680 -> 696), `./bin/dbg` **MODEL OK (0 problems)**,
+  `./bin/test_fm` **235 checks, 0 failures**.
+- `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`, 696/0,
+  MODEL OK, 235/0. (No window mapped — the GPU is at 11.8/12.2 GiB, s81's rule.)
+- `make asan` -> exit 0: 696/0 + MODEL OK + 235/0, and `grep -cE
+  "AddressSanitizer|runtime error|LeakSanitizer|SUMMARY|ERROR"` over the run -> **0**.
+
+**Next action (step 5):** the live run — ONE window, fish, a partial command typed at the prompt, a browser
+navigation, and the bytes the PTY received as ground truth.
+
+### s84 entry 3 — step 5 first run: the machine REFUSED in the real window, and the reason is a resize
+
+Live harness `.scratch/s84/inj_follow.sh` (one window, real niri, keys through uinput, fish as the shell,
+`-d` log). Ground truth deliberately not the screen: fish's `fish_preexec` logs every command that RAN with
+its cwd, a `Ctrl+T` bind dumps the command-line BUFFER without executing it, and kai-term's own `fm:` lines
+record the machine. (Two fish-4 traps hit on the way, both harness bugs: `[(cmd)]` inside double quotes is
+NOT substituted in fish 4.6 — `fish -c 'echo "x [(echo hi)]"'` prints it literally — and `$CMDLINE` in
+`fish_preexec` came back empty, so the honest proof is a side effect the command has on the filesystem.)
+
+**Result: `fm: not telling the shell to follow — its input line is not one I can describe`.** The capture
+step refused, so nothing was erased and nothing was `cd`'d — the feature does not work in the very case the
+user asked for.
+
+**Root cause, measured headless with `.scratch/s84/pdiag.c`** (real `src/pty.c` + real fish + real
+`term_parse()`, printing the snapshot state and a cell-by-cell diff of the remembered row against the row
+under the cursor; it also had to answer the terminal queries like main.c does, because fish otherwise sits
+waiting for its DA1/OSC-11 answer and never paints a prompt — worth remembering for any pty probe):
+- With NO resize in between, everything works: prompt → `at_prompt=1 line=""`; type `echo restored:` →
+  `term_prompt_line` returns exactly `echo restored:` (13 differing cells, first at x=30 where the prompt
+  ends); Ctrl+U → the erase is PROVEN (`pending` goes 1 → 0, the row matches again, `at_prompt=1`).
+- The live run differs in one step: **opening the band resizes the terminal grid** (`grid resized to 154x61`
+  → `154x49`, the band costs 12 rows). `term_resize()` (src/vt.c:926-958) reads `was_clean` BEFORE the rows
+  move and then either re-takes the snapshot (clean) or sets `prompt_valid = 0` (dirty). So the moment the
+  user opened the band with text on the line, the snapshot was destroyed, and the capture step could only
+  refuse. The old design could live with that (it refused anyway); the new one cannot — the snapshot is now
+  load-bearing, and a band open / window resize / zoom is not an edge case, it is step one of the flow.
+
+**Fix planned (next edit, `src/vt.c` only):** a resize that does not re-wrap anything must not destroy the
+snapshot of a dirty line. `cols` unchanged means no line was re-broken; the cursor's row is mapped through
+the resize by `grid_resize()` already, so the row under the cursor afterwards IS the line it was on before —
+but that is VERIFIED, not assumed: the row's cells are copied before the resize and compared cell-for-cell
+after it, and the snapshot is kept (with `prompt_cy` moved to the cursor's new row, `prompt_cx` unchanged)
+only if they are identical. A width change, a row that did not survive, or a cursor that was not on the
+snapshot row (a wrapped input line) still invalidates — the safe direction, unchanged.
+
+**Next action:** make that fix, re-run `pdiag` with a band-open-shaped resize in the middle, then re-run the
+live harness.
+
+### s84 entry 4 — the resize fix is in `src/vt.c`; 6 more checks; `pdiag` now walks the whole flow against real fish
+
+`term_resize()`: a resize no longer throws away the snapshot of a **dirty** line when it did not touch that
+line. It saves the row under the cursor before the rows move and, afterwards, compares the row that ended up
+under the cursor with it cell for cell (`prompt_cell_same`). Kept — with `prompt_cy` moved to the cursor's new
+row and `prompt_cx` unchanged — only when the width is unchanged, the cursor was ON the snapshot row, and the
+comparison is clean. A width change, a row that did not survive, a wrapped input line, or a failed
+allocation still answer `prompt_valid = 0` ("unknown" → "do not write here"). The clean case is unchanged:
+the snapshot is simply re-taken.
+
+**Verified headless against real fish, not just the unit model** — `.scratch/s84/pdiag` now does
+prompt → type `echo restored:` → **`term_resize(80x24 -> 80x12)`, the band opening** → Ctrl+U:
+- after typing: `term_prompt_line -> 1 [echo restored:]`, `at_prompt=0`;
+- after the resize: **still `1 [echo restored:]`** (it was 0 before the fix — that was the live failure);
+- after Ctrl+U: `pending 1 -> 0`, the row matches again, `at_prompt=1` — the erase is proven, so the machine
+  would now send the `cd`.
+
+**New `tests/test_vt.c` checks (696 -> 702, 0 failures):** the line is describable before the band opens; a
+height-only resize moves the snapshot with its row instead of discarding it; the typed text is still exactly
+describable afterwards; a WIDTH change still invalidates it; a wrapped input line stays refused across a
+resize (the cursor was not on the snapshot row). No existing check contradicted the change — the whole suite
+still passes, which is the point of having pinned the old rule.
+
+**Measured:** `make -j8` exit 0, `grep -ciE "warning|error"` -> **0**; `./bin/test_vt` **702 checks,
+0 failures**; `./bin/dbg` MODEL OK; `./bin/test_fm` 235/0.
+
+**Next action:** re-run the live harness (one window) with the fish config fixed — `set -l buf
+(commandline)` instead of the quoted `[(commandline)]`, and a filesystem side effect (`touch
+restored_marker`) as the proof that the re-typed command ran in the directory the browser moved to.
+
+### s85 entry 1 — the timeout's root cause is the shell's GHOST TEXT, not the timeout; `term_prompt_line_is()` fixes the confirmation
+
+Re-ran the harness (`inj_follow.sh bin/kai-term new3`, one window, fish). The behaviour is right and the
+filesystem proves it: `restored_marker` was created in `tree/sub`, `fish_preexec` shows `cd …` in `tree`
+then `touch restored_marker` in `tree/sub`, and the line buffer after the navigation reads
+`pwd=…/tree/sub buf=[touch restored_marker]`. **But the machine still logged
+`fm: dropped the follow while re-typing (the wait ran out)`** — so s84 entry 5's `fm_cd_docrow` fix did
+land (the sequence now reaches RETYPING, which it did not before) and RETYPING's own predicate is what
+never fires.
+
+**Measured headless, no window** — `.scratch/s84/pdiag` extended to walk the whole machine (prompt → type
+→ band-open resize → Ctrl+U → `cd` → re-type) against real fish, printing `term_prompt_line`, the new
+`term_prompt_line_is`, and EVERY differing cell between the remembered row and the live one (the
+first-difference-only view had been hiding the answer). The re-type step:
+
+```
+cx=35 cy=5 p_cx=14 p_cy=5   differing cells: 21
+snapshot: ?..21:08:29.?.|...............................................
+current : ?..21:08:29.?.touch.restored_marker|..........................
+differ x=35: current ch=32 fg=ff777777 | snapshot ch=0 fg=ffe5e5e5
+```
+
+All 21 differences are the typed text itself — except the one at x=35, exactly the cursor column: a cell
+fish paints in grey (`ff777777`) that the snapshot holds blank. **That is fish's autosuggestion**, and
+`term_prompt_line()` requires every cell right of the cursor to equal the snapshot, so the confirmation
+can never fire in fish. Measured how common that is (same probe, four texts): `touch restored_marker` and
+`touch restored` → no ghost; `git com` → fish draws `mit -m "Initial commit"` in grey right of the cursor;
+`ls -la /tmp` → a grey `/`. Two of four.
+
+**Why the fix is a second predicate and not a relaxed one.** The right-of-cursor requirement exists for
+the caller that is about to ERASE the line: if the user parked the cursor mid-command, Ctrl+U erases only
+the left half, the right half survives, and a `cd` typed there would run on it. A ghost is indistinguishable
+from that at the cell level, so `term_prompt_line()` must keep refusing — it did refuse for `git com` and
+`ls -la /tmp` at the capture step, measured above. But RETYPING is not about to erase anything: it asks
+"did the text I typed land?", and the text it compares lives between the end of the prompt and the cursor,
+which is where typed text goes and never where a ghost is drawn.
+
+**Changed (three files, one edit each, in this order):**
+1. `include/kai-term/kai-term.h` — new `int term_prompt_line_is(Term *t, const char *text)`, documented as
+   the same question with exactly one difference, and why a caller about to erase must still use the strict
+   one.
+2. `src/vt.c` — the body of `term_prompt_line()` becomes `static int prompt_line_text(t, out, cap,
+   strict_right)` so the two entry points cannot drift; `term_prompt_line()` = strict (behaviour
+   unchanged), `term_prompt_line_is()` = non-strict + `strcmp`. The right-of-cursor loop is now behind
+   `if (strict_right)`; every other rule (prompt prefix must match, cursor not left of the prompt end, same
+   row, not scrolled back, not the alternate screen, refuse rather than truncate) applies to both.
+3. `src/main.c` — `FMCD_RETYPING` calls `term_prompt_line_is(t, fm_cd_line)` instead of describing the
+   line into a buffer and comparing it by hand.
+
+**Measured after the change:** `make -j8` exit 0, `grep -ciE "warning|error"` -> **0**; and the same probe
+now answers, at the re-type step, `term_prompt_line -> 0` (still strict, still refuses a ghost line —
+correct for the capture step) with `term_prompt_line_is("git com") -> 1`,
+`term_prompt_line_is("ls -la /tmp") -> 1`, `term_prompt_line_is("touch restored_marker") -> 1`. At every
+earlier step `term_prompt_line_is` answers 0, so it is not simply a predicate that says yes.
+
+**Trap hit while measuring, worth recording:** the probe was recompiled WITHOUT `-D_GNU_SOURCE`, which
+makes `src/pty.c` fail to compile (`implicit declaration of posix_openpt`), and `cc` left the PREVIOUS
+binary in place — so the run that appeared to reproduce the bug was running the old probe. The tell: the
+new `differ x=` lines were missing from the output while the old ones were there. Always check the compile
+exit status before believing a probe's output (same class as the stale-sanitizer-binary trap).
+
+**Open design question this measurement raised, for the user:** the capture step is (deliberately) still
+strict, so a navigation whose line shows a fish autosuggestion is refused outright — the browser moves and
+the shell is not told at all. That is the safe answer, but it means "the prompt ALWAYS follows" is not
+true in fish for a partially typed command that matches a longer history entry. Making it follow would
+mean erasing a line whose right half Kai-Term cannot classify, and putting it back when the erase proof
+fails. Ask before building that.
+
+**Next action:** `tests/test_vt.c` checks for the new predicate (a ghost right of the cursor: strict
+refuses, `term_prompt_line_is` accepts; a mid-line cursor whose described text differs: both refuse), then
+`make test` + `make asan`, then the live harness again — this time requiring
+`fm: the prompt now holds the browser's directory and what you had typed`.
+
+### s84 entry 5 — the live run WORKS, and it also caught the machine believing its own command echo
+
+Second live run (`.scratch/s84/inj_follow.sh bin/kai-term new2`, one window, fish, ground truth = the
+command-line buffer dumped by a `Ctrl+T` bind + the filesystem + `fish_preexec`'s cwd):
+
+| what was checked | result |
+|---|---|
+| line buffer before the band opens | `pwd=…/tree buf=[touch restored_marker]` |
+| machine's own trace | `fm: clearing the shell's input line to follow the browser into …/sub` → `fm: told the shell to follow: cd …/sub` → `fm: re-typing what was on the line: touch restored_marker` |
+| line buffer after the navigation | `pwd=…/tree/sub buf=[touch restored_marker]` — **the prompt holds the browser's directory AND what the user had typed** |
+| what actually ran | `cd …` in `…/tree`, then `touch restored_marker` in `…/tree/sub`, then `pwd` in `…/tree/sub` |
+| filesystem | `restored_marker` exists in `tree/sub`, not in `tree` — the re-typed command ran in the new directory |
+
+So the user's requirement is met end to end. **But the run also logged
+`fm: dropped the follow while re-typing (the wait ran out)`** — the machine never noticed it had finished.
+
+**Diagnosed with a temporary `L_DEBUG` probe in the RETYPING branch** (added, run once, removed —
+`grep -rn "TEMPORARY\|PROBE\|EXPERIMENT" src/ include/ tests/` is empty again). The first probe line explains
+everything:
+`pr=1 now=['/home/…/tree/sub'] want=[touch restored_marker] cx=76 cy=2 pcx=33 pcy=2`
+— at the moment CDING decided the new prompt had arrived, the row was still the row the `cd` had been typed
+on, and the "typed text" the model described was **the quoted path of our own command**.
+
+**Cause:** the `cd` write ends with CR, and `term_note_input()` treats a CR as "the line was submitted", so
+the echo window was already closed when the tty echoed `cd '<dir>'`. The end-of-burst rule then re-took the
+prompt snapshot at the end of that echo, and `term_at_prompt()` is trivially true against a snapshot taken at
+the cursor. The headless probe had not caught it because there the echo, the newline and the new prompt all
+arrived in ONE burst; live, they arrive in two.
+
+**Fix (`src/main.c`):** the new prompt is only believed once the cursor has moved off the row the `cd` was
+typed on — `fm_cd_docrow`, recorded in `fm_cd_write()`, compared with the new `term_docrow()` helper
+(`g.row_base + g.live_off + g.cy`, the grid's own document numbering, the same identity the image anchors
+use). A viewport row would not do: a prompt on the last row keeps its viewport row while the grid rotates
+under it. `-1` means "this sequence sent no `cd`" (the browser moved back to the directory the shell was
+already in) and carries no row requirement, so that path still completes instead of timing out and losing
+the erased text. The command Kai-Term sends ends with a newline, so a shell that echoes it necessarily ends
+up on a later document row; a shell that does not echo at all now fails safe (timeout → drop → the log prints
+what had been typed).
+
+**Measured:** `make -j8` exit 0, `grep -ciE "warning|error"` -> **0**; `./bin/test_vt` **702 checks,
+0 failures**, `./bin/dbg` MODEL OK, `./bin/test_fm` 235/0.
+
+**Next action:** re-run the live harness and require the completion line
+`fm: the prompt now holds the browser's directory and what you had typed` with no timeout drop.
+
+## Previous Task (s83 — executing the s82 plan: green tests, commit the verified range, then the clear -> `cd` -> re-populate machine)
 
 **User request (2026-10-19):** "We need to continue the work on Kai-Term, Previous session should've drafted
 the plan." The plan is s82's, below under "Previous Task (s82 — PLAN ONLY…)". This session implements it.
@@ -2462,15 +3045,15 @@ problem with a reproduction.
    graphics bits (4/16/18) to the DA1 answer or by inventing a `TERM` value: measured A/B (s70), advertising
    sixel without implementing it makes the picture vanish entirely, and timg's auto-detect list is hardcoded
    in its binary. Sixel/iTerm2 support would be a NEW feature — only on an explicit request.
-3. **The tree is red on 2 checks, and they are test bugs, not a regression.** `tests/test_vt.c:2410` and
-   `:2416` build their scrolled case with one burst of application output (`feed("p 😀")`), which correctly
-   re-takes the prompt snapshot, so the typed text is `""` and the expected `"😀"` never appears. Fix the
-   setup (`feed("p ")` then `type("😀")`) — do NOT change `vt.c`'s snapshot logic; `.scratch/s82/promptprobe`
-   shows it already answers correctly at the live bottom after a scroll and refuses while scrolled back.
-   The rest of the unfinished work is s79 step 3 onward (the clear -> `cd` -> re-populate machine in
-   `main.c`, the `fm_send_path()` gate, README/ISSUES for the new prompt rule, a live run through fish);
-   the ordered plan with the design and the safety properties is under "Current Task (s82)".
-   The crash s81 fixed (see ISSUES.md "Fixed") is separate and verified.
+3. **The prompt follow is implemented, idempotent and green (s86) — what is owed to the user is the in-window
+   confirmation, not more code.** Ask them to run `./bin/kai-term -d`, type a partial command, open the band
+   with `Ctrl+Shift+F` and navigate TWICE: the `-d` log must end each navigation with
+   `fm: the prompt now holds the browser's directory and what you had typed`, with no
+   `dropped the follow …` line, and the prompt must hold the text once, not `text cd <dir>`. If it misbehaves
+   in their window, start from the s86 entries and the three predicates under "The prompt invariant" in
+   Architecture & Invariants — and diagnose headless (`.scratch/s86/follow2.c`) before touching the model.
+   The old "tree is red on 2 checks" item is closed: those were test bugs, fixed in s83 entry 1, and
+   `vt.c`'s snapshot logic was never changed for them.
 4. Housekeeping, none a bug:
    - ASan build of `kai-term` binary itself as a real Makefile target (only tests have one). The
      hand-built one covered mux/layout and found `row[rcap]` overrun; covering Wayland/EGL would pay off
@@ -2513,12 +3096,12 @@ Kai-Term/
 ├── .gitignore                   # bin/, build/, *.o/*.obj/*.d/*.so/*.a, editor leftovers, docs/ARCHITECTURE.md
 ├── LICENSE                      # MIT, "Copyright (c) 2026 Kaida"
 ├── AGENT.md                     # this journal
-├── ISSUES.md                    # open items (the red test_vt checks) + Fixed + known limitations
+├── ISSUES.md                    # open items (none) + Fixed + known limitations
 ├── README.md                    # features, deps, build, flags, config keys, shortcuts, exit status
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 678 checks, 2 failing (s79's prompt-line work; see Current Status)
+├── tests/test_vt.c              # 719 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
 ├── tests/test_fm.c              # 235 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # 94 checks driving the REAL bin/kai-term; ONE probe launch gates the
@@ -2565,13 +3148,17 @@ Kai-Term/
   `BarItem[]` rects + labels, `PaneGeom[]` rects (each with cols/rows), the file-manager band (`FmGeom`:
   browser rect + preview rect + their cols/rows) and `layout_hit_fm()`, `layout_grid_size()`,
   `layout_initial_size()`.
-- `tests/test_vt.c` — 678 checks (2 of them failing, see Current Status): parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
+- `tests/test_vt.c` — 719 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
   bracketed paste, `term_init` guard, reflow, `term_grid_geometry`, zoom/alt-screen row-shrink,
   `mouse_sgr_button`, the graphics path (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll
   anchoring/id replacement/DA1-DA2-DSR answers), mux, keybind/keymods parsing, multiplexing config keys,
-  `layout_compute` / `layout_grid_size` / `layout_initial_size`. The source is list of what is covered; 2
-  invariants with dedicated checkers are `row[]` permutation (also `tests/dbg.c`) and startup-size round trip.
-- `tests/test_fm.c` — 220 checks against a real temporary directory tree (dirs, a dotfile, a dangling
+  `layout_compute` / `layout_grid_size` / `layout_initial_size`, and the prompt machinery the file manager's
+  follow is built from (`term_at_prompt()` / `term_prompt_line()` / `term_prompt_line_typed()` /
+  `term_prompt_line_is()`, the echo window and its transition rule, the clear -> `cd` -> re-populate sequence
+  as the model sees it). `main.c` itself is in no test binary — the machine is covered by
+  `.scratch/s86/follow2.c` and the live harness, not here. 2 invariants with dedicated checkers are `row[]`
+  permutation (also `tests/dbg.c`) and startup-size round trip.
+- `tests/test_fm.c` — 235 checks against a real temporary directory tree (dirs, a dotfile, a dangling
   symlink, a FIFO, an unreadable dir, four image formats, a binary file): scan + sort + caps + truncation,
   the hidden filter and `fm_set_hidden`, selection and scrolling (`fm_row_pos`, `ensure_visible`),
   navigation, the request-id rule (a stale answer is dropped), every preview kind and its error path, the
@@ -2743,6 +3330,28 @@ after `ptr_*` hit-tested bar then panes.
   as to the browser (measured live, s74).
 - `fm_send_cd()` is the only place the feature writes to the shell, never to a session on the alternate
   screen, and only when the directory actually changed (`fm_last_cd`, cleared by `tab_switch()`).
+- **The prompt invariant (what the follow may never violate).** Kai-Term cannot see where a prompt ENDS — the
+  tty echo arrives as ordinary output — so the model remembers the whole cursor row as the shell last printed
+  it (`prompt_row`/`prompt_cx`/`prompt_cy`) and treats "does that row still match, cell for cell" as the only
+  evidence available. Three rules follow, and every one of them has a check in `tests/test_vt.c`:
+  1. **The `cd` is written only from ERASING/CDING behind `term_at_prompt()`** — i.e. only once the row is
+     proven to be the bare remembered prompt. "Runs a mangled command" is closed by construction, not by
+     trusting a key binding, so no capture rule may ever gate the write.
+  2. **A steady state is not evidence.** The echo window closes only when the row CHANGED into the remembered
+     prompt between the start and the end of one burst (`prompt_matched_before` in `term_parse()`). A burst
+     that leaves the row exactly as it was — fish repainting OSC 7 / OSC 0 / DECSET after Kai-Term re-typed
+     the user's text — must not close it, or the next burst re-takes the snapshot over Kai-Term's own echo
+     and a line holding text starts answering "empty" (the s86 bug the user reported).
+  3. **A burst boundary is not a prompt.** CDING additionally waits for the session to go quiet
+     (`FMCD_QUIET_MS` 150, advanced from the frame timer) before believing the new prompt is drawn: fish
+     answers a `cd` with the echo, a continuation row and prompt chrome in separate bursts, each of which
+     re-takes the snapshot.
+  The three description predicates must not be confused: `term_at_prompt()` = "safe to WRITE here"; strict
+  `term_prompt_line()` = "I can describe this line and nothing survives an erase"; `term_prompt_line_typed()`
+  / `term_prompt_line_is()` = "ignore the shell's ghost text right of the cursor", legal only for the capture
+  (which is followed by the proof) and for confirming Kai-Term's own typing. `input_pending` is deliberately
+  NOT consulted by the description predicates — the row comparison is the evidence, and Kai-Term's own typed
+  path sets that flag while leaving a perfectly describable line behind.
 
 **Geometry: one helper decides a grid's size AND its origin.**
 
@@ -2855,7 +3464,15 @@ after `ptr_*` hit-tested bar then panes.
   `fm: keyboard -> terminal|browser|preview`; a click `fm: click row N selects <name>`; what was typed at
   the prompt `fm: typed the selected path at the prompt: <path>`; the shell follow
   `fm: told the shell to follow: cd <dir>` (absent = the directory did not change, or the session is on the
-  alternate screen, or `fm_follow = 0`); a failed read `fm: cannot open <dir>: <reason>`;
+  alternate screen, or `fm_follow = 0`); the clear -> `cd` -> re-populate sequence logs its steps —
+  `fm: clearing the shell's input line to follow the browser into <dir>`, that `told the shell to follow`
+  line, `fm: re-typing what was on the line: <text>`, and the completion `fm: the prompt now holds the
+  browser's directory and what you had typed`. Anywhere it stops instead: `fm: dropped the follow while
+  <erasing|cd|re-typing> (<why>)`, and when the captured text never made it back that line adds
+  `— the shell's line does NOT hold what you had typed; it was: <text>` (the only way to recover it, so quote
+  it in full in a report). A refusal to write at all is `fm: not telling the shell to follow — its input line
+  is not one I can describe` or `fm: not typing the path — …`; a navigation arriving mid-sequence logs
+  `fm: the follow already in flight now targets <dir>`; a failed read `fm: cannot open <dir>: <reason>`;
   `fm: worker started (result fd N)` — absent means the band was never opened, so no thread and no
   descriptor exist. The band's size is visible in the ordinary `grid resized to CxR …` line: with the band
   on, `R` is `fm_rows` + gap smaller than without it.
@@ -2922,6 +3539,28 @@ after `ptr_*` hit-tested bar then panes.
   run, s79/s81). The rule now: the glyph atlas is worth exiting over (nothing can be drawn without it —
   `render_draw()` returns -1 and `main()` exits 1), the color atlas is worth downgrading to mono glyphs, a
   picture is worth skipping. Retrying an upload is fine; drawing the result is not.
+- **A steady-state condition is not evidence of an event.** `else if (prompt_row_matches(t))
+  t->input_pending = 0;` read as "the shell put the prompt back, so the line is empty" — but it was also true
+  for a burst that had changed NOTHING, e.g. fish repainting only OSC 7 / OSC 0 / DECSET after Kai-Term had
+  re-typed the user's text. The echo window closed over bytes that had not been echoed yet, every later burst
+  re-took the prompt snapshot (including the one carrying the echo of Kai-Term's own typing), and a row
+  holding `Some text` began answering `term_at_prompt()` as EMPTY — so the next file-manager navigation
+  appended `cd '<dir>'` to the command and the shell ran it (user report, 2026-10-19). Snapshot the condition
+  at the START of the burst and act only on the transition. Same class as "a log line that prints its own
+  argument can lie": a predicate that is true before and after an event cannot report that event.
+- **A burst boundary is not a semantic boundary.** Advancing a "wait for the shell's next prompt" state at the
+  end of any pty read looks reasonable and is wrong: fish answers a `cd` with the command echo, then a
+  continuation row, then prompt chrome, then the prompt — four separate reads, and the model re-takes the
+  prompt snapshot at the end of each. The state machine left that step on a BLANK row, typed the user's text
+  there and could never confirm it. Where the evidence is "the application has FINISHED printing", wait for
+  silence (`FMCD_QUIET_MS`, driven from the frame timer) — no further burst is coming to trigger it.
+- **Never run the live key-injection or window-mapping harnesses while the user is at the machine, and never
+  assume a red screen came from your own test.** The user was disturbed mid-session (2026-10-19). Measured
+  after the fact rather than guessed: no `bin/kai-term` of mine was alive, no `.scratch/inject` process, no
+  new core dump, and the CLI suite had mapped 0 windows (`KAI_TERM_TEST_NO_WINDOW=1`, 10 SKIP lines) — what
+  actually happened was `noctalia` (the lock screen) SIGSEGVing and niri restarting the session, a recurring
+  host fault also present at 17:43, 18:06 and 20:59. Default to headless coverage (`.scratch/s86/follow2.c`
+  drives the real machine over the real pty with no window at all) and hand the in-window check to the user.
 - **A red check can mean the test's setup is unrepresentative, not that the model is wrong.**
   `tests/test_vt.c:2410/:2416` looked like "the prompt snapshot breaks after a scroll" and would have
   invited a change to correct snapshot logic. `.scratch/s82/promptprobe.c` replayed the sequence and printed

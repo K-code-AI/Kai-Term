@@ -6,29 +6,25 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Re-measured 2026-10-19 after the s75-s81 work was committed:
-`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **680 checks, 0 failures**; `./bin/dbg` **MODEL OK
-(0 problems)**; `./bin/test_fm` **235 checks, 0 failures**; `make asan` exit 0 with the same counts and no
-sanitizer report; `tests/cli_test.sh` green (94 checks, 0 failures, 0 skipped) when the probe launch can draw,
-62 checks + 10 skipped under `KAI_TERM_TEST_NO_WINDOW=1`. No `TODO`/`FIXME`/`XXX` anywhere in `src/`,
-`include/`, `tests/`.
+**No open bug.** Re-measured 2026-10-19 after the s86 fix to the prompt follow:
+`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **719 checks, 0 failures**; `./bin/dbg` **MODEL OK
+(0 problems)**; `./bin/test_fm` **235 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+(`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
+sanitizer report; `tests/cli_test.sh` green (94 checks, 0 failures, 0 skipped) when the probe launch can draw.
+No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
-The 2 failures that were here on the previous measurement (`tests/test_vt.c:2410` and `:2416`) were **bugs in
-the test, not in the terminal** (measured with `.scratch/s82/promptprobe.c`): the checks built their scrolled
-case with one burst of application output (`feed("p 😀")`), and the model correctly re-takes the prompt
-snapshot at the end of such a burst, so the typed text really was empty. The checks now print the prompt and
-type the text, and two further checks pin the rule the broken setup tripped over. `src/vt.c` was not changed
-for them.
+**Fixed this session (verified headless against real fish, not yet re-run in the user's window):** a second
+file-manager navigation on top of a prompt Kai-Term had just re-populated did not erase it — the prompt ended
+up `Some text cd '/'` and the shell ran that. See the s86 entries in AGENT.md for the cause (the echo window
+closed on a steady state instead of on a change) and the 11 checks that now pin it.
 
-**One behaviour the user asked for is not implemented yet** (it is a request, not a bug): navigating the file
-manager while the shell's input line already holds text should clear that line, `cd`, and put the text back on
-the new prompt. Today such a navigation is *refused* instead — see "Known limitations", "File manager". The
-design and the ordered plan are in AGENT.md "Current Task (s83)".
+The behaviour the user asked for on 2026-10-19 — clear the prompt, `cd`, put the text back — **is implemented**
+(README "File manager"). Its limits are under "Known limitations" below.
 
 Everything else below is current behaviour, not a bug.
 
 The integrated file manager (README "File manager") is built, wired into the window and covered by 235
-model/layout/config checks plus the 680 passing ones in the VT/config suite; its input routing was verified
+model/layout/config checks plus the 719 passing ones in the VT/config suite; its input routing was verified
 live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
 file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
 at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s75/s76 entries in
@@ -43,6 +39,24 @@ To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` log
 not filed; it is not a bug until it reproduces.
 
 ## Fixed
+
+**A second file-manager navigation appended `cd <dir>` to the prompt instead of erasing it first
+(2026-10-19).** Symptom, reported by the user: type `Some text`, browse once — the line is cleared, the `cd`
+runs and `Some text` comes back, as intended; browse again without touching the line and the prompt becomes
+`Some text cd '/'`, which the shell then runs (`fish: Unknown command: Some`). Cause, measured against real
+fish through the real pty (`.scratch/s86/follow2`): after Kai-Term re-typed the text, the shell's next burst
+repainted only prompt chrome (OSC 7, OSC 0, DECSET) and touched the input row not at all, so that row still
+equalled the remembered prompt. The end-of-burst rule read that **steady state** as "the application put the
+prompt back, so the line is provably empty" and closed the echo window over bytes that had not been echoed
+yet; every later burst then re-took the prompt snapshot — including the one carrying the echo of Kai-Term's
+own text — so a row holding `Some text` began answering `term_at_prompt()` as EMPTY, the re-type could never
+be confirmed, and the next navigation took the fast path. Now the window closes only when the row **changed**
+into the remembered prompt between the start and the end of one burst, and the `cd`-step additionally waits
+for the session to go quiet (150 ms) before believing the new prompt is drawn — a burst boundary is not a
+prompt, and fish answers a `cd` with the echo, a continuation row and prompt chrome before drawing it.
+Verified: 11 new checks in `tests/test_vt.c` (708 -> 719, 0 failures) and a headless replay of the machine
+over real fish — two navigations in a row both end with the completion line and the line holds `Some text `,
+not the appended command. Not re-run in the user's window.
 
 **Kai-Term segfaulted inside the graphics driver when the GPU refused a texture (2026-10-19).** Symptom:
 `kai-term error: atlas glTexImage2D failed: 0x505 (512x512)` followed by SIGSEGV at address 0x4 inside
@@ -170,15 +184,21 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   about a `cd` you typed yourself. Navigating away and back to a directory sends the line again. It is
   never sent to a session on the alternate screen (vim, htop, less would receive it as typing), and
   switching session clears the memory so the newly visible shell is re-synced on the next navigation.
-- **The `cd` and the typed path go only to a prompt the model can describe as untouched.** Kai-Term cannot
-  see where a prompt ends — the tty echoes what you type, and that echo arrives as ordinary output — so it
-  remembers the whole cursor row as the shell last printed it and compares. Typing, a history recall
-  (readline redraws the line) and a paste all make it stop matching; backspacing everything away, or
-  arrowing back down to an empty prompt, makes it match again. Anything else — a session scrolled back into
-  its history, one whose rows just moved, one on the alternate screen — counts as "unknown", and unknown is
-  answered as "do not write here". The safe direction to be wrong in is refusing: the navigation happens and
-  the shell simply is not told (`-d` logs `fm: not telling the shell to follow — its input line is not
-  empty`). Pressing Enter or Ctrl+C in the terminal re-arms it.
+- **The follow writes only where the model can prove the line is empty.** Kai-Term cannot see where a prompt
+  ends — the tty echoes what you type, and that echo arrives as ordinary output — so it remembers the whole
+  cursor row as the shell last printed it and compares. A navigation therefore captures your text, erases the
+  line with Ctrl+U, and sends the `cd` **only after a burst is seen to CHANGE that row back into the
+  remembered prompt**; a burst that leaves the row exactly as it was proves nothing. If the shell never shows
+  that, the sequence times out after two seconds, nothing more is written, and the log prints what had been
+  captured. Two shapes are refused or dropped rather than written through: a line the model cannot describe at
+  all (wrapped onto a second row, scrolled back into history, the alternate screen, a prompt redrawn with
+  different attributes, text longer than the buffer), and a cursor parked in the **middle** of a command —
+  Ctrl+U erases backwards from the cursor, the right half would survive and the `cd` would run in front of it,
+  so the proof fails and the sequence is dropped (the captured text goes to the log). A shell's autosuggestion
+  ghost right of the cursor is deliberately NOT in that group: it is ignored, and the navigation goes through.
+  Pressing Enter or Ctrl+C in the terminal re-arms the gate. `Return` on a file (which types a path at the
+  cursor and sends no newline) asks the same question and refuses on the same evidence — `-d` logs
+  `fm: not typing the path — the input line is not one I can describe`.
 - **The injected command cannot be hidden from the screen.** The tty echoes what Kai-Term writes, and
   discarding those bytes would leave the screen showing something readline believes is not there — its next
   redraw (`\r\x1b[K…`) would print the command anyway, and everything in between would be a lie. So `cd

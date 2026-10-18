@@ -853,7 +853,12 @@ int term_at_prompt(Term *t)
     return prompt_row_matches(t);
 }
 
-int term_prompt_line(Term *t, char *out, size_t cap)
+/* The shared body of term_prompt_line() and term_prompt_line_is(). One implementation so the two cannot
+   drift apart on what "the prompt, then typed text ending at the cursor" means; the only thing they
+   disagree on is whether the cells RIGHT of the cursor have to match the snapshot, which is what
+   strict_right decides (see the two wrappers' comments — one is about to erase the line, the other only
+   wants to know whether text it typed itself has landed). */
+static int prompt_line_text(Term *t, char *out, size_t cap, int strict_right)
 {
     if (!out || cap < 1)
         return 0;
@@ -878,10 +883,14 @@ int term_prompt_line(Term *t, char *out, size_t cap)
             return 0;
     /* And the cursor must sit at the END of the line's content. Erasing from mid-line (the user pressed
        Left) would leave the text right of the cursor in place, and the `cd` would then be typed in front
-       of it and RUN on it — the one thing this feature must never do. */
-    for (int x = t->cx; x < t->g.cols; x++)
-        if (!prompt_cell_same(&row[x], &t->prompt_row[x]))
-            return 0;
+       of it and RUN on it — the one thing this feature must never do. That is a requirement on a caller
+       that is about to WRITE at this line; a caller that is only checking its own typing did not erase
+       anything, and a shell's ghost text right of the cursor (fish's autosuggestion) would otherwise hide
+       an answer that is plainly yes. */
+    if (strict_right)
+        for (int x = t->cx; x < t->g.cols; x++)
+            if (!prompt_cell_same(&row[x], &t->prompt_row[x]))
+                return 0;
 
     /* What is between the end of the prompt and the cursor is what the user typed. Wide glyphs own two
        cells (the second is an ATTR_WIDE continuation holding nothing), and a cluster's extra codepoints
@@ -917,16 +926,57 @@ int term_prompt_line(Term *t, char *out, size_t cap)
     return 1;
 }
 
+int term_prompt_line(Term *t, char *out, size_t cap)
+{
+    return prompt_line_text(t, out, cap, 1);
+}
+
+int term_prompt_line_typed(Term *t, char *out, size_t cap)
+{
+    return prompt_line_text(t, out, cap, 0);
+}
+
+int term_prompt_line_is(Term *t, const char *text)
+{
+    if (!text)
+        return 0;
+    char got[FM_LINE_MAX];
+    if (!prompt_line_text(t, got, sizeof got, 0))
+        return 0;
+    return strcmp(got, text) == 0;
+}
+
 void term_resize(Term *t, int rows, int cols)
 {
     /* A resize moves and re-wraps rows, so a snapshot taken before it names cells that no longer exist.
        The clean/dirty answer must survive the resize all the same — a user who has typed nothing should
        still be able to use the file manager after dragging the window — so the state is read BEFORE the
-       rows move and re-taken AFTER them if it was clean. A line the user had already typed on stays
-       "not at a prompt", which is the safe direction to be wrong in. */
+       rows move and re-taken AFTER them if it was clean. */
     int was_clean = term_at_prompt(t);
     int old_live = t->g.live_off;
     int old_cy = t->cy;
+    int old_cols = t->g.cols;
+    /* A DIRTY line is the one the file manager now has to DESCRIBE (term_prompt_line) before it erases
+       and re-types it, and opening the file-manager band resizes the grid — measured 2026-10-19: the band
+       costs the terminal its rows (154x61 -> 154x49), so the very first step of the user's flow destroyed
+       the description it needed three steps later. Keeping it is only honest when the resize did not touch
+       the line: the width is unchanged (so grid_resize() re-broke no line), the cursor was ON the snapshot
+       row (a wrapped input line is a different matter and stays refused), and the row that ends up under
+       the cursor is compared cell for cell with the row that was there before. "Expected to be the same"
+       is not evidence — a snapshot naming the wrong row is worse than no snapshot, because the file
+       manager would then erase and re-type on top of something else. */
+    Cell *saved = NULL;
+    if (!was_clean && t->prompt_valid && t->prompt_row && cols == old_cols &&
+        old_cy == t->prompt_cy && old_cols > 0) {
+        const Cell *row = grid_vprow(&t->g, old_cy);
+        if (row) {
+            saved = malloc((size_t)old_cols * sizeof(Cell));
+            if (saved)
+                memcpy(saved, row, (size_t)old_cols * sizeof(Cell));
+            else
+                t->prompt_valid = 0;      /* cannot verify: answer "unknown", which means "do not touch" */
+        }
+    }
     /* The cursor travels through the reflow as an absolute row[] slot + column: grid_resize maps it
        to the same cell in the new grid (its logical line and column are preserved, and if the line
        was evicted by narrowing it lands on the newest surviving line). Without reflow the slot does
@@ -954,10 +1004,23 @@ void term_resize(Term *t, int rows, int cols)
     t->wrap_next = 0;
     cluster_invalidate(t);
     term_select_clear(t);   /* selection is viewport-relative; drop it on resize */
-    if (was_clean)
+    if (was_clean) {
         prompt_snapshot(t);
-    else
-        t->prompt_valid = 0;
+    } else if (saved) {
+        const Cell *row = grid_vprow(&t->g, t->cy);
+        int same = row != NULL;
+        if (row)
+            for (int x = 0; same && x < old_cols; x++)
+                if (!prompt_cell_same(&row[x], &saved[x]))
+                    same = 0;
+        if (same)
+            t->prompt_cy = t->cy;   /* the line survived the resize unchanged: the snapshot still fits it */
+        else
+            t->prompt_valid = 0;    /* it moved, was evicted or was rewritten: unknown */
+        free(saved);
+    } else {
+        t->prompt_valid = 0;        /* a width change re-wraps the line: no honest description survives */
+    }
 }
 
 void term_select_clear(Term *t)
@@ -2657,6 +2720,17 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
 {
     Parser *ps = &t->ps;
     ps->t = t;
+    /* Was the input line already the remembered prompt BEFORE this burst? The end-of-burst rule below
+       needs the difference, not the state: only a burst that CHANGED the line into the prompt is evidence
+       that the line became empty. Measured 2026-10-19 (`.scratch/s86/follow2`): after the file manager
+       re-typed the user's text, fish's next burst repainted only prompt chrome (OSC 7 / OSC 0 / DECSET /
+       `ESC[K` / a cursor move) and touched the input row not at all, so the row still equalled the
+       snapshot; the old steady-state test called that "the prompt is back, the line is provably empty",
+       closed the echo window over bytes that had not been echoed yet, and every later burst then
+       RE-TOOK the snapshot — including the burst carrying the echo of the text Kai-Term itself had typed.
+       The snapshot became `prompt + the user's text`, so a prompt holding text answered `term_at_prompt()`
+       as EMPTY and the next navigation appended `cd <dir>` to it and ran the result. */
+    int prompt_matched_before = prompt_row_matches(t);
 
     for (size_t i = 0; i < len; i++) {
         uint8_t b = buf[i];
@@ -2838,10 +2912,10 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
         ;
     else if (!t->input_pending)
         prompt_snapshot(t);
-    else if (prompt_row_matches(t))
-        /* The application has put the remembered prompt back on screen — the line is provably empty again
-           (readline's erase, an arrow-key redraw). Close the echo window on that evidence only; an
-           application that shows nothing leaves it open. The snapshot itself is not re-taken here: the row
-           already equals it, cell for cell. */
+    else if (prompt_matched_before == 0 && prompt_row_matches(t))
+        /* The application has CHANGED the row into the remembered prompt — the line is provably empty
+           again (readline's erase, an arrow-key redraw, the shell's repaint after Ctrl+U). Close the echo
+           window on that evidence only: a burst that leaves the row exactly as it was proves nothing about
+           what happened to the bytes we sent, and an application that shows nothing leaves it open. */
         t->input_pending = 0;
 }

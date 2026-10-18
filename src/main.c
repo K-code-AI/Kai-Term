@@ -149,10 +149,63 @@ typedef struct {
 static FmReq fm_req[FMQ_KINDS];
 static int fm_quit;                 /* the worker must leave its cond_wait and exit */
 static int fm_worker_up;
-/* The directory the shell was last told to move into (fm_follow). One per window, because one window has
+/* The directory the shell is believed to be in (fm_follow) — the one fact every follow decision is made
+   from: fm_send_cd() skips a directory it already stated, and the clear -> `cd` -> re-populate machine
+   asks the same variable whether a `cd` still has to be sent at all. One per window, because one window has
    one file manager; a session switch clears it so the newly visible shell is re-synced on the next
    navigation. Declared up here because tab_switch() resets it and fm_send_cd() is further down. */
 static char fm_last_cd[FM_PATH_MAX];
+
+/* The clear -> `cd` -> re-populate sequence.
+   The user's rule (2026-10-19): "it should first empty the prompt, cd into the new dir, then repopulate
+   the prompt with what was in it previously. Basically the prompt part should ALWAYS be in the same
+   directory as the File Manager." So a navigation is no longer refused because the input line already
+   holds text: the text is captured, the line is erased, the `cd` runs, and the text is typed back.
+   It cannot be one write. Kai-Term must PROVE the erase worked before sending the `cd`, or a line editor
+   that binds Ctrl+U to something other than erase-to-start would leave half a command on the line for the
+   `cd` to be RUN on. Hence the states, and hence every advance happens after that session's pty output has
+   been parsed — the only evidence that an erase or a `cd` landed is what the shell printed next.
+   SAFETY PROPERTY: the `cd` is sent only from ERASING/CDING, and only when term_at_prompt() says the line
+   is empty, so "runs a mangled command" is closed by construction rather than by trusting a key binding.
+   One per window, because one window has one file manager. */
+enum { FMCD_IDLE = 0, FMCD_ERASING, FMCD_CDING, FMCD_RETYPING };
+static const char *const fm_cd_state_name[] = { "idle", "erasing", "cd", "re-typing" };
+static int fm_cd_state = FMCD_IDLE;
+static int fm_cd_tab = -1;              /* the session the sequence belongs to */
+static char fm_cd_line[FM_LINE_MAX];    /* what the user had typed, captured before the erase */
+static char fm_cd_dir[FM_PATH_MAX];     /* the directory the browser is in NOW (a newer navigation
+                                           re-targets it, so the shell always ends up where the user is
+                                           looking, even if they moved again mid-sequence) */
+static int fm_cd_docrow = -1;           /* the DOCUMENT row the last `cd` of this sequence was typed on, or
+                                           -1 when this sequence has sent no `cd` (the browser moved back to
+                                           the directory the shell was already in). The new prompt is only
+                                           believed once the cursor has moved off that row. */
+static uint64_t fm_cd_deadline;         /* CLOCK_MONOTONIC ms; a stuck sequence is dropped, not retried */
+static uint64_t fm_cd_last_burst;       /* CLOCK_MONOTONIC ms of the last output burst of the owning
+                                           session — CDING counts its quiet period from this */
+/* A shell that never redraws its prompt, or a line editor that does not bind Ctrl+U to erase-to-start,
+   would otherwise leave this waiting forever. Two seconds is far longer than a local shell needs to
+   repaint and short enough that a stall is never felt. */
+#define FMCD_TIMEOUT_MS 2000
+/* How long the session must have STOPPED printing before CDING believes the new prompt is drawn. A burst
+   boundary is not the prompt: measured 2026-10-19 (`.scratch/s86/follow2`), fish answers the `cd` with the
+   echo of the command, then a continuation row, then prompt chrome (OSC 7 / OSC 0 / DECSET), and only then
+   the prompt — each in its own burst. The model re-takes the prompt snapshot at the end of every one of
+   them (our `cd` ended with CR, so nothing is outstanding), so stopping at the first burst on a new row
+   remembered a BLANK row as "the prompt", typed the user's text there, and could never confirm it. The
+   shell is at its prompt when it has finished printing; after this much silence the snapshot the model
+   holds IS the prompt, by construction. */
+#define FMCD_QUIET_MS 150
+static void fm_cd_abort(const char *why);
+
+static uint64_t mono_ms(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L);
+}
+
 /* The band's click state. One click selects the entry under the pointer; a SECOND click on the same entry
    within this many milliseconds opens it, which is what a user means by "double-click to open". Wayland's
    button `time` is milliseconds on the same clock as the keyboard events, so a plain difference measures
@@ -652,6 +705,13 @@ static void tab_close(int idx)
 {
     if (idx < 0 || idx >= mux_count(&mux))
         return;
+    /* mux_close() keeps the array dense: every tab AFTER idx slides down one slot. So a follow belongs to
+       no session any more once idx or any LOWER index closes — fm_cd_tab would keep its old number and
+       name a different shell, which is the one thing this index must never do (the machine would erase that
+       shell's line, `cd` it and type the other session's text into it). Aborting on idx == fm_cd_tab alone
+       is not enough; the shift is what breaks the index. */
+    if (fm_cd_tab >= 0 && idx <= fm_cd_tab)
+        fm_cd_abort("a session closed");
     Pty p = mux.tab[idx].pty;
     if (g_ep >= 0 && p.mfd >= 0)
         epoll_ctl(g_ep, EPOLL_CTL_DEL, p.mfd, NULL);
@@ -692,6 +752,9 @@ static void tab_switch(int idx)
        `cd` means the next navigation re-states the directory to this shell instead of silently doing
        nothing because some OTHER session was already told. */
     fm_last_cd[0] = 0;
+    /* A follow in flight belongs to the session that started it. Its captured text must not be typed into
+       the newly visible shell, and its `cd` must not be sent there either. */
+    fm_cd_abort("the visible session changed");
     klog(L_INFO, "mux: tab %d/%d visible", act + 1, mux_count(&mux));
     /* Which session is visible is part of the LAYOUT: it is the item the bar highlights, the pane the
        focus border is drawn around, the session the pane window slides to in split view, and the one whose
@@ -894,22 +957,21 @@ static size_t shell_quote(char *out, size_t cap, const char *path)
    A directory the user reaches by typing `cd` themselves is not tracked, so navigating away and back to
    it sends the line again; that is the safe direction to be wrong in. */
 
-static void fm_send_cd(const char *dir)
+/* The row the cursor is on, in the grid's own document numbering (slot 0 = document row row_base, the
+   cursor's slot is live_off + cy). A viewport row says nothing across a scroll: a prompt on the last row
+   stays at the same viewport row while the grid rotates under it. This is the same identity the image
+   anchors use (src/vt.c, "Images are anchored to an ABSOLUTE document row"). */
+static int term_docrow(Term *t)
 {
-    Term *t = cur_term();
-    Pty *p = cur_pty();
-    if (!t || !p || t->alt_screen || !conf.fm_follow)
-        return;
-    if (!dir[0] || !strcmp(fm_last_cd, dir))
-        return;
-    /* Only at a prompt the user has not typed on. Writing `cd <dir>` into a half-typed command mangles it
-       and then RUNS the mangled result, which is the one thing this feature must never do. The check is
-       the model's (term_at_prompt, src/vt.c); fm_last_cd is deliberately NOT updated on a refusal, so the
-       next navigation still gets through once the line is empty again. */
-    if (!term_at_prompt(t)) {
-        klog(L_DEBUG, "fm: not telling the shell to follow — its input line is not empty");
-        return;
-    }
+    return t->g.row_base + t->g.live_off + t->cy;
+}
+
+/* Write the `cd` itself. Shared by the fast path and the deferred machine so the quoting and the log line
+   cannot drift apart. Moves fm_last_cd, which is the single owner of "where the shell is believed to be" —
+   the machine's next step is decided by comparing it with fm_cd_dir, so a `cd` is never sent for a
+   directory the shell is already in. */
+static void fm_cd_write(Term *t, Pty *p, const char *dir)
+{
     char cmd[FM_PATH_MAX + 16];
     size_t n = 0;
     cmd[n++] = 'c'; cmd[n++] = 'd'; cmd[n++] = ' ';
@@ -918,11 +980,213 @@ static void fm_send_cd(const char *dir)
     cmd[n] = 0;
     input_write(t, p, cmd, n);
     snprintf(fm_last_cd, sizeof fm_last_cd, "%s", dir);
+    fm_cd_docrow = term_docrow(t);      /* the row the command was typed on: the prompt must be on another */
     /* Logged AFTER the write, and naming the directory the model actually holds rather than the one some
        caller asked for: a line that printed its own argument could claim a cd the alt-screen gate (or a
        dead pty) refused. This is the only client-side evidence the follow-the-directory rule has. */
     klog(L_DEBUG, "fm: told the shell to follow: cd %s", dir);
 }
+
+static void fm_send_cd(const char *dir)
+{
+    Term *t = cur_term();
+    Pty *p = cur_pty();
+    if (!t || !p || t->alt_screen || !conf.fm_follow)
+        return;
+    if (!dir[0])
+        return;
+    /* A sequence is already in flight for this session. Do NOT abort it — the erase may already have
+       happened, and dropping it then would throw the user's text away. Re-target it instead: the newest
+       directory is what the shell must end up in, and the machine re-checks fm_last_cd against fm_cd_dir
+       at every step, so a navigation that arrives mid-sequence is still honoured. This is checked BEFORE
+       the "already told it about that one" skip, and deliberately still fires when `dir` IS fm_last_cd:
+       the browser may have come back to the directory the shell never left, and the line has already been
+       erased, so the sequence still has to finish (it just has no `cd` left to send). */
+    if (fm_cd_state != FMCD_IDLE) {
+        if (fm_cd_tab == mux_active(&mux)) {
+            snprintf(fm_cd_dir, sizeof fm_cd_dir, "%s", dir);
+            fm_cd_deadline = mono_ms() + FMCD_TIMEOUT_MS;
+            klog(L_DEBUG, "fm: the follow already in flight now targets %s", dir);
+        }
+        return;
+    }
+    if (!strcmp(fm_last_cd, dir))
+        return;
+    /* Fast path: the line is provably empty, so nothing has to be erased first. */
+    if (term_at_prompt(t)) {
+        fm_cd_write(t, p, dir);
+        return;
+    }
+    /* The line has text on it. Capture it: term_prompt_line_typed() answers 1 when the row reads as "the
+       remembered prompt, then typed text ending exactly at the cursor", and it IGNORES whatever the shell
+       paints right of the cursor — fish's grey autosuggestion ghost (measured 2026-10-19: `git com` gets
+       `mit -m "Initial commit"` drawn there, `ls -la /tmp` gets a `/`). The strict term_prompt_line()
+       refused those, which meant the browser moved and the shell was never told — the user's ruling
+       (2026-10-19) is that following is what they want, so the ghost is now walked through. What makes
+       that safe is not the capture, it is the step after it: the `cd` is sent only once the WHOLE row is
+       proven equal to the remembered prompt, so a cursor parked mid-line (whose Ctrl+U erases only the
+       left half) fails the proof and the sequence drops with the captured text in the log rather than
+       running a mangled command. Anything else it cannot describe — a wrapped line, a scrolled-back view,
+       the alternate screen, a redrawn prompt prefix, text too long for the buffer — is still a refusal:
+       the navigation happens and the shell is simply not told. */
+    if (!term_prompt_line_typed(t, fm_cd_line, sizeof fm_cd_line)) {
+        fm_cd_line[0] = 0;
+        klog(L_DEBUG, "fm: not telling the shell to follow — its input line is not one I can describe");
+        return;
+    }
+    snprintf(fm_cd_dir, sizeof fm_cd_dir, "%s", dir);
+    fm_cd_docrow = -1;                  /* no `cd` sent yet, so no row requirement yet */
+    fm_cd_tab = mux_active(&mux);
+    fm_cd_state = FMCD_ERASING;
+    fm_cd_deadline = mono_ms() + FMCD_TIMEOUT_MS;
+    /* Ctrl+U erases backwards to the start of the line. Measured on this box: fish 4.6 binds it to
+       backward-kill-line, readline's is unix-line-discard, zsh's emacs mode binds ^U to
+       unix-line-discard too (fish's own binding read with `fish -c 'bind \cu'`, s79). It needs no
+       character count, which a backspace-per-cell approach would: a tab advances several columns and a
+       wide glyph occupies two cells, so cells are not keystrokes. */
+    input_write(t, p, "\025", 1);
+    klog(L_DEBUG, "fm: clearing the shell's input line to follow the browser into %s", dir);
+}
+
+/* Stop the sequence and leave the terminal exactly as it is. Never retype captured text from here: text
+   typed into a line we cannot describe is precisely the mangling this machine exists to avoid. */
+static void fm_cd_abort(const char *why)
+{
+    if (fm_cd_state == FMCD_IDLE)
+        return;
+    /* If the captured text never made it back onto the line, say so and print it — losing half of what the
+       user typed is the worst failure this feature has, and the log is the only way to get it back. When
+       the line still holds it, the erase never took effect and nothing was lost. */
+    int lost = (fm_cd_state == FMCD_ERASING || fm_cd_state == FMCD_CDING) && fm_cd_line[0];
+    if (lost && fm_cd_tab >= 0 && fm_cd_tab < mux_count(&mux)) {
+        char now[FM_LINE_MAX];
+        if (term_prompt_line(&mux.tab[fm_cd_tab].term, now, sizeof now) == 1 && !strcmp(now, fm_cd_line))
+            lost = 0;
+    }
+    if (lost)
+        klog(L_WARN, "fm: dropped the follow while %s (%s) — the shell's line does NOT hold what you had "
+                     "typed; it was: %s", fm_cd_state_name[fm_cd_state], why, fm_cd_line);
+    else
+        klog(L_DEBUG, "fm: dropped the follow while %s (%s)", fm_cd_state_name[fm_cd_state], why);
+    fm_cd_state = FMCD_IDLE;
+    fm_cd_tab = -1;
+    fm_cd_line[0] = 0;
+    fm_cd_dir[0] = 0;
+    fm_cd_docrow = -1;
+}
+
+/* Advance the sequence after one burst of that session's output. This is where it moves, because the only
+   evidence that an erase or a `cd` landed is what the shell printed next. Called for every session; a
+   sequence belongs to exactly one of them. `burst` says whether this call was caused by that output (1) or
+   by the frame timer (0) — only real output restarts CDING's quiet period. */
+static void fm_cd_advance(int ti, int burst)
+{
+    if (fm_cd_state == FMCD_IDLE)
+        return;
+    if (ti != fm_cd_tab || ti < 0 || ti >= mux_count(&mux))
+        return;
+    Term *t = &mux.tab[ti].term;
+    Pty *p = &mux.tab[ti].pty;
+    if (burst)
+        fm_cd_last_burst = mono_ms();
+
+    if (mono_ms() >= fm_cd_deadline) {
+        fm_cd_abort("the wait ran out");
+        return;
+    }
+    if (t->alt_screen) {
+        fm_cd_abort("the session entered the alternate screen");
+        return;
+    }
+    switch (fm_cd_state) {
+    case FMCD_ERASING:
+        /* term_at_prompt() here is not a convenience: it is the PROOF that the line is empty again — the
+           row matches the remembered prompt and no bytes of ours are outstanding. Until then the `cd`
+           is not sent, whatever the line editor did with Ctrl+U. */
+        if (!term_at_prompt(t))
+            return;
+        fm_cd_state = FMCD_CDING;
+        fm_cd_deadline = mono_ms() + FMCD_TIMEOUT_MS;
+        fm_cd_write(t, p, fm_cd_dir);
+        return;
+    case FMCD_CDING:
+        if (!term_at_prompt(t))
+            return;                       /* the new prompt has not been drawn yet */
+        if (fm_cd_docrow >= 0 && term_docrow(t) == fm_cd_docrow)
+            /* Still the row the `cd` was typed on. Measured live 2026-10-19: the tty echoes the command
+               we sent, and because that write ended with CR the model had no echo window left, so the end
+               of the echo burst RE-TOOK the prompt snapshot at the end of our own command — which made
+               term_at_prompt() true on a row that is not a prompt at all (term_prompt_line there happily
+               describes the quoted path as if the USER had typed it). The command we sent ends with a
+               newline, so the shell's next prompt is necessarily on a later DOCUMENT row; comparing
+               document rows rather than viewport rows is what survives the grid scrolling under us. */
+            return;
+        /* Off the `cd` row is necessary but not sufficient — see FMCD_QUIET_MS. Wait for the session to go
+           quiet, which is the evidence that the shell has finished drawing its prompt. */
+        if (mono_ms() - fm_cd_last_burst < FMCD_QUIET_MS)
+            return;
+        if (strcmp(fm_last_cd, fm_cd_dir)) {
+            /* The browser moved again while that `cd` was in flight, or it moved back to the directory the
+               shell never left, and the line is provably empty. State the newest directory before anything
+               is typed back — and only then, because fm_last_cd is what says whether a `cd` is needed at
+               all (fm_cd_write moves it, so a second pass through here never repeats the line). */
+            fm_cd_deadline = mono_ms() + FMCD_TIMEOUT_MS;
+            fm_cd_write(t, p, fm_cd_dir);
+            return;
+        }
+        if (!fm_cd_line[0]) {             /* nothing had been typed: there is nothing to put back */
+            fm_cd_state = FMCD_IDLE;
+            fm_cd_tab = -1;
+            klog(L_DEBUG, "fm: the shell followed the browser (the line was empty, nothing to restore)");
+            return;
+        }
+        fm_cd_state = FMCD_RETYPING;
+        fm_cd_deadline = mono_ms() + FMCD_TIMEOUT_MS;
+        input_write(t, p, fm_cd_line, strlen(fm_cd_line));   /* no CR: nothing is ever run here */
+        klog(L_DEBUG, "fm: re-typing what was on the line: %s", fm_cd_line);
+        return;
+    case FMCD_RETYPING:
+        /* NOT term_prompt_line(). Measured live 2026-10-19: the erase, the `cd` and the re-typed command
+           all landed and the re-typed command RAN in the new directory, yet the machine logged
+           `dropped the follow while re-typing (the wait ran out)` — it never noticed it had finished.
+           The reason is fish's autosuggestion: after the re-type fish paints grey ghost text immediately
+           right of the cursor, and term_prompt_line() requires every cell right of the cursor to equal the
+           snapshot (correct for a caller about to erase the line, wrong for one asking "did MY typing
+           land?"). term_prompt_line_is() asks exactly this state's question: the line is the remembered
+           prompt plus exactly fm_cd_line, ending at the cursor. */
+        if (!term_prompt_line_is(t, fm_cd_line))
+            return;                       /* the echo has not landed (or differs): keep waiting */
+        fm_cd_state = FMCD_IDLE;
+        fm_cd_tab = -1;
+        klog(L_DEBUG, "fm: the prompt now holds the browser's directory and what you had typed");
+        fm_cd_line[0] = 0;
+        /* A navigation that arrived during the re-type could not send its `cd` then — the line already
+           held text again. Run the sequence once more now that the line is describable. */
+        if (strcmp(fm_last_cd, fm_cd_dir))
+            fm_send_cd(fm_cd_dir);
+        return;
+    default:
+        fm_cd_abort("an impossible state");
+        return;
+    }
+}
+
+/* The deadline has to be checked even when the session prints nothing at all — a shell that never answers
+   produces no output to advance on. The frame timer fires every 8 ms, far finer than the timeout. It is
+   also what advances CDING once the session has gone quiet (FMCD_QUIET_MS): that step's evidence is the
+   END of the shell's output, and no further burst is coming to trigger it. */
+static void fm_cd_tick(void)
+{
+    if (fm_cd_state == FMCD_IDLE)
+        return;
+    if (mono_ms() >= fm_cd_deadline) {
+        fm_cd_abort("the wait ran out");
+        return;
+    }
+    if (fm_cd_state == FMCD_CDING && mono_ms() - fm_cd_last_burst >= FMCD_QUIET_MS)
+        fm_cd_advance(fm_cd_tab, 0);
+}
+
 
 /* The model changed: re-apply the geometry (layout_apply() is what calls fm_set_size() with the band's
    rects) and ask for a redraw. The grids themselves are painted in redraw(), just before the frame. */
@@ -1026,15 +1290,25 @@ static void fm_preview_toggle(void)
 
 /* Enter on a file: type its path at the shell prompt, WITHOUT a newline. Kai-Term does not guess what
    "open" means for a file and never runs one — the user adds the command, or presses Enter themselves.
-   Same quoting as the cd line, so a path with spaces or apostrophes arrives intact. */
+   Same quoting as the cd line, so a path with spaces or apostrophes arrives intact.
+   Appending at the cursor is what typing does, and it cannot run anything because no CR is sent — so a
+   line that merely HAS text on it is no longer a reason to refuse. What is still refused: a line the model
+   cannot describe at all, and the moment a clear/cd/re-type sequence is in flight (typing into that would
+   land the path in the middle of a line being erased). */
 static void fm_send_path(void)
 {
     Term *t = cur_term();
     Pty *p = cur_pty();
     if (!t || !p)
         return;
-    if (!term_at_prompt(t)) {          /* same rule as the cd: never write into a line in use */
-        klog(L_DEBUG, "fm: not typing the path — the input line is not empty");
+    if (fm_cd_state != FMCD_IDLE) {
+        klog(L_DEBUG, "fm: not typing the path — the shell's line is being moved to the browser's "
+                      "directory");
+        return;
+    }
+    char probe[FM_LINE_MAX];
+    if (term_prompt_line(t, probe, sizeof probe) != 1) {
+        klog(L_DEBUG, "fm: not typing the path — the input line is not one I can describe");
         return;
     }
     char path[FM_PATH_MAX];
@@ -1335,6 +1609,10 @@ static void input_write(Term *t, Pty *p, const void *buf, size_t len)
 
 static void send_str(const char *s, size_t n)
 {
+    /* The user typed at the prompt. A follow sequence in flight would otherwise erase that text or type
+       the captured text on top of it, so it stops here — the terminal is the user's again. */
+    if (fm_cd_state != FMCD_IDLE)
+        fm_cd_abort("you typed at the prompt");
     input_write(cur_term(), cur_pty(), s, n);
 }
 
@@ -2071,6 +2349,8 @@ static void paste_flush(void)
 {
     if (!paste_len)
         return;
+    if (fm_cd_state != FMCD_IDLE)
+        fm_cd_abort("a paste was inserted at the prompt");
     int bracketed = cur_term()->bracketed_paste && !paste_overflow;
     static const char start[] = PASTE_START, end[] = PASTE_END;
     Pty *pp = cur_pty();
@@ -2602,6 +2882,9 @@ int main(int argc, char **argv)
                         if (tb->term.g.scroll_off != tb->term.g.live_off)
                             snap_to_live(&tb->term);
                         term_parse(&tb->term, rbuf, (size_t)r);
+                        /* The file manager's clear -> `cd` -> re-populate machine advances only on this
+                           event: what the shell printed is the only proof that an erase or a `cd` landed. */
+                        fm_cd_advance(ti, 1);
                         /* Drain any terminal query responses (CPR, DA) queued by the parser */
                         if (tb->term.resp_len > 0) {
                             pty_write(&tb->pty, tb->term.resp, (size_t)tb->term.resp_len);
@@ -2633,6 +2916,9 @@ int main(int argc, char **argv)
             } else if (fd == tfd) {
                 uint64_t ticks;
                 (void)!read(tfd, &ticks, sizeof(ticks));
+                /* A follow sequence whose shell never answers has no output to advance on, so the
+                   deadline is checked here too. */
+                fm_cd_tick();
                 /* Draw when something changed AND no frame callback is in flight (frame_cb == NULL means
                    the compositor already showed the buffer we committed, so the swap has the best chance
                    of not waiting for a buffer release). `resized` is in the condition because a size
