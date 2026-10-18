@@ -75,7 +75,7 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s87 — CLOSED: AGENT.md cut from 3579 to 832 lines; no rule, invariant or pitfall removed)
+## Current Task (s87 — CLOSED: AGENT.md cut from 3579 to 838 lines; no rule, invariant or pitfall removed)
 
 **User request (2026-10-19):** "a massive cleanup of AGENT.md … get rid of everything that we don't need for
 further development."
@@ -128,7 +128,7 @@ there, so nothing was lost by deleting the narrative that discovered it.
   holds the rule; bare session labels (`s74`, `s81`, `s86`) still resolve to the era entries.
 
 **Measured after the change (docs only — re-run to prove the counts did not move):**
-- `wc AGENT.md` -> **832 lines / 10931 words / 73211 bytes** (was 3579 / 45481 / 295384 — 75% smaller).
+- `wc AGENT.md` -> **838 lines / 11005 words / 73684 bytes** (was 3579 / 45481 / 295384 — 75% smaller).
 - `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`, `./bin/test_vt`
   **719 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks,
   0 failures**, 0 warnings. (No window mapped — the GPU is at 11785/12227 MiB and the user works here.)
@@ -138,6 +138,12 @@ there, so nothing was lost by deleting the narrative that discovered it.
 **Unfinished / next:** nothing owed by this session. The deleted narrative is in git history (the commit
 before this one holds the whole 3579-line file). If a future session needs why a rule exists, the rule names
 its session; the blow-by-blow is `git log --follow AGENT.md`.
+
+**Committed** `AGENT.md` + `ISSUES.md` as one docs commit; `git fetch origin` first (nothing on GitHub to
+integrate), so `git push origin main` was a fast-forward (exit 0). Re-fetched and verified: `git status -sb`
+shows `main...origin/main` with no ahead/behind marker and `git diff main origin/main` is empty. No hash or
+ahead-count is written here — the commit recording it makes that wrong; read the truth with
+`git status -sb` / `git log --oneline origin/main -1`.
 
 ## Progress Journal (root causes of fixed bugs: git history)
 
@@ -283,7 +289,7 @@ its session; the blow-by-blow is `git log --follow AGENT.md`.
 - **2026-10-19, s87 — AGENT.md cleanup (docs only, no source touched).** The s68-s86 "Current Task /
   Previous Task / entry N" narrative (~2700 lines: plans, measured-start blocks, per-step logs, expected
   outcomes) is replaced by the era entries above; the long s63-s67 entries were cut to the same level.
-  3579 -> 832 lines, 45481 -> 10931 words, 295 KB -> 72 KB (75% smaller). Nothing that constrains a change
+  3579 -> 838 lines, 45481 -> 11005 words, 295 KB -> 72 KB (75% smaller). Nothing that constrains a change
   was removed: Architecture & Invariants, Debugging this project, Key Decisions & Pitfalls, Project Files &
   Facts, Next Steps and the verified Current Status are kept, and the deleted narrative is in git history — the
   same rule ISSUES.md has followed since s66. Session labels (`s74`, `s81`, `s86`) still resolve to the era
