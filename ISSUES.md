@@ -6,11 +6,13 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Re-measured 2026-10-19 (s87):
-`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **719 checks, 0 failures**; `./bin/dbg` **MODEL OK
-(0 problems)**; `./bin/test_fm` **235 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+**No open bug.** Re-measured 2026-10-19 (s88):
+`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **726 checks, 0 failures**; `./bin/dbg` **MODEL OK
+(0 problems)**; `./bin/test_fm` **247 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
-sanitizer report; `tests/cli_test.sh` green (94 checks, 0 failures, 0 skipped) when the probe launch can draw.
+sanitizer report; `tests/cli_test.sh` 95 checks / 0 failures / 0 skipped when the probe launch can draw (one
+check was added this session; the window-opening group is skipped on a box whose video memory is spoken for,
+so it was not re-run here).
 No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 **Fixed and confirmed by the user in their own window (2026-10-19):** a second file-manager navigation on top
@@ -40,6 +42,31 @@ To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` log
 not filed; it is not a bug until it reproduces.
 
 ## Fixed
+
+**The file manager's metadata was painted across its own image preview (2026-10-19).** Symptom, reported by
+the user: "the metadata sometimes get written on the image preview". Cause, in the model, not in the shader:
+the preview pane's picture box started at a hardcoded row 3 while `paint_preview_meta()` wrote every metadata
+line it had starting at row 2 — an image preview carries eight of them (path, type, size, mode, owner, group,
+modified, format) — and the renderer emits the pane's glyphs in the batch AFTER the picture, so every line
+from row 3 down landed on top of it. It only looked intermittent because a small picture is centred low
+enough to miss the text. Now one place owns the pane's rows (`preview_head_rows()` + `preview_meta_rows()`),
+used by both the painter and `fm_image_fit()`: header, then the metadata lines that fit, then the picture,
+which always keeps at least one row. Verified by 12 new checks in `tests/test_fm.c` (235 -> 247, 0 failures)
+that scan every cell inside the box `fm_image_fit()` reports for a painted glyph, and by A/B: the same new
+test file against the previous `src/fm.c` gives **8 failures**, including `fit: a picture that fills the area
+has no metadata line drawn across it`. Not yet re-run in the user's window.
+
+**The band is now a share of the window, not a row count (2026-10-19).** Requested by the user: "Would it be
+possible for the File manager part to occupy more space? like 75% per default and make it configurable in the
+config file" — and, on the shape of it, "don't keep fm_rows we don't need it". So `fm_rows` is GONE (config
+key, `Config`/`LayoutReq` field, `FM_ROWS_MAX`, its README row and its checks) and `fm_size` (percent of the
+text area, default **75**, clamped 10–95 at parse time and again in `layout.c`) replaces it. The band now
+keeps its proportion through a resize or a zoom instead of becoming huge or tiny next to the terminal, and
+`layout_initial_size()` solves the inverse (`grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))`) so a startup
+still gets exactly the configured `cols x rows` for the terminal pane. Verified by 7 new checks in
+`tests/test_vt.c` (719 -> 726, 0 failures: the share, both clamps, the terminal's floor, the share surviving
+a resize and a zoom, three startup round trips) and by one new `tests/cli_test.sh` check comparing the real
+binary's `grid CxR per session` line with the band off and with `fm_size = 50` on. Not yet seen by the user.
 
 **A second file-manager navigation appended `cd <dir>` to the prompt instead of erasing it first
 (2026-10-19).** Symptom, reported by the user: type `Some text`, browse once — the line is cleared, the `cd`
@@ -174,10 +201,15 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
 
 **File manager**
 
-- **The band costs the terminal rows, and the terminal wins.** `fm_rows` (3–64) is clamped in `layout.c`
-  so the shell keeps at least 3 rows; in a window too small for even that, the band is dropped for that
-  frame and the terminal gets the whole grid area back — the same rule the tab bar follows. `-d` shows it:
-  `grid resized to 154x51 …` with the band on in a window that is 154x61 without it.
+- **The band costs the terminal rows, and the terminal wins.** `fm_size` (10–95, default 75) is a PERCENT of
+  the grid area's height: the band keeps that share when the window is resized or the font zoomed. It is
+  clamped in `layout.c` so the shell keeps at least 3 rows, and dropped entirely for a frame when even that
+  leaves fewer than 3 rows of band — the same rule the tab bar follows. `-d` shows it: `grid resized to
+  154x14 …` with the band on in a window whose grid area is 154x58 without it (75% of the rows, the gap and
+  the whole-cell remainder taken off the terminal).
+- **An image preview shows its picture, not its metadata, when the pane is too short for both.** The rows go
+  header first, then as many metadata lines as fit, then the picture, which always keeps one row. A preview
+  pane of 3 rows therefore shows the image with no metadata at all; 2 rows show no picture box at all.
 - **One browser per window, shared by every session in it.** The file manager does not follow the active
   session's working directory, and it does not have one view per tab.
 - **The `cd` follow is one directory deep.** Kai-Term remembers the last directory it sent and does not

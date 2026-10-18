@@ -66,11 +66,12 @@ void config_default(Config *c)
     c->split_max = 4;
     keybind_parse("Ctrl+Shift+S", &c->key_toggle_layout);
     /* The in-window file manager. OFF by default: a user who never presses the toggle gets exactly the
-       terminal of earlier sessions, and closing it again returns to that state. The band is 12 cell rows
-       (layout.c clamps that against the real window), the preview pane is on, dotfiles are hidden at
-       first, and browsing a directory also moves the shell there (fm_follow). */
+       terminal of earlier sessions, and closing it again returns to that state. The band takes 75% of the
+       window's height (layout.c clamps that against the real window and always leaves the terminal its
+       floor), the preview pane is on, dotfiles are hidden at first, and browsing a directory also moves
+       the shell there (fm_follow). */
     c->fm_on = 0;
-    c->fm_rows = 12;
+    c->fm_size = FM_SIZE_DEF;
     c->fm_preview = 1;
     c->fm_show_hidden = 0;
     c->fm_follow = 1;
@@ -436,10 +437,10 @@ static void apply(Config *c, const char *key, char *val)
     } else if (!strcmp(key, "file_manager")) {
         /* Start with the file manager shown. Off by default; the toggle is Ctrl+Shift+F. */
         c->fm_on = cfg_bool(val) ? 1 : 0;
-    } else if (!strcmp(key, "fm_rows")) {
-        /* Cell rows the file-manager band asks for. layout.c clamps this again against the window and
-           always leaves the terminal pane at least FM_TERM_MIN_ROWS rows. */
-        c->fm_rows = iclamp_(atoi(val), FM_ROWS_MIN, FM_ROWS_MAX);
+    } else if (!strcmp(key, "fm_size")) {
+        /* Percent of the window's height the file-manager band asks for. layout.c clamps this again
+           against the real window and always leaves the terminal pane at least FM_TERM_MIN_ROWS rows. */
+        c->fm_size = iclamp_(atoi(val), FM_SIZE_MIN, FM_SIZE_MAX);
     } else if (!strcmp(key, "fm_preview")) {
         /* The preview pane next to the browser (toggled at runtime too). Off = the browser is full width. */
         c->fm_preview = cfg_bool(val) ? 1 : 0;

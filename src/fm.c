@@ -1526,7 +1526,31 @@ static void paint_list(FileMgr *fm, uint32_t fg, uint32_t bg)
     }
 }
 
-/* The two header lines every preview starts with: what is being previewed, and what it is. */
+/* ---- the preview pane's row budget: ONE place decides which rows are whose ----
+   The picture is drawn by the renderer over the box fm_image_fit() reports, and the pane's glyphs are
+   emitted in the batch AFTER it. So the moment the painter and fm_image_fit() disagree about which rows
+   text owns, a text line lands on top of the picture — which is exactly the bug this section exists to
+   prevent: the header's size used to be a literal 3 in two functions, and the metadata rows were not
+   counted at all. Both the painter and the fit call these two helpers, so they cannot drift. */
+static int preview_head_rows(const FmPreview *pv)
+{
+    /* name; path + what it is; and the error line, when the preview has one. */
+    return 2 + (pv && pv->err[0] ? 1 : 0);
+}
+
+/* Metadata rows the picture preview may paint, given the pane's height: never so many that the image is
+   left without a row of its own. Every other preview kind paints its own body instead of meta, so this
+   question only exists for FMP_IMAGE. */
+static int preview_meta_rows(const FileMgr *fm, int head_rows)
+{
+    const FmPreview *pv = fm->pv;
+    if (!pv || pv->kind != FMP_IMAGE)
+        return 0;
+    int room = fm->prev.rows - head_rows - 1;   /* -1: the picture keeps at least one row */
+    return iclamp_(pv->nmeta, 0, imax_(room, 0));
+}
+
+/* The header lines every preview starts with: what is being previewed, and what it is. */
 static void paint_preview_head(FileMgr *fm, uint32_t fg, uint32_t bg, int *row_out)
 {
     FmPane *p = &fm->prev;
@@ -1549,6 +1573,7 @@ static void paint_preview_head(FileMgr *fm, uint32_t fg, uint32_t bg, int *row_o
         pane_puts(p, 1, row, pv->err, -1, FM_ERR_COL, bg, 0);
         row++;
     }
+    /* The row this leaves off IS preview_head_rows(): fm_image_fit() trusts it to place the picture. */
     *row_out = row;
 }
 
@@ -1622,12 +1647,13 @@ static void paint_preview_text(FileMgr *fm, uint32_t fg, uint32_t bg, int row)
     }
 }
 
-static void paint_preview_meta(FileMgr *fm, uint32_t fg, uint32_t bg, int row)
+static void paint_preview_meta(FileMgr *fm, uint32_t fg, uint32_t bg, int row, int max_lines)
 {
     FmPane *p = &fm->prev;
     const FmPreview *pv = fm->pv;
     uint32_t dim = mix_c(fg, bg, 45);
-    for (int i = 0; i < pv->nmeta && row < p->rows; i++, row++) {
+    int n = imin_(pv->nmeta, max_lines);
+    for (int i = 0; i < n && row < p->rows; i++, row++) {
         const char *line = pv->meta[i];
         const char *tab = strchr(line, '\t');
         if (!tab) {
@@ -1657,11 +1683,12 @@ static void paint_preview(FileMgr *fm, uint32_t fg, uint32_t bg)
     case FMP_TEXT: paint_preview_text(fm, fg, bg, row); break;
     case FMP_IMAGE:
         /* The picture itself is drawn by the renderer over the box fm_image_fit() reports; the cells
-           under it stay blank so it composites against the pane background. */
-        if (fm->pv->nmeta)
-            paint_preview_meta(fm, fg, bg, row);
+           under it stay blank so it composites against the pane background. The meta lines therefore get
+           only the rows preview_meta_rows() allows — the ones ABOVE that box — and a pane too short for
+           both drops the metadata rather than writing it across the image. */
+        paint_preview_meta(fm, fg, bg, row, preview_meta_rows(fm, row));
         break;
-    default:       paint_preview_meta(fm, fg, bg, row); break;
+    default:       paint_preview_meta(fm, fg, bg, row, FM_META_LINES); break;
     }
 }
 
@@ -1681,7 +1708,12 @@ void fm_image_fit(const FileMgr *fm, int cell_w, int cell_h,
     if (!pv || pv->kind != FMP_IMAGE || pv->w <= 0 || pv->h <= 0)
         return;
     int cw = imax_(cell_w, 1), ch = imax_(cell_h, 1);
-    int avail_rows = imax_(fm->prev.rows - 3, 0);      /* the preview header owns 3 rows */
+    /* The rows the pane's own text owns: the header, then the meta lines preview_meta_rows() allows.
+       The picture starts below BOTH — the same numbers paint_preview() paints with, from the same two
+       helpers, which is what makes "metadata on top of the image" impossible instead of unlikely. */
+    int head = preview_head_rows(pv);
+    int first = head + preview_meta_rows(fm, head);
+    int avail_rows = imax_(fm->prev.rows - first, 0);
     if (avail_rows <= 0 || fm->prev.cols <= 0)
         return;
     int avail_w = fm->prev.cols * cw, avail_h = avail_rows * ch;
@@ -1706,9 +1738,9 @@ void fm_image_fit(const FileMgr *fm, int cell_w, int cell_h,
     *cols = (w + cw - 1) / cw;
     *rows = (h + ch - 1) / ch;
     *col = (fm->prev.cols - *cols) / 2;
-    *row = 3 + (avail_rows - *rows) / 2;
+    *row = first + (avail_rows - *rows) / 2;
     if (*col < 0) *col = 0;
-    if (*row < 3) *row = 3;
+    if (*row < first) *row = first;
     /* The box in PIXELS as well as in cells: ceil-dividing into cells can add up to one cell of slack,
        and a picture drawn into the CELL box would be stretched by that slack. The renderer draws these
        numbers into the cell box and centres them in it, so the aspect the fit computed is the aspect the

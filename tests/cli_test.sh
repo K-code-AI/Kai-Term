@@ -64,6 +64,12 @@ run_split() {
     stderr_only=$(cat "$sefile")
 }
 
+# The R in the last "layout: ... grid CxR per session" line — the rows every session was sized to. Empty
+# when the run logged no layout, which the caller treats as a failure rather than a pass.
+grid_rows() {
+    printf '%s\n' "$1" | sed -n 's/.*grid \([0-9][0-9]*\)x\([0-9][0-9]*\) per session.*/\2/p' | tail -1
+}
+
 # every launch that opens a window is wrapped in a timeout so a hang cannot wedge the suite
 if [ -n "$WAYLAND_DISPLAY" ]; then
     have_display=1
@@ -191,7 +197,7 @@ if [ "$have_display" = 1 ]; then
 
     # the in-window file manager: its config keys must be known, and its bindings must be unbindable.
     # Off by default, so the plain run above must not mention a file manager at all.
-    printf 'file_manager = on\nfm_rows = 8\nfm_preview = off\nfm_show_hidden = on\nfm_follow = off\nkey_file_manager = Alt+F\nkey_fm_focus = none\nfm_key_up = k\nfm_key_down = j\nfm_key_open = none\nfm_key_left = h\nfm_key_right = none\n' > "$tmp/fmconf"
+    printf 'file_manager = on\nfm_size = 40\nfm_preview = off\nfm_show_hidden = on\nfm_follow = off\nkey_file_manager = Alt+F\nkey_fm_focus = none\nfm_key_up = k\nfm_key_down = j\nfm_key_open = none\nfm_key_left = h\nfm_key_right = none\n' > "$tmp/fmconf"
     run -c "$tmp/fmconf" -d -e true
     ck "$rc" 0 "a config with the file manager keys runs"
     ck "$(printf '%s\n' "$out" | grep -c 'unknown key')" 0 "the file manager config keys are known"
@@ -201,6 +207,20 @@ if [ "$have_display" = 1 ]; then
     run -c "$tmp/fmconf" -d -e true
     ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_up unbound')" 0 "fm_key_up = k is a binding, not an unbind"
     ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_left unbound')" 0 "fm_key_left = h is a binding, not an unbind"
+    # fm_size is a SHARE of the window, so opening the band must cost the terminal rows — measured against
+    # the same window with the band off, never against a hard-coded row count.
+    printf 'file_manager = off\n' > "$tmp/nofm"
+    printf 'file_manager = on\nfm_size = 50\n' > "$tmp/fm50"
+    run -c "$tmp/nofm" -d -e true
+    rows_off=$(grid_rows "$out")
+    run -c "$tmp/fm50" -d -e true
+    rows_on=$(grid_rows "$out")
+    if [ -n "$rows_off" ] && [ -n "$rows_on" ] && [ "$rows_on" -lt "$rows_off" ]; then
+        ck ok ok "fm_size = 50: the band takes a share of the window, so the terminal gets fewer rows"
+    else
+        ck "$rows_on" "fewer than $rows_off" \
+           "fm_size = 50: the band takes a share of the window, so the terminal gets fewer rows"
+    fi
     run -d -e true
     ck "$(printf '%s\n' "$out" | grep -c 'file manager')" 0 "the file manager is off by default: the layout line does not mention it"
 

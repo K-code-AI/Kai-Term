@@ -558,11 +558,13 @@ typedef struct Config {
     /* ---- the in-window file manager (src/fm.c; its band is laid out by src/layout.c) ----
        fm_on: start with the file manager shown. Default off — a user who never presses the toggle sees
        exactly the terminal of earlier sessions, and closing the file manager returns to that state.
-       fm_rows: how many CELL ROWS the band asks for (layout.c clamps it again against the window).
+       fm_size: the PERCENT of the grid area's height the band asks for (layout.c clamps it again against
+       the window, so the terminal always keeps its floor). It is a share and not a row count on purpose:
+       the band then keeps its proportion when the window is resized or zoomed.
        fm_preview: the preview pane is shown (it can also be toggled at runtime). fm_show_hidden:
        dotfiles are part of the listing from the start. fm_follow: navigating into a directory also
        sends `cd <path>` to the shell, so the prompt lands where the browser is looking. */
-    int  fm_on, fm_rows, fm_preview, fm_show_hidden, fm_follow;
+    int  fm_on, fm_size, fm_preview, fm_show_hidden, fm_follow;
     /* The window-level shortcuts; these carry modifiers like every other terminal binding. */
     KeyBind key_file_manager;    /* show / hide the file manager */
     KeyBind key_fm_focus;        /* the keyboard drives the file-manager panes */
@@ -700,11 +702,16 @@ typedef struct {
 /* layout_hit_fm() answers. FM_HIT_NONE means the point is on a terminal pane, the bar, a margin or a gap. */
 enum { FM_HIT_NONE = 0, FM_HIT_LIST = 1, FM_HIT_PREVIEW = 2 };
 
-/* The band's height is asked for in CELL ROWS (Config.fm_rows) because that is the unit the panes are
-   painted in. Both bounds and the terminal pane's minimum are layout rules, so they live here, not in
-   config.c: clamping in config.c would let a different caller ask for a 1-row band and get one. */
+/* How much of the grid area the band asks for is a PERCENT of its height (Config.fm_size), not a row
+   count: the band then holds its share through a resize or a zoom instead of becoming huge or tiny
+   relative to the terminal. All three numbers here are layout rules, so they live here and not in
+   config.c: clamping only in config.c would let a different caller ask for a 1-row band and get one.
+   FM_SIZE_MIN/MAX bound the request; FM_ROWS_MIN is the smallest band worth drawing at all, and
+   FM_TERM_MIN_ROWS the floor the terminal pane never goes below. */
+#define FM_SIZE_DEF 75
+#define FM_SIZE_MIN 10
+#define FM_SIZE_MAX 95
 #define FM_ROWS_MIN 3
-#define FM_ROWS_MAX 64
 #define FM_TERM_MIN_ROWS 3    /* the terminal pane never shrinks below this many rows */
 
 typedef struct {
@@ -738,7 +745,7 @@ typedef struct {
     int bar;           /* BAR_OFF / BAR_AUTO / BAR_ALWAYS */
     int fm_on;         /* the file manager is shown */
     int fm_preview_on; /* its preview pane is shown too */
-    int fm_rows;       /* how many cell rows the band asks for (clamped to FM_ROWS_MIN..MAX here) */
+    int fm_size;       /* percent of the grid area's height the band asks for (clamped here) */
     TabInfo tab[TAB_MAX];
 } LayoutReq;
 
@@ -765,7 +772,7 @@ void layout_grid_size(const Layout *l, int *cols, int *rows);
    writing cell_w there instead leaves the grid one row short of the configured `rows` for every non-square
    cell — a mistake a check in tests/test_vt.c catches only if the arithmetic is in a module the tests link. */
 void layout_initial_size(int cols, int rows, int cell_w, int cell_h, int pad, int gap, int bar,
-                         int fm_on, int fm_rows, int *win_w, int *win_h);
+                         int fm_on, int fm_size, int *win_w, int *win_h);
 
 /* ---------- file manager (src/fm.c) ----------
    An in-window browser: a listing of one directory, a context-sensitive preview of the selected entry,

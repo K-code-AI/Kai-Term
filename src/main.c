@@ -349,7 +349,7 @@ static void layout_apply(void)
     rq.bar = conf.tab_bar;
     rq.fm_on = g_fm.on;
     rq.fm_preview_on = g_fm.preview_on;
-    rq.fm_rows = conf.fm_rows;
+    rq.fm_size = conf.fm_size;
     for (int i = 0; i < rq.ntab; i++) {
         rq.tab[i].tab = i;
         rq.tab[i].attention = mux.tab[i].attention;
@@ -2735,7 +2735,7 @@ int main(int argc, char **argv)
        linked test can prove the two agree. */
     int init_w, init_h;
     layout_initial_size(conf.cols, conf.rows, font.cell_w, font.cell_h, conf.padding, PANE_GAP,
-                        conf.tab_bar, conf.fm_on, conf.fm_rows, &init_w, &init_h);
+                        conf.tab_bar, conf.fm_on, conf.fm_size, &init_w, &init_h);
 
     if (wayland_setup(init_w, init_h) < 0)
         return 1;

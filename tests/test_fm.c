@@ -875,6 +875,34 @@ static void test_paint(void)
 
 /* ---------- the preview picture box ---------- */
 
+/* Glyphs painted INSIDE the box fm_image_fit() reports. The renderer draws the picture into that box and
+   emits the pane's glyphs in the batch AFTER it, so any glyph here is text drawn across the image — the
+   bug the user reported on 2026-10-19 ("the metadata sometimes get written on the image preview"). */
+static int ink_in_box(const FileMgr *fm, int col, int row, int cols, int rows)
+{
+    int ink = 0;
+    for (int y = row; y < row + rows && y < fm->prev.rows; y++)
+        for (int x = col; x < col + cols && x < fm->prev.cols; x++)
+            if (pch(&fm->prev, x, y))
+                ink++;
+    return ink;
+}
+
+/* Rows in [from,to) that hold at least one glyph — how many metadata lines the painter really drew. */
+static int ink_rows(const FileMgr *fm, int from, int to)
+{
+    int n = 0;
+    for (int y = from; y < to && y < fm->prev.rows; y++) {
+        int ink = 0;
+        for (int x = 0; x < fm->prev.cols; x++)
+            if (pch(&fm->prev, x, y))
+                ink = 1;
+        if (ink)
+            n++;
+    }
+    return n;
+}
+
 static void test_fit(void)
 {
     FileMgr fm;
@@ -892,10 +920,76 @@ static void test_fit(void)
     fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
     CHECK(cols == 1 && rows == 1, "fit: a picture smaller than the pane is NOT enlarged");
     CHECK(pw == 8 && ph == 8, "fit: and its pixel box is its own size");
-    CHECK(c == 19 && r == 11, "fit: and is centred in the area below the header");
+    /* 20 rows, 2 of header, 8 of metadata (path, type, size, mode, owner, group, modified, format): the
+       8x8 px picture is centred in the 10 rows left, so row 14 — NOT row 11, which is where a box that
+       ignored the metadata lines would sit. */
+    CHECK(c == 19 && r == 14, "fit: and is centred in the area below the header AND the metadata");
+
+    /* The direct pin of the user's complaint: paint the pane, ask where the picture goes, and require
+       that no glyph of the pane sits in that box. Before the row budget was shared, the metadata lines
+       from row 3 down were painted exactly there. */
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
+    CHECK(ink_in_box(&fm, c, r, cols, rows) == 0,
+          "fit: no painted glyph sits inside the box the picture is drawn into");
+    int nmeta = p->nmeta;      /* install frees the preview it replaces, so keep the count */
+    CHECK(r >= 2 + nmeta,
+          "fit: with room to spare the picture starts below every metadata line");
+    CHECK(ink_rows(&fm, 2, r) == nmeta,
+          "fit: and every metadata line that fits above the picture is still drawn");
+
+    /* The shape that actually overlapped before the row budget was shared: a picture big enough that its
+       box starts at the TOP of the picture area, which is exactly where the metadata lines are painted.
+       The pixels are the real img.png's; only the reported size is widened, because the fit is geometry
+       and generating a 1000x500 PNG here would test the encoder instead. */
+    FmPreview *wide = calloc(1, sizeof *wide);
+    wide->kind = FMP_IMAGE;
+    wide->w = 1000;
+    wide->h = 500;
+    wide->seq = 4;
+    for (int i = 0; i < nmeta && i < FM_META_LINES; i++)
+        snprintf(wide->meta[i], FM_META_WIDTH, "%s", p->meta[i]);
+    wide->nmeta = nmeta;
+    fm.pv_req = 4;
+    CHECK(fm_install_preview(&fm, wide) == 1, "fit: a picture that fills the pane, with metadata, installs");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
+    CHECK(rows == 10 && cols == 40 && r + rows <= 20,
+          "fit: that picture takes the whole area below the metadata");
+    CHECK(ink_in_box(&fm, c, r, cols, rows) == 0,
+          "fit: a picture that fills the area has no metadata line drawn across it");
+    CHECK(r == 2 + nmeta && ink_rows(&fm, 2, r) == nmeta,
+          "fit: the metadata sits in the rows above it, all of them");
+    fm_set_size(&fm, 40, 40, 40, 20);
+
+    /* A pane too short for header + all the metadata + a row of picture: the metadata is cut back, the
+       picture keeps its row, and the two still never share a cell. 5 rows = 2 header + 2 meta + 1 image. */
+    fm_set_size(&fm, 40, 40, 40, 5);
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
+    CHECK(rows > 0 && r == 4, "fit: a short pane keeps the picture a row and gives the metadata only what is left");
+    CHECK(ink_in_box(&fm, c, r, cols, rows) == 0,
+          "fit: a short pane still paints no glyph across the picture");
+    CHECK(ink_rows(&fm, 2, r) == 2, "fit: the metadata rows that fit are drawn, the rest are dropped");
+
+    /* Header height exactly: every metadata line goes, the picture keeps its one row. */
+    fm_set_size(&fm, 40, 40, 40, 3);
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
+    CHECK(rows > 0 && r == 2 && ink_rows(&fm, 2, r) == 0 && ink_in_box(&fm, c, r, cols, rows) == 0,
+          "fit: a pane the height of its header drops ALL the metadata rather than covering the picture");
+
+    /* No row left at all: no box, so nothing can overlap. */
+    fm_set_size(&fm, 40, 40, 40, 2);
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
+    CHECK(cols == 0 && rows == 0 && pw == 0 && ph == 0,
+          "fit: a pane with no row left for the picture reports no box");
+    fm_set_size(&fm, 40, 40, 40, 20);
 
     /* A fabricated preview: the geometry must hold for any size, and generating a 1000x500 image
-       file here would test the encoder, not the fit. */
+       file here would test the encoder, not the fit. It carries no metadata lines, so the picture
+       area starts right below the 2-row header and is 18 rows tall. */
     FmPreview *big = calloc(1, sizeof *big);
     big->kind = FMP_IMAGE;
     big->w = 1000;
@@ -912,9 +1006,9 @@ static void test_fit(void)
     /* aspect in PIXELS: 1000x500 is 2:1, and the box must be within a cell of it */
     double ar = (double)(cols * 8) / (double)(rows * 16);
     CHECK(ar > 1.6 && ar < 2.4, "fit: the aspect ratio is preserved in pixels, not cells");
-    CHECK(c >= 0 && r >= 3, "fit: the box never covers the preview header");
+    CHECK(c >= 0 && r >= 2, "fit: the box never covers the preview header");
 
-    /* A tall picture in the same pane. */
+    /* A tall picture in the same pane: height-limited by the 18 rows below the header. */
     FmPreview *tall = calloc(1, sizeof *tall);
     tall->kind = FMP_IMAGE;
     tall->w = 100;
@@ -925,7 +1019,7 @@ static void test_fit(void)
     fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
     double ar2 = (double)(cols * 8) / (double)(rows * 16);
     CHECK(ar2 > 0.05 && ar2 < 0.15, "fit: a tall picture stays tall");
-    CHECK(pw == 27 && ph == 271, "fit: a tall picture's pixel box is height-limited");
+    CHECK(pw == 28 && ph == 287, "fit: a tall picture's pixel box is height-limited");
     CHECK(pw * 10 == ph * 100 / 100 * 10 || ((pw * 1000) / ph > 20 && (pw * 1000) / ph < 110),
           "fit: and keeps its 1:10 aspect in pixels");
     CHECK(cols <= 40 && r + rows <= 20, "fit: and still fits");

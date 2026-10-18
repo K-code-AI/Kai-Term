@@ -23,11 +23,11 @@
      dropped for that frame rather than shrinking the grid to nothing.
    * In side-by-side mode at most split_max panes are shown; when there are more sessions than that, the
      shown window of tabs slides to contain the active one.
-   * With the file manager on, the grid area is split HORIZONTALLY first: a band of fm_rows cell rows on
-     top (browser left, preview right) and the terminal pane(s) below it. The sessions stay ordinary
-     entries in pane[], only shorter, so every hit test, focus border and pointer -> cell mapping works
-     whether the band is on or off. If the window cannot hold the band AND FM_TERM_MIN_ROWS of terminal,
-     the band is dropped for that frame — the terminal wins again. */
+   * With the file manager on, the grid area is split HORIZONTALLY first: a band taking fm_size PERCENT of
+     its height on top (browser left, preview right) and the terminal pane(s) below it. The sessions stay
+     ordinary entries in pane[], only shorter, so every hit test, focus border and pointer -> cell mapping
+     works whether the band is on or off. If the window cannot hold the band AND FM_TERM_MIN_ROWS of
+     terminal, the band is dropped for that frame — the terminal wins again. */
 #include "kai-term.h"
 
 /* Cut a string to at most `max` UTF-8 codepoints, never in the middle of a multi-byte sequence. A tab's
@@ -122,13 +122,14 @@ void layout_compute(const LayoutReq *rq, Layout *out)
     }
 
     /* ---- the file-manager band, above the terminal pane(s) ----
-       The band takes fm_rows cell rows of the grid area and the sessions keep the rest. The terminal
-       stays a normal PaneGeom in pane[], only shorter, which is what lets every existing hit test, the
-       focus border and W.gx/W.gy keep working with the file manager on AND off. */
+       The band takes fm_size percent of the grid area's height and the sessions keep the rest — a SHARE of
+       the window rather than a fixed row count, so resizing or zooming keeps the proportion the user asked
+       for. The terminal stays a normal PaneGeom in pane[], only shorter, which is what lets every existing
+       hit test, the focus border and W.gx/W.gy keep working with the file manager on AND off. */
     int pane_y = grid_y, pane_h = grid_h;
     if (rq->fm_on) {
-        int want = iclamp_(imax_(rq->fm_rows, FM_ROWS_MIN), FM_ROWS_MIN, FM_ROWS_MAX);
-        int band_h = want * ch;
+        int pct = iclamp_(rq->fm_size, FM_SIZE_MIN, FM_SIZE_MAX);
+        int band_h = (int)((long long)grid_h * pct / 100);
         /* The shell keeps at least FM_TERM_MIN_ROWS rows. If that leaves less than a usable band, the
            band is dropped for this frame rather than starving the terminal — the bar's rule again. */
         int room = grid_h - gap - FM_TERM_MIN_ROWS * ch;
@@ -251,12 +252,13 @@ void layout_grid_size(const Layout *l, int *cols, int *rows)
 
 /* The window size to ask the compositor for at startup. Kept next to layout_compute() because it is its
    inverse for this one case: the grid must fit the window that layout_compute() will later measure, and the
-   bar costs one cell ROW plus the gap — cell_h, never cell_w. The file-manager band costs fm_rows rows plus
-   one more gap, for the same reason: layout_compute() subtracts exactly that from the grid area, so feeding
-   this back into it returns the configured cols x rows for the TERMINAL pane. tests/test_vt.c does exactly
-   that round trip, with the band on and off. */
+   bar costs one cell ROW plus the gap — cell_h, never cell_w. The file-manager band is a PERCENT of the
+   grid area, so the inverse has to be solved rather than added: with band = pct% of grid_h, the terminal
+   pane's rows*ch plus the gap must fit in the (100-pct)% that is left, i.e.
+   grid_h = ceil((rows*ch + gap) * 100 / (100 - pct)). tests/test_vt.c feeds this straight back into
+   layout_compute() and requires the configured cols x rows for the TERMINAL pane, band on and off. */
 void layout_initial_size(int cols, int rows, int cell_w, int cell_h, int pad, int gap, int bar,
-                         int fm_on, int fm_rows, int *win_w, int *win_h)
+                         int fm_on, int fm_size, int *win_w, int *win_h)
 {
     int cw = imax_(cell_w, 1), ch = imax_(cell_h, 1);
     int p  = imax_(pad, 0), g = imax_(gap, 0);
@@ -266,6 +268,12 @@ void layout_initial_size(int cols, int rows, int cell_w, int cell_h, int pad, in
     /* BAR_AUTO shows nothing with the single starting session, so it needs no extra height here. */
     if (bar == BAR_ALWAYS)
         *win_h += ch + g;
-    if (fm_on)
-        *win_h += iclamp_(imax_(fm_rows, FM_ROWS_MIN), FM_ROWS_MIN, FM_ROWS_MAX) * ch + g;
+    if (fm_on) {
+        int pct = iclamp_(fm_size, FM_SIZE_MIN, FM_SIZE_MAX);
+        int need = imax_(rows, 1) * ch + g;      /* what the (100-pct)% remainder has to hold */
+        int grid_h = (need * 100 + (100 - pct) - 1) / (100 - pct);
+        *win_h = grid_h + 2 * p;
+        if (bar == BAR_ALWAYS)
+            *win_h += ch + g;
+    }
 }

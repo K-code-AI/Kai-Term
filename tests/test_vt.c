@@ -1815,7 +1815,7 @@ int main(void)
         }
     }
 
-    /* --- config: the file manager (file_manager / fm_rows / fm_* bindings) ----------------------
+    /* --- config: the file manager (file_manager / fm_size / fm_* bindings) ---------------------
        Off by default, because the feature must not change what a user who never touches it sees. The
        fourteen fm_key_* bindings are the ones allowed to be bare keys (keybind_parse_plain). */
     {
@@ -1823,7 +1823,7 @@ int main(void)
         const char *path = "/tmp/kterm_test_config6.conf";
         config_default(&c);
         CHECK(c.fm_on == 0, "config: the file manager is off by default");
-        CHECK(c.fm_rows == 12, "config: the band asks for 12 rows by default");
+        CHECK(c.fm_size == 75, "config: the band takes 75% of the window's height by default");
         CHECK(c.fm_preview == 1, "config: the preview pane is on by default");
         CHECK(c.fm_show_hidden == 0, "config: dotfiles are hidden by default");
         CHECK(c.fm_follow == 1, "config: the shell follows the browsed directory by default");
@@ -1853,7 +1853,7 @@ int main(void)
         FILE *f = fopen(path, "w");
         CHECK(f != NULL, "config: temp config file writable (file manager settings)");
         if (f) {
-            fputs("file_manager = on\nfm_rows = 6\nfm_preview = off\nfm_show_hidden = yes\n"
+            fputs("file_manager = on\nfm_size = 40\nfm_preview = off\nfm_show_hidden = yes\n"
                   "fm_follow = 0\nkey_file_manager = Alt+F\nkey_fm_focus = none\n"
                   "fm_key_up = k\nfm_key_down = j\nfm_key_open = Enter\n"
                   "fm_key_left = h\nfm_key_right = l\n", f);
@@ -1861,7 +1861,7 @@ int main(void)
             config_default(&c);
             config_load(&c, path);
             CHECK(c.fm_on == 1, "config: file_manager = on starts the feature shown");
-            CHECK(c.fm_rows == 6, "config: fm_rows read from the file");
+            CHECK(c.fm_size == 40, "config: fm_size read from the file");
             CHECK(c.fm_preview == 0, "config: fm_preview = off hides the preview pane");
             CHECK(c.fm_show_hidden == 1, "config: fm_show_hidden = yes lists dotfiles");
             CHECK(c.fm_follow == 0, "config: fm_follow = 0 leaves the shell alone");
@@ -1880,12 +1880,12 @@ int main(void)
                   "config: a fm_key the file does not mention keeps its default");
 
             f = fopen(path, "w");
-            fputs("fm_rows = 0\nfm_key_up = none\nfm_key_left = none\n"
+            fputs("fm_size = 0\nfm_key_up = none\nfm_key_left = none\n"
                   "fm_key_open = Ctrl+Shift+Nope\nfm_key_right = Ctrl+Shift+Nope\n", f);
             fclose(f);
             config_default(&c);
             config_load(&c, path);
-            CHECK(c.fm_rows == FM_ROWS_MIN, "config: fm_rows = 0 clamps to the layout minimum");
+            CHECK(c.fm_size == FM_SIZE_MIN, "config: fm_size = 0 clamps to the layout minimum");
             CHECK(c.fm_key.up.set == 0, "config: fm_key_up = none unbinds that action");
             CHECK(c.fm_key.left.set == 0, "config: fm_key_left = none leaves BackSpace as the only way up");
             CHECK(c.fm_key.open.set && c.fm_key.open.sym == KB_KEY_Return,
@@ -1894,11 +1894,11 @@ int main(void)
                   "config: an unparseable fm_key_right keeps Right, it does not disable entering");
 
             f = fopen(path, "w");
-            fputs("fm_rows = 99999\n", f);
+            fputs("fm_size = 99999\n", f);
             fclose(f);
             config_default(&c);
             config_load(&c, path);
-            CHECK(c.fm_rows == FM_ROWS_MAX, "config: fm_rows clamps to the layout maximum");
+            CHECK(c.fm_size == FM_SIZE_MAX, "config: fm_size clamps to the layout maximum");
             remove(path);
         }
     }
@@ -2089,29 +2089,32 @@ int main(void)
 
         /* ---------- the file-manager band (Layout.fm) ----------
            936x1002 px window, 8x17 cells, padding 8, gap 8, one session, bar auto (off with one tab):
-           the grid area is 920 x 986 px = 115 x 58 whole cells. A 12-row band is asked for. */
+           the grid area is 920 x 986 px = 115 x 58 whole cells. The band asks for 75% of that height
+           (the default), i.e. 739 px; the pixels that do not fill a whole cell stay at the BOTTOM of the
+           band, exactly as they stay at the bottom of a grid. */
         lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
-        rq.fm_on = 1; rq.fm_preview_on = 1; rq.fm_rows = 12;
+        rq.fm_on = 1; rq.fm_preview_on = 1; rq.fm_size = 75;
         layout_compute(&rq, &L);
         CHECK(L.fm.on == 1 && L.fm.prev_on == 1, "fm layout: the band appears when it is asked for");
-        CHECK(L.fm.list_y == 8 && L.fm.list_h == 12 * 17,
-              "fm layout: the band starts at the top margin and is fm_rows cell rows tall");
+        CHECK(L.fm.list_y == 8 && L.fm.list_h == 986 * 75 / 100,
+              "fm layout: the band takes fm_size PERCENT of the grid area, from its top");
         CHECK(L.fm.list_x == 8 && L.fm.list_w == (920 - 8) / 2,
               "fm layout: the browser takes the left half of the band");
         CHECK(L.fm.prev_x == 8 + L.fm.list_w + 8 && L.fm.prev_w == 920 - 8 - L.fm.list_w &&
-              L.fm.prev_y == 8 && L.fm.prev_h == 12 * 17,
+              L.fm.prev_y == 8 && L.fm.prev_h == 986 * 75 / 100,
               "fm layout: the preview takes the right half, one gap between, same height");
         CHECK(L.fm.list_w + L.fm.prev_w + 8 == 920,
               "fm layout: the two panes and the gap fill the band exactly (remainder on the right)");
-        CHECK(L.fm.list_cols == L.fm.list_w / 8 && L.fm.list_rows == 12 &&
-              L.fm.prev_cols == L.fm.prev_w / 8 && L.fm.prev_rows == 12,
+        CHECK(L.fm.list_cols == L.fm.list_w / 8 && L.fm.list_rows == (986 * 75 / 100) / 17 &&
+              L.fm.prev_cols == L.fm.prev_w / 8 && L.fm.prev_rows == (986 * 75 / 100) / 17,
               "fm layout: each pane's cols x rows come from term_grid_geometry on its own rect");
-        CHECK(L.pane[0].y == 8 + 12 * 17 + 8 && L.pane[0].h == 986 - 12 * 17 - 8,
+        CHECK(L.pane[0].y == 8 + (986 * 75 / 100) + 8 && L.pane[0].h == 986 - (986 * 75 / 100) - 8,
               "fm layout: the terminal pane is what is left BELOW the band, gap between");
         CHECK(L.pane[0].x == 8 && L.pane[0].w == 920,
               "fm layout: the terminal pane keeps the full width - the band only costs height");
         layout_grid_size(&L, &lcols, &lrows);
-        CHECK(lcols == L.pane[0].cols && lrows == L.pane[0].rows && lrows == 45 && lcols == 115,
+        CHECK(lcols == L.pane[0].cols && lrows == L.pane[0].rows &&
+              lrows == (986 - (986 * 75 / 100) - 8) / 17 && lcols == 115,
               "fm layout: every session is sized to the TERMINAL pane, not to the window");
         CHECK(layout_hit_fm(&L, L.fm.list_x + 1, L.fm.list_y + 1) == FM_HIT_LIST,
               "fm layout: a click in the browser pane is the browser");
@@ -2135,17 +2138,42 @@ int main(void)
         CHECK(layout_hit_fm(&L, 900, 100) == FM_HIT_LIST,
               "fm layout: and the whole band hit-tests as the browser");
 
-        /* A band bigger than the window can spare: the terminal keeps FM_TERM_MIN_ROWS and the band
-           shrinks to the rest - it never starves the shell. */
+        /* A share the window cannot give: it is clamped twice — to FM_SIZE_MAX as a request, then to
+           whatever leaves the terminal its FM_TERM_MIN_ROWS. The shell is never starved. */
         rq.fm_preview_on = 1;
-        rq.fm_rows = 100000;
+        rq.fm_size = 100000;
         layout_compute(&rq, &L);
         CHECK(L.fm.on == 1 && L.fm.list_h == 986 - 8 - FM_TERM_MIN_ROWS * 17 &&
               L.pane[0].h == FM_TERM_MIN_ROWS * 17,
-              "fm layout: an oversized band shrinks so the terminal keeps its minimum rows");
+              "fm layout: an oversized share shrinks so the terminal keeps its minimum rows");
+        rq.fm_size = FM_SIZE_MAX;
+        layout_compute(&rq, &L);
+        CHECK(L.fm.on == 1 && L.fm.list_h == 986 - 8 - FM_TERM_MIN_ROWS * 17,
+              "fm layout: even fm_size = FM_SIZE_MAX leaves the terminal its floor");
+        rq.fm_size = FM_SIZE_MIN;
+        layout_compute(&rq, &L);
+        CHECK(L.fm.on == 1 && L.fm.list_h == 986 * FM_SIZE_MIN / 100 &&
+              L.fm.list_rows == (986 * FM_SIZE_MIN / 100) / 17,
+              "fm layout: the smallest allowed share is still drawn, at its own size");
+
+        /* The whole point of a percent instead of a row count: the proportion survives a resize and a
+           zoom. A taller window gives the band more pixels; a bigger font gives it the same pixels and
+           therefore fewer rows. */
+        rq.fm_size = 75;
+        rq.win_h = 1502;                        /* grid area 1486 px instead of 986 */
+        layout_compute(&rq, &L);
+        CHECK(L.fm.on == 1 && L.fm.list_h == 1486 * 75 / 100,
+              "fm layout: a taller window gives the band a taller share of the same percent");
+        rq.win_h = 1002;
+        rq.cell_h = 34;                         /* zoomed in */
+        layout_compute(&rq, &L);
+        CHECK(L.fm.on == 1 && L.fm.list_h == 986 * 75 / 100 &&
+              L.fm.list_rows == (986 * 75 / 100) / 34,
+              "fm layout: zooming keeps the same pixel share and hands back fewer rows");
+        rq.cell_h = 17;
 
         /* A window too short for both: the band is dropped, exactly like the tab bar is. */
-        rq.fm_rows = 12;
+        rq.fm_size = 75;
         rq.win_h = 120;                       /* grid area 104 px: no room for 3+3 rows and a gap */
         layout_compute(&rq, &L);
         CHECK(L.fm.on == 0 && L.fm.list_h == 0,
@@ -2155,17 +2183,37 @@ int main(void)
         CHECK(layout_hit_fm(&L, 100, 20) == FM_HIT_NONE,
               "fm layout: with the band off no point ever hit-tests as the file manager");
 
-        /* The startup round trip with the band on: the window asked for must give back the configured
-           cols x rows for the terminal pane, band and both gaps included. */
-        layout_initial_size(80, 30, 8, 17, 8, 8, BAR_AUTO, 1, 12, &iw, &ih);
-        CHECK(ih == 30 * 17 + 16 + 12 * 17 + 8,
-              "fm layout: the startup window also holds the band rows and their gap");
+        /* The startup round trip with the band on. The band is a PERCENT, so the startup height has to be
+           SOLVED, not added to: the terminal's rows*ch plus the gap must fit in the (100-pct)% the grid
+           area keeps, i.e. grid_h = ceil((rows*ch + gap) * 100 / (100 - pct)). 30 rows at 17 px plus an
+           8 px gap is 518 px out of 25%, so the grid area is 2072 px and the window 2088 px. */
+        layout_initial_size(80, 30, 8, 17, 8, 8, BAR_AUTO, 1, 75, &iw, &ih);
+        CHECK(iw == 80 * 8 + 16 && ih == 2072 + 16,
+              "fm layout: the startup window is solved from the percent, not by adding band rows");
         lreq(&rq, LAYOUT_TABS, iw, ih, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
-        rq.fm_on = 1; rq.fm_preview_on = 1; rq.fm_rows = 12;
+        rq.fm_on = 1; rq.fm_preview_on = 1; rq.fm_size = 75;
         layout_compute(&rq, &L);
         layout_grid_size(&L, &lcols, &lrows);
         CHECK(lcols == 80 && lrows == 30,
               "layout: a file-manager startup gets the configured cols x rows back for the terminal pane");
+        CHECK(L.fm.on == 1 && L.fm.list_h == 2072 * 75 / 100,
+              "fm layout: and the band really did take its share of that window");
+        /* The round trip must hold for every combination main.c can ask for: a bar that costs a row, a
+           different percent, and no padding or gap at all. */
+        layout_initial_size(80, 30, 8, 17, 8, 8, BAR_ALWAYS, 1, 40, &iw, &ih);
+        lreq(&rq, LAYOUT_TABS, iw, ih, 8, 17, 8, 8, 1, 0, 4, BAR_ALWAYS);
+        rq.fm_on = 1; rq.fm_preview_on = 1; rq.fm_size = 40;
+        layout_compute(&rq, &L);
+        layout_grid_size(&L, &lcols, &lrows);
+        CHECK(lcols == 80 && lrows == 30 && L.bar_on == 1 && L.fm.on == 1,
+              "layout: a bar + band startup at fm_size = 40 gets its cols x rows back too");
+        layout_initial_size(80, 30, 8, 8, 0, 0, BAR_AUTO, 1, 50, &iw, &ih);
+        lreq(&rq, LAYOUT_TABS, iw, ih, 8, 8, 0, 0, 1, 0, 4, BAR_AUTO);
+        rq.fm_on = 1; rq.fm_preview_on = 1; rq.fm_size = 50;
+        layout_compute(&rq, &L);
+        layout_grid_size(&L, &lcols, &lrows);
+        CHECK(lcols == 80 && lrows == 30,
+              "layout: with no padding and no gap the band round trip still holds");
     }
 
     /* ---------- the shell's input line: term_at_prompt() (src/vt.c) ----------

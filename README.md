@@ -168,6 +168,11 @@ configuration file only. Any option Kai-Term does not accept is rejected with
 leaves the ordinary terminal underneath. It is drawn with the same font, colours, borders and cells as the
 terminal, and closing it returns the window to exactly what it was before.
 
+The band takes three quarters of the window's text area by default and **keeps that share** when you resize
+the window or change the font size — `fm_size` in the configuration file sets the percent (10–95). The
+terminal always keeps its floor: if the window is too small for the band and three text rows, the band is
+dropped for that frame rather than starving the shell.
+
 The browser lists the current directory — directories first, then files, case-insensitively — with the
 directory path in its header line and, in its footer, how many entries are shown, whether the listing was
 capped, and any error. The first row is always `..`, the way back up (the root directory has no such row,
@@ -179,7 +184,7 @@ The preview pane shows whatever fits the selected entry:
 | Selected | Preview |
 |---|---|
 | a directory | its contents (up to 512 entries), plus the entry count |
-| an image | the picture, aspect-preserving and never upscaled — PNG, JPEG, WebP and GIF, recognised by their own magic bytes, not by the file name |
+| an image | the picture, aspect-preserving and never upscaled, with its metadata in the rows above it — PNG, JPEG, WebP and GIF, recognised by their own magic bytes, not by the file name. A preview pane too short for both shows the picture and drops the metadata lines that do not fit |
 | a text file | the first 256 KiB, with syntax highlighting for C/C++/headers, Python, shell, JSON, Markdown, Make, INI/TOML, HTML/XML, Rust, JS/TS, Go, CSS and YAML |
 | anything else | its type, size, modification and access times, owner and group, and permission string |
 
@@ -284,7 +289,7 @@ Settings use a simple `key = value` format.
 | `key_tab_prefix` | `Ctrl+Shift` | Hold these and press `1`–`9` to jump to that session (`none` disables it) |
 | `key_toggle_layout` | `Ctrl+Shift+S` | Switch between the one-session view and the side-by-side view |
 | `file_manager` | `0` | Show the file-manager band from startup instead of only when the shortcut is pressed |
-| `fm_rows` | `12` | Cell rows the band asks for (clamped to 3–64, and shrunk further so the terminal keeps at least 3 rows; if even that does not fit, the band is dropped for that frame) |
+| `fm_size` | `75` | Percent of the window's text area the band asks for (clamped to 10–95, and shrunk further so the terminal keeps at least 3 rows; if even that does not fit, the band is dropped for that frame) |
 | `fm_preview` | `1` | Show the preview pane next to the browser (`p` toggles it at runtime; off means the browser is full width) |
 | `fm_show_hidden` | `0` | Include dotfiles in the listing from the start (`.` toggles it at runtime) |
 | `fm_follow` | `1` | Browsing into a directory also sends `cd '<path>'` to the shell |

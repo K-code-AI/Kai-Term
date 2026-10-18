@@ -17,11 +17,11 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-19, s87 — build and every suite green; the prompt follow is implemented, idempotent and user-confirmed; the one open item is the user's verdict on how the band LOOKS)
+## Current Status (re-measured 2026-10-19, s88 — build and every suite green; the band now takes a configurable share (`fm_size`, default 75%) and its preview's rows have one owner; what is open is the user's eye on both)
 
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **719 checks, 0 failures**,
-  `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **235 checks, 0 failures**;
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **726 checks, 0 failures**,
+  `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **247 checks, 0 failures**;
   `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
   `make asan` exit 0 with the same counts and 0 sanitizer reports.
 - **The follow is user-confirmed in their own window (2026-10-19): "I confirm it works"** — after the s86
@@ -44,6 +44,14 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   has now run the band in their own window and confirmed the behaviour (2026-10-19). **No explicit verdict on
   how it LOOKS has been given** — if they ever report something visual, start from the `fm:` log lines, not
   from the shader.
+- **s88 changed how big that band is and what its preview may paint, and no human eye has seen it yet.**
+  `fm_rows` (a row count) is gone from the whole tree; `fm_size` (percent of the grid area, default **75**,
+  clamped 10–95 in config.c AND layout.c) decides the share, so the band keeps its proportion through a
+  resize and a zoom. And the preview pane's rows now have ONE owner (`preview_head_rows()` +
+  `preview_meta_rows()` in fm.c, used by both `paint_preview()` and `fm_image_fit()`), which is what stops
+  the metadata lines being drawn across the picture — the user's "the metadata sometimes get written on the
+  image preview". Both are pinned by checks (726 + 247, 0 failures) and the preview one by an A/B against the
+  previous `src/fm.c` (8 failures there). Nothing here has been looked at in the user's window.
 - **Image support (kitty graphics protocol) is in the tree and user-confirmed by eye** ("The image display
   properly. The feature works as expected", 2026-10-17, session 70, `timg -p k` with a PNG): APC/DCS parser
   states, chunk assembly, base64 + zlib + PNG (libpng simplified API) + raw f=24/32 decode, premultiplied
@@ -74,6 +82,233 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   ahead/behind count in this file — the commit recording it makes it wrong. Read the truth with
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
+
+## Current Task (s88 — file manager: the band takes a configurable share of the window (default 75%), and metadata must never be painted over an image preview)
+
+**User request (2026-10-19):** "Would it be possible for the File manager part to occupy more space? like 75%
+per default and make it configurable in the config file. Also the metadata sometimes get written on the image
+preview, can we make sure this doesn't happen?" — and, on the shape of the setting: **"don't keep fm_rows we
+don't need it"**, so `fm_rows` (a cell-row count) is REMOVED, not kept alongside a new key.
+
+**s88 measured start (measured this session, not inherited):**
+- `git status -sb` -> `main` == `origin/main`, clean (the s87 docs commits are pushed).
+- `make -j8` -> exit 0, 0 warnings; `./bin/test_vt` **719 checks, 0 failures**, `./bin/dbg` **MODEL OK (0
+  problems)**, `./bin/test_fm` **235 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+  (`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0, same counts, 0 sanitizer reports.
+- `fm_rows` appears in 24 places: `src/config.c` (default 12 + the `apply()` branch), `src/layout.c`
+  (the band split + `layout_initial_size`), `src/main.c` (2 call sites), the header (`Config.fm_rows`,
+  `LayoutReq.fm_rows`, `FM_ROWS_MIN/MAX`), `tests/test_vt.c` (6 config checks + 5 layout checks),
+  `tests/cli_test.sh`, README, ISSUES.md, AGENT.md. That is the full list of what has to change.
+- **The overlap is real and its cause is two hardcoded numbers, not the renderer.** `paint_preview()`
+  (src/fm.c:1658) paints the image's meta lines starting at the row after the header, while
+  `fm_image_fit()` (src/fm.c:1675) reserves `fm->prev.rows - 3` rows for the picture and starts its box at
+  row 3 — the header's size is written down twice, and the meta lines are not counted at all. Glyphs are
+  emitted in batch B, AFTER the picture, so any meta cell inside the picture box is drawn on top of it. The
+  image preview carries one meta line (`format: <fmt> image, WxH px`, src/fm.c:863), which is exactly the
+  "metadata sometimes written on the image" the user sees.
+
+**s88 objective:** one config key that says how much of the window the file manager gets (percent, default
+75), with `fm_rows` gone everywhere; and one shared row budget for the preview pane, so the picture and the
+text can never occupy the same cell.
+
+**s88 design (decided before writing code):**
+1. `fm_size` = percent of the grid area's HEIGHT the band asks for. Default **75**, clamped to 10–95 at parse
+   time and again in layout.c (the project's rule: layout owns the real clamp). `FM_ROWS_MIN` 3 stays as the
+   layout's minimum usable band and `FM_TERM_MIN_ROWS` 3 as the terminal's floor — both are floors, not config
+   values; `FM_ROWS_MAX` goes away with `fm_rows` (a percent cannot ask for 600 rows).
+2. `layout_compute()`: `band_h = grid_h * pct / 100`, then clamped to `grid_h - gap - FM_TERM_MIN_ROWS * ch`.
+   The "terminal wins" rule is unchanged in shape, only in where the request comes from.
+3. `layout_initial_size()` is the inverse, so it must solve for the percent instead of adding rows:
+   `grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))`. The round-trip check in `tests/test_vt.c` is what
+   proves that arithmetic, with the band on and off.
+4. The preview pane gets ONE row budget, computed in one place and used by the painter AND by
+   `fm_image_fit()`: header rows (2, +1 when there is an error line), then the meta rows that fit
+   (`min(nmeta, rows - head - 1)`, so the picture always keeps at least one row), then the picture box starts
+   after both. The header's size stops being a literal 3 in two functions.
+
+**s88 planned steps (each one: edit -> AGENT.md -> build/test; never commit red):**
+1. Header: `fm_size` in `Config`/`LayoutReq`, `FM_SIZE_MIN/MAX/DEF`, drop `fm_rows` + `FM_ROWS_MAX`.
+2. `src/layout.c`: percent band + the inverse in `layout_initial_size()`.
+3. `src/config.c`: the `fm_size` key and its default.
+4. `src/main.c`: the two call sites.
+5. `src/fm.c`: the shared preview row budget; the picture box starts below the meta lines.
+6. Tests: `test_vt` config (default 75, read, both clamps) + layout (share of the grid, terminal floor,
+   round trip); `test_fm` — no cell inside `fm_image_fit()`'s box holds a painted glyph, and a short pane
+   drops meta rather than overlapping.
+7. `tests/cli_test.sh`, README, ISSUES.md, AGENT.md's invariants + debugging lines.
+8. `make test` (`KAI_TERM_TEST_NO_WINDOW=1` — the GPU is full) + `make asan`, exact counts; commit, push.
+
+**s88 expected outcome:** `fm_rows` appears nowhere in the tree; `fm_size = 75` by default and honoured from
+the config file; the band takes ~75% of the grid area with the terminal keeping its floor; a picture preview
+shows its metadata above the image, never across it, pinned by a check that scans the picture's own cells.
+
+### s88 entry 1 — steps 1-5 done: `fm_size` replaces `fm_rows` in the code, and the preview's rows now have one owner
+
+Five edits, in dependency order (header -> layout.c -> config.c -> main.c -> fm.c), then a build.
+
+**1. `include/kai-term/kai-term.h`** — `Config.fm_rows` -> `Config.fm_size`, `LayoutReq.fm_rows` ->
+`fm_size`, `layout_initial_size()`'s parameter renamed. `FM_ROWS_MAX` (64) is **gone**; added
+`FM_SIZE_DEF 75`, `FM_SIZE_MIN 10`, `FM_SIZE_MAX 95`. `FM_ROWS_MIN` 3 stays — it is the smallest band worth
+drawing, a layout floor, not a config value — and `FM_TERM_MIN_ROWS` 3 stays as the terminal's floor.
+
+**2. `src/layout.c`** — the band is now `band_h = grid_h * pct / 100` (long long multiply, so a 4K window
+cannot overflow), then clamped to `grid_h - gap - FM_TERM_MIN_ROWS * ch` exactly as before. The "terminal
+wins / band dropped" rules are untouched. `layout_initial_size()` can no longer ADD a fixed height — it
+solves the inverse: `grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))`, then adds the padding and, for
+`tab_bar = always`, the bar's row + gap. Proof that the floor-rounding of `band_h` cannot steal the
+terminal's row: `grid_h - floor(grid_h*pct/100) = ceil(grid_h*(100-pct)/100) >= need` by construction, and
+the round-trip check in `tests/test_vt.c` pins it for real numbers.
+
+**3. `src/config.c`** — default `c->fm_size = FM_SIZE_DEF`; the `fm_rows` key is replaced by `fm_size`
+(clamped to `FM_SIZE_MIN..FM_SIZE_MAX` at parse time, as every other numeric key is).
+
+**4. `src/main.c`** — the two call sites (`rq.fm_size`, `layout_initial_size(..., conf.fm_size, ...)`).
+
+**5. `src/fm.c` — the metadata-over-image fix.** Two new statics, `preview_head_rows()` (2 rows, +1 when the
+preview has an error line) and `preview_meta_rows()` (for `FMP_IMAGE` only: `min(nmeta,
+prev.rows - head - 1)`, so the picture always keeps a row). `paint_preview()` now paints at most
+`preview_meta_rows()` meta lines, and `fm_image_fit()` places the picture box at
+`head + preview_meta_rows()` instead of the literal 3 it used to share with nothing. The header's size was
+written down as `3` in two functions and the meta rows were counted in neither — that is what let the
+`format: png image, 64x40 px` line sit inside the picture's box, where batch B draws it over the image.
+`paint_preview_meta()` gained a `max_lines` argument (the non-image call passes `FM_META_LINES`, i.e.
+unchanged behaviour).
+
+**Measured:** `make -j8` -> exit 0, `grep -iE "warning|error"` over the build log -> **0 hits**.
+The test binaries have NOT been rebuilt/run yet — `tests/test_vt.c` still names `fm_rows` and `FM_ROWS_MAX`,
+so it cannot compile until step 6 rewrites those checks. That is the next action, not a regression.
+
+**Next action (step 6):** `tests/test_vt.c` — the 6 config checks (default 75, read from file, clamps at both
+ends) and the 5 layout checks (the band takes the requested share, the terminal keeps its floor, an oversized
+request is clamped, a tiny window drops the band, the startup round trip). Then `tests/test_fm.c`: after
+painting an image preview, every cell inside the box `fm_image_fit()` reports must be blank — the direct pin
+of "metadata never lands on the picture" — plus a short pane that drops the meta line instead of overlapping.
+
+### s88 entry 2 — step 6a done: `tests/test_vt.c` compiles again and pins the percent (719 -> 726 checks)
+
+**Config checks (already in place when this session resumed — `git status` showed `tests/test_vt.c` modified):**
+default `fm_size == 75`, read from a file (`fm_size = 40`), clamped at both ends (`0` -> `FM_SIZE_MIN`,
+`99999` -> `FM_SIZE_MAX`). No change was needed; they were verified by running the suite, not by reading them.
+
+**Layout checks rewritten to the percent** (same window as before: 936x1002 px, 8x17 cells, padding 8, gap 8,
+one session, bar auto -> grid area 920 x 986 px):
+* band height is now `986 * 75 / 100` = 739 px, not `12 * 17`; the pane cols/rows, the terminal pane's `y`
+  and `h`, and `layout_grid_size()` are all expressed from that share instead of from a row count.
+* new: `fm_size = FM_SIZE_MAX` still leaves the terminal `FM_TERM_MIN_ROWS` rows (the second clamp, in
+  layout.c, is what does that — the config clamp alone would not);
+* new: `fm_size = FM_SIZE_MIN` is still drawn, at `986 * 10 / 100` px;
+* new — the reason a percent exists at all: `win_h` 1002 -> 1502 gives the band `1486 * 75 / 100` px (the
+  share grows with the window), and `cell_h` 17 -> 34 (a zoom) keeps the SAME pixel share and hands back
+  fewer rows. A row-count key could not do either.
+* the oversized-request check now asks for `fm_size = 100000` and expects the same clamp as `FM_SIZE_MAX`;
+* the tiny-window check (`win_h = 120`) is unchanged in shape: 75% of 104 px is 78 px, the room rule cuts it
+  to 45 px, which is under `FM_ROWS_MIN * ch`, so the band is dropped and the terminal gets the whole area.
+* the startup round trip is now THREE round trips, because `layout_initial_size()` solves instead of adds:
+  `fm_size = 75` -> window 2088 px and the check pins that number AND that the band took `2072 * 75 / 100`
+  of it; `BAR_ALWAYS` + `fm_size = 40`; and padding 0 / gap 0 / square cell + `fm_size = 50`. All three must
+  give the terminal pane back exactly 80x30.
+
+**Measured:** `make -j8` exit 0, 0 warning/error lines in the build log; `make -j8 bin/test_vt bin/dbg
+bin/test_fm` exit 0, 0 warnings; `./bin/test_vt` -> **726 checks, 0 failures** (was 719; +7).
+
+**Next action (step 6b):** `tests/test_fm.c` — after painting an image preview, every cell inside the box
+`fm_image_fit()` reports must hold no glyph (the direct pin of "metadata never lands on the picture"), plus a
+pane short enough that the meta line is dropped rather than overlapping. Then `tests/cli_test.sh:194` (its
+config file still writes `fm_rows = 8`), README, ISSUES.md.
+
+### s88 entry 3 — step 6b done: the metadata-over-image bug is pinned by checks that FAIL on the old fm.c
+
+**Two new helpers in `tests/test_fm.c`:** `ink_in_box()` (glyphs the painter put inside the box
+`fm_image_fit()` reports) and `ink_rows(from,to)` (how many rows in a range hold a glyph, i.e. how many meta
+lines were really drawn). Both read the same `Cell` array the renderer reads.
+
+**New/updated checks in `test_fit()`** (243 -> **247 checks**):
+* the 8x8 `img.png` preview in a 40x20 pane now centres at row **14**, not 11 — 2 header rows + its **8**
+  metadata lines (path, type, size, mode, owner, group, modified, format) come first;
+* a fabricated preview that carries those 8 real meta lines AND reports 1000x500 px — the shape that
+  actually overlapped, because its box starts at the TOP of the picture area. It takes rows 10..19 across
+  all 40 columns, and `ink_in_box()` must be 0;
+* a 5-row pane: 2 header + 2 meta + 1 picture row, box at row 4, nothing painted in it;
+* a 3-row pane: every meta line dropped, picture keeps row 2;
+* a 2-row pane: `fm_image_fit()` reports no box at all (so nothing can overlap);
+* the fabricated no-metadata previews now get one more row than before (the picture area starts at row 2,
+  not at the literal 3), so the tall-picture expectation moved from 27x271 px to **28x287** px and
+  `r >= 3` became `r >= 2`.
+
+**A/B proof the checks are real, not tautological** (the rule: never claim a check pins a bug without running
+it against the buggy code): `git show HEAD:src/fm.c` -> `/home/kaida/Project/.scratch/s88/fm_old.c`, compiled
+with the project's own flags against the NEW `tests/test_fm.c` (the header change touches nothing fm.c uses).
+Result: **247 checks, 8 failures**, including `fit: a picture that fills the area has no metadata line drawn
+across it` and `fit: a short pane still paints no glyph across the picture`. Against the fixed `src/fm.c`:
+**247 checks, 0 failures**. The first version of this check (8x8 picture only) PASSED on the old code — the
+small centred picture happened to land below the meta lines — which is why the fills-the-pane case was added.
+
+**Measured:** `make -j8 bin/test_fm` exit 0, 0 warnings; `./bin/test_fm` -> 247 checks, 0 failures.
+
+**Next action (step 7):** `tests/cli_test.sh:194` writes `fm_rows = 8` into its config probe (an unknown key
+now — it must become `fm_size`), README's settings table row and its File manager section, ISSUES.md's
+"The band costs the terminal rows" limitation, then AGENT.md's own invariants/debugging lines (the
+`grid resized to …` note still says the band is `fm_rows` rows smaller). Then step 8: full `make test` +
+`make asan`, exact counts, commit, push.
+
+### s88 entry 4 — step 7a: `tests/cli_test.sh` speaks `fm_size`, and gained a band-share check
+
+* Its file-manager config file wrote `fm_rows = 8`; that key no longer exists, so the suite's
+  `the file manager config keys are known` check (which greps for `unknown key`) would have failed. It now
+  writes `fm_size = 40`.
+* New helper `grid_rows()` — the R of the last `layout: … grid CxR per session` line — and one new check:
+  the same window with `file_manager = off` must give the sessions MORE rows than with
+  `file_manager = on, fm_size = 50`. It compares two runs of the real binary instead of hard-coding a row
+  count, so it cannot go stale when the default window size or the font changes, and an empty capture is
+  reported as a failure rather than passing silently.
+* Verified what could be verified headless: `sh -n tests/cli_test.sh` -> clean, and `grid_rows()` was run
+  against real-shaped log lines in `/home/kaida/Project/.scratch/s88/gridrows.sh` (last layout line's rows ->
+  `56`; no layout line -> empty). The check itself runs only in the window-opening group, which
+  `KAI_TERM_TEST_NO_WINDOW=1` skips on this box — so its count is reported below as skipped, not as passed.
+
+**Next action (step 7b):** README (the `fm_rows` settings row, the File manager section's band wording) and
+ISSUES.md (the "The band costs the terminal rows, and the terminal wins" limitation says `fm_rows` (3–64)),
+then AGENT.md's own invariants + debugging lines.
+
+### s88 entry 5 — steps 7b + 8 done: docs match the code, and the whole tree is green again
+
+**README** — the settings table row `fm_rows | 12 | Cell rows …` became `fm_size | 75 | Percent of the
+window's text area …`; the File manager section gained a paragraph (three quarters by default, keeps that
+share through resize and zoom, the terminal's floor and the drop rule); the image-preview row now says the
+metadata sits in the rows above the picture and that a too-short pane drops the lines that do not fit.
+Re-checked by set difference, not by eye: the 49 keys `apply()` in `src/config.c` compares and the 49 rows of
+the "Available settings" table are the same set (`diff` empty both ways).
+
+**ISSUES.md** — two entries added to `Fixed`, each stating exactly what was verified and what was not (neither
+has been seen in the user's window): the metadata-across-the-preview bug with its root cause and the A/B
+result, and the `fm_rows` -> `fm_size` change as a user-requested behaviour change. The "band costs the
+terminal rows" limitation was rewritten for the percent, and a new limitation records the row budget (a 3-row
+preview pane shows the image with no metadata; 2 rows show no box). The Open section's re-measured line now
+carries this session's counts, and says plainly that the CLI suite's window group was NOT re-run here.
+
+**AGENT.md** — Current Status re-headed to s88 with the new counts and a bullet saying plainly that no human
+eye has seen the new band size or the preview fix; Next Steps 1 re-worded the same way; Project Files counts
+and the two test descriptions updated; the "File manager band" invariants now state the percent rule (and why
+a share beats a row count) plus a new invariant: **the preview pane's rows have ONE owner**; the Debugging
+section's band-size hint no longer refers to `fm_rows`.
+
+**Measured (this session, after every change):**
+- `make -j8` -> exit 0, `grep -ciE "warning|error"` over the build log -> **0**.
+- `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`,
+  `./bin/test_vt` **726 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm`
+  **247 checks, 0 failures**, 0 warnings.
+- `make asan` -> exit 0: same three counts, and `grep -cE
+  "AddressSanitizer|runtime error|LeakSanitizer|SUMMARY:|ERROR:"` over the run -> **0**.
+- `sh -n tests/cli_test.sh` -> clean; `grid_rows()` unit-checked in `.scratch/s88/gridrows.sh`.
+- `grep -rn "fm_rows\|FM_ROWS_MAX" src include tests README.md ISSUES.md Makefile` -> **no code, test, build
+  or user-facing setting names the removed key.** The only hits are history prose: ISSUES.md's `Fixed` entry
+  naming what was removed, and this journal.
+
+**Not verified (stated, not hidden):** the CLI suite's window-opening group (including the new `fm_size`
+band-share check) and the two visual changes themselves — the GPU is spoken for and the user works at this
+machine, so no window was mapped. That is the user's to look at.
+
+**Next action:** commit the source + tests + docs as one change and push (`git fetch origin` first).
 
 ## Current Task (s87 — CLOSED: AGENT.md cut from 3579 to 838 lines; no rule, invariant or pitfall removed)
 
@@ -297,14 +532,16 @@ ahead-count is written here — the commit recording it makes that wrong; read t
 
 ## Next Steps
 
-1. **File manager: the only open item is a verdict on how the band LOOKS.** Built, wired, documented, green
-   (235 model/layout/config checks + the s74 live key-injection run that proves the routing and the `cd`
-   follow), and the user has run it in their own window and confirmed its behaviour (2026-10-19) — but they
-   have never said whether they like how it looks. If they report something visual, start from the `-d` lines
-   `fm: opened on …`, `fm: listing <dir> (request N)`, `fm: dropping stale …`, `fm: keyboard -> …` and
-   `graphics: … + the file-manager preview`, not from the shader. Two decisions they may want to revisit, both
-   flagged, both one-line changes with different safety implications: `Return` on a file types its path
-   instead of running it, and `fm_follow` sends `cd <path>` unprompted.
+1. **File manager: the open item is the user's eye on the new 75% band and on the fixed preview.** Built,
+   wired, documented, green (247 model/layout/config checks + the s74 live key-injection run that proves the
+   routing and the `cd` follow), and the user has run the band in their own window and confirmed its
+   behaviour (2026-10-19) — but the band's new SHARE (`fm_size = 75`, s88) and its new preview row budget
+   have never been seen by them, and they have never said whether they like how the band looks. If they
+   report something visual, start from the `-d` lines `fm: opened on …`, `fm: listing <dir> (request N)`,
+   `fm: dropping stale …`, `fm: keyboard -> …` and `graphics: … + the file-manager preview`, not from the
+   shader. Two decisions they may want to revisit, both flagged, both one-line changes with different safety
+   implications: `Return` on a file types its path instead of running it, and `fm_follow` sends `cd <path>`
+   unprompted.
 2. **Image support is done and confirmed by eye** (2026-10-17), and the user has settled its scope:
    "The goal was image support, Not auto-detection by timg so it work fine using `-p k`". So `-p k` IS the
    supported way to show a picture and nothing more is wanted here. Do NOT "improve" this by re-adding the
@@ -364,10 +601,10 @@ Kai-Term/
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 719 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
-├── tests/test_fm.c              # 235 checks: the file-manager model, previews, decoders, band geometry
+├── tests/test_vt.c              # 726 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
+├── tests/test_fm.c              # 247 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
-├── tests/cli_test.sh            # 94 checks driving the REAL bin/kai-term; ONE probe launch gates the
+├── tests/cli_test.sh            # 95 checks driving the REAL bin/kai-term; ONE probe launch gates the
 │                                # window checks, KAI_TERM_TEST_NO_WINDOW=1 skips them entirely
 ├── bin/                         # kai-term, test_vt, dbg (+ *_asan)          [generated, git-ignored]
 └── build/                       # *.o + generated/xdg-shell-*                [generated, git-ignored]
@@ -411,21 +648,24 @@ Kai-Term/
   `BarItem[]` rects + labels, `PaneGeom[]` rects (each with cols/rows), the file-manager band (`FmGeom`:
   browser rect + preview rect + their cols/rows) and `layout_hit_fm()`, `layout_grid_size()`,
   `layout_initial_size()`.
-- `tests/test_vt.c` — 719 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
+- `tests/test_vt.c` — 726 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
   bracketed paste, `term_init` guard, reflow, `term_grid_geometry`, zoom/alt-screen row-shrink,
   `mouse_sgr_button`, the graphics path (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll
   anchoring/id replacement/DA1-DA2-DSR answers), mux, keybind/keymods parsing, multiplexing config keys,
-  `layout_compute` / `layout_grid_size` / `layout_initial_size`, and the prompt machinery the file manager's
-  follow is built from (`term_at_prompt()` / `term_prompt_line()` / `term_prompt_line_typed()` /
+  `layout_compute` / `layout_grid_size` / `layout_initial_size` (the tab bar, the side-by-side panes and the
+  file-manager band's SHARE: `fm_size` percent, both clamps, the terminal's floor, the share surviving a
+  resize and a zoom, and three startup round trips band on/off/bar), and the prompt machinery the file
+  manager's follow is built from (`term_at_prompt()` / `term_prompt_line()` / `term_prompt_line_typed()` /
   `term_prompt_line_is()`, the echo window and its transition rule, the clear -> `cd` -> re-populate sequence
   as the model sees it). `main.c` itself is in no test binary — the machine is covered by
   `.scratch/s86/follow2.c` and the live harness, not here. 2 invariants with dedicated checkers are `row[]`
   permutation (also `tests/dbg.c`) and startup-size round trip.
-- `tests/test_fm.c` — 235 checks against a real temporary directory tree (dirs, a dotfile, a dangling
+- `tests/test_fm.c` — 247 checks against a real temporary directory tree (dirs, a dotfile, a dangling
   symlink, a FIFO, an unreadable dir, four image formats, a binary file): scan + sort + caps + truncation,
   the hidden filter and `fm_set_hidden`, selection and scrolling (`fm_row_pos`, `ensure_visible`),
   navigation, the request-id rule (a stale answer is dropped), every preview kind and its error path, the
-  highlighter reaching the cells, the pane painters, `fm_image_fit`, and the band's rects inside
+  highlighter reaching the cells, the pane painters, `fm_image_fit`, the preview's row budget (no painted
+  glyph may sit inside the box the picture is drawn into — `ink_in_box()`), and the band's rects inside
   `layout_compute()`.
 - `Makefile` — pkg-config-driven; `-Iinclude/kai-term -Ibuild/generated`; output dirs via order-only
   prerequisites so they never force rebuilds; generates xdg-shell bindings with `wayland-scanner`.
@@ -567,14 +807,25 @@ after `ptr_*` hit-tested bar then panes.
 **File manager band (fm.c + layout.c + render.c + main.c).**
 
 - The band is geometry, model and drawing in the same three places as everything else: `layout_compute()`
-  splits the grid area VERTICALLY first (a band of `fm_rows` rows on top, terminal pane(s) below at
-  `pane_y = grid_y + band_h + gap`), then splits the band horizontally (browser | preview). Sessions stay
-  ordinary `pane[]` entries, only shorter — that is what keeps `layout_hit_pane`, `layout_pane_of_tab`,
-  `layout_grid_size()`, the focus border and `W.gx/W.gy` working with the band on AND off. `layout_hit_fm()`
-  must be checked BEFORE `layout_hit_pane()`.
-- The band is clamped, never trusted: `fm_rows` is reduced so the shell keeps `FM_TERM_MIN_ROWS` rows, and
-  dropped entirely when even that leaves fewer than `FM_ROWS_MIN`. Clamped in layout.c, not config.c, so no
-  caller can ask for a 1-row band — the tab bar's "the terminal wins" rule again.
+  splits the grid area VERTICALLY first (a band taking `fm_size` PERCENT of its height on top, terminal
+  pane(s) below at `pane_y = grid_y + band_h + gap`), then splits the band horizontally (browser | preview).
+  Sessions stay ordinary `pane[]` entries, only shorter — that is what keeps `layout_hit_pane`,
+  `layout_pane_of_tab`, `layout_grid_size()`, the focus border and `W.gx/W.gy` working with the band on AND
+  off. `layout_hit_fm()` must be checked BEFORE `layout_hit_pane()`.
+- The band is clamped, never trusted: `band_h = grid_h * pct / 100` (a `long long` multiply, so a 4K window
+  cannot overflow) is reduced so the shell keeps `FM_TERM_MIN_ROWS` rows, and dropped entirely when even that
+  leaves fewer than `FM_ROWS_MIN`. Clamped in layout.c, not config.c, so no caller can ask for a 1-row band —
+  the tab bar's "the terminal wins" rule again. It is a SHARE and not a row count on purpose: the band then
+  survives a resize or a zoom with the proportion the user asked for. `layout_initial_size()` is its inverse
+  (`grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))`) and the round-trip checks in `tests/test_vt.c` are
+  what prove that arithmetic.
+- **The preview pane's rows have ONE owner.** `preview_head_rows()` (2, +1 when the preview has an error
+  line) and `preview_meta_rows()` (image previews only: `min(nmeta, prev.rows - head - 1)`, so the picture
+  always keeps a row) are called by `paint_preview()` AND by `fm_image_fit()`; the picture box starts at
+  `head + meta_rows`. Glyphs are emitted in the batch AFTER the picture, so any disagreement between the two
+  about which rows text owns paints metadata across the image — that was the bug (the header's size used to
+  be a literal 3 in two functions and the meta rows were counted in neither), and `ink_in_box()` in
+  `tests/test_fm.c` is what keeps it from coming back.
 - The two panes are `FmPane` = a flat `Cell` array + cols/rows, walked exactly like a session grid, so the
   renderer needs no new drawing path: "a grid with no cursor and no selection". Glyphs go through the same
   `emit_cell_glyph()` as a session (a file name can hold any codepoint, so the emoji/wide rules must be
@@ -737,8 +988,10 @@ after `ptr_*` hit-tested bar then panes.
   is not one I can describe` or `fm: not typing the path — …`; a navigation arriving mid-sequence logs
   `fm: the follow already in flight now targets <dir>`; a failed read `fm: cannot open <dir>: <reason>`;
   `fm: worker started (result fd N)` — absent means the band was never opened, so no thread and no
-  descriptor exist. The band's size is visible in the ordinary `grid resized to CxR …` line: with the band
-  on, `R` is `fm_rows` + gap smaller than without it.
+  descriptor exist. The band's size is visible in the ordinary `grid resized to CxR …` line: with the band on
+  at the default `fm_size = 75`, `R` is roughly a quarter of what it is with the band off (grid area 58 rows
+  -> terminal 14 rows), and `layout: … grid CxR per session` is what `tests/cli_test.sh` compares between a
+  band-off and a band-on run.
 - `./bin/dbg` — scripted scroll/resize/reflow/zoom stages; each prints `scroll_off/live_off/rows/rcap/used`
   plus one 2-character token per slot (`v` viewport / `s` scrollback, then row's first cell), and asserts
   `row[]` is a NULL-free, duplicate-free permutation.
