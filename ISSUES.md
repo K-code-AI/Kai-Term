@@ -6,17 +6,17 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Re-measured 2026-10-19 after the s86 fix to the prompt follow:
+**No open bug.** Re-measured 2026-10-19 (s87):
 `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **719 checks, 0 failures**; `./bin/dbg` **MODEL OK
 (0 problems)**; `./bin/test_fm` **235 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
 sanitizer report; `tests/cli_test.sh` green (94 checks, 0 failures, 0 skipped) when the probe launch can draw.
 No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
-**Fixed this session (verified headless against real fish, not yet re-run in the user's window):** a second
-file-manager navigation on top of a prompt Kai-Term had just re-populated did not erase it — the prompt ended
-up `Some text cd '/'` and the shell ran that. See the s86 entries in AGENT.md for the cause (the echo window
-closed on a steady state instead of on a change) and the 11 checks that now pin it.
+**Fixed and confirmed by the user in their own window (2026-10-19):** a second file-manager navigation on top
+of a prompt Kai-Term had just re-populated did not erase it — the prompt ended up `Some text cd '/'` and the
+shell ran that. The cause (the echo window closed on a steady state instead of on a change), the fix and the
+11 checks that now pin it are in the "Fixed" entry below and the s82-s86 journal entry of AGENT.md.
 
 The behaviour the user asked for on 2026-10-19 — clear the prompt, `cd`, put the text back — **is implemented**
 (README "File manager"). Its limits are under "Known limitations" below.
@@ -27,9 +27,10 @@ The integrated file manager (README "File manager") is built, wired into the win
 model/layout/config checks plus the 719 passing ones in the VT/config suite; its input routing was verified
 live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
 file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
-at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s75/s76 entries in
-AGENT.md. **Its appearance has not yet been confirmed by a human eye** — that is the one open item, and it
-belongs to the user. Its limits are under "Known limitations" — "File manager".
+at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s71-s79 journal
+entries in AGENT.md. The user has run the band in their own window and confirmed its behaviour
+(2026-10-19); **no verdict has been given on how it LOOKS** — that is the one open item, and it belongs to
+the user. Its limits are under "Known limitations" — "File manager".
 
 Image support is confirmed by eye in the user's window (`timg -p k <file.png>`, 2026-10-17) as well as by
 the model tests and the `graphics: N image(s) drawn` log line. Its limits are listed under
@@ -56,7 +57,7 @@ for the session to go quiet (150 ms) before believing the new prompt is drawn �
 prompt, and fish answers a `cd` with the echo, a continuation row and prompt chrome before drawing it.
 Verified: 11 new checks in `tests/test_vt.c` (708 -> 719, 0 failures) and a headless replay of the machine
 over real fish — two navigations in a row both end with the completion line and the line holds `Some text `,
-not the appended command. Not re-run in the user's window.
+not the appended command. The user then confirmed it in their own window ("I confirm it works", 2026-10-19).
 
 **Kai-Term segfaulted inside the graphics driver when the GPU refused a texture (2026-10-19).** Symptom:
 `kai-term error: atlas glTexImage2D failed: 0x505 (512x512)` followed by SIGSEGV at address 0x4 inside
