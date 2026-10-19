@@ -71,9 +71,11 @@ eight questions in "Current Task")
   verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
   a new Open item with a reproduction.
 
-## Current Task (s102 — IN PROGRESS. Step 0, the filed `cursor_color =` bug, is DONE (code, checks, A/B, docs) —
-only the user's look-verdict is outstanding. Steps 1-7 are still NOT STARTED and stay that way until the user
-answers the questions at the end. The facts in each block were measured against this tree.)
+## Current Task (s102 — IN PROGRESS. Step 0 (the dead `cursor_color =`) is DONE in code, checks, A/B and docs; only
+the user's look-verdict is outstanding. Steps 1-7 are UNBLOCKED: all eight questions were answered 2026-10-22, and
+the answers are recorded under "The eight questions" below — they change the plan in four places (no `cursor_style`
+key, no primary-selection work, plain-click URLs, an interactive overwrite prompt). The facts in each block were
+measured against this tree.)
 
 ### 0. The dead `cursor_color =` (ISSUES.md "Open") — DONE 2026-10-22, except the user's look-verdict
 
@@ -272,23 +274,36 @@ scan it for `http://` / `https://`, take the run containing the clicked cell, st
 punctuation. No storage, no reflow interaction, no per-frame cost. Opening needs a decision (below): `xdg-open` means
 fork/exec from the terminal process.
 
-### Open questions — the user's, answer before starting step 1
+### The eight questions — ANSWERED BY THE USER 2026-10-22. These are decisions, not open items.
 
-1. **Theme precedence**: theme file → `kai-term.conf` → `kai-term.bind` (my proposal: an explicit `background =` still
-   beats a theme). Or should a theme win outright?
-2. **OSC 4 / 10 / 11 / 104**: build them with the palette, or leave the palette file-only? Any program in the terminal
-   could then repaint the window.
-3. **Cursor**: default `cursor_style = bar` for everyone, or keep `block` as the default and let them set `bar`?
-   Bar width fixed at 2 px, or scaled with the font so it survives a zoom? Blink on by default at 500 ms half-period?
-   Honour DECSCUSR (apps may then override the style they chose)?
-4. **Word selection**: strip only `,` and `.` as they said, or also `:;!?)]}"'` (a trailing `)` from `(foo)` and a
-   trailing `:` from `path:` are common)? Leading punctuation kept? Triple-click on a soft-wrapped line — one logical
-   line or one screen row?
-5. **Middle-click**: paste the **primary** selection (Wayland-correct, but empty unless they select with the mouse)
-   or the **clipboard** (what Ctrl+Shift+C copies — usually what people actually want)?
-6. **Bell**: default on or off?
-7. **URLs**: open with `xdg-open`, or a configurable `url_opener` command, or print the URL and let them copy it?
-8. **`--import-theme`**: overwrite an existing theme of the same name, or refuse and require a new name?
+1. **Precedence: `kai-term.conf` beats a theme; `kai-term.bind` is not in the chain at all.** Their words: "kai-term.bind
+   contains only keybind, so nothing about the theme there, But yes value in the kai-term.conf should supersede the
+   theme." So: theme file first, then the settings file wins over it. A colour key in `kai-term.bind` stays the error it
+   already is (`is not a key binding — kai-term.bind holds bindings only`). Implementation consequence: a theme cannot be
+   applied line-by-line while the settings file is being read, because a `background =` line ABOVE the `theme =` line
+   must still beat the theme — the settings file has to record which keys it set explicitly, and the theme fills only
+   the rest.
+2. **OSC 4 / 10 / 11 / 104: yes, but they were unsure ("I guess ?").** Build them, and give them an off switch —
+   `osc_colors = 1` — so "any program in my terminal can repaint the window" can be turned off without a rebuild. If
+   they later say no, the whole feature is one commit to revert.
+3. **Cursor: a bar, always. No `cursor_style` key, no block, no underline as a user choice.** Blink half-period
+   **1000 ms** ("blink 1 sec, 0.5 sounds too fast") — on for a second, off for a second; `cursor_blink = 1000`, `0` =
+   steady. **Honour DECSCUSR**, so an application (vim/neovim/fish) can still ask for block or underline despite there
+   being no user setting for it.
+4. **Word selection: strip any punctuation that can stick to the end of a word** — not just `,` and `.`. Leading
+   punctuation stays part of the word (their earlier rule was "everything not separated by a space").
+5. **Middle-click: pastes the CLIPBOARD, and the option is OFF by default — by default a middle click does nothing.**
+   No `wl_primary` work is needed at all; that whole sub-task is dropped.
+6. **Visual bell: on by default.**
+7. **URLs: plain click, no modifier** (their question back to me — "could it just be click url, no modifier ?"). Yes,
+   with gates, because a plain click already belongs to other things: it opens a URL only when the click lands on an
+   `http://`/`https://` run, the click never moved (a drag still selects), it is not the first click of a double/triple
+   click (that selects a word/line), it is not on the tab bar, not in the file-manager band, and the program does not
+   own the mouse (`term_wants_key_mouse` — nano/less/vim keep their click-to-place-cursor). So the URL test happens on
+   RELEASE, after the double-click window says "this was a single click".
+8. **`--import-theme`: ask, do not silently overwrite and do not silently refuse** — print
+   `Warning a theme with the same name already exist. Overwrite ? [y/N]` and read the answer. A terminal-less stdin
+   cannot answer, so there it refuses and says to re-run with `--force`.
 
 ### Rules for the whole session
 
