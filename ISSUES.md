@@ -23,9 +23,11 @@ checks, 0 failures** (was 944 before the s101 colour checks); `./bin/dbg` **MODE
 **293 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped`
 + those three); `make asan` exit 0 with the same counts and no sanitizer report. The windowed group of
 `tests/cli_test.sh` (**117 checks / 0 failures / 0 skipped**, last measured that way in s99) was skipped again —
-the user at the machine — so the config-search, `kai-term.bind` and `-b` checks have no NEW coverage; they run only
-when a window can be mapped. No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`,
-`include/`, `tests/`.
+the user at the machine. That leaves only its own half uncovered: `main()`'s argv handling (`-c/--config`,
+`-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing /
+display / file-manager keys. The config search order and the settings-vs-binding file rules are covered headless in
+`tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. No `TODO`/`FIXME`/`XXX`
+and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
 what is verified and what is not is AGENT.md's "Current Status". This file carries only: what is broken, what was

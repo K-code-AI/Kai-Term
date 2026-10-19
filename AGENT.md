@@ -25,9 +25,13 @@ user-confirmed in their own window)
 - **Suites:** `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 67 checks, 0 failures, 13 skipped`,
   `./bin/test_vt` **958 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
   0 failures**. `make asan` exit 0, same three counts, 0 sanitizer reports. With a display and spare VRAM,
-  `tests/cli_test.sh` reports **117 checks / 0 failures / 0 skipped** — the only run in which the config-search,
-  `kai-term.bind` and `-b` checks execute at all, so a no-window "0 failures" does not cover them (last measured
-  that way in s99; s100 and s101 skipped it — the user at the machine). **Re-diff these numbers, do not copy them.**
+  `tests/cli_test.sh` reports **117 checks / 0 failures / 0 skipped**. What its windowed group alone covers is
+  `main()`'s own argv handling — `-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e` — and
+  that a real launch applies the multiplexing / display / file-manager keys and the band's share of the window. The
+  config SEARCH order and the split-by-name rules are NOT exclusive to it: `tests/test_vt.c` covers those headless
+  (13 `cfgsearch` checks + the `config split` group). A no-window "0 failures" therefore leaves only the argv half
+  uncovered (last full windowed run measured in s99; s100 and s101 skipped it — the user at the machine). **Re-diff
+  these numbers, do not copy them.**
 - **No open bug.** The last one, the visible frame around the grid, is fixed (s101) and **confirmed by the user in
   their own window** ("It's fixed, you can push", 2026-10-22): one runtime value
   (`term_set_default_colors()` / `term_default_fg()` / `term_default_bg()` in `src/vt.c`) now owns the default ink
@@ -432,6 +436,19 @@ state, 2 on a sentinel-divergent variant).
   Current Status, Current Task, Next Steps and s101 era entry, and in ISSUES.md's Open + Fixed entries, now say what
   is true — confirmed by the user. Re-ran the suites after the doc edits: `make -j8` 0 warnings, `CLI: 67 checks,
   0 failures, 13 skipped`, `test_vt` 958 / 0, `dbg` MODEL OK, `test_fm` 293 / 0.
+
+- **2026-10-22, s101 follow-up — a coverage claim in the docs was too strong (the user asked, and asked for the
+  fix).** AGENT.md's Current Status and ISSUES.md's re-measurement line both said the config-search, `kai-term.bind`
+  and `-b` checks "execute only when a window can be mapped" / "run only when a window can be mapped". Checked
+  against the suites before rewording: `tests/test_vt.c` has a headless `cfgsearch` group — 13 CHECKs, counted with
+  `grep -c "cfgsearch:"` — that drives `config_find()` / `config_load(NULL)` / `config_load_binds(NULL)` against a
+  scratch `HOME` + `XDG_CONFIG_HOME` tree (XDG wins, `~/.config` next, `/etc` last and never invented, an empty
+  `XDG_CONFIG_HOME` means "not set", a DIRECTORY named `kai-term.conf` is skipped, `kai-term.bind` is searched
+  independently), plus the `config split` group for the by-name rules. So the real gap left by
+  `KAI_TERM_TEST_NO_WINDOW=1` is narrower and is worth naming exactly: `main()`'s argv handling (`-c/--config`,
+  `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing /
+  display / file-manager keys and the band's share. Both files now say that. Docs only — no source touched, suites
+  not re-run (nothing they exercise changed).
 
 ## Next Steps
 
@@ -1145,7 +1162,9 @@ after `ptr_*` hit-tested bar then panes.
   plus one 2-character token per slot (`v` viewport / `s` scrollback, then row's first cell), and asserts
   `row[]` is a NULL-free, duplicate-free permutation.
 - `tests/cli_test.sh` drives real binary — `main()` is in no linked test, so it is the only honest coverage of
-  argv + config keys. It makes ONE probe launch (`-d -e true`) first: if that cannot draw, every
+  argv and of what a real launch does with the config it loads. (The config SEARCH order itself is not exclusive
+  to it — the `cfgsearch` group in `tests/test_vt.c` covers that headless.) It makes ONE probe launch
+  (`-d -e true`) first: if that cannot draw, every
   window-opening check is skipped with the probe's reason printed. `KAI_TERM_TEST_NO_WINDOW=1` skips them
   without mapping any window — use it unless the window path is what is under test.
 - Headless harness: link `src/vt.c` + `src/config.c` (+ `mux.c`, `layout.c`) into a throwaway program in
