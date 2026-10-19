@@ -6,9 +6,12 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Re-measured 2026-10-20 (s95, after the path-key change): `make -j8` exit 0 with **0 warnings**;
-`./bin/test_vt` **814 checks, 0 failures**; `./bin/dbg` **MODEL OK
-(0 problems)**; `./bin/test_fm` **247 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+**No open bug.** The user's report that opened this — the mouse wheel doing nothing inside `nano` — is fixed and
+confirmed in their own window; see the three s96 entries at the top of "Fixed".
+
+Re-measured 2026-10-21 (s96, after the mouse-in-full-screen work): `make -j8` exit 0 with **0 warnings**;
+`./bin/test_vt` **845 checks, 0 failures**; `./bin/dbg` **MODEL OK
+(0 problems)**; `./bin/test_fm` **274 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
 sanitizer report; `tests/cli_test.sh` 95 checks / 0 failures / 0 skipped when the probe launch can draw (the
 window-opening group is skipped on a box whose video memory is spoken for, so it was not re-run here).
@@ -51,6 +54,47 @@ To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` log
 not filed; it is not a bug until it reproduces.
 
 ## Fixed
+
+**The mouse wheel did nothing inside `nano` / `less` / `man`, and was dead in every program that DID ask for the
+mouse (2026-10-21, s96).** Symptom, reported by the user: "When opening a file with nano or similar program it
+would be nice to be able to scroll with the mouse", and, comparing terminals, "In kitty I can't click, but I can
+scroll. So I want scrolling in Kai-Term too when using nano and clicking could be a nice bonus." Two separate
+causes, both measured first (`.scratch/s96/nanoprobe`, `.scratch/s96/clickprobe` — real nano 9.2 and less in a
+real Kai-Term pty, no window): (1) such a program owns the alternate screen, whose grid is built with
+`scrollback_max = 0`, so the wheel landed in `scrollback_nav()` and was thrown away — nothing of the terminal's
+to scroll; (2) the wheel report sent to a program that HAD grabbed the mouse used button codes **4/5**, which
+ncurses reads as button 1: on `nano --mouse`, `ESC[<5;20;12M` did nothing at all while `ESC[<65;20;12M` scrolled
+the text (same in the legacy X10 form — `32+65` scrolls, `32+4` does not), so the wheel was broken in vim, htop,
+tmux and `nano --mouse`. Fix: `term_wants_key_mouse()` / `term_wheel_arrow_keys()` / `term_click_arrow_keys()` in
+`src/vt.c` (the state they read lives there, and main.c is linked into no test binary), wired in `ptr_scroll_done()`
+and `ptr_button()`, plus `mouse_wheel_button()` for the 64/65 codes. A click is turned into the arrow-key presses
+that walk the program's own cursor to the clicked cell — **keystroke synthesis, not mouse support**, because a
+program with no mouse protocol reads a report as typed text: one `ESC[<64;20;5M` put `64;20;5M` into the user's
+file and marked it Modified. `wheel_sends_keys` / `click_moves_cursor` (both default 1) switch each half off.
+Verified: 31 new checks in `tests/test_vt.c` (814 -> 845, 0 failures), and **the user confirmed it in their own
+window** — scrolling in nano works, and `nano --mouse` behaves as expected.
+
+**The arrow keys did nothing at all in `less`, `man` and `htop` (2026-10-21, s96).** DECCKM (DEC private mode 1,
+application cursor keys) was not implemented: `send_key()` always sent the CSI form (`ESC [ A`..`D`), while an
+ncurses program asks for the SS3 form (`ESC O A`..`D`) with `ESC[?1h`. Measured, and the two programs differ —
+nano answers either form, **less answers ONLY the SS3 one**, so in less the arrow keys were inert. `Term.app_cursor`
+is now set by `ESC[?1h` / cleared by `ESC[?1l`, saved and restored across the alternate screen the way xterm does,
+and every cursor key — the ones the user presses and the ones the wheel and a click are turned into — goes out
+through one `term_arrow_seq()`, so they cannot disagree about the form. Verified by the same probe (30 SS3 presses
+moved less from top line 1 to 31; the CSI form moved it not at all) and by checks on both forms.
+
+**The wheel over the file manager's preview pane did nothing, and a resized pane could leave the preview scrolled
+into blank rows (2026-10-21, s96).** `fm_wheel()` claimed the gesture over the preview, set focus and returned
+without acting — so a long file could not be read in the pane that exists to read it. Added `FileMgr.pv_scroll`
+with `fm_preview_scroll()` / `fm_preview_scroll_max()` and made the painter obey it for a text file and for a
+directory listing; an image or metadata-only preview has no body, so the call is a harmless no-op there.
+**A second defect, found by the new checks and in the model rather than the test:** the clamp that keeps
+`pv_scroll` inside what the pane can show sat at the TOP of `fm_set_size()`, but `fm_preview_scroll_max()`
+measures `fm->prev.rows` — the pane that actually EXISTS — and the realloc had not run yet, so it reported the
+OLD height and the clamp could never change anything (a 40-line file at the bottom of a 12-row pane, `pv_scroll`
+30, grown to a 40-row pane, stayed at 30: 28 rows of nothing). Moved after the allocation. Verified: 27 new
+checks in `tests/test_fm.c` (247 -> 274, 0 failures), and the clamp check A/B'd against `fm.c` with the clamp in
+its old place — 1 failure there, 0 here (`.scratch/s96/clampab/`).
 
 **A shell started at the prompt fell back to the typed `cd`, and the prompt kept showing the OLD directory
 (2026-10-20).** Symptom, reported by the user: "changing shell in the prompt make it go in fallback mode instead
@@ -313,9 +357,10 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   Directories and previews are read on a worker thread, so the UI never blocks — an answer about a
   directory or file the user has already moved away from is dropped (`-d` logs
   `fm: dropping stale listing/preview …`).
-- **The text preview is not a viewer.** It shows the file from the beginning: no scrolling, no search, no
-  line numbers, and a line longer than the pane is **cut at the right edge, not wrapped** (wrapping would
-  push the rest of the file off the pane). Highlighting is chosen from the file name — 13 languages — and
+- **The text preview is not a viewer.** It shows the file from the beginning and the wheel over the pane
+  scrolls it (since 2026-10-21, s96), but there is no search and no line numbers, and a line longer than the
+  pane is **cut at the right edge, not wrapped** (wrapping would push the rest of the file off the pane) — which
+  is why one file line is exactly one scrolled row. Highlighting is chosen from the file name — 13 languages — and
   is a heuristic, not a parser.
 - **Only the first image of a file is decoded — and an animated WebP is not decoded at all.** An animated
   GIF previews its first frame: the in-tree GIF decoder stops after the first image block, because later
@@ -331,8 +376,8 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   on a file they do nothing, exactly like `Return` (a path is typed by `p` and by no mouse action). The
   threshold is not configurable, and a click on the header, on the
   preview or on a different row breaks the pair. A single click never opens, and the band's clicks never
-  reach an application that has grabbed the mouse. The wheel over the band walks the listing instead of
-  scrolling the terminal's history.
+  reach an application that has grabbed the mouse. The wheel over the browser walks the listing and the wheel
+  over the preview scrolls that pane's contents; neither scrolls the terminal's history.
 - **While the band owns the keyboard, no other key reaches the shell** — that is the point of the feature,
   but it also means the band's own bindings are the only way to move there. The window's shortcuts (sessions,
   zoom, copy/paste, `Shift`+`PageUp`/`PageDown` scrolling, the band's toggle and focus keys) still work, and

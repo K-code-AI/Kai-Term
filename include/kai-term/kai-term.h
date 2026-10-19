@@ -80,6 +80,16 @@ enum {
 };
 int mouse_sgr_button(uint32_t evdev_code);   /* 0 left, 1 middle, 2 right, 3 any other button */
 
+/* The wheel is not a button in the kernel's numbering — it is an axis — so the code reported to an
+   application that DID ask for the mouse has to be chosen, and the number is not free. 64 = wheel up,
+   65 = wheel down is what xterm, kitty, neovim, tmux and ncurses all read as a scroll. Measured
+   2026-10-21 (.scratch/s96/nanoprobe) on `nano --mouse`, which asks for ?1000+?1006: ESC[<5;20;12M did
+   nothing at all while ESC[<65;20;12M scrolled the text, and in the legacy X10 form 32+65 scrolled while
+   32+4 did not — ncurses reads a code of 4 as button 1, so the old 4/5 made the wheel dead in every
+   mouse-grabbing program. One pair of numbers is right for BOTH encodings because mouse_send() adds the
+   +32 the X10 form wants. Kept in vt.c for the standing reason: main.c is linked into no test binary. */
+int mouse_wheel_button(int up);   /* 64 wheel up, 65 wheel down */
+
 typedef struct {
     uint32_t ch;    /* codepoint; 0 = blank */
     uint32_t fg, bg;
@@ -251,9 +261,18 @@ typedef struct Term {
     int show_cursor;
     int newline_mode;      /* LNM: LF also does CR */
     int mouse_mode;        /* bitmask: MOUSE_PRESS | MOUSE_DRAG | MOUSE_SGR */
+    /* DECCKM (DEC private mode 1, "application cursor keys"). An ncurses program (less, man, htop, nano)
+       turns it on with ESC[?1h when it takes the screen and off with ESC[?1l on the way out, and while it
+       is on the four cursor keys go out as SS3 (ESC O A..D) instead of CSI (ESC [ A..D). Ignoring it is
+       not cosmetic: measured 2026-10-21 (.scratch/s96/nanoprobe) nano answers either form but less answers
+       ONLY the SS3 one — so while ?1h is ignored, the arrow keys do nothing at all in less. Saved and
+       restored across the alternate screen the way xterm does, so a main-screen program that set it cannot
+       leave an application-cursor mode behind for the next full-screen program. */
+    int app_cursor;
     int alt_screen;        /* 1 when the alternate screen buffer is active */
     Grid alt;              /* saved MAIN grid while alt_screen is active */
     int alt_saved_cx, alt_saved_cy;  /* main-screen cursor saved on ?1049h */
+    int alt_saved_app_cursor;        /* DECCKM of the screen being parked, restored on leaving the alt */
     /* Bracketed paste mode (DEC private mode 2004). An application (bash, zsh, vim, ...) turns it
        on with ESC[?2004h to ask that pasted text be told apart from typed text: the terminal wraps
        the paste in ESC[200~ ... ESC[201~, so embedded newlines stay in the application's own
@@ -385,6 +404,47 @@ int term_at_prompt(Term *t);
    outstanding — do NOT re-take the prompt snapshot) from the application's own output (do). Call it for
    INPUT only: a query answer (DA1, DSR, CPR) or a mouse report is not typing and must not set it. */
 void term_note_input(Term *t, const void *buf, size_t len);
+
+/* The wheel and a click inside a program that owns its own screen and never asked for the mouse
+   (nano, less, man) can only be delivered as KEYS. Both helpers below answer "which keys?", and both
+   are in vt.c rather than main.c for the standing reason: main.c is linked into no test binary.
+
+   WHY NOT A MOUSE REPORT — measured, 2026-10-21 (.scratch/s96/nanoprobe, real nano 9.2 in a real pty):
+   a program that has not enabled a mouse protocol does not swallow the report, it treats it as typed
+   text. One ESC[<64;20;5M put "64;20;5M" into the user's file and marked the buffer Modified. Reporting
+   the wheel to such a program is a data-corruption bug, not a no-op. */
+
+/* The most arrow-key presses either helper will emit. A click cannot be further than cols+rows cells
+   away in a grid Kai-Term draws, and a wheel gesture is bounded by the frame that produced it, so this
+   is a bound on pathological input, not a limit anyone reaches. */
+#define TERM_ARROW_MAX 1024
+
+/* 1 = this session is in the state where the wheel and a click belong to the application as keys:
+   the alternate screen, and no mouse protocol the application asked for (?1000/?1002 both count as
+   "the application wants the mouse"; ?1006 alone only picks the encoding). */
+int term_wants_key_mouse(const Term *t);
+
+/* The bytes this session's application expects for ONE cursor key: SS3 (ESC O A..D) while it holds
+   DECCKM (ESC[?1h), CSI (ESC [ A..D) otherwise. `which` is the final byte of either form — A up, B down,
+   C right, D left; anything else gives "". One function because the arrow keys the USER presses and the
+   ones the wheel and a click are turned into must never disagree about the form the program asked for:
+   measured, nano answers either, less answers ONLY the SS3 one. Returns a static string, 3 bytes. */
+const char *term_arrow_seq(const Term *t, char which);
+
+/* The wheel, as arrow-key presses. lines > 0 scrolls toward the top of the application's text (wheel
+   up), < 0 toward the bottom. Returns the number of bytes written to out, or 0 when this session is not
+   in that state or the gesture moves nothing. */
+int term_wheel_arrow_keys(const Term *t, int lines, char *out, size_t cap);
+
+/* A left click at viewport cell (col,row), as the arrow-key presses that walk the application's OWN
+   cursor there — computed from the cursor position the model already tracks (t->cx/t->cy), so no
+   knowledge of the program is needed. Vertical first, then horizontal: measured on nano, Up/Down keep
+   the target column, so correcting the column afterwards lands on the clicked cell. The target column
+   is clamped to the clicked row's last non-blank cell + 1, because a program's Right at end-of-line
+   moves to the NEXT line (measured: a click at column 60 of a 58-column line landed on the row below).
+   Returns the number of bytes written to out, or 0 when this session is not in that state, the cell is
+   outside the grid, or the cursor is already there. */
+int term_click_arrow_keys(const Term *t, int col, int row, char *out, size_t cap);
 
 /* The longest input line term_prompt_line() will hand back. A line of `cols` wide codepoints plus
    CLUSTER_MAX modifiers each cannot come near this at any window size Kai-Term supports, so hitting the
@@ -575,6 +635,19 @@ typedef struct Config {
     /* 1 = releasing the selection drag copies to the clipboard (the old behaviour).
        Default 0: selecting only SELECTS, the user copies with Ctrl+Shift+C. */
     int  copy_on_release;
+    /* The mouse inside a full-screen program that never asked for the mouse (nano, less, man). Such a
+       program owns its own screen and has no scrollback of the terminal's to scroll, so the only thing
+       that can move it is keystrokes — see term_wheel_arrow_keys()/term_click_arrow_keys() in vt.c.
+       wheel_sends_keys: 1 (default) = the wheel sends Up/Down presses there, which is what makes nano
+       and less scroll. 0 = the wheel does nothing in that state (what it did before this existed).
+       click_moves_cursor: 1 (default) = a left click walks the program's own cursor to the clicked cell.
+       0 = a click only ever selects text. Both leave every other mouse behaviour exactly as it was: a
+       program that DID ask for the mouse (vim, htop, tmux) keeps getting reports, and the main screen
+       keeps scrolling its scrollback.
+       The honest caveat on click_moves_cursor: it is keystroke synthesis, not mouse support, so a program
+       that uses the arrow keys for something other than moving a cursor reacts to a click (alsamixer
+       would change the slider it is on). That is why it is a switch and not a law. */
+    int  wheel_sends_keys, click_moves_cursor;
     /* Kai-Term drives its own key repeat. repeat_delay = milliseconds a key must be
        held before it starts repeating (default 300; 0 = leave repeat to the compositor, which is the
        behaviour before client-side repeat existed and the escape hatch if the timings ever get in the
@@ -1008,6 +1081,10 @@ typedef struct {
     int truncated;       /* the listing is not the whole directory */
 
     int sel, top;        /* selected position in vis[], first visible row of the list pane */
+    int pv_scroll;       /* rows the preview pane's BODY is scrolled down by (text and directory
+                            previews). Owned by the wheel over that pane; reset when a new preview is
+                            installed, clamped to what the pane can show. The LIST pane has no such field
+                            because its scroll is its selection — fm->top follows fm->sel. */
     int list_cols, list_rows, prev_cols, prev_rows;   /* what the layout asked for */
     FmPane list, prev;   /* what the renderer draws */
 
@@ -1058,6 +1135,13 @@ void fm_set_hidden(FileMgr *fm, int show);
    the footer) or past the end. The painter owns the row layout, so the hit test lives next to it:
    main.c must not re-derive where the entries start. */
 int  fm_row_pos(const FileMgr *fm, int row);
+/* Scrolling the PREVIEW pane's body. The wheel over that pane owns pv_scroll (the listing has its own
+   selection, the preview has none), and the painter is the only thing that reads it. delta > 0 moves
+   toward the END of the file (wheel down). Clamped to [0, fm_preview_scroll_max()], which is 0 for a
+   preview with nothing to scroll (an image, plain metadata), so calling it for every kind is harmless.
+   It is reset by fm_install_preview(): a new file starts at its beginning. */
+void fm_preview_scroll(FileMgr *fm, int delta);
+int  fm_preview_scroll_max(const FileMgr *fm);
 
 /* ---- preview: build (worker thread) then install (main thread) ---- */
 FmPreview *fm_preview_build(const char *path, unsigned long seq);

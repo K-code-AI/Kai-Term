@@ -263,6 +263,15 @@ static void make_tree(void)
         snprintf(rel, sizeof rel, "many/f%d", i);
         wfile(rel, "x", 1);
     }
+    /* A text file longer than any preview pane the tests build — what the wheel over the preview pane
+       exists for (s96). Every line is a 3-character label the painting checks look for by name. */
+    {
+        char big[40 * 8];
+        size_t o = 0;
+        for (int i = 1; i <= 40; i++)
+            o += (size_t)snprintf(big + o, sizeof big - o, "L%02d\n", i);
+        wstr("many.txt", big);
+    }
     p_join(p, sizeof p, "exec.sh");
     f = fopen(p, "wb");
     if (f) { fputs("#!/bin/sh\necho hi\n", f); fclose(f); }
@@ -873,6 +882,116 @@ static void test_paint(void)
     fm_destroy(&fm);
 }
 
+/* ---------- the preview pane's own scroll (s96) ---------- */
+
+static void pane_row_text(const FmPane *p, int y, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (int x = 0; x < p->cols && o + 8 < cap; x++)
+        if (p->cell[y * p->cols + x].ch)
+            o += (size_t)utf8_encode(p->cell[y * p->cols + x].ch, out + o);
+    out[o] = 0;
+}
+
+/* Which row of the preview pane shows WHAT, or -1. The test asks the pane what it PAINTS, so a scroll
+   that only moved a field and not the pixels cannot pass. */
+static int pane_shows(const FileMgr *fm, const char *what)
+{
+    char line[4096];
+    for (int y = 0; y < fm->prev.rows; y++) {
+        pane_row_text(&fm->prev, y, line, sizeof line);
+        if (strstr(line, what))
+            return y;
+    }
+    return -1;
+}
+
+static void test_preview_scroll(void)
+{
+    FileMgr fm;
+    fm_init(&fm, root);
+    fm_set_size(&fm, 40, 12, 30, 12);
+    unsigned long seq = 0;
+    fm_go(&fm, root, &seq);
+    fm_install_scan(&fm, fm_scan_build(root, seq));
+
+    char path[1024];
+    int pos = find_pos(&fm, "many.txt");
+    CHECK(pos >= 0, "pvscroll: the tree has many.txt to preview");
+    fm_select(&fm, pos);
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvscroll: a preview is asked for");
+    CHECK(fm_install_preview(&fm, fm_preview_build(path, seq)) == 1, "pvscroll: and it installs");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+
+    /* 40 lines, a 12-row pane, 2 header rows: 10 shown, 30 to scroll through. */
+    CHECK(fm_preview_scroll_max(&fm) == 40 - (12 - 2), "pvscroll: max is what the pane cannot show");
+    CHECK(pane_shows(&fm, "L01") >= 0, "pvscroll: the first line is painted before any scroll");
+    CHECK(pane_shows(&fm, "L40") < 0, "pvscroll: and the last one is not");
+
+    fm_preview_scroll(&fm, 1);
+    CHECK(fm.pv_scroll == 1, "pvscroll: the wheel moves the body down one line");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "L01") < 0 && pane_shows(&fm, "L02") >= 0,
+          "pvscroll: the painter obeys it - L02 is the new top line");
+
+    fm_preview_scroll(&fm, -1);
+    CHECK(fm.pv_scroll == 0, "pvscroll: wheel up walks back");
+    fm_preview_scroll(&fm, -100);
+    CHECK(fm.pv_scroll == 0, "pvscroll: never above the first line");
+    fm_preview_scroll(&fm, 1000);
+    CHECK(fm.pv_scroll == fm_preview_scroll_max(&fm), "pvscroll: never past the last line");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "L40") >= 0, "pvscroll: the last line is reachable");
+
+    /* The resize clamp bites when the pane GROWS: a taller pane shows more of the body, so the range
+       shrinks and a body scrolled to the OLD bottom would be painted into blank rows. The other direction
+       is the counter-intuitive one — a SHORTER pane has MORE to scroll (40 lines in a 6-row pane is 36
+       rows of range, not less) — so a check written the obvious way round passes with no clamp at all. */
+    fm_set_size(&fm, 40, 12, 30, 40);
+    CHECK(fm_preview_scroll_max(&fm) == 40 - (40 - 2), "pvscroll: a taller pane has less left to scroll");
+    CHECK(fm.pv_scroll == 2, "pvscroll: and the resize pulls the scroll back inside what it can show");
+    fm_set_size(&fm, 40, 12, 30, 6);
+    CHECK(fm_preview_scroll_max(&fm) == 40 - (6 - 2), "pvscroll: a shorter pane has more to scroll");
+    CHECK(fm.pv_scroll == 2, "pvscroll: growing the range does not move the body by itself");
+    fm_set_size(&fm, 40, 12, 30, 12);
+
+    /* A new preview starts at the beginning, however far the last one was scrolled. */
+    fm_preview_scroll(&fm, -1000);
+    CHECK(fm.pv_scroll == 0, "pvscroll: back to the top first, so the reset below means something");
+    fm_preview_scroll(&fm, 5);
+    CHECK(fm.pv_scroll == 5, "pvscroll: scrolled, to prove the reset below means something");
+    fm_select(&fm, find_pos(&fm, "file.txt"));
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1,
+          "pvscroll: selecting another file asks for a new preview");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    CHECK(fm.pv_scroll == 0, "pvscroll: and the new preview starts at its beginning");
+
+    /* A preview with no body — metadata only — has nothing to scroll, and scrolling it is a no-op
+       rather than a jump into blank rows. */
+    p_join(path, sizeof path, "broken.png");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    CHECK(fm_preview_scroll_max(&fm) == 0, "pvscroll: a metadata-only preview has nothing to scroll");
+    fm_preview_scroll(&fm, 5);
+    CHECK(fm.pv_scroll == 0, "pvscroll: and scrolling it does nothing");
+
+    /* A directory preview scrolls too: its body is the entry list. */
+    fm_set_size(&fm, 40, 12, 30, 5);
+    fm_select(&fm, find_pos(&fm, "many"));
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvscroll: a directory preview is asked for");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    int body = fm.pv->n + 1;                 /* the entries (the .. row included) + the count line */
+    CHECK(fm_preview_scroll_max(&fm) == body - (5 - 2),
+          "pvscroll: a directory preview's body is its entries plus the count line");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "f0") >= 0, "pvscroll: the first entry is painted");
+    CHECK(pane_shows(&fm, "f8") < 0, "pvscroll: the last one is below the fold");
+    fm_preview_scroll(&fm, 100);
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "f8") >= 0, "pvscroll: and the wheel reaches it");
+
+    fm_destroy(&fm);
+}
+
 /* ---------- the preview picture box ---------- */
 
 /* Glyphs painted INSIDE the box fm_image_fit() reports. The renderer draws the picture into that box and
@@ -1105,6 +1224,7 @@ int main(void)
     test_view_toggle();
     test_preview();
     test_paint();
+    test_preview_scroll();
     test_fit();
 
     /* Undo the chmod before removing the tree, or rmdir fails. */

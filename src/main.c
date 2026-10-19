@@ -94,6 +94,10 @@ typedef struct Wayland {
     int ptr_btn;                /* held button mapped to SGR index (0/1/2), or -1 */
     int selecting;              /* 1 while a left-button text selection drag is in progress */
     double scroll_accum;        /* pending scrollback scroll in lines (+ = up/history) */
+    double wheel_accum;         /* the same carry, for a wheel gesture turned into application cursor
+                                   keys — kept apart from scroll_accum so a session that leaves the
+                                   alternate screen mid-gesture cannot hand the scrollback a remainder it
+                                   never asked for */
     double frame_axis_val;      /* axis value (px) accumulated within the current scroll frame */
     int    frame_discrete;      /* discrete wheel steps accumulated within the current frame */
     int    frame_has_axis;      /* an axis event occurred in the current frame */
@@ -1602,8 +1606,8 @@ static void fm_pointer_select(int hit, int btn, uint32_t time)
     fm_open_sel();
 }
 
-/* The wheel over the band walks the listing instead of scrolling the terminal's scrollback. Returns 1
-   when the wheel belonged to the file manager (so the caller must not scroll the session). */
+/* The wheel over the band walks the listing, or scrolls the preview pane's body. Returns 1 when the
+   wheel belonged to the file manager (so the caller must not scroll the session). */
 static int fm_wheel(void)
 {
     if (!g_fm.on)
@@ -1612,17 +1616,24 @@ static int fm_wheel(void)
     if (hit == FM_HIT_NONE)
         return 0;
     fm_focus_set(hit == FM_HIT_LIST ? FM_FOCUS_LIST : FM_FOCUS_PREVIEW);
-    if (hit != FM_HIT_LIST)
-        return 1;
     int steps = 0;
     if (W.frame_discrete_seen)
         steps = W.frame_discrete;                       /* wheel down = later entries */
     else if (W.frame_has_axis)
         steps = (int)W.frame_axis_val / imax_(font.cell_h, 1);
-    if (steps) {
-        fm_move(&g_fm, steps);
-        fm_sel_changed();
+    if (!steps)
+        return 1;
+    if (hit == FM_HIT_PREVIEW) {
+        /* The preview has no selection to walk, so the wheel scrolls its BODY — the text of a file, or the
+           entries of a directory. It used to do nothing at all here, which is what made a long file
+           unreadable in the pane that exists to read it. fm_preview_scroll() clamps to what the pane can
+           show, so a picture or a metadata-only preview simply does not move. */
+        fm_preview_scroll(&g_fm, steps);
+        W.dirty = 1;
+        return 1;
     }
+    fm_move(&g_fm, steps);
+    fm_sel_changed();
     return 1;
 }
 
@@ -1907,10 +1918,10 @@ static int send_key(uint32_t key, uint32_t serial)
     case XKB_KEY_Tab:          send_str("\t", 1); return 1;
     case XKB_KEY_ISO_Left_Tab: send_str("\x1b[Z", 3); return 1;
     case XKB_KEY_Escape:       send_str("\x1b", 1); return 1;
-    case XKB_KEY_Up:           send_str("\x1b[A", 3); return 1;
-    case XKB_KEY_Down:         send_str("\x1b[B", 3); return 1;
-    case XKB_KEY_Right:        send_str("\x1b[C", 3); return 1;
-    case XKB_KEY_Left:         send_str("\x1b[D", 3); return 1;
+    case XKB_KEY_Up:           send_str(term_arrow_seq(cur_term(), 'A'), 3); return 1;
+    case XKB_KEY_Down:         send_str(term_arrow_seq(cur_term(), 'B'), 3); return 1;
+    case XKB_KEY_Right:        send_str(term_arrow_seq(cur_term(), 'C'), 3); return 1;
+    case XKB_KEY_Left:         send_str(term_arrow_seq(cur_term(), 'D'), 3); return 1;
     case XKB_KEY_Home:         send_str("\x1b[H", 3); return 1;
     case XKB_KEY_End:          send_str("\x1b[F", 3); return 1;
     case XKB_KEY_Page_Up:      send_str("\x1b[5~", 4); return 1;
@@ -2148,6 +2159,19 @@ static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t 
     }
 }
 
+/* Is Shift down right now? The pointer events carry no modifier state, but the keyboard listener keeps
+   xkb_state current (kb_mod calls xkb_state_update_mask), so the terminal can ask. Shift is the escape
+   hatch every terminal uses to step around an application's mouse handling: Shift + click means "I want
+   the selection, not whatever the program does with a click". */
+static int ptr_shift_held(void)
+{
+    if (!W.keymap || !W.xkb_state)
+        return 0;
+    xkb_mod_mask_t shift = xkb_keymap_mod_get_mask(W.keymap, "Shift");
+    xkb_mod_mask_t eff = xkb_state_serialize_mods(W.xkb_state, XKB_STATE_MODS_EFFECTIVE);
+    return shift && (eff & shift) ? 1 : 0;
+}
+
 static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t time,
                        uint32_t button, uint32_t state)
 {
@@ -2225,6 +2249,27 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                  cur_term()->g.rows, cur_term()->g.cols);
         } else {
             W.selecting = 0;
+            /* A click that never moved is the user asking the program to put its cursor where they
+               clicked. Only for a program that owns its own screen and never asked for the mouse: that is
+               the one state where a report cannot be sent (it would be typed into the document) and the
+               one where a click used to do nothing at all. A DRAG is untouched — it still selects, so text
+               can still be copied out of nano and less — and Shift means "selection, not click". The
+               synthesis is keystrokes computed from the cursor position the model already tracks, so
+               nothing here knows what nano is; see term_click_arrow_keys(). */
+            int no_drag = (col == cur_term()->sel_ax && row == cur_term()->sel_ay);
+            if (no_drag && conf.click_moves_cursor && !ptr_shift_held() &&
+                term_wants_key_mouse(cur_term())) {
+                char seq[3 * TERM_ARROW_MAX + 8];
+                int n = term_click_arrow_keys(cur_term(), col, row, seq, sizeof seq);
+                if (n > 0) {
+                    term_select_clear(cur_term());   /* the cursor moved; leave no stray highlight */
+                    send_str(seq, (size_t)n);
+                    klog(L_DEBUG, "mouse: click at (%d,%d) became %d cursor key press(es) for the "
+                                  "application", col, row, n / 3);
+                    W.dirty = 1;
+                    return;
+                }
+            }
             /* Releasing the drag used to ALWAYS offer the selection to the
                clipboard, which meant any stray click-drag overwrote what the user had copied.
                `copy_on_release = 1` restores that; by default the selection just stays visible and
@@ -2241,6 +2286,35 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
     }
 }
 
+/* The wheel inside a program that owns its own screen and never asked for the mouse (nano, less, man).
+   Such a program has no terminal scrollback to move — its grid is built with scrollback_max = 0 — and it
+   must NOT be sent a mouse report, because a program with no mouse protocol reads one as typed text
+   (measured: one report put "64;20;5M" into the user's file and marked it Modified). So the gesture
+   becomes cursor-key presses, which is what kitty and VTE do and what measurably scrolls nano and less.
+   Fractional (trackpad) motion is carried in W.wheel_accum the way scroll_apply() carries it for the
+   scrollback, so a slow two-finger swipe still produces whole presses.
+   Returns 1 when this session is in that state and the caller must not touch the scrollback. */
+static int app_wheel(Term *t, double delta_lines)
+{
+    if (!conf.wheel_sends_keys || !term_wants_key_mouse(t)) {
+        W.wheel_accum = 0;
+        return 0;
+    }
+    W.wheel_accum += delta_lines;
+    int whole = (int)W.wheel_accum;          /* truncate toward zero, as scroll_apply() does */
+    if (whole == 0)
+        return 1;
+    W.wheel_accum -= whole;
+    char seq[3 * TERM_ARROW_MAX + 8];
+    int n = term_wheel_arrow_keys(t, whole, seq, sizeof seq);
+    if (n > 0) {
+        send_str(seq, (size_t)n);
+        klog(L_DEBUG, "mouse: the wheel became %d %s for the application",
+             n / 3, t->app_cursor ? "SS3 cursor key press(es)" : "cursor key press(es)");
+    }
+    return 1;
+}
+
 static void ptr_axis(void *d, struct wl_pointer *p, uint32_t time, uint32_t axis,
                      wl_fixed_t value)
 {
@@ -2249,10 +2323,14 @@ static void ptr_axis(void *d, struct wl_pointer *p, uint32_t time, uint32_t axis
         return;
     double v = wl_fixed_to_double(value);
     if (cur_term()->mouse_mode & (MOUSE_PRESS | MOUSE_DRAG)) {
-        /* an application grabbed the mouse: report the wheel as SGR button 4 (up) / 5 (down) */
+        /* An application grabbed the mouse: report the wheel as button 64 (up) / 65 (down), which is what
+           xterm, kitty, neovim and tmux send — and NOT 4/5. Measured 2026-10-21
+           (.scratch/s96/nanoprobe) on nano --mouse, which asks for ?1000+?1006: ESC[<5;20;12M did nothing
+           at all, ESC[<65;20;12M scrolled the text, and in the legacy form 32+65 scrolled while 32+4 did
+           not. mouse_wheel_button() (vt.c) owns those numbers so tests/test_vt.c can pin them. */
         int col, row;
         mouse_cell(&col, &row);
-        mouse_send(v > 0 ? 5 : 4, col, row, 'M');
+        mouse_send(mouse_wheel_button(v < 0), col, row, 'M');
         return;
     }
     /* No application grabbed the mouse: accumulate the continuous (pixel) delta for this frame.
@@ -2298,8 +2376,12 @@ static void ptr_scroll_done(void *d, struct wl_pointer *p)
                 int ch = font.cell_h > 0 ? font.cell_h : 1;
                 delta_lines = -W.frame_axis_val / (double)ch;
             }
-            if (delta_lines != 0.0)
-                scroll_apply(delta_lines);
+            if (delta_lines != 0.0) {
+                /* The application owns this screen and never asked for the mouse: the wheel is its
+                   cursor keys, not the terminal's scrollback. */
+                if (!app_wheel(cur_term(), delta_lines))
+                    scroll_apply(delta_lines);
+            }
         }
     }
     W.frame_axis_val = 0;

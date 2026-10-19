@@ -902,6 +902,115 @@ int main(void)
           "raw 0x111 is right, raw 0x112 is middle");
     CHECK(mouse_sgr_button(0x113) == 3 && mouse_sgr_button(0) == 3, "side/extra/unknown -> SGR 3");
 
+    /* The wheel code sent to an application that DID ask for the mouse (s96). The wheel is an axis, not a
+       button, so the number is a choice — and the old one (4 up / 5 down) is read by ncurses as button 1,
+       which made the wheel do nothing in vim, htop, tmux and `nano --mouse`. Measured 2026-10-21
+       (.scratch/s96/nanoprobe) on nano --mouse: ESC[<5;20;12M did nothing, ESC[<65;20;12M scrolled the text,
+       and in the legacy X10 form 32+65 scrolled while 32+4 did not. */
+    CHECK(mouse_wheel_button(1) == 64 && mouse_wheel_button(0) == 65,
+          "the wheel is SGR 64 up / 65 down");
+    CHECK(mouse_wheel_button(1) != 4 && mouse_wheel_button(0) != 5,
+          "and never the old 4/5, which ncurses reads as button 1");
+
+    /* --- DECCKM (ESC[?1h): the form the cursor keys go out in ---
+       Measured 2026-10-21 (.scratch/s96/nanoprobe, real programs in a real pty): nano answers either
+       form of the cursor keys, less answers ONLY the SS3 one — and less asks for it with ESC[?1h. So a
+       terminal that ignores ?1h cannot be scrolled by the arrow keys in less at all. */
+    feed("\x1b[?1h");
+    CHECK(T.app_cursor == 1, "DECCKM set by ESC[?1h");
+    CHECK(!strcmp(term_arrow_seq(&T, 'A'), "\x1bOA") && !strcmp(term_arrow_seq(&T, 'D'), "\x1bOD"),
+          "DECCKM on: cursor keys are SS3");
+    feed("\x1b[?1l");
+    CHECK(T.app_cursor == 0, "DECCKM cleared by ESC[?1l");
+    CHECK(!strcmp(term_arrow_seq(&T, 'A'), "\x1b[A") && !strcmp(term_arrow_seq(&T, 'C'), "\x1b[C"),
+          "DECCKM off: cursor keys are CSI");
+    CHECK(term_arrow_seq(&T, 'Z')[0] == 0, "an unknown cursor key gives an empty string, not garbage");
+    /* DECCKM belongs to the screen: entering the alt screen parks it, leaving restores it. */
+    feed("\x1b[?1h");
+    feed("\x1b[?1049h");
+    CHECK(T.app_cursor == 0, "the alt screen starts with DECCKM off, not the main screen's");
+    feed("\x1b[?1h");
+    feed("\x1b[?1049l");
+    CHECK(T.app_cursor == 1, "and the main screen's DECCKM comes back");
+    feed("\x1b[?1l");
+
+    /* --- the wheel and a click as keystrokes (s96: nano/less scrolling) ---
+       The state that matters is "alternate screen AND no mouse protocol": there the program owns its
+       screen, has no terminal scrollback, and reads a mouse report as TYPED TEXT (measured: one report
+       put "64;20;5M" into the user's file). So the wheel and a click have to become cursor keys. */
+    char kseq[4096];
+    term_destroy(&T);
+    term_init(&T, 24, 80, 100);
+    feed("prompt$ ");
+    CHECK(term_wants_key_mouse(&T) == 0, "keymouse: the main screen keeps the wheel for its scrollback");
+    CHECK(term_wheel_arrow_keys(&T, 3, kseq, sizeof kseq) == 0,
+          "keymouse: nothing is synthesized outside the alternate screen");
+    CHECK(term_click_arrow_keys(&T, 5, 5, kseq, sizeof kseq) == 0,
+          "keymouse: nor is a click");
+
+    feed("\x1b[?1049h");
+    CHECK(T.alt_screen == 1 && term_wants_key_mouse(&T) == 1,
+          "keymouse: alt screen + no mouse protocol belongs to the application");
+    int kn = term_wheel_arrow_keys(&T, 3, kseq, sizeof kseq);
+    CHECK(kn == 9 && !memcmp(kseq, "\x1b[A\x1b[A\x1b[A", 9), "keymouse: wheel up = three Up presses");
+    kn = term_wheel_arrow_keys(&T, -2, kseq, sizeof kseq);
+    CHECK(kn == 6 && !memcmp(kseq, "\x1b[B\x1b[B", 6), "keymouse: wheel down = two Down presses");
+    CHECK(term_wheel_arrow_keys(&T, 0, kseq, sizeof kseq) == 0,
+          "keymouse: a gesture that moves nothing sends nothing");
+    kn = term_wheel_arrow_keys(&T, 1000000, kseq, sizeof kseq);
+    CHECK(kn == 3 * TERM_ARROW_MAX, "keymouse: an absurd gesture is bounded, not unbounded");
+    feed("\x1b[?1h");
+    kn = term_wheel_arrow_keys(&T, 2, kseq, sizeof kseq);
+    CHECK(kn == 6 && !memcmp(kseq, "\x1bOA\x1bOA", 6),
+          "keymouse: while DECCKM is on the wheel sends the SS3 form (what less needs)");
+    feed("\x1b[?1l");
+
+    /* An application that DID ask for the mouse keeps getting reports, never keys. */
+    feed("\x1b[?1000h");
+    CHECK(term_wants_key_mouse(&T) == 0, "keymouse: ?1000 means the application wants the mouse");
+    CHECK(term_wheel_arrow_keys(&T, 3, kseq, sizeof kseq) == 0 &&
+          term_click_arrow_keys(&T, 5, 5, kseq, sizeof kseq) == 0,
+          "keymouse: so neither the wheel nor a click is turned into keys");
+    feed("\x1b[?1000l");
+    feed("\x1b[?1002h");
+    CHECK(term_wants_key_mouse(&T) == 0, "keymouse: ?1002 counts too");
+    feed("\x1b[?1002l");
+    feed("\x1b[?1006h");
+    CHECK(term_wants_key_mouse(&T) == 1, "keymouse: ?1006 alone only picks the encoding");
+    feed("\x1b[?1006l");
+
+    /* The click: walk the application's own cursor to the clicked cell. The order (vertical first) and
+       the end-of-line clamp are both measured behaviour of nano (.scratch/s96/clickprobe.c). */
+    feed("\x1b[2J\x1b[H");
+    feed("abcdefghij\r\nabc\r\n");
+    feed("\x1b[H");                       /* cursor back to (0,0) */
+    CHECK(T.cx == 0 && T.cy == 0, "keyclick: the cursor starts at home");
+    kn = term_click_arrow_keys(&T, 3, 0, kseq, sizeof kseq);
+    CHECK(kn == 9 && !memcmp(kseq, "\x1b[C\x1b[C\x1b[C", 9),
+          "keyclick: three columns right is three Right presses, nothing else");
+    kn = term_click_arrow_keys(&T, 40, 1, kseq, sizeof kseq);
+    CHECK(kn == 12 && !memcmp(kseq, "\x1b[B\x1b[C\x1b[C\x1b[C", 12),
+          "keyclick: vertical first, and a click past the end of a 3-column line lands at its end");
+    kn = term_click_arrow_keys(&T, 4, 2, kseq, sizeof kseq);
+    CHECK(kn == 6 && !memcmp(kseq, "\x1b[B\x1b[B", 6),
+          "keyclick: an empty row is clicked at its start, not at column 4");
+    CHECK(term_click_arrow_keys(&T, 0, 0, kseq, sizeof kseq) == 0,
+          "keyclick: clicking where the cursor already is sends nothing");
+    CHECK(term_click_arrow_keys(&T, -1, 0, kseq, sizeof kseq) == 0 &&
+          term_click_arrow_keys(&T, 0, T.g.rows, kseq, sizeof kseq) == 0,
+          "keyclick: a cell outside the grid sends nothing");
+    feed("\x1b[?1h");
+    kn = term_click_arrow_keys(&T, 2, 0, kseq, sizeof kseq);
+    CHECK(kn == 6 && !memcmp(kseq, "\x1bOC\x1bOC", 6),
+          "keyclick: the click follows DECCKM too");
+    feed("\x1b[?1l");
+    /* A small buffer must be respected to the byte, and the result stays terminated. */
+    char small[8];
+    kn = term_click_arrow_keys(&T, 70, 20, small, sizeof small);
+    CHECK(kn == 6 && small[kn] == 0 && !memcmp(small, "\x1b[B\x1b[B", 6),
+          "keyclick: a short buffer gets whole presses, never half an escape sequence");
+    CHECK(term_click_arrow_keys(&T, 3, 0, small, 3) == 0, "keyclick: a buffer that cannot hold one press sends nothing");
+
     /* --- empty/omitted params --- */
     feed("\x1b[2J\x1b[H");
     feed("\x1b[H\x1b[2;H");

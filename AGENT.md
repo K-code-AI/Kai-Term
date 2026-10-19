@@ -17,11 +17,27 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s95 — build and every suite green; the file manager's path key is implemented, measured headless in fish/bash/zsh AND confirmed working by the user in their own window)
+## Current Status (re-measured 2026-10-21, s96 — build and every suite green; the mouse wheel and a click work
+inside full-screen programs and the preview pane scrolls, measured headless AND confirmed by the user in their own
+window)
 
-- **s90-s95 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
-  the push: `git status -sb` shows no ahead/behind and `git diff --stat main origin/main` is empty). Read the
-  remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
+- **s96 (the mouse inside full-screen programs) is implemented, wired, green and CONFIRMED BY THE USER IN THEIR
+  OWN WINDOW** (2026-10-21: "I tested it and now I can scroll in nano", "nano --mouse works as expected", "I
+  confirm it to be good"). What it is: DECCKM (`ESC[?1h`) is honoured and saved/restored across the alternate
+  screen, so cursor keys go out in the form the program asked for — this alone fixes the arrow keys in less/man/htop,
+  which answer ONLY the SS3 form; the wheel inside a program that owns its screen and never asked for the mouse
+  becomes Up/Down presses; a click that never dragged becomes the arrow-key walk to the clicked cell (vertical
+  first, target column clamped to the clicked row's last glyph + 1); the wheel report to a program that DID grab
+  the mouse is 64/65, not 4/5 (ncurses reads 4 as button 1, so the wheel was dead in vim/htop/tmux/`nano --mouse`);
+  and the file manager's preview pane scrolls its own body. Decisions live in `src/vt.c`
+  (`term_wants_key_mouse`, `term_arrow_seq`, `term_wheel_arrow_keys`, `term_click_arrow_keys`,
+  `mouse_wheel_button`) and `src/fm.c` (`pv_scroll`, `fm_preview_scroll`, `fm_preview_scroll_max`); the wiring is
+  `app_wheel()` + `ptr_button()` + `send_key()` + `fm_wheel()` in main.c. Switches: `wheel_sends_keys`,
+  `click_moves_cursor` (default 1). Pinned by 31 new `test_vt` checks and 27 new `test_fm` checks; the preview
+  resize clamp was A/B'd (`.scratch/s96/clampab`: 1 failure on the old placement, 0 here).
+- **s90-s95 are all committed on `main` and pushed; `main` == `origin/main`. The s96 work (mouse wheel/click in
+  full-screen programs, preview-pane scrolling) is UNCOMMITTED in the tree** — read the remote state with
+  `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
   follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks)
   was confirmed by the user in their own window (2026-10-20).
 - **s95 changed the file manager's key layout, by request — implemented, green, measured headless and CONFIRMED
@@ -36,8 +52,8 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `.scratch/s90b/diffgate.sh` reports all seven copied functions byte-identical to `main.c`, and all six
   integration modes still end `MATCH` with `typed text INTACT`.
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **814 checks, 0 failures**,
-  `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **247 checks, 0 failures**;
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **845 checks, 0 failures**,
+  `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **274 checks, 0 failures**;
   `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
   `make asan` exit 0 with the same counts and 0 sanitizer reports.
 - **Shell integration (s90-s92) is implemented, wired, and CONFIRMED BY THE USER IN THEIR OWN WINDOW for all
@@ -78,7 +94,7 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   resize and a zoom. And the preview pane's rows now have ONE owner (`preview_head_rows()` +
   `preview_meta_rows()` in fm.c, used by both `paint_preview()` and `fm_image_fit()`), which is what stops
   the metadata lines being drawn across the picture — the user's "the metadata sometimes get written on the
-  image preview". Both are pinned by checks (814 + 247, 0 failures) and the preview one by an A/B against the
+  image preview". Both are pinned by checks (845 + 274, 0 failures) and the preview one by an A/B against the
   previous `src/fm.c` (8 failures there). Nothing here has been looked at in the user's window.
 - **Image support (kitty graphics protocol) is in the tree and user-confirmed by eye** ("The image display
   properly. The feature works as expected", 2026-10-17, session 70, `timg -p k` with a PNG): APC/DCS parser
@@ -89,11 +105,12 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   (`graphics: 1 image(s) drawn, 1 texture(s) held`, no GL warning).
 - No probe/experiment left in tree: `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` ->
   empty (the s85 RETYPING probe was removed in s86).
-- README's flag table (`-e -w -c -d -v -h`) and its **51** settings rows match `src/main.c` / `src/config.c`
-  exactly — re-checked by set difference, not by eye, in s95: the 51 keys `apply()` in `src/config.c`
-  compares (`!strcmp(key, …)`, `font` included) and the 51 rows of its "Available settings" table are the same
-  set, `diff` empty both ways (`fm_key_path` is the one added in s95). `usage()`'s six options and README's
-  option table are the same six. README also
+- README's flag table (`-e -w -c -d -v -h`) and its **53** settings rows match `src/main.c` / `src/config.c`
+  exactly — re-checked by set difference, not by eye, in s96: the 53 keys `apply()` in `src/config.c`
+  compares (`!strcmp(key, …)`, `font` included) and the 53 rows of its "Available settings" table are the same
+  set, `diff` empty both ways (`wheel_sends_keys` and `click_moves_cursor` are the two added in s96).
+  `usage()`'s six options and README's option table are the same six, short names and long names both checked.
+  README also
   carries the "File manager" usage section, the file-manager settings rows, the shortcut tables and libjpeg +
   libwebp in Requirements.
 - **No open issues.** The 4 reports that used to be in ISSUES.md were unproven (never reproduced here) and
@@ -105,7 +122,9 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   fix, heavy-output segfault fix, transparency, bracketed paste, `clear` drops scrollback, shell start dir,
   color emoji, text selection, `app_id`, several instances at once, window resize, key-hold repeat, clipboard
   interop both directions; the file manager's path key `p` and the `Return`-does-nothing change ("The feature
-  works", 2026-10-20, s95).
+  works", 2026-10-20, s95); the mouse wheel and a click inside full-screen programs — scrolling nano, and
+  `nano --mouse` reporting the wheel ("I tested it and now I can scroll in nano", "nano --mouse works as expected",
+  "I confirm it to be good", 2026-10-21, s96).
 - Verified at model+live level (not all re-checked by hand): reflow on width change, color emoji + grapheme
   clusters, whole-glyph selection with no band over unwritten space, compositor transparency, CSI 3 J +
   startup dir, client-side key repeat, draw/commit + event-loop pacing.
@@ -114,7 +133,208 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s95 — CLOSED: the user asked to CHANGE a design decision, not fix a bug. "If I pre-type some text and then use the file manager, pressing enter on a file doesn't append it's path to the prompt. can we change that? … cat ' /path/to/somefile.txt'" and, when I called it a defect: "it is not a bug, it was a design decision, But we are changing it." Shipped as the `p` key; the user's verdict on their own window: "The feature works". See s95 entries 1-8.)
+## Current Task (s97 — OPEN, nothing done yet: the user's hypothesis about a stray `h` reaching the prompt)
+
+**The user's report, in their words (2026-10-21):** they suspect the trailing `h` of the sequence a shell sends to
+enable bracketed paste is being leaked into the input as a keystroke. Their proposed mechanism, verbatim in
+substance: (1) the terminal is sent `\e[?2004h`; (2) the parser catches `\e[?2004` and flips
+`bracketed_paste_enabled = true`; (3) **the bug they suspect** — the parser changes state before consuming the
+final character, or fails to discard the `h`, so the `h` "gets accidentally leaked or fed back into the PTY input
+queue as a raw keyboard stroke"; (4) because bracketed paste just turned on, the emulator decides to wrap incoming
+input in paste brackets; (5) the leaked `h` comes back as `\e[200~h\e[201~`.
+
+**What is right and what is wrong in it, before any code is read** (this is a reading of the mechanism, not a
+verdict — nothing has been measured yet):
+- The SHAPE is plausible and matches a real class of parser bug: a state machine that acts on a sequence and then
+  re-processes its last byte, or that leaves one byte in the buffer, produces exactly "a character nobody typed".
+- The DIRECTION is wrong: Kai-Term does not send `\e[?2004h` to itself. That sequence arrives **from the shell**,
+  in bytes read out of the pty, and `term_parse()` consumes them. There is no path in which our parser writes to
+  our own pty input queue, so step 3's "fed back into the PTY input queue" cannot happen as described.
+- What CAN happen, and is what to look for: the `h` is parsed as part of the private-mode sequence but then also
+  reaches the text path, so it lands **in the grid** (a visible `h` on the prompt line) — or the parser's
+  parameter/final-byte handling leaves one byte over and the NEXT burst starts one byte off. Either way the
+  symptom is a character in the terminal that nobody typed, which is what the user is seeing.
+- Step 4-5's bracket wrapping is a separate question worth checking on its own: `paste_wrap()` only adds
+  `ESC[200~`/`ESC[201~` around a **paste** the user performs, never around a stray grid character, so a leaked `h`
+  would not normally be bracketed. If the user is literally seeing `\e[200~h\e[201~` on the line, that points at a
+  different path than a leaked final byte and is itself a clue.
+
+**Planned steps (MEASURE first, headless, no window — the standing rule):**
+1. Read the parser's actual path for a private-mode sequence end to end: the CSI/DCS state machine in `src/vt.c`
+   (`csi_dispatch`'s `h`/`l` loops, where `p == 2004` sets `t->bracketed_paste`, the parameter collector, and what
+   happens to the final byte). Note `p == 1` (DECCKM) and `p == 2004` sit in the SAME loops, added in s96 — so if
+   the final byte were mishandled, s96 changed what is at stake.
+2. A probe that feeds `\e[?2004h` (and `\e[?2004l`, and the combined forms real shells send, e.g.
+   `\e[?1004;2004h`) through the real `term_parse()` and prints the grid, the cursor, and `bracketed_paste` after
+   each — the question is whether any cell gains an `h` and whether `cx` moves. Also feed it split across bursts
+   (`\e[?200` + `4h`) because that is where a leftover byte would show.
+3. Check the same for the neighbouring sequences a shell sends at startup (`\e[?1h`, `\e[?1049h`, `\e[?2004h`, and
+   the APC integration announcement `shellint.c` writes), since the user's symptom appears at the prompt.
+4. Only after the measurement: fix, pin with checks in `tests/test_vt.c`, and A/B the check against the code that
+   had the bug.
+**Also worth asking the user:** exactly what they see (a bare `h` on the line, or the literal text
+`\e[200~h\e[201~`), and in which shell — that single detail decides whether this is a leaked final byte or a
+paste-wrapping bug, and it is the difference between two very different probes.
+
+## Previous Task (s96 — CLOSED: the user asked for the mouse wheel to work inside full-screen programs. "When opening a file with nano or similar program it would be nice to be able to scroll with the mouse. Also scrolling in the preview pane of the file manager would be really good if possible when over a text." Then, comparing with kitty: "In kitty I can't click, but I can scroll. So I want scrolling in Kai-Term too when using nano and clicking could be a nice bonus." Shipped, and their verdict in their own window: "I confirm it to be good". See s96 entries 1-4.)
+
+**What is wanted, in three parts:**
+1. **Wheel inside a full-screen program that never asked for the mouse** (nano, less, man). Today the wheel
+   does NOTHING there: `ptr_scroll_done()` -> `scroll_apply()` -> `scrollback_nav()`, and the alt grid is built
+   with `scrollback_max = 0` (`alt_screen_enter()`, src/vt.c), so `live_off` is always 0 and `scrollback_nav()`
+   returns 0 immediately. nano has no scrollback to scroll and no mouse protocol to report to, so the gesture
+   is thrown away. The user's kitty observation says what the fix is: kitty (like VTE) turns the wheel into
+   **Up/Down arrow key presses** in that state, which is the only thing that can scroll a program that owns
+   its own screen — and it also explains "I can't click" in kitty, because nano is not told about the mouse.
+2. **Wheel over the file manager's preview pane** when the preview is text (or a directory listing): today
+   `fm_wheel()` claims the gesture over the preview, sets focus and returns 1 without doing anything.
+3. **Clicking as a bonus**: a left click in the same alt-screen-no-mouse state moves the program's own cursor
+   to the clicked cell, by arrow keys computed from the cursor position Kai-Term already tracks (`t->cx/cy`).
+   This is NOT mouse support for the program — nano still receives no coordinates — it is keystroke synthesis,
+   and it is why clicking can work at all in a program that never asked for the mouse.
+
+**Planned steps:** (1) MEASURE first, headless, no window: `.scratch/s96/nanoprobe.c` runs the real `nano 9.2`
+over the real `src/pty.c` into the real `term_parse()` and answers three questions with bytes, not opinion —
+does nano enter ?1049, does it set ?1000/?1002/?1006, and do `\x1b[B` presses really scroll its text (read the
+grid before/after)? (2) put the two decisions in **src/vt.c** (`term_wheel_arrow_keys()`,
+`term_click_arrow_keys()`), not main.c — main.c is in no test binary, so arithmetic there is untestable (Key
+Decisions); (3) wire them in `ptr_scroll_done()` / `ptr_button()`, keeping every existing rule: the bar and the
+band are checked before the terminal, an application that DID grab the mouse keeps getting SGR reports, a drag
+still selects text; (4) preview scrolling in **src/fm.c** (`fm_preview_scroll()` + a `pv_scroll` offset the
+painter obeys), reset when a new preview is installed; (5) two config switches, defaults chosen so nothing that
+works today changes; (6) durable checks in `tests/test_vt.c` and `tests/test_fm.c`; (7) README + ISSUES.md +
+AGENT.md.
+**Expected outcome:** the wheel scrolls nano/less/man and the preview pane's text; a click moves nano's cursor;
+no change at all for an application that asked for the mouse (vim/htop/tmux), for the tab bar, or for
+scrollback in the main screen. Nothing is claimed until the probe and the suites say so.
+
+### s96 entry 1 — MEASURED first: what nano/less really are, and what makes them scroll
+
+`.scratch/s96/nanoprobe.c` (real `src/pty.c` + real `term_parse()`, 24x80, no window) and
+`.scratch/s96/clickprobe.c`. nano 9.2, less (system), file of 200 `LINE-nnnn` rows; "top-line" is the
+`LINE-nnnn` number on the first grid row, i.e. the program's own scroll position, read out of Kai-Term's grid.
+
+| program | alt_screen | mouse_mode | private modes it sent | what scrolled it |
+|---|---|---|---|---|
+| `nano file` | **1** | **0x0** | `?2004h ?1049h ?7h ?1h ?1h ?25l ?12l ?25h` | 30 x `ESC[B` -> top 1->12; 30 more `ESC OB` -> 12->42; Up -> back to 1 |
+| `less file` | **1** | **0x0** | `?1049h ?1h` | 30 x `ESC[B` -> **top stayed 1**; 30 x `ESC OB` -> **1->31**; `ESC OA` -> back to 1 |
+| `nano --mouse file` | 1 | **0x5** (PRESS+SGR) | `?2004h ?1049h ?7h ?1h ?1h ?25l ?1006;1000h ?12l ?25h` | 3 x `ESC[<5;20;12M` (what `ptr_axis` sends today) -> **nothing**; 3 x `ESC[<65;20;12M` -> **top 1->5**; X10 `32+65` -> scrolled; X10 `32+4` -> not a scroll |
+
+Four facts this settles, and the two defects it exposes:
+1. **nano and less are exactly the state the plan assumed**: alternate screen, `mouse_mode == 0`. Kai-Term's
+   wheel path ends in `scrollback_nav()`, the alt grid has `scrollback_max = 0` so `live_off == 0`, and the
+   gesture is thrown away. That is the user's report, reproduced with bytes.
+2. **Arrow keys scroll them.** So the fix is the kitty/VTE trick: in that state the wheel becomes arrow-key
+   presses. (It is also the only thing that CAN work — see 3.)
+3. **A mouse report sent to a program that never asked for the mouse is TYPED INTO ITS DOCUMENT.** One
+   `ESC[<64;20;5M` to plain nano put `64;20;5M` on row 1 and made the title read `Modified`. So the click
+   bonus must be keystrokes, never a report — and Kai-Term is right today to not report in that state.
+   (v1 of the probe did exactly this by accident and every number after it measured a file the probe had
+   edited — the journal's "suspect the harness" rule, again.)
+4. **DECCKM (`ESC[?1h`, application cursor keys) is not implemented here, and that is why `less` is dead to
+   the arrow keys today.** nano accepts both forms; less accepts ONLY the SS3 form (`ESC O A`..`D`) because it
+   asked for it with `?1h`, and `send_key()` always sends the CSI form. So the synthesized arrows must follow
+   DECCKM, and honouring it also fixes the user's own arrow keys in less/man/htop — a pre-existing bug this
+   feature runs straight into.
+5. **The wheel report to a program that DID grab the mouse uses the wrong button code.** Measured on
+   `nano --mouse`: Kai-Term's 4/5 does nothing, xterm/kitty/neovim/tmux's 64/65 scrolls. Same in the legacy
+   X10 form (`32+65` scrolls, `32+4` does not). `ptr_axis()` sends 4/5 in both encodings, so the wheel is
+   broken in every mouse-grabbing app (vim/htop/tmux/nano --mouse). Fix: send 64/65; `mouse_send()` already
+   adds the +32 the X10 form needs.
+
+**Click synthesis, measured on a pristine nano** (`clickprobe.c`, cursor read back from `T.cx/T.cy`):
+start (0,1) -> click(20,5) **EXACT**; -> click(5,15) **EXACT**; -> click(0,1) **EXACT**; -> click(40,12)
+**EXACT**, and EXACT again after the view had been scrolled. Not exact, and why:
+click(60,10) and click(75,2) landed on the NEXT row, because those columns are past the end of a 58-column
+line and nano's Right at end-of-line wraps to the next line; click(30,0) (the title bar) and click(30,23)
+(the shortcut bar) clamped to the first/last text row, which is nano deciding, not the synthesis.
+So: vertical first then horizontal, and **clamp the target column to the clicked row's last non-blank cell +
+1** (the grid is right there, and vt.c is where a test can pin it) — that turns the two wrap failures into
+"lands at the end of the line", which is what a click past the text should mean.
+
+### s96 entry 2 — DECCKM and the two key-synthesis helpers (header + src/vt.c)
+
+**Done:**
+- `Term.app_cursor` (DECCKM) and `Term.alt_saved_app_cursor`, set/cleared by `ESC[?1h` / `ESC[?1l` in the
+  private-mode `h`/`l` loops, saved and restored by `alt_screen_enter()` / `alt_screen_leave()`.
+- Three new functions in vt.c, next to `mouse_sgr_button()` and the state they read:
+  `term_wants_key_mouse()` (alt screen AND no `MOUSE_PRESS`/`MOUSE_DRAG`), `term_wheel_arrow_keys()`,
+  `term_click_arrow_keys()`, plus file-local `arrow_append()` (SS3 while DECCKM is on, CSI otherwise) and
+  `row_last_col()` (the clicked row's last non-blank cell, a space counting as blank).
+  `TERM_ARROW_MAX 1024` bounds the burst.
+- `FileMgr.pv_scroll` and `fm_preview_scroll()` / `fm_preview_scroll_max()` declared;
+  `Config.wheel_sends_keys` and `Config.click_moves_cursor` declared.
+**Why there and not main.c:** the standing rule — main.c is in no test binary, so the arithmetic (which keys,
+how many, clamped to what) has to sit where `tests/test_vt.c` can pin it.
+**One mistake made and fixed:** the three declarations first went in beside `mouse_sgr_button()`, which is
+BEFORE `typedef struct Term` — `make` failed with `unknown type name 'Term'` in five translation units. They
+now sit after `term_note_input()`, where the type exists. After the move `make -j8` exits 0 with 0 warnings.
+**Not wired yet:** nothing calls the new functions, so behaviour is unchanged as of this entry.
+
+### s96 entry 3 — the wiring is in, and the preview-scroll clamp was measuring the pane the user was LEAVING
+
+The code described as "not wired" in entry 2 is now wired (this entry re-measured it rather than trusting the
+journal, which was behind the tree):
+- `src/main.c`: `app_wheel()` in `ptr_scroll_done()` (wheel -> cursor keys, its own `W.wheel_accum` carry so a
+  mid-gesture alt-screen exit cannot hand a remainder to the scrollback); the click path in `ptr_button()`
+  (a click that never moved, `click_moves_cursor`, no Shift, `term_wants_key_mouse()`); `send_key()`'s four
+  arrow keys now go through `term_arrow_seq(cur_term(), ...)`; `fm_wheel()` hands the preview hit to
+  `fm_preview_scroll()` instead of swallowing it.
+- `ptr_axis()`: the wheel report to a mouse-grabbing app is now **64/65, not 4/5** — the defect entry 1 measured
+  on `nano --mouse`. That fix is in the tree; it is NOT yet re-measured against a real app (see Next Steps).
+- `src/config.c` + header: `wheel_sends_keys` (1) and `click_moves_cursor` (1), both documented in the header
+  with the honest caveat that click synthesis is keystrokes, so a program that uses arrows for something else
+  (alsamixer) will react.
+
+**One real defect found by the new checks, in `fm_set_size()` — and it was the MODEL, not the test.**
+The clamp `fm->pv_scroll = iclamp_(fm->pv_scroll, 0, fm_preview_scroll_max(fm))` sat at the TOP of
+`fm_set_size()`, next to the requested sizes. But `fm_preview_scroll_max()` measures `fm->prev.rows` — the pane
+that actually EXISTS, the same field the painter reads — and at that point in the function the realloc has not
+run yet, so it still reports the OLD height. The clamp therefore measured the screen the user was leaving and
+could never change anything: a 40-line file scrolled to its bottom in a 12-row pane (`pv_scroll` 30) and grown
+to a 40-row pane stayed at 30, i.e. 28 rows of blank space. Moved to after the allocation (with a comment
+saying why the order matters). `tests/test_fm.c:952` now pins it.
+
+**The A/B that proves the check is worth having** (the standing rule: a check that passes on the buggy code
+pins nothing): `.scratch/s96/clampab/` holds `fm.c` with the clamp moved back to its old position, built against
+the same `tests/test_fm.c` — **1 failure there (`test_fm.c:952`), 0 here**.
+
+**A second test bug found on the way, and it is the same pitfall twice.** The check that used to be there —
+`fm_set_size(..., 6); CHECK(pv_scroll <= scroll_max)` — passed with NO clamp at all, because for a body longer
+than the pane a SHORTER pane has MORE to scroll (40 lines in a 6-row pane = 36 rows of range, not less); the
+clamp only bites when the pane GROWS. And the next line, `fm_preview_scroll(&fm, 5); CHECK(pv_scroll == 5)`, was
+red for a mundane reason: the previous check had left `pv_scroll` at its maximum (30), so the call clamped to 30.
+Both rewritten to say what they mean. Net: `test_fm` 247 -> **274 checks**.
+
+**Re-measured from this tree:** `make -j8` exit 0, 0 warnings; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 —
+`CLI: 62 checks, 0 failures, 10 skipped`, `test_vt` **843 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
+`test_fm` **274 checks, 0 failures**. DECCKM and the two synthesis helpers are pinned by 30 new checks in
+`tests/test_vt.c` (814 -> 843). Nothing here has been seen in the user's window yet.
+
+### s96 entry 4 — the wheel code moved to vt.c, and the user confirmed the whole feature in their own window
+
+`mouse_wheel_button()` (header + vt.c, 2 new checks in `tests/test_vt.c`, 843 -> **845**): the 64/65 wheel codes
+entry 1 measured were inline in `ptr_axis()`, where no test binary can reach them — the same reason the arrow-key
+helpers went in vt.c. `ptr_axis()` now calls it. Behaviour unchanged; the constant is now pinned.
+
+**The user ran it in their own window and confirmed it (2026-10-21): "I tested it and now I can scroll in nano",
+"nano --mouse works as expected", and "I confirm it to be good"** — that closes the three things this task owed a
+human eye for: the wheel inside nano, the wheel inside a program that DID grab the mouse (the 64/65 fix), and the
+feature as a whole. They also re-ran `make asan` themselves (`MODEL OK (0 problems)`, `274 checks, 0 failures`) —
+re-run here from this tree and identical: `test_vt` 845 / `dbg` MODEL OK / `test_fm` 274, exit 0, no sanitizer
+report.
+
+**s96 is closed.** What shipped: DECCKM (which also fixes the user's own arrow keys in less/man/htop), the wheel
+as cursor keys inside a full-screen program that never asked for the mouse, a click as the arrow-key walk to the
+clicked cell, the 64/65 wheel code for programs that DID ask for the mouse, and the file manager's preview pane
+scrolling its own body. Two config switches (`wheel_sends_keys`, `click_moves_cursor`, both default 1). Docs:
+README gained a usage section ("The mouse wheel and a click inside a full-screen program"), two feature bullets
+and the two settings rows; the stale "over the band it walks the listing" wheel row and the stale "text preview …
+no scrolling" limitation were corrected; ISSUES.md gained three Fixed entries. Verified by set difference, not by
+eye: the 53 keys `apply()` in `src/config.c` and the 53 rows of README's settings table are the same set (`diff`
+empty both ways), and `usage()`'s six options and README's option table are the same six, short and long.
+
+## Previous Task (s95 — CLOSED: the user asked to CHANGE a design decision, not fix a bug. "If I pre-type some text and then use the file manager, pressing enter on a file doesn't append it's path to the prompt. can we change that? … cat ' /path/to/somefile.txt'" and, when I called it a defect: "it is not a bug, it was a design decision, But we are changing it." Shipped as the `p` key; the user's verdict on their own window: "The feature works". See s95 entries 1-8.)
 
 **Objective:** `Return` on a file in the browser must type its quoted path at the prompt **even when the line
 already holds text**, so `cat ` + Enter-on-`somefile.txt` gives `cat '/path/to/somefile.txt'`. Today
@@ -1277,7 +1497,7 @@ one verified change and push.
 ## Next Steps
 
 1. **File manager: the open item is the user's eye on the new 75% band and on the fixed preview.** Built,
-   wired, documented, green (247 model/layout/config checks + the s74 live key-injection run that proves the
+   wired, documented, green (274 model/layout/config checks + the s74 live key-injection run that proves the
    routing and the `cd` follow), and the user has run the band in their own window and confirmed its
    behaviour (2026-10-19) — but the band's new SHARE (`fm_size = 75`, s88) and its new preview row budget
    have never been seen by them, and they have never said whether they like how the band looks. If they
@@ -1293,6 +1513,17 @@ one verified change and push.
    `fm: not typing the path — the input line is not one I can describe` (alternate screen, wrapped line,
    scrolled-back view, repainted prompt, or a `cd` follow mid-flight). If they dislike a key, it is a config
    default, not a code change: `fm_key_path`, `fm_key_preview`, `fm_key_open`.
+1c. **The mouse inside full-screen programs (s96) is done: built, green, measured headless AND confirmed by the
+   user in their own window** ("I tested it and now I can scroll in nano", "nano --mouse works as expected", "I
+   confirm it to be good", 2026-10-21). Nothing is owed here but a diagnosis if a report ever arrives. The recipe:
+   `./bin/kai-term -d`, open `nano file`, turn the wheel — `-d` logs `mouse: the wheel became N cursor key
+   press(es) for the application` (or `SS3 cursor key press(es)` once nano has asked for `ESC[?1h`, which it does
+   on entry). A click logs `mouse: click at (col,row) became N cursor key press(es) for the application`. If the
+   wheel scrolls nothing, check `term_wants_key_mouse()`'s two conditions first (`alt_screen` and no
+   `MOUSE_PRESS`/`MOUSE_DRAG`) — a program that asked for the mouse is deliberately excluded and keeps getting
+   reports. If a click lands one row off, that is the end-of-line clamp in `term_click_arrow_keys()` meeting a
+   program whose arrow keys do not preserve the column (measured on nano; a program that wraps Right differently
+   is the known limit). Both halves are config, not code: `wheel_sends_keys`, `click_moves_cursor`.
 2. **Shell integration (s90-s92) is done: wired, green, measured headless AND confirmed by the user's eye in
    their own window for fish, bash and zsh (2026-10-20).** Nothing is owed here but a diagnosis if a report ever
    arrives. The recipe: run `./bin/kai-term -d`, browse into a directory with the band open, and read the log —
@@ -1371,8 +1602,8 @@ Kai-Term/
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 803 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
-├── tests/test_fm.c              # 247 checks: the file-manager model, previews, decoders, band geometry
+├── tests/test_vt.c              # 845 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
+├── tests/test_fm.c              # 274 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # 95 checks driving the REAL bin/kai-term; ONE probe launch gates the
 │                                # window checks, KAI_TERM_TEST_NO_WINDOW=1 skips them entirely
@@ -1427,9 +1658,14 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 814 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
+- `tests/test_vt.c` — 845 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
   bracketed paste, `term_init` guard, reflow, `term_grid_geometry`, zoom/alt-screen row-shrink,
-  `mouse_sgr_button`, the graphics path (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll
+  `mouse_sgr_button` and `mouse_wheel_button` (the SGR button order and the 64/65 wheel codes), DECCKM
+  (`app_cursor` set/cleared by `ESC[?1h`/`ESC[?1l`, saved and restored across the alternate screen,
+  `term_arrow_seq()` answering SS3 or CSI), and the mouse-as-keystrokes helpers (`term_wants_key_mouse`,
+  `term_wheel_arrow_keys`, `term_click_arrow_keys` — the alt-screen/no-mouse gate, the vertical-then-horizontal
+  order, the end-of-line column clamp, the buffer bounds), the graphics path
+  (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll
   anchoring/id replacement/DA1-DA2-DSR answers), mux, keybind/keymods parsing, multiplexing config keys,
   `layout_compute` / `layout_grid_size` / `layout_initial_size` (the tab bar, the side-by-side panes and the
   file-manager band's SHARE: `fm_size` percent, both clamps, the terminal's floor, the share surviving a
@@ -1444,12 +1680,15 @@ Kai-Term/
   land on disk (each binds exactly what `shellint_seq()` returns, fish repaints, bash does NOT pretend to,
   every script names `$KAI_TERM_INT_DIR`, every `shellint_argv()` carries it, the nested-shell wrappers are
   there, and cleanup finds a request file whose id is past `TAB_MAX`).
-- `tests/test_fm.c` — 247 checks against a real temporary directory tree (dirs, a dotfile, a dangling
+- `tests/test_fm.c` — 274 checks against a real temporary directory tree (dirs, a dotfile, a dangling
   symlink, a FIFO, an unreadable dir, four image formats, a binary file): scan + sort + caps + truncation,
   the hidden filter and `fm_set_hidden`, selection and scrolling (`fm_row_pos`, `ensure_visible`),
   navigation, the request-id rule (a stale answer is dropped), every preview kind and its error path, the
   highlighter reaching the cells, the pane painters, `fm_image_fit`, the preview's row budget (no painted
-  glyph may sit inside the box the picture is drawn into — `ink_in_box()`), and the band's rects inside
+  glyph may sit inside the box the picture is drawn into — `ink_in_box()`), the preview pane's own scroll
+  (`pv_scroll` / `fm_preview_scroll` / `fm_preview_scroll_max`: the painter obeys it for a text file and for a
+  directory listing, both ends clamp, a new preview starts at the top, a pane with no body has nothing to scroll,
+  and a resize pulls the scroll back inside what the NEW pane can show), and the band's rects inside
   `layout_compute()`.
 - `Makefile` — pkg-config-driven; `-Iinclude/kai-term -Ibuild/generated`; output dirs via order-only
   prerequisites so they never force rebuilds; generates xdg-shell bindings with `wayland-scanner`.
@@ -1858,6 +2097,19 @@ after `ptr_*` hit-tested bar then panes.
   `/home/kaida/Project/.scratch/` to exercise logic Wayland input events cannot reach.
 
 ## Key Decisions & Pitfalls
+
+- **A guard that reads a field the change has not applied yet is a no-op that looks exactly like a guard.**
+  `fm_set_size()` clamped `pv_scroll` to `fm_preview_scroll_max(fm)` on the line where it stored the REQUESTED
+  pane size — but `fm_preview_scroll_max()` measures `fm->prev.rows`, the pane that actually EXISTS (the same field
+  the painter reads), and the `realloc` that changes it runs 20 lines later. So the clamp measured the size the
+  pane used to have and could never change anything; every check written as "scroll, resize, assert it is inside
+  the new range" still passed, because the range it compared against was the old one. Moved after the allocation.
+  Two traps made it easy to miss: (a) the natural test — shrink the pane, expect the scroll to shrink — is the
+  direction where the range GROWS (40 lines in a 6-row pane is 36 rows of range, not less), so it pins nothing in
+  either version; the clamp only bites when the pane GROWS. (b) The next check, `fm_preview_scroll(5)` expecting
+  5, was red for an unrelated reason: the previous check had left `pv_scroll` at its maximum, so the call clamped.
+  When a clamp/validate call takes a max from a getter, ask what state that getter reads and whether the change has
+  landed in it yet (s96).
 
 - **`eglSwapBuffers` blocks, and a blocked swap looks like a dead terminal.** It waits until driver gets a
   buffer back and only compositor releases buffers, so a client whose surface is not being rendered stalls

@@ -437,6 +437,14 @@ void fm_set_size(FileMgr *fm, int lc, int lr, int pc, int pr)
             fm->prev.cell = NULL;
         }
     }
+    /* Pull the preview's scroll back inside what the NEW pane can show, so a resize cannot leave the body
+       painted into blank rows. This has to come AFTER the allocation: fm_preview_scroll_max() measures
+       fm->prev.rows, the pane that actually EXISTS (the painter reads that same field), so until the
+       realloc above has run it still reports the OLD height — a clamp placed up with the requested sizes
+       measures the screen the user is leaving and changes nothing. Measured: a 40-line file scrolled to
+       its bottom in a 12-row pane (pv_scroll 30) and the pane grown to 40 rows left 28 rows of nothing. */
+    fm->pv_scroll = iclamp_(fm->pv_scroll, 0, fm_preview_scroll_max(fm));
+
     fm->dirty = 1;
 }
 
@@ -941,6 +949,7 @@ int fm_install_preview(FileMgr *fm, FmPreview *pv)
     pv->uid = ++uid_next;
     fm_preview_free(fm->pv);
     fm->pv = pv;
+    fm->pv_scroll = 0;      /* a new file starts at its beginning, however far the last one was scrolled */
     fm->dirty = 1;
     return 1;
 }
@@ -1550,6 +1559,57 @@ static int preview_meta_rows(const FileMgr *fm, int head_rows)
     return iclamp_(pv->nmeta, 0, imax_(room, 0));
 }
 
+/* How many lines the preview's BODY holds — everything below the header, which is what the wheel over
+   this pane moves through. An image and a plain metadata preview have no body to scroll (their rows are
+   the picture and the metadata, both laid out by the row budget above), so they answer 0 and
+   fm_preview_scroll() becomes a harmless no-op for them. */
+static int preview_body_lines(const FileMgr *fm)
+{
+    const FmPreview *pv = fm->pv;
+    if (!pv)
+        return 0;
+    switch (pv->kind) {
+    case FMP_TEXT: {
+        if (!pv->text || !pv->len)
+            return 0;
+        int n = 1;
+        for (size_t i = 0; i < pv->len; i++)
+            if (pv->text[i] == '\n')
+                n++;
+        if (pv->text[pv->len - 1] == '\n')
+            n--;                       /* a trailing newline is not a line to scroll onto */
+        if (pv->truncated)
+            n++;                       /* the "- text truncated at N KiB -" line */
+        return imax_(n, 0);
+    }
+    case FMP_DIR:
+        return pv->n + ((pv->n || pv->truncated) ? 1 : 0);   /* the entries + the count line */
+    default:
+        return 0;
+    }
+}
+
+int fm_preview_scroll_max(const FileMgr *fm)
+{
+    const FmPreview *pv = fm->pv;
+    if (!pv || fm->prev.rows <= 0)
+        return 0;
+    int body = preview_body_lines(fm);
+    int visible = fm->prev.rows - preview_head_rows(pv);
+    if (visible < 1)
+        visible = 1;
+    return iclamp_(body - visible, 0, body);
+}
+
+void fm_preview_scroll(FileMgr *fm, int delta)
+{
+    int want = iclamp_(fm->pv_scroll + delta, 0, fm_preview_scroll_max(fm));
+    if (want == fm->pv_scroll)
+        return;
+    fm->pv_scroll = want;
+    fm->dirty = 1;
+}
+
 /* The header lines every preview starts with: what is being previewed, and what it is. */
 static void paint_preview_head(FileMgr *fm, uint32_t fg, uint32_t bg, int *row_out)
 {
@@ -1582,7 +1642,10 @@ static void paint_preview_dir(FileMgr *fm, uint32_t fg, uint32_t bg, int row)
     FmPane *p = &fm->prev;
     const FmPreview *pv = fm->pv;
     uint32_t dim = mix_c(fg, bg, 45);
-    for (int i = 0; i < pv->n && row < p->rows; i++, row++) {
+    /* The wheel over this pane owns pv_scroll; it can never pass fm_preview_scroll_max(), so the last
+       entry is always reachable and never scrolled into blank space. */
+    int first = iclamp_(fm->pv_scroll, 0, imax_(pv->n, 0));
+    for (int i = first; i < pv->n && row < p->rows; i++, row++) {
         const FmEntry *e = &pv->ent[i];
         uint32_t col, attr;
         entry_colour(e, fg, &col, &attr);
@@ -1612,6 +1675,15 @@ static void paint_preview_text(FileMgr *fm, uint32_t fg, uint32_t bg, int row)
     uint32_t hl[4096];
     const char *s = pv->text ? pv->text : "";
     size_t n = pv->len, i = 0;
+    /* The wheel over this pane owns pv_scroll: walk that many lines off the front before painting
+       anything. A line is cut at the right edge rather than wrapped (see ISSUES.md), so one file line is
+       exactly one pane row and counting lines IS counting rows. */
+    for (int skip = fm->pv_scroll; skip > 0 && i < n; skip--) {
+        size_t eol = i;
+        while (eol < n && s[eol] != '\n')
+            eol++;
+        i = eol < n ? eol + 1 : n;
+    }
     while (row < p->rows) {
         size_t eol = i;
         while (eol < n && s[eol] != '\n')

@@ -51,6 +51,12 @@ void config_default(Config *c)
     snprintf(c->app_id, sizeof(c->app_id), DEF_APP_ID);
     c->clear_scrollback = 1;   /* CSI 3 J drops the scrollback (on by default) */
     c->copy_on_release = 0;    /* selecting does not copy unless the user asks (Ctrl+Shift+C does) */
+    /* The mouse inside a full-screen program that never asked for the mouse (nano, less, man). Both on:
+       in that state the wheel and a click used to do NOTHING at all (the alt grid has no scrollback and a
+       mouse report would be typed into the document), so turning them into cursor keys costs the user
+       nothing that worked before. See Config in kai-term.h for what each one does and what it can surprise. */
+    c->wheel_sends_keys = 1;
+    c->click_moves_cursor = 1;
     c->repeat_delay = 300;     /* ms before a held key repeats (0 = Kai-Term does not repeat) */
     c->repeat_rate = 30;       /* repeats per second once repeating */
     /* A few pixels of margin on every side. Compositors round the window corners (niri does), and with
@@ -393,6 +399,15 @@ static void apply(Config *c, const char *key, char *val)
         /* 0 (default) = releasing the drag only selects; 1 = also copy to the clipboard.
            Ctrl+Shift+C copies either way. */
         c->copy_on_release = cfg_bool(val) ? 1 : 0;
+    } else if (!strcmp(key, "wheel_sends_keys")) {
+        /* 1 (default) = in a full-screen program that never asked for the mouse, the wheel sends
+           Up/Down presses, which is what scrolls nano/less/man. 0 = the wheel does nothing there. */
+        c->wheel_sends_keys = cfg_bool(val) ? 1 : 0;
+    } else if (!strcmp(key, "click_moves_cursor")) {
+        /* 1 (default) = in that same state, a left click that does not drag walks the program's own
+           cursor to the clicked cell. 0 = a click only ever selects text. A drag always selects, and
+           Shift + click always selects, whatever this says. */
+        c->click_moves_cursor = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "repeat_delay")) {
         /* 0 turns Kai-Term's own repeat off and leaves it to the compositor. */
         c->repeat_delay = iclamp_(atoi(val), 0, 5000);

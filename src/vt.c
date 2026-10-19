@@ -631,6 +631,130 @@ int mouse_sgr_button(uint32_t evdev_code)
     }
 }
 
+/* The wheel code an application that asked for the mouse expects. See the header: 4/5 (which Kai-Term sent
+   until s96) is read by ncurses as button 1, so the wheel did nothing in vim, htop, tmux and `nano --mouse`;
+   64/65 is what every other terminal sends and what measurably scrolls those programs. */
+int mouse_wheel_button(int up)
+{
+    return up ? 64 : 65;
+}
+
+/* ---------------- the wheel and a click, delivered as keystrokes ----------------
+   A program that takes over the whole screen (nano, less, man) and never asks for the mouse cannot be
+   scrolled by scrollback — its grid has no scrollback (alt_screen_enter() builds it with
+   scrollback_max = 0) — and cannot be reported to, because a program with no mouse protocol reads a
+   mouse report as TYPED TEXT: measured 2026-10-21 (.scratch/s96/nanoprobe), one ESC[<64;20;5M put
+   "64;20;5M" into the user's file and set the title to "Modified". What does move them is the cursor
+   keys, which is what kitty and VTE send in this state and what these three functions work out.
+   They live in vt.c, next to the state they read, because main.c is linked into no test binary. */
+int term_wants_key_mouse(const Term *t)
+{
+    return t && t->alt_screen && !(t->mouse_mode & (MOUSE_PRESS | MOUSE_DRAG));
+}
+
+/* Append one cursor-key press in the form THIS application asked for. `which` is the final byte either
+   way — A up, B down, C right, D left. */
+static size_t arrow_append(char *out, size_t cap, size_t o, const Term *t, char which)
+{
+    const char *seq = term_arrow_seq(t, which);
+    size_t n = strlen(seq);
+    if (!n || o + n + 1 > cap)      /* never fill the caller's buffer right up to its last byte */
+        return o;
+    memcpy(out + o, seq, n);
+    return o + n;
+}
+
+/* The three bytes the application in THIS session expects for one cursor key: SS3 (ESC O x) while DECCKM
+   is on, CSI (ESC [ x) otherwise. One function because main.c's real arrow keys and the synthesized ones
+   must never disagree about which form the program asked for. */
+const char *term_arrow_seq(const Term *t, char which)
+{
+    int app = t && t->app_cursor;
+    switch (which) {
+    case 'A': return app ? "\x1bOA" : "\x1b[A";
+    case 'B': return app ? "\x1bOB" : "\x1b[B";
+    case 'C': return app ? "\x1bOC" : "\x1b[C";
+    case 'D': return app ? "\x1bOD" : "\x1b[D";
+    default:  return "";
+    }
+}
+
+int term_wheel_arrow_keys(const Term *t, int lines, char *out, size_t cap)
+{
+    if (!out || cap < 4 || lines == 0 || !term_wants_key_mouse(t))
+        return 0;
+    long n = lines;
+    if (n > TERM_ARROW_MAX)
+        n = TERM_ARROW_MAX;
+    if (n < -TERM_ARROW_MAX)
+        n = -TERM_ARROW_MAX;
+    /* lines > 0 means "toward the top of the text", which is the Up key. */
+    char which = n > 0 ? 'A' : 'B';
+    if (n < 0)
+        n = -n;
+    size_t o = 0;
+    for (long i = 0; i < n; i++)
+        o = arrow_append(out, cap, o, t, which);
+    out[o] = 0;
+    return (int)o;
+}
+
+/* Viewport row `row`, read without handing a const Grid to grid_vprow(). Same slot it returns. */
+static const Cell *const_vprow(const Term *t, int row)
+{
+    return t->g.row[t->g.scroll_off + row];
+}
+
+/* The last column of viewport row `row` that holds a glyph, or -1 when the row is empty. A space counts
+   as empty: nano paints its text rows out to the right margin, so "the last cell that is not blank" is
+   the width of the pane and not the end of the line, and a click in the empty space right of a line must
+   land at the end of THAT line, not 40 presses further right. A wide glyph's continuation cell is blank,
+   so the anchor is what counts. */
+static int row_last_col(const Term *t, int row)
+{
+    const Cell *r = const_vprow(t, row);
+    int last = -1;
+    for (int x = 0; x < t->g.cols; x++)
+        if (r[x].ch && r[x].ch != ' ')
+            last = x;
+    return last;
+}
+
+int term_click_arrow_keys(const Term *t, int col, int row, char *out, size_t cap)
+{
+    if (!out || cap < 4 || !term_wants_key_mouse(t))
+        return 0;
+    if (col < 0 || row < 0 || col >= t->g.cols || row >= t->g.rows)
+        return 0;
+
+    /* A click right of the line's text means "put me at the end of that line": sending more Right
+       presses than the line holds walks into the NEXT line (measured on nano — a click at column 60 of a
+       58-column line landed on the row below). Clamping to the last glyph + 1 is the position a program
+       leaves its cursor at when the line ends. */
+    int last = row_last_col(t, row);
+    int want_col = col > last + 1 ? last + 1 : col;
+    if (want_col < 0)
+        want_col = 0;
+
+    int dy = row - t->cy;
+    int dx = want_col - t->cx;
+    if (!dy && !dx)
+        return 0;
+    dy = iclamp_(dy, -TERM_ARROW_MAX, TERM_ARROW_MAX);
+    dx = iclamp_(dx, -TERM_ARROW_MAX, TERM_ARROW_MAX);
+
+    /* Vertical first, then horizontal: measured on nano, Up/Down keep the column the cursor is heading
+       for, so correcting the column afterwards lands on the clicked cell. The other order lets a
+       horizontal move cross a line boundary and land a row away. */
+    size_t o = 0;
+    for (int i = 0; i < (dy > 0 ? dy : -dy); i++)
+        o = arrow_append(out, cap, o, t, dy > 0 ? 'B' : 'A');
+    for (int i = 0; i < (dx > 0 ? dx : -dx); i++)
+        o = arrow_append(out, cap, o, t, dx > 0 ? 'C' : 'D');
+    out[o] = 0;
+    return (int)o;
+}
+
 /* ---------------- terminal core ---------------- */
 
 static void pen_default(Term *t)
@@ -1344,6 +1468,12 @@ static void alt_screen_enter(Term *t, int save_cursor)
     }
     t->alt = t->g;                                        /* park main grid */
     grid_init(&t->g, t->alt.rows, t->alt.cols, 0);       /* fresh alt grid, no scrollback */
+    /* DECCKM belongs to the screen, not to the terminal: xterm saves and restores it with the buffer,
+       and an application that never touches ?1h must not inherit the mode the program on the other
+       screen left behind. (Every ncurses program here sets it explicitly on entry anyway — nano and less
+       both send ESC[?1h right after ?1049h, measured.) */
+    t->alt_saved_app_cursor = t->app_cursor;
+    t->app_cursor = 0;
     for (int y = 0; y < t->g.rows; y++)
         row_fillblank(&t->g, t->g.row[y], t->pen.bg);
     t->top = 0;
@@ -1365,6 +1495,8 @@ static void alt_screen_leave(Term *t, int restore_cursor)
     t->g = t->alt;                      /* restore main grid */
     memset(&t->alt, 0, sizeof(t->alt));
     t->alt_screen = 0;
+    t->app_cursor = t->alt_saved_app_cursor;
+    t->alt_saved_app_cursor = 0;
     t->top = 0;
     t->bot = t->g.rows - 1;
     t->cx = restore_cursor ? t->alt_saved_cx : 0;
@@ -1807,6 +1939,7 @@ static void csi_dispatch(Term *t, int fin)
             for (int i = 0; i <= t->ps.npar; i++) {
                 int p = t->ps.par[i];
                 if (p == 25) t->show_cursor = 1;
+                else if (p == 1) t->app_cursor = 1;          /* DECCKM: application cursor keys */
                 else if (p == 47 || p == 1047) alt_screen_enter(t, 0);
                 else if (p == 1049) alt_screen_enter(t, 1);
                 else if (p == 1048) { t->alt_saved_cx = t->cx; t->alt_saved_cy = t->cy; }
@@ -1820,6 +1953,7 @@ static void csi_dispatch(Term *t, int fin)
             for (int i = 0; i <= t->ps.npar; i++) {
                 int p = t->ps.par[i];
                 if (p == 25) t->show_cursor = 0;
+                else if (p == 1) t->app_cursor = 0;          /* DECCKM back to normal cursor keys */
                 else if (p == 47 || p == 1047) alt_screen_leave(t, 0);
                 else if (p == 1049) alt_screen_leave(t, 1);
                 else if (p == 1048) {

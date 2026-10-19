@@ -20,9 +20,15 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
 - **Scrollback** — Retains history (2000 lines by default) and scrolls with the mouse wheel or the
   keyboard; new output snaps the view back to the live bottom.
 - **Full-screen applications** — The alternate screen (`vim`, `htop`, `less`, `nano`) is supported; the
-  main screen is parked while an app owns it and comes back re-wrapped when the app exits.
+  main screen is parked while an app owns it and comes back re-wrapped when the app exits. Kai-Term also
+  honours application cursor keys (DECCKM), so the arrow keys work in programs that ask for them — `less`,
+  `man` and `htop` answer only that form.
 - **Clear scrollback** — `clear` can remove both visible content and terminal history.
 - **Mouse support** — Application mouse reporting, text selection, and clipboard integration.
+- **Scrolling a program that owns its screen** — The mouse wheel scrolls `nano`, `less` and `man` even
+  though they never asked for the mouse, by turning the wheel into cursor-key presses; a click moves the
+  program's own cursor to the cell you clicked. See "The mouse wheel and a click inside a full-screen
+  program".
 - **Key repeat** — Holding a key down repeats it, with the delay and rate set in the configuration file.
 - **Transparency** — Configurable window opacity, subject to compositor support.
 - **Window padding** — A configurable margin around the text, so a compositor's rounded window corners
@@ -211,7 +217,7 @@ line saying why there is no preview — never as garbage and never as an error t
 | `.` | show or hide dotfiles |
 | `Escape` | close the file manager |
 | mouse left click | select the row under the pointer; a **second click on the same row** opens it (a directory is entered; a file does nothing); a click in the terminal pane hands the keyboard back |
-| mouse wheel | over the band it walks the listing; over the terminal it scrolls history as usual |
+| mouse wheel | over the browser it walks the listing; over the preview pane it scrolls that pane's contents (a file's text, or a directory's entries); over the terminal it scrolls history as usual — except inside a full-screen program that never asked for the mouse, where it becomes cursor keys (see below) |
 
 `Ctrl`+`Shift`+`Up` gives the keyboard to the browser, `Ctrl`+`Shift`+`Down` gives it back to the terminal.
 While the browser has the keyboard the keys above belong to it **and no other key reaches the terminal** —
@@ -305,6 +311,37 @@ shell, so a shell that is not listening simply ignores it — nothing lands on y
 
 To have the band up from startup, set `file_manager = 1` in the configuration file.
 
+### The mouse wheel and a click inside a full-screen program
+
+A program that takes over the whole screen — `nano`, `less`, `man` — owns its own text and has no terminal
+history to scroll, so the wheel used to do nothing there. It now sends **cursor-key presses** instead, which is
+what actually moves those programs (the same thing other terminals do). It works in both directions:
+
+| Gesture | Inside `nano` / `less` / `man` |
+|---|---|
+| wheel up / down | Up / Down presses, as many as the gesture is worth |
+| left click on a cell | the presses that walk the program's own cursor to that cell |
+| click-drag | still selects text, so you can still copy out of `nano` and `less` |
+| `Shift` + click | always selects, never moves the program's cursor |
+
+Two things worth knowing, because they decide what you will see:
+
+- **This is keystrokes, not mouse support.** The program is never told a mouse exists and receives no
+  coordinates — which is deliberate: a program that has not asked for the mouse reads a mouse report as typed
+  text, and one report would put something like `64;20;5M` into your file. So a click moves the program's
+  cursor the way pressing the arrow keys would, and a program that uses the arrow keys for something other
+  than moving a cursor will react to a click (a mixer would change the slider it is on). `click_moves_cursor = 0`
+  turns the click half off; `wheel_sends_keys = 0` leaves the wheel doing nothing in that state, the way it did
+  before.
+- **A click past the end of a line lands at the end of that line**, not on the row below, and a click in the
+  empty space of a blank row lands at its start.
+
+A program that *did* ask for the mouse — `vim`, `htop`, `tmux`, `nano --mouse` — is untouched by all of this:
+it keeps receiving mouse reports, including the wheel, and Kai-Term sends it the wheel code those programs
+understand (64/65). The main screen keeps scrolling its scrollback. The cursor keys themselves now follow the
+program's own request (DECCKM), which is a fix on its own: `less`, `man` and `htop` answer only the form they
+ask for with `ESC[?1h`, so the arrow keys did nothing in them before.
+
 ## Configuration
 
 The default configuration file is:
@@ -337,6 +374,8 @@ Settings use a simple `key = value` format.
 | `app_id` | `Kai-Term` | Wayland app ID reported to the compositor (window rules, taskbar grouping) |
 | `clear_scrollback` | `1` | Clear history when `clear` is used |
 | `copy_on_release` | `0` | Copy to the clipboard when the selection drag is released |
+| `wheel_sends_keys` | `1` | Inside a full-screen program that never asked for the mouse (`nano`, `less`, `man`), the wheel sends cursor-key presses, which is what scrolls them (`0` leaves the wheel doing nothing there) |
+| `click_moves_cursor` | `1` | In that same state, a left click that does not drag walks the program's own cursor to the clicked cell (`0` means a click only ever selects text). A drag always selects, and `Shift` + click always selects |
 | `repeat_delay` | `300` | Milliseconds a key must be held before it starts repeating (`0` disables repeating) |
 | `repeat_rate` | `30` | Repeats per second once a key starts repeating |
 | `max_tabs` | `8` | Sessions one window may hold (clamped to 1–64) |
