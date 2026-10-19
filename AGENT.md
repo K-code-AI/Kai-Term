@@ -336,7 +336,15 @@ checks, and are written that way in the journal so a later session does not read
 **Docs changed:** AGENT.md only (Current Status heading + s95 bullet + the confirmed list + the close-out +
 Next Steps 1b + the Current Task heading). README and ISSUES.md needed nothing — they describe behaviour, and
 the behaviour they describe is what was confirmed.
-**Nothing in the source changed**, so no rebuild or re-run was owed; the suites quoted above still stand.
+**Nothing in the source changed**, so no rebuild or re-run was owed; the suites quoted above still stand —
+re-run to confirm it: `KAI_TERM_TEST_NO_WINDOW=1 make test` -> `CLI: 62 checks, 0 failures, 10 skipped`,
+`814 checks, 0 failures`, `MODEL OK (0 problems)`, `247 checks, 0 failures`.
+**Pushed and verified:** `git fetch` -> nothing to take, `git push origin main` exit 0, then `git status -sb` ->
+`## main...origin/main` (no ahead/behind) and `git diff --stat main origin/main` -> empty; working tree clean.
+**Session end state:** nothing unfinished in the repo. The only open items are the user's, all recorded in Next
+Steps — the band's appearance (item 1), the optional `fish -n`/`bash -n`/`zsh -n` script check (item 2), and the
+housekeeping list (item 5). `.scratch/s95/` holds the A/B gate and its `build.sh`; nothing was deleted from
+`.scratch/`.
 
 **Also owed by s94 entry 4 (found while reading, now PAID — see s95 entry 6):** its planned steps (3)-(5), a
 `build.sh` beside `.scratch/s90b/intgate.c` plus a rebuild and a re-run of every mode from there, had never been
