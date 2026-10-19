@@ -1880,7 +1880,12 @@ int main(void)
         CHECK(c.fm_key.right.set && c.fm_key.right.sym == KB_KEY_Right && c.fm_key.right.mods == 0,
               "config: Right enters the highlighted directory by default");
         CHECK(c.fm_key.open.set && c.fm_key.open.sym == KB_KEY_Return,
-              "config: Return opens a directory");
+              "config: Return opens a directory (and, since s95, nothing at all on a file)");
+        CHECK(c.fm_key.path.set && c.fm_key.path.sym == 'p' && c.fm_key.path.mods == 0,
+              "config: p types the selected path at the prompt (s95 — this is the only band key that "
+              "touches the shell's line)");
+        CHECK(c.fm_key.preview.set && c.fm_key.preview.sym == 'v' && c.fm_key.preview.mods == 0,
+              "config: v toggles the preview pane — it moved off p when p became the path key");
         CHECK(c.fm_key.parent.set && c.fm_key.parent.sym == KB_KEY_BackSpace,
               "config: Backspace goes to the parent directory");
         CHECK(c.fm_key.quit.set && c.fm_key.quit.sym == KB_KEY_Escape,
@@ -1893,7 +1898,7 @@ int main(void)
             fputs("file_manager = on\nfm_size = 40\nfm_preview = off\nfm_show_hidden = yes\n"
                   "fm_follow = 0\nkey_file_manager = Alt+F\nkey_fm_focus = none\n"
                   "fm_key_up = k\nfm_key_down = j\nfm_key_open = Enter\n"
-                  "fm_key_left = h\nfm_key_right = l\n", f);
+                  "fm_key_left = h\nfm_key_right = l\nfm_key_path = g\nfm_key_preview = p\n", f);
             fclose(f);
             config_default(&c);
             config_load(&c, path);
@@ -1913,11 +1918,16 @@ int main(void)
                   "config: fm_key_left = h rebinds the parent-directory key to a bare h");
             CHECK(c.fm_key.right.set && c.fm_key.right.sym == 'l' && c.fm_key.right.mods == 0,
                   "config: fm_key_right = l rebinds the enter-directory key to a bare l");
+            CHECK(c.fm_key.path.set && c.fm_key.path.sym == 'g' && c.fm_key.path.mods == 0,
+                  "config: fm_key_path = g rebinds the key that types the path");
+            CHECK(c.fm_key.preview.set && c.fm_key.preview.sym == 'p' && c.fm_key.preview.mods == 0,
+                  "config: fm_key_preview = p gives the old p back to the preview toggle");
             CHECK(c.fm_key.refresh.set && c.fm_key.refresh.sym == 'r',
                   "config: a fm_key the file does not mention keeps its default");
 
             f = fopen(path, "w");
             fputs("fm_size = 0\nfm_key_up = none\nfm_key_left = none\n"
+                  "fm_key_path = none\n"
                   "fm_key_open = Ctrl+Shift+Nope\nfm_key_right = Ctrl+Shift+Nope\n", f);
             fclose(f);
             config_default(&c);
@@ -1925,6 +1935,8 @@ int main(void)
             CHECK(c.fm_size == FM_SIZE_MIN, "config: fm_size = 0 clamps to the layout minimum");
             CHECK(c.fm_key.up.set == 0, "config: fm_key_up = none unbinds that action");
             CHECK(c.fm_key.left.set == 0, "config: fm_key_left = none leaves BackSpace as the only way up");
+            CHECK(c.fm_key.path.set == 0,
+                  "config: fm_key_path = none leaves NO key that can write at the prompt");
             CHECK(c.fm_key.open.set && c.fm_key.open.sym == KB_KEY_Return,
                   "config: an unparseable fm_key keeps the default instead of disabling the action");
             CHECK(c.fm_key.right.set && c.fm_key.right.sym == KB_KEY_Right,
@@ -2525,6 +2537,24 @@ int main(void)
           "right half of a command is not knowable, so the erasing caller refuses both");
     type("\x1b[C");
 
+    /* ---------- the same line, asked the way the PATH KEY asks it: term_prompt_line_typed() (s95) ----------
+       The path key inserts at the cursor and erases nothing, so the right-of-cursor half of the strict question
+       is not a safety check for it — it is only a refusal. Measured 2026-10-20 (.scratch/s95/pathgate.c, real
+       fish/bash/zsh in a real pty, the old machine and the new one in ONE binary): bash and zsh already typed
+       the path after `cat `, and the ONLY refusals were the cases where cells right of the cursor hold
+       something — fish's autosuggestion, or a cursor the user had moved back. These checks pin the difference
+       between the two predicates, so the choice cannot drift back without a check going red. */
+    CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
+          "path gate: (the setup) the strict predicate refuses this line — a ghost sits right of the cursor");
+    CHECK(term_prompt_line_typed(&T, pline, sizeof pline) == 1 && !strcmp(pline, "rm -rf su"),
+          "path gate: the non-strict predicate describes that same line, ghost ignored — this is the gate "
+          "fm_send_path() uses");
+    type("\x1b[D");                        /* Left: now a REAL character is right of the cursor */
+    CHECK(term_prompt_line_typed(&T, pline, sizeof pline) == 1 && !strcmp(pline, "rm -rf s"),
+          "path gate: a cursor parked mid-line is described up to the cursor (one character, `u`, is right of "
+          "it) — the path is inserted where the user is typing, which is exactly what they asked for (s95)");
+    type("\x1b[C");
+
     /* input_pending is deliberately NOT a reason to refuse here: the row comparison is the evidence, and
        the path Kai-Term typed itself leaves a perfectly describable line behind. */
     send_in("'/tmp/x'");
@@ -2539,6 +2569,9 @@ int main(void)
     feed("\r\x1b[K\x1b[31mprompt$ \x1b[0mrm -rf su'/tmp/x'");
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
           "line: a prompt redrawn in another colour is refused, not half-captured");
+    CHECK(term_prompt_line_typed(&T, pline, sizeof pline) == 0,
+          "path gate: a redrawn prompt is refused by the loose predicate too — choosing the looser question "
+          "does not make an undescribable line describable");
 
     /* A line that WRAPS onto the next row is not describable either: the snapshot holds one row, and the
        text the user typed now lives in two of them. */
@@ -2550,6 +2583,8 @@ int main(void)
           "line: the setup really did wrap the typed text onto another row");
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
           "line: a wrapped input line is refused rather than half-read");
+    CHECK(term_prompt_line_typed(&T, pline, sizeof pline) == 0,
+          "path gate: a wrapped input line is refused by the path key as well");
     term_resize(&T, 10, 40);
 
     /* A buffer too small is a refusal, never a truncated command: losing half of what the user typed is
@@ -2580,6 +2615,8 @@ int main(void)
     feed("\x1b[?1049h");
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
           "line: the alternate screen has no prompt line to describe");
+    CHECK(term_prompt_line_typed(&T, pline, sizeof pline) == 0,
+          "path gate: the path key never writes while a full-screen application owns the line");
     feed("\x1b[2J\r\x1b[Hthe application paints its own screen\x1b[?1049l");
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "\xf0\x9f\x98\x80"),
           "line: back on the main screen the same line is describable again, text and all");

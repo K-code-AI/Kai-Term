@@ -17,15 +17,24 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s94 — build and every suite green; shell integration (s90-s92) is implemented, wired, measured headless AND confirmed by the user's own eye in their window for fish, bash and zsh)
+## Current Status (re-measured 2026-10-20, s95 — build and every suite green; the file manager's path key is implemented and measured headless in fish/bash/zsh, NOT yet seen by the user's eye)
 
-- **s90-s93 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
-  the push: `git status -sb` shows no ahead/behind and `git diff main origin/main` is empty). s89's follow fix
-  (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks) was
-  confirmed by the user in their own window (2026-10-20). Read the remote state with `git status -sb` /
-  `git log --oneline origin/main -1`.
+- **s90-s94 are committed and pushed; the s95 work is committed on `main` but NOT yet pushed** — read the real
+  state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's follow
+  fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks) was
+  confirmed by the user in their own window (2026-10-20).
+- **s95 changed the file manager's key layout, by request — implemented, green, measured headless, NOT yet seen
+  by the user's eye.** `p` (`fm_key_path`) types the selected entry's quoted path at the cursor; the preview
+  toggle moved to `v`; `Return` on a file does nothing (it used to type the path), and so does a double-click.
+  The gate in `fm_send_path()` is now the non-strict `term_prompt_line_typed()`, which is what makes it work
+  after a half-typed command, through fish's autosuggestion ghost, and at a cursor parked mid-line — the three
+  cases the strict predicate refused (`.scratch/s95/pathgate.c` runs the old and new machine in ONE binary over
+  real fish/bash/zsh: 18/18 modes green on the new one, and `midline` + `ghost` red on the old one, which is the
+  proof the change moved what it was meant to move). The `cd` follow is provably untouched:
+  `.scratch/s90b/diffgate.sh` reports all seven copied functions byte-identical to `main.c`, and all six
+  integration modes still end `MATCH` with `typed text INTACT`.
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **803 checks, 0 failures**,
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **814 checks, 0 failures**,
   `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **247 checks, 0 failures**;
   `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
   `make asan` exit 0 with the same counts and 0 sanitizer reports.
@@ -67,7 +76,7 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   resize and a zoom. And the preview pane's rows now have ONE owner (`preview_head_rows()` +
   `preview_meta_rows()` in fm.c, used by both `paint_preview()` and `fm_image_fit()`), which is what stops
   the metadata lines being drawn across the picture — the user's "the metadata sometimes get written on the
-  image preview". Both are pinned by checks (803 + 247, 0 failures) and the preview one by an A/B against the
+  image preview". Both are pinned by checks (814 + 247, 0 failures) and the preview one by an A/B against the
   previous `src/fm.c` (8 failures there). Nothing here has been looked at in the user's window.
 - **Image support (kitty graphics protocol) is in the tree and user-confirmed by eye** ("The image display
   properly. The feature works as expected", 2026-10-17, session 70, `timg -p k` with a PNG): APC/DCS parser
@@ -78,10 +87,11 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   (`graphics: 1 image(s) drawn, 1 texture(s) held`, no GL warning).
 - No probe/experiment left in tree: `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` ->
   empty (the s85 RETYPING probe was removed in s86).
-- README's flag table (`-e -w -c -d -v -h`) and its **50** settings rows match `src/main.c` / `src/config.c`
-  exactly — re-checked by set difference, not by eye, in s93: the 50 keys `apply()` in `src/config.c`
-  compares (`!strcmp(key, …)`, `font` included) and the 50 rows of its "Available settings" table are the same
-  set, `diff` empty both ways. `usage()`'s six options and README's option table are the same six. README also
+- README's flag table (`-e -w -c -d -v -h`) and its **51** settings rows match `src/main.c` / `src/config.c`
+  exactly — re-checked by set difference, not by eye, in s95: the 51 keys `apply()` in `src/config.c`
+  compares (`!strcmp(key, …)`, `font` included) and the 51 rows of its "Available settings" table are the same
+  set, `diff` empty both ways (`fm_key_path` is the one added in s95). `usage()`'s six options and README's
+  option table are the same six. README also
   carries the "File manager" usage section, the file-manager settings rows, the shortcut tables and libjpeg +
   libwebp in Requirements.
 - **No open issues.** The 4 reports that used to be in ISSUES.md were unproven (never reproduced here) and
@@ -101,7 +111,216 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s94 — CLOSED: the user's verdict on the shell integration. "I verified the shell integration, Fish Bash and Zsh are working as expected now. Perfect" — plus the headless zsh run that had never been possible before, because zsh is now installed here. See s94 entries 1-2.)
+## Current Task (s95 — CLOSED in code, AWAITING THE USER'S EYE: the user asked to CHANGE a design decision, not fix a bug. "If I pre-type some text and then use the file manager, pressing enter on a file doesn't append it's path to the prompt. can we change that? … cat ' /path/to/somefile.txt'" and, when I called it a defect: "it is not a bug, it was a design decision, But we are changing it.")
+
+**Objective:** `Return` on a file in the browser must type its quoted path at the prompt **even when the line
+already holds text**, so `cat ` + Enter-on-`somefile.txt` gives `cat '/path/to/somefile.txt'`. Today
+`fm_send_path()` (src/main.c) refuses in that situation and logs `fm: not typing the path — the input line is
+not one I can describe`.
+
+**Why it refuses (the design decision being changed):** the gate is the STRICT `term_prompt_line()`
+(src/vt.c), which requires every cell RIGHT of the cursor to still equal the remembered prompt. That rule
+exists for a caller that is about to ERASE from the cursor leftwards and re-type — the `cd` follow machine —
+where text right of the cursor means the cursor is mid-line and the erase would only take the left half.
+`fm_send_path()` never erases and never sends CR: it inserts at the cursor and leaves the line unsubmitted,
+exactly what the user's own keystrokes would do. So the strict half is the wrong question for it, and fish's
+grey autosuggestion ghost (which sits right of the cursor on any typed word) alone is enough to make it answer
+"no" — the user's login shell is fish (`getent passwd kaida` -> `/bin/fish`).
+
+**MEASURED FIRST (2026-10-20, headless, no window) — the refusal is not what the report sounds like.**
+`.scratch/s95/pathgate.c` (built with the link line in `.scratch/s95/build.sh`) runs `fm_send_path()` +
+`shell_quote()` + `input_write()` copied verbatim from `src/main.c` over a real fish 4.6 / bash 5.3 / zsh 5.9 in
+the real `src/pty.c` + real `term_parse()`, with the path coming from a REAL `fm_scan_build()` of a real
+directory (`/tmp/s95/tree/somefile.txt`, holding a marker string), and reads back the row the shell shows.
+| case | shell | what the row holds | strict `term_prompt_line()` | `term_prompt_line_typed()` | result today |
+|---|---|---|---|---|---|
+| nothing typed | fish | empty prompt | 1 | 1 | path typed |
+| `cat ` typed | **bash** | `cat ` | **1** | 1 | **path typed — works** |
+| `cat ` typed | **zsh** | `cat ` | **1** | 1 | **path typed — works** |
+| `cat ` typed | **fish** | `cat ` + grey ghost `~/.ssh/id_ed25519.pub` | **0** | 1 | **REFUSED** |
+| `cat tail`, cursor moved Left x4 | fish | `cat \|tail` | **0** | 1 | **REFUSED** |
+So the plain "the line has text on it" case already worked in bash and zsh — pressing Enter after it printed
+`MARKER-CONTENT-42`, i.e. the path really landed. What fails for this user is **fish's autosuggestion ghost**
+(their login shell is fish: `getent passwd kaida` -> `/bin/fish`) and **a cursor parked mid-line**; both are the
+same one cause — the strict predicate's right-of-cursor half. Ground truth for the ghost: fish answered `cat `
+with `~/.ssh/id_ed25519.pub` painted right of the cursor, which is exactly the cell range strict checks.
+
+**Planned steps:** (1) reproduce headless — `.scratch/s95/pathgate.c`, the real `fm_send_path()` machine over a
+real fish/bash/zsh in the real `src/pty.c` + real `term_parse()` + the real `src/fm.c` model, so the file path
+comes from a real scan; (2) change the gate to the non-strict `term_prompt_line_typed()`, which asks the same
+question minus the right-of-cursor half, and keep every other refusal (alt screen, unknown prompt, cursor left
+of the prompt end, a follow in flight, path too long); (3) pin the two predicates' difference with `tests/test_vt.c`
+checks so the choice cannot drift back; (4) re-run the shell-integration gate (`.scratch/s90b/intgate.c` +
+`diffgate.sh`) to prove the `cd` follow machine is untouched; (5) README + ISSUES.md + AGENT.md.
+**Expected outcome:** the path is typed after pre-typed text in all three shells, nothing is ever run, and the
+`cd` follow behaviour is byte-for-byte what it was.
+
+**THE DESIGN THE USER CHOSE (2026-10-20, supersedes step 2's "just relax the gate" plan).** I offered three
+key layouts and the `Return` question; they answered **"I love number 2"** and **"And yes Return on a file does
+nothing, that's good — We are green to go"**. So:
+- A NEW binding `fm_key_path`, default **`p`**, types the selected entry's quoted path at the prompt.
+- The preview toggle moves **`p` -> `v`** (`fm_key_preview`), because `p` was already taken by it.
+- **`Return` on a file does NOTHING** — it stays "enter this directory", exactly what `Right` already was. No
+  key in the band writes at the prompt unless the user asked for that one thing.
+- The gate still becomes the non-strict `term_prompt_line_typed()`, so it works with text already on the line,
+  with a cursor parked mid-line, and through fish's autosuggestion ghost — the three cases the table above shows
+  refusing today.
+Files this touches: `include/kai-term/kai-term.h` (`FmKeys.path`), `src/config.c` (defaults + `fm_key_path`),
+`src/main.c` (`fm_keys`, `fm_open_sel`, `fm_send_path`, the double-click path), `tests/test_vt.c`,
+`tests/cli_test.sh`, README, ISSUES.md.
+
+### s95 entry 1 — the new `fm_key_path` binding, in the header
+
+**Done:** `FmKeys` gains `KeyBind path` (between `open` and `parent`), the count in the struct's comment goes
+fourteen -> fifteen, and `open`'s comment now says it does nothing on a file. `right`'s "unlike open" is
+dropped — after this change there is nothing to be unlike.
+**Why here:** the struct is what `config_default()` and `fm_keys()` both compile against, so the field has to
+exist before either can name it.
+**Result:** edit applied; not yet compiled (config.c and main.c do not know the field yet — building now would
+only prove that).
+
+### s95 entry 2 — `config_default()` and the `fm_key_path` setting (src/config.c)
+
+**Changed:**
+- `config_default()`: `fm_key.path` = `p`, and `fm_key.preview` moves `p` -> `v` (with a comment naming the
+  swap, so the next reader knows `p` was not always the path key).
+- `apply()`: a new `fm_key_path` branch through the same `set_fm_keybind()` every other band key uses, so
+  `fm_key_path = none` unbinds it and a bad value keeps the old binding and warns — no new parser path.
+- Two comments that the change made FALSE: `fm_key_right`'s "Unlike `fm_key_open` this never types anything"
+  and the header's "unlike open". `open` no longer types anything either, so the contrast is gone. Leaving
+  them would have described a key layout that no longer exists.
+**Result:** edit applied. Not compiled yet — `main.c` still routes the path through `open`. The settings count
+AGENT.md quotes (50 keys `apply()` compares / 50 README rows) is now 51 on the code side; README gets its row
+in the docs step and the set-difference re-check happens there, not by eye.
+
+### s95 entry 3 — the routing and the gate (src/main.c)
+
+**Changed, three places:**
+- `fm_send_path()`: the gate is now `term_prompt_line_typed()` instead of the strict `term_prompt_line()`.
+  Everything else in it is untouched — the `fm_cd_state != FMCD_IDLE` refusal, `fm_entry_path()`,
+  `shell_quote()`, `input_write()` with no CR, the log line. Its comment now states WHY the non-strict
+  predicate is the right question here and lists what is still refused, with the measurement cited.
+- `fm_open_sel()`: the `else fm_send_path();` branch is GONE. A directory is entered; a file, symlink-to-nothing,
+  fifo, socket or device does nothing. One function still serves the `open` key and the double-click, so the two
+  cannot drift.
+- `fm_keys()`: `if (bind_match(&k->path, base, mods)) { fm_send_path(); return 0; }` — returns 0 (handled,
+  must NOT auto-repeat), so holding `p` cannot type the path over and over. Placed after `open`, before `parent`.
+- Comments the change made false: `right`'s "unlike `open` it never types a path" in `fm_keys()`, and the
+  double-click comment's "a file behaves exactly as `open` does" (now: a file does nothing).
+**Build:** `make -j8` exit 0, **0 warnings** under `WARN` (the whole tree rebuilt).
+**Not yet verified behaviourally** — the next entry is the re-run of `.scratch/s95/pathgate.c` against the new
+objects, which is what decides whether the change actually did what the table predicted.
+
+### s95 entry 4 — the A/B: old machine vs new, three shells, and two harness flaws the A/B itself exposed
+
+`.scratch/s95/pathgate.c` + `build.sh` (link line kept beside it). ONE binary holds both machines:
+`fm_send_path_old()` (the pre-s95 strict gate, verbatim) and `fm_send_path_new()` (the current one), chosen by
+argv — so the only difference between a run and a run is the predicate. The path comes from a real
+`fm_scan_build()`; the shell is real; ground truth is the row the shell shows plus whether Enter really reads
+the file. `openfile` mode presses the OPEN key on a file and counts the bytes that reached the pty.
+
+| mode | what the line holds before the key | OLD | NEW |
+|---|---|---|---|
+| `empty` | nothing | PASS | PASS |
+| `typed` | `cat ` | PASS (fish `--private`, bash, zsh) | PASS |
+| `midline` | `cat ` + `tail`, cursor moved Left x4 | **FAIL — refused** (fish, bash, zsh) | **PASS** |
+| `ghost` | `cat ` + fish's autosuggestion right of the cursor | **FAIL — refused** | **PASS** |
+| `openfile` | `cat ` | PASS (0 bytes written) | PASS (0 bytes written) |
+
+So the change moved exactly the two cases it was meant to move and nothing else. The rows it produces, read off
+the screen model: `cat '/tmp/s95/tree/somefile-1501179.txt'|tail` — the path lands AT the cursor, and in the
+ghost case fish's grey suggestion stays where it was and Enter runs `cat '<path>'` and prints the marker.
+
+**Two harness flaws, both found by running the OLD machine (this is why the A/B is worth its time):**
+1. **The row check passed on the machine that typed nothing.** The shells write to the user's real history
+   file, so a later run's autosuggestion ghost was a command an EARLIER run had typed — the needle was already
+   on the line. Fixed twice over: the file name now carries the pid (no history can contain it), and the shells
+   run with their history redirected (`fish --private`, `HISTFILE=/tmp/s95/<shell>_hist`) so the gate stops
+   leaving commands in the user's `fish_history` / `bash_history` — a harness typing into their real history is
+   a change to their machine, not a unit test.
+2. **The marker check passed on the refusing machine** in `ghost` mode: fish's own suggestion completed `cat `
+   into a history entry that reads the file, so Enter printed the marker with nothing typed by the code under
+   test. That check is now limited to `typed` (the s88 lesson: a check that passes on the buggy code pins
+   nothing). `empty` is excluded too — its line is a bare path, and executing a non-executable file is not what
+   this feature claims.
+3. Smaller one: `fish --private-mode` is not an option (it is `--private` / `-P`); the shell died at once and
+   EVERY mode went red in 0.25 s. A suite that fails everywhere is a broken harness, not a broken product —
+   the runtime told me before the output did.
+
+### s95 entry 5 — durable checks in tests/ (the A/B lives in .scratch, so the semantics need pinning here)
+
+`main.c` is in no test binary (Next Steps item 5), so the *choice of predicate* can only be A/B'd in
+`.scratch/`. What `tests/` can pin is the semantics the choice depends on, so it cannot drift back:
+- `tests/test_vt.c`, a new "path gate" block next to the existing ghost checks: `term_prompt_line_typed()`
+  describes a line the strict predicate refuses (fish ghost right of the cursor) and describes a mid-line
+  cursor **up to the cursor** (`rm -rf s` with `u` on the right) — the behaviour the user asked for; and it
+  still refuses the three things that must stay refused: a prompt redrawn in another colour, a wrapped input
+  line, and the alternate screen. Each refusal check is paired with the strict one so the pair is readable.
+- Config checks: defaults `p` = path and `v` = preview; `fm_key_path = g` rebinds; `fm_key_preview = p` gives
+  the old key back; `fm_key_path = none` leaves **no** band key that can write at the prompt.
+- `tests/cli_test.sh`: `fm_key_path = none` added to the file-manager config run, expecting
+  `config: fm_key_path unbound`.
+**One of my own checks was wrong first:** I expected `rm -rf ` for the mid-line case and the suite said FAIL at
+tests/test_vt.c:2553 — the columns are `r m ␠ - r f ␠ s u`, so a cursor left of `u` describes `rm -rf s`. The
+check was right to disagree with me; the needle was wrong, not the model.
+**Suite:** `KAI_TERM_TEST_NO_WINDOW=1 make test` -> `CLI: 62 checks, 0 failures, 10 skipped`,
+`./bin/test_vt` **814 checks, 0 failures** (was 803 — 11 added), `./bin/dbg` MODEL OK, `./bin/test_fm` 247 / 0.
+The 10 skips include the file-manager CLI block, so the new `cli_test.sh` line was NOT exercised this session
+(no window was mapped — the user is at this machine); the same config surface is covered by the `test_vt.c`
+checks, which did run.
+
+### s95 entry 6 — the `cd` follow is provably untouched, and the build.sh s94 promised now exists
+
+**The s94 debt, paid:** `.scratch/s90b/build.sh` did not exist while AGENT.md's Next Steps claimed it did. Written
+(now it prints the `main.o` timestamp it linked against and reminds you to run `diffgate.sh`), and the gate was
+rebuilt and re-run from that location — s94 entry 4's steps (3)-(5) are now actually done.
+**Proof the follow machine did not change:** `./diffgate.sh ../../Kai-Term/src/main.c intgate.c` ->
+`same code:` for all seven copied functions (`fm_send_cd`, `fm_int_try`, `fm_cd_write`, `fm_cd_advance`,
+`fm_cd_abort`, `fm_int_failed`, `fm_cd_tick`). Byte-identical, so the s95 edit cannot have altered it.
+**Behaviour re-run anyway** (all six modes, target `/tmp/s90target`): fish / bash / zsh / nested / dead / off all
+end `VERDICT: cwd is /tmp/s90target -> MATCH` (nested -> `/var`, as that mode expects) with
+`typed text INTACT` on every line, acks at 52-74 ms.
+**A false alarm worth recording:** the first run said `NO MATCH` for fish, zsh and dead. Cause: I passed a target
+directory that did not exist, so the shells' `cd` failed. `mkdir -p /tmp/s90target` and every mode matched. A
+gate that fails because of ITS OWN setup is the same trap as s82's unrepresentative test — check the setup before
+editing the logic it exercises.
+**Sanitizers:** `make asan` exit 0 — `814 checks, 0 failures`, `MODEL OK`, `247 checks, 0 failures`, no ASan/UBSan
+report.
+
+### s95 entry 7 — the README's quoting claim measured, and the full matrix
+
+The new README text says a path with a space or an apostrophe arrives quoted the shell's way and needs no
+further quoting. That is a claim, so it got a mode: `odd` selects a file literally named
+`odd name'"<pid>.txt` (space, apostrophe, double quote). **Measured in all three shells:** the row holds
+`cat '/tmp/s95/tree/odd name'\''"1513813.txt'` and pressing Enter prints the file's marker — the quoting is
+correct end to end, not just in theory.
+My first needle for it was wrong a second time (I wrote the raw path into the needle and missed the `'\''` that
+appears IN THE MIDDLE of the quoted path). The fix is the lesson: build the expected text with the same
+`shell_quote()` the program uses, never by hand.
+**Full matrix, NEW machine, `./pathgate <shell> <mode> new` — 18 runs, 0 failures:**
+fish / bash / zsh × `empty` `typed` `midline` `ghost` `odd` `openfile` -> `== OK: 0 failure(s)` each.
+
+### s95 close-out — what is done, what is not
+
+**Done and verified:** the new `p` key and its `fm_key_path` setting, `v` for the preview toggle, `Return` and
+double-click doing nothing on a file, the non-strict gate, 11 new `test_vt.c` checks, the README (feature bullet,
+both key tables, the settings row, a worked table of what `p` does to a line) and ISSUES.md (the four passages
+the change made false, plus a note that the defaults changed). Build 0 warnings; `test_vt` 814 / 0, `dbg` MODEL
+OK, `test_fm` 247 / 0, `make asan` clean; README settings rows vs `apply()`'s keys re-diffed by set difference
+(51 = 51, `diff` empty); the `cd` follow proven unchanged by `diffgate.sh` + all six integration modes.
+**Not verified, and nobody should claim it:** the user has not seen this in their window. Everything above is
+headless or a unit check. The in-window questions only they can answer: does `p` feel right next to `v`, does the
+path land where they expect with the cursor mid-line, and does the one-shot (no auto-repeat) behave.
+**Committed on `main`, NOT pushed** — `git status -sb` says `[ahead 1]`; the push is the user's call (they also
+commit on GitHub, so `git fetch` first). The commit also carries the AGENT.md corrections s94 had left uncommitted.
+**Next action:** hand it to the user to try (`make && ./bin/kai-term -d`, `Ctrl+Shift+F`, type `cat `, press `p`
+on a file). If they confirm, the only follow-ups worth offering are the ones already in Next Steps.
+
+**Also owed by s94 entry 4 (found while reading, now PAID — see s95 entry 6):** its planned steps (3)-(5), a
+`build.sh` beside `.scratch/s90b/intgate.c` plus a rebuild and a re-run of every mode from there, had never been
+done even though AGENT.md's Next Steps already described the file as existing.
+
+## Previous Task (s94 — CLOSED: the user's verdict on the shell integration. "I verified the shell integration, Fish Bash and Zsh are working as expected now. Perfect" — plus the headless zsh run that had never been possible before, because zsh is now installed here. See s94 entries 1-2.)
 
 **What the user reported (2026-10-20):** all three shells — fish, bash and zsh — behave as expected in their own
 window. No new defect, no new symptom, nothing to reproduce. The work was therefore to make the documentation
@@ -134,8 +353,9 @@ status everywhere (Current Status, ISSUES.md Open, README).
 so its script has never been run"; that is no longer true, and an unverified claim in the docs is a bug.
 
 **Measured, headless, the SHIPPED scripts (no window).** `.scratch/s90b/intgate.c` was COPIED to `/tmp/s94/` and a
-`zsh` mode added there — `.scratch/` itself was not touched, per the user's standing "don't touch .scratch for
-now". Built against the current `build/*.o`, so it runs the machine copied from `main.c` over the real `src/pty.c`,
+`zsh` mode added there, rather than editing the one in `.scratch/` — a reading of the user's "don't touch .scratch
+for now" that turned out to be too strict (corrected in s94 entry 4: they meant do not DELETE it, writing into it
+is fine). Built against the current `build/*.o`, so it runs the machine copied from `main.c` over the real `src/pty.c`,
 real `term_parse()`, real `mux.c` and the scripts `shellint_prepare()` writes:
 - `zsh /tmp/s94test`: `announced kind = 3 (zsh)` -> `fm: shell integration (zsh) asked to cd into /tmp/s94test` ->
   `fm: the shell's integration changed directory to /tmp/s94test — the line was not touched`, ack in **54 ms**.
@@ -208,6 +428,30 @@ messages reworded); `./bin/dbg` MODEL OK; `./bin/test_fm` 247 / 0; `KAI_TERM_TES
 (`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0 with the same counts and no sanitizer report.
 
 **Next action:** none pending in the repo.
+
+### s94 entry 4 — my reading of "don't touch .scratch" was wrong; corrected, and the zsh gate moved where it belongs
+
+**The user's correction, verbatim:** ".scratch is not off limit … I just told you to not delete it for now, when you
+asked, never said not to use it anymore" (2026-10-20). So the rule is: **deleting or pruning `.scratch/` is on hold
+until they say otherwise; writing, editing and building there is normal and expected.** I had written "off-limits",
+"do not touch", "needs their permission" into five places in AGENT.md (and had acted on it by putting this
+session's harness in `/tmp`). Nothing had actually been deleted, so no harm was done to their data — the cost was
+that a regression gate was written to a directory that does not survive a reboot.
+
+**Corrected in AGENT.md:** the s94 entry 1 sentence about `.scratch` not being touched, the s93 entry 5 "standing
+rule is to ask first" line, the s93 entry 6 bullet (which is where the wrong reading was born), Next Steps item 2
+(the gate's home) and item 8 (the scratch rule itself, now stated as delete-vs-write). Lesson worth keeping: when
+the user answers a question with a short "not for now", record what they actually restricted, not a general
+prohibition — an over-broad rule outlives the moment that produced it and quietly changes what later sessions do.
+
+**Objective now:** give the zsh-mode integration gate a durable home, since `/tmp/s94/` is gone on reboot and the
+gate is the only coverage the shell integration has beyond `make test`'s script-on-disk pins.
+
+**Planned steps:** (1) diff `/tmp/s94/intgate.c` against `.scratch/s90b/intgate.c` so the only changes are the two
+s94 additions; (2) write the improved version over `.scratch/s90b/intgate.c` (editing a harness in place is allowed
+now — and keeping one copy is the point, since two copies of a gate drift, which is the s92 pitfall); (3) add a
+`build.sh` beside it so it can be rebuilt from the repo's current `build/*.o` without remembering the link line;
+(4) rebuild and re-run every mode from the new location; (5) journal the result.
 
 ## Previous Task (s93 — CLOSED: a codebase cleanliness pass, asked for by the user: "We need to check to make sure we have a clean codebase". s92 finished and committed; the audit's three findings fixed; the docs re-diffed. See s93 entries 1-6.)
 
@@ -353,8 +597,8 @@ has not been asked this session.
 - Push these two commits? (`git fetch` first — they also commit on GitHub.)
 - `/home/kaida/Project/.scratch/` holds 171 MB of probes, and AGENT.md/ISSUES.md cite paths in it (`s90b/intgate.c`,
   `s86/follow2.c`, `s74/inj_keys.sh`, …) that a fresh clone of the repo cannot run. Either prune the binaries and
-  logs of closed sessions, or move the real regression gates into `tests/`. Nothing outside the repo was touched —
-  the standing rule is to ask first.
+  logs of closed sessions, or move the real regression gates into `tests/`. Nothing was pruned — and the rule for
+  what "don't touch" meant is settled in s94 entry 4: **deleting is on hold, writing is allowed.**
 
 **No unfinished work in the repo.** [As written at the time:] the only genuinely unverified code path in the tree
 was the zsh integration script (no zsh on this box) and the shell integration had still never been seen in the
@@ -367,12 +611,10 @@ confirmed by the user in their window, and the integration is user-confirmed for
   GitHub since the last session), then `git push origin main` -> exit 0, `b958117..506c7e1`.
   **Verified after:** `git status -sb` -> `## main...origin/main` with no ahead/behind, and
   `git diff --stat main origin/main` -> empty, so local and remote hold the same tree.
-- **`.scratch/` — the user said "don't touch .scratch for now" (2026-10-20).** So the 171 MB of probes, binaries
-  and logs stays exactly where it is, and the harnesses AGENT.md and ISSUES.md cite remain runnable in place.
-  Do NOT prune it in a future session without asking again: "for now" is a decision with an expiry the user
-  controls, not a standing permission. If it is ever revisited, the two options already written down are (a) delete
-  the binaries/logs of closed sessions and keep the `.c`/`.sh` harnesses, or (b) move the real regression gates
-  into `tests/` so they survive a fresh clone.
+- **`.scratch/` — the user said "don't touch .scratch for now" (2026-10-20), and I read that as "off-limits".
+  That reading was wrong and is corrected in s94 entry 4:** they meant do not DELETE it. Nothing was deleted, which
+  is the part that mattered; the cost of my over-reading was one session's harness written to `/tmp` instead of
+  where it belongs.
 
 **Nothing is in progress. Next action:** none pending in the repo — the open items are the user's eye on the shell
 integration in their own window and, if they want it, installing zsh to verify that script (Next Steps item 2).
@@ -1011,9 +1253,15 @@ one verified change and push.
    have never been seen by them, and they have never said whether they like how the band looks. If they
    report something visual, start from the `-d` lines `fm: opened on …`, `fm: listing <dir> (request N)`,
    `fm: dropping stale …`, `fm: keyboard -> …` and `graphics: … + the file-manager preview`, not from the
-   shader. Two decisions they may want to revisit, both flagged, both one-line changes with different safety
-   implications: `Return` on a file types its path instead of running it, and `fm_follow` sends `cd <path>`
-   unprompted.
+   shader. One decision they may want to revisit, flagged and one line to change: `fm_follow` sends `cd <path>`
+   unprompted. (`Return` typing a path is no longer one of them — s95 moved that to `p` at their request.)
+1b. **The path key (s95) is built, green and measured headless; the open item is the user's eye.** The recipe:
+   `./bin/kai-term -d`, `Ctrl+Shift+F`, type `cat `, press `p` on a file — the prompt must read
+   `cat '/path/to/file'` with the cursor after it and nothing executed. With `-d` the line is
+   `fm: typed the selected path at the prompt: <path>`; a refusal logs
+   `fm: not typing the path — the input line is not one I can describe` (alternate screen, wrapped line,
+   scrolled-back view, repainted prompt, or a `cd` follow mid-flight). If they dislike a key, it is a config
+   default, not a code change: `fm_key_path`, `fm_key_preview`, `fm_key_open`.
 2. **Shell integration (s90-s92) is done: wired, green, measured headless AND confirmed by the user's eye in
    their own window for fish, bash and zsh (2026-10-20).** Nothing is owed here but a diagnosis if a report ever
    arrives. The recipe: run `./bin/kai-term -d`, browse into a directory with the band open, and read the log —
@@ -1021,11 +1269,11 @@ one verified change and push.
    `fm: the shell's integration changed directory to <dir> — the line was not touched`. `no integration ack` means
    the reader was not an integrated shell (expected for `env bash`, `sudo bash`, `/usr/bin/bash`); `shell
    integration: off for this run` means the script directory could not be created. In **bash** a stale prompt
-   string is expected behaviour, not a bug (ISSUES.md "Shell integration"). Two optional improvements, both the
-   user's call, neither a defect: (a) the zsh-mode gate lives in `/tmp/s94/` and will not survive a reboot — it
-   belongs in `.scratch/s90b/` (needs their permission, .scratch is off-limits for now) or in `tests/`; (b) a
-   `tests/` check running `fish -n` / `bash -n` / `zsh -n` over the generated scripts would catch a script that no
-   shell can parse, but it makes the suite depend on external shells unless it skips when one is missing.
+   string is expected behaviour, not a bug (ISSUES.md "Shell integration"). One optional improvement, the user's
+   call, not a defect: a `tests/` check running `fish -n` / `bash -n` / `zsh -n` over the generated scripts would
+   catch a script that no shell can parse, but it makes the suite depend on external shells unless it skips when
+   one is missing. (The zsh-mode gate itself now lives in `.scratch/s90b/intgate.c` with a `build.sh` beside it —
+   s94 entry 4.)
 3. **Image support is done and confirmed by eye** (2026-10-17), and the user has settled its scope:
    "The goal was image support, Not auto-detection by timg so it work fine using `-p k`". So `-p k` IS the
    supported way to show a picture and nothing more is wanted here. Do NOT "improve" this by re-adding the
@@ -1066,9 +1314,11 @@ one verified change and push.
    `FT_Set_Pixel_Sizes` + `hb_ft_font_changed` on zoom) — this box has only a bitmap-only Noto CBDT font; and a
    cluster HarfBuzz renders as >1 glyph, deliberately rejected (`ng == 1`), falls back to mono.
 8. Scratch: throwaway probes live in `/home/kaida/Project/.scratch/` (outside project, 171 MB of it — mostly
-   binaries and logs of closed sessions). **The user's standing answer as of 2026-10-20 is "don't touch .scratch
-   for now" — do not prune or move anything there without asking again.** Worth keeping as regression harnesses if
-   it is ever revisited: `s70/timg_gate.c` (end-to-end image), `s74/inj_keys.sh` (the file-manager input
+   binaries and logs of closed sessions). **What the user's "don't touch .scratch for now" actually means, settled
+   with them on 2026-10-20: do not DELETE or prune anything there; writing new files and editing existing ones is
+   fine and expected** — that directory is where harnesses belong, and an agent that refuses to write there ends up
+   putting throwaway work in `/tmp`, where it cannot be found again. Deleting is still the user's call. Harnesses
+   worth keeping: `s70/timg_gate.c` (end-to-end image), `s74/inj_keys.sh` (the file-manager input
    routing gate — the only coverage `make test` does not have), `s86/follow2.c` (the prompt follow over a real
    pty), `s89/follow3` + `s89/bstoprobe` (the echo-window transition, old-vs-new A/B), `s90b/intgate.c` (the
    shell-integration gate: the machine copied from `main.c` over real fish/bash — re-diff it against `main.c`
@@ -1146,7 +1396,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 803 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
+- `tests/test_vt.c` — 814 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
   bracketed paste, `term_init` guard, reflow, `term_grid_geometry`, zoom/alt-screen row-shrink,
   `mouse_sgr_button`, the graphics path (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll
   anchoring/id replacement/DA1-DA2-DSR answers), mux, keybind/keymods parsing, multiplexing config keys,

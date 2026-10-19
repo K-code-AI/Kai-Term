@@ -197,13 +197,14 @@ if [ "$have_display" = 1 ]; then
 
     # the in-window file manager: its config keys must be known, and its bindings must be unbindable.
     # Off by default, so the plain run above must not mention a file manager at all.
-    printf 'file_manager = on\nfm_size = 40\nfm_preview = off\nfm_show_hidden = on\nfm_follow = off\nkey_file_manager = Alt+F\nkey_fm_focus = none\nfm_key_up = k\nfm_key_down = j\nfm_key_open = none\nfm_key_left = h\nfm_key_right = none\n' > "$tmp/fmconf"
+    printf 'file_manager = on\nfm_size = 40\nfm_preview = off\nfm_show_hidden = on\nfm_follow = off\nkey_file_manager = Alt+F\nkey_fm_focus = none\nfm_key_up = k\nfm_key_down = j\nfm_key_open = none\nfm_key_left = h\nfm_key_right = none\nfm_key_path = none\n' > "$tmp/fmconf"
     run -c "$tmp/fmconf" -d -e true
     ck "$rc" 0 "a config with the file manager keys runs"
     ck "$(printf '%s\n' "$out" | grep -c 'unknown key')" 0 "the file manager config keys are known"
     ck "$(printf '%s\n' "$out" | grep -c 'config: key_fm_focus unbound')" 1 "key_fm_focus = none unbinds the focus switch"
     ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_open unbound')" 1 "fm_key_open = none unbinds that key"
     ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_right unbound')" 1 "fm_key_right = none unbinds the enter-directory key"
+    ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_path unbound')" 1 "fm_key_path = none unbinds the key that types a path"
     run -c "$tmp/fmconf" -d -e true
     ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_up unbound')" 0 "fm_key_up = k is a binding, not an unbind"
     ck "$(printf '%s\n' "$out" | grep -c 'config: fm_key_left unbound')" 0 "fm_key_left = h is a binding, not an unbind"

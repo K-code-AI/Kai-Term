@@ -37,8 +37,9 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   the same font, colours and cells as the terminal. It shows the directory contents, an image preview
   (PNG, JPEG, WebP, GIF), syntax-highlighted text, or the type, size, dates, owner and permissions of
   anything else, and the shell below follows the directory you browse into, keeping whatever you had already
-  typed at the prompt. The listing starts with a `..` row, one click selects and a double-click opens. One
-  shortcut shows it, another moves the keyboard between the browser and the terminal.
+  typed at the prompt. The listing starts with a `..` row, one click selects and a double-click opens.
+  One key drops the selected entry's quoted path onto your half-typed command without running it. One
+  shortcut shows the band, another moves the keyboard between the browser and the terminal.
 - **Shell integration** — A fish, bash or zsh that Kai-Term starts is loaded with a small script of its own,
   which lets the file manager ask the shell to change its **own** working directory: your half-typed command is
   never erased, never re-typed and never sees a `cd`, and the shell confirms the directory it entered. A shell
@@ -202,13 +203,14 @@ line saying why there is no preview — never as garbage and never as an error t
 | `Page_Up` / `Page_Down`, `Home` / `End` | move by a page, to the first / last entry |
 | `Left` | go to the parent directory |
 | `Right` | enter the highlighted directory — and **nothing at all** on a file, so holding it cannot write at your prompt |
-| `Return` | open the selected directory; on a file, type its quoted path at the shell prompt **without** pressing Enter |
+| `Return` | open the highlighted directory — and **nothing at all** on a file, so holding it cannot write at your prompt |
+| `p` | **type the selected entry's quoted path at your prompt**, at the cursor, without pressing Enter — the only file-manager key that touches the line, and it never runs anything |
 | `BackSpace` | go to the parent directory |
 | `r` | re-read the current directory |
-| `p` | show or hide the preview pane (with it off, the browser is the full width of the band) |
+| `v` | show or hide the preview pane (with it off, the browser is the full width of the band) |
 | `.` | show or hide dotfiles |
 | `Escape` | close the file manager |
-| mouse left click | select the row under the pointer; a **second click on the same row** opens it (enter the directory, or type a file's path); a click in the terminal pane hands the keyboard back |
+| mouse left click | select the row under the pointer; a **second click on the same row** opens it (a directory is entered; a file does nothing); a click in the terminal pane hands the keyboard back |
 | mouse wheel | over the band it walks the listing; over the terminal it scrolls history as usual |
 
 `Ctrl`+`Shift`+`Up` gives the keyboard to the browser, `Ctrl`+`Shift`+`Down` gives it back to the terminal.
@@ -220,8 +222,24 @@ those same keys go to the shell unchanged, so `Up` is still history recall. A th
 has the keyboard.
 
 By default, browsing into a directory also moves the shell there, so the prompt lands where you are looking
-(`fm_follow = 0` turns that off). Kai-Term never runs a file for you: `Return` on a file only types its path,
-and you add the command.
+(`fm_follow = 0` turns that off).
+
+**`p` puts a path on your command line; nothing else in the band does.** It types the selected entry's absolute
+path in single quotes at the cursor and stops there — no Enter, so Kai-Term never runs a file it was only asked
+to name. It works however far you have already got with the command, and the path lands **where your cursor is**:
+
+| your line before `p` | your line after `p` on `somefile.txt` |
+|---|---|
+| (nothing) | `'/path/to/somefile.txt'` |
+| `cat ` | `cat '/path/to/somefile.txt'` |
+| `cat tail`, cursor moved back before `tail` | `cat '/path/to/somefile.txt'tail` |
+| `cat ` with fish's grey autosuggestion showing | `cat '/path/to/somefile.txt'` — the suggestion is left alone |
+
+A path with a space or an apostrophe in it arrives quoted the shell's way, so it needs no further quoting from
+you. `p` is refused, and says so in the `-d` log, when the line is not one Kai-Term can describe: a full-screen
+application (vim, less, htop) owns its screen, and a wrapped or scrolled-back or repainted prompt is not
+something it will write into. `fm_key_path = none` removes the key entirely, and then **no** file-manager key can
+write at your prompt.
 
 **With fish or bash, the shell does the changing and your line is never touched.** Kai-Term starts a recognised
 shell (fish, bash, zsh) with a small integration script — your own configuration is loaded first, nothing of
@@ -332,7 +350,7 @@ Settings use a simple `key = value` format.
 | `key_toggle_layout` | `Ctrl+Shift+S` | Switch between the one-session view and the side-by-side view |
 | `file_manager` | `0` | Show the file-manager band from startup instead of only when the shortcut is pressed |
 | `fm_size` | `75` | Percent of the window's text area the band asks for (clamped to 10–95, and shrunk further so the terminal keeps at least 3 rows; if even that does not fit, the band is dropped for that frame) |
-| `fm_preview` | `1` | Show the preview pane next to the browser (`p` toggles it at runtime; off means the browser is full width) |
+| `fm_preview` | `1` | Show the preview pane next to the browser (`v` toggles it at runtime; off means the browser is full width) |
 | `fm_show_hidden` | `0` | Include dotfiles in the listing from the start (`.` toggles it at runtime) |
 | `fm_follow` | `1` | Browsing into a directory also sends `cd '<path>'` to the shell |
 | `key_file_manager` | `Ctrl+Shift+F` | Show / hide the file manager (`none` unbinds it) |
@@ -346,10 +364,11 @@ Settings use a simple `key = value` format.
 | `fm_key_end` | `End` | Select the last entry |
 | `fm_key_left` | `Left` | Go to the parent directory |
 | `fm_key_right` | `Right` | Enter the highlighted directory (does nothing to a file) |
-| `fm_key_open` | `Return` | Open a directory / type a file's path |
+| `fm_key_open` | `Return` | Open the highlighted directory (does nothing to a file) |
+| `fm_key_path` | `p` | Type the selected entry's quoted path at the prompt, without running it (`none` leaves no key that can write at your prompt) |
 | `fm_key_parent` | `BackSpace` | Go to the parent directory |
 | `fm_key_refresh` | `r` | Re-read the current directory |
-| `fm_key_preview` | `p` | Show / hide the preview pane |
+| `fm_key_preview` | `v` | Show / hide the preview pane |
 | `fm_key_hidden` | `.` | Show / hide dotfiles |
 | `fm_key_quit` | `Escape` | Close the file manager |
 | `log` | `1` | Log level: 0 = error, 1 = warning, 2 = info, 3 = debug |
@@ -426,10 +445,11 @@ unchanged.
 | `Home` / `End` | First / last entry |
 | `Left` | Go to the parent directory |
 | `Right` | Enter the highlighted directory; on a file it does nothing |
-| `Return` | Open the selected directory; on a file, type its quoted path at the prompt |
+| `Return` | Open the highlighted directory; on a file it does nothing |
+| `p` | Type the selected entry's quoted path at your prompt, at the cursor, without pressing Enter |
 | `BackSpace` | Go to the parent directory |
 | `r` | Re-read the current directory |
-| `p` | Show / hide the preview pane |
+| `v` | Show / hide the preview pane |
 | `.` | Show / hide dotfiles |
 | `Escape` | Close the file manager |
 

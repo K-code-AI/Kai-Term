@@ -6,8 +6,8 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Re-measured 2026-10-20 (s93, after the cleanup commit):
-`make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **803 checks, 0 failures**; `./bin/dbg` **MODEL OK
+**No open bug.** Re-measured 2026-10-20 (s95, after the path-key change): `make -j8` exit 0 with **0 warnings**;
+`./bin/test_vt` **814 checks, 0 failures**; `./bin/dbg` **MODEL OK
 (0 problems)**; `./bin/test_fm` **247 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
 sanitizer report; `tests/cli_test.sh` 95 checks / 0 failures / 0 skipped when the probe launch can draw (the
@@ -25,7 +25,7 @@ The behaviour the user asked for on 2026-10-19 — clear the prompt, `cd`, put t
 Everything else below is current behaviour, not a bug.
 
 The integrated file manager (README "File manager") is built, wired into the window and covered by 247
-model/layout/config checks plus the 803 passing ones in the VT/config suite; its input routing was verified
+model/layout/config checks plus the 814 passing ones in the VT/config suite; its input routing was verified
 live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
 file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
 at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s71-s79 journal
@@ -279,9 +279,11 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   Submitting the line (Enter) or discarding it (Ctrl+C) re-arms the gate, and so does any key that cannot put
   a character on the line — BackSpace, Delete, an arrow key — while the line is provably empty (see "Fixed",
   2026-10-20). A key that CAN insert characters (Tab, Up/Down, Ctrl+R, Ctrl+Y) keeps the gate shut until the
-  shell proves the line empty again. `Return` on a file (which types a path at the
-  cursor and sends no newline) asks the same question and refuses on the same evidence — `-d` logs
-  `fm: not typing the path — the input line is not one I can describe`.
+  shell proves the line empty again. The path key (`p`, see below) asks the LOOSER version of the same question
+  — prompt prefix unchanged, text up to the cursor, whatever is right of the cursor ignored — because it erases
+  nothing, and that is what lets it type after a half-finished command, through a ghost, and at a cursor parked
+  mid-line. It still refuses the alternate screen, a wrapped line, a scrolled-back view and a repainted prompt;
+  `-d` logs `fm: not typing the path — the input line is not one I can describe`.
 - **The typed `cd` cannot be hidden from the screen — but for an integrated shell there is no typed `cd` at
   all.** For fish, bash and zsh started by Kai-Term (see "Shell integration" below) the directory change runs
   inside the shell's own line editor, so nothing is echoed and nothing is typed. For every other shell the old
@@ -296,9 +298,14 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   unexpected — `fm_follow = 0` avoids it. The integration path is safer here (its bytes are inert for anything
   that is not the integrated shell's line editor) but not free: the request is answered only by that shell, so
   a navigation during another program simply times out and falls back to the typed path.
-- **Kai-Term never opens a file.** `Return` on a file types its quoted path at the prompt and stops there;
-  there is no "default application", no shell-out, and no confirmation dialog. Opening things is a decision
-  deliberately left to the user.
+- **Kai-Term never opens a file.** `Return` on a file does NOTHING at all, and the path key (`p`) types its
+  quoted path at the cursor and stops there; there is no "default application", no shell-out, and no
+  confirmation dialog. Opening things is a decision deliberately left to the user.
+- **The band's key layout changed on 2026-10-20 (s95), by request.** `p` used to toggle the preview and `Return`
+  used to type a file's path; now `p` types the path and `v` toggles the preview, and `Return` on a file does
+  nothing. Muscle memory is the only cost, and every one of them is rebindable — `fm_key_path`, `fm_key_preview`,
+  `fm_key_open` — with `none` to remove one. `fm_key_path = none` is the setting for "no file-manager key may
+  ever write at my prompt".
 - **Hard caps, so a huge directory or a huge file cannot stall or exhaust anything.** A listing keeps at
   most 8192 entries (the footer says `(listing capped)`); a directory preview shows at most 512; a text
   preview reads at most 256 KiB; an image preview reads at most 16 MiB of file and then meets the decoder's
@@ -320,8 +327,9 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   then directories first, then case-insensitive by name (then by bytes, so the order is total). No sort
   options, no tree view, no multi-select, and no rename / copy / move / delete — the browser reads the
   filesystem and writes nothing to it.
-- **One click selects, a double-click opens.** Two left clicks on the same row within 500 ms enter the
-  directory or type the file's path; the threshold is not configurable, and a click on the header, on the
+- **One click selects, a double-click opens.** Two left clicks on the same row within 500 ms enter a directory;
+  on a file they do nothing, exactly like `Return` (a path is typed by `p` and by no mouse action). The
+  threshold is not configurable, and a click on the header, on the
   preview or on a different row breaks the pair. A single click never opens, and the band's clicks never
   reach an application that has grabbed the mouse. The wheel over the band walks the listing instead of
   scrolling the terminal's history.

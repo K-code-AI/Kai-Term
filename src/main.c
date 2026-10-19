@@ -1434,13 +1434,23 @@ static void fm_preview_toggle(void)
     fm_ask_preview();
 }
 
-/* Enter on a file: type its path at the shell prompt, WITHOUT a newline. Kai-Term does not guess what
-   "open" means for a file and never runs one — the user adds the command, or presses Enter themselves.
-   Same quoting as the cd line, so a path with spaces or apostrophes arrives intact.
-   Appending at the cursor is what typing does, and it cannot run anything because no CR is sent — so a
-   line that merely HAS text on it is no longer a reason to refuse. What is still refused: a line the model
-   cannot describe at all, and the moment a clear/cd/re-type sequence is in flight (typing into that would
-   land the path in the middle of a line being erased). */
+/* The key that puts the selected entry's path on the shell's line. It types the path and NOTHING else —
+   no newline, so Kai-Term never runs a file it was only asked to name. Same quoting as the cd line, so a
+   path with spaces or apostrophes arrives intact.
+   THE GATE IS THE NON-STRICT PREDICATE, deliberately (s95). `term_prompt_line_typed()` answers "is this the
+   remembered prompt, then text, up to the cursor?" and IGNORES whatever sits right of the cursor. The strict
+   `term_prompt_line()` also demands those cells be blank, and that extra half exists for the `cd` follow
+   machine, which ERASES from the cursor leftwards and re-types: there, text on the right means the cursor is
+   mid-line and an erase would take only the left half. This action erases nothing — it inserts at the cursor
+   and leaves the line unsubmitted, which is exactly what the user's own keystrokes would do — so the strict
+   half only ever caused refusals: measured 2026-10-20 (`.scratch/s95/pathgate.c`, real shells in a real pty)
+   it typed the path fine in bash and zsh with `cat ` already on the line, and refused ONLY where cells right of
+   the cursor hold something — fish's grey autosuggestion ghost, or a cursor the user had moved back mid-line.
+   Both now work, and the path lands at the cursor, where the user was typing.
+   What is STILL refused, unchanged: the alternate screen (a full-screen app owns that line), a prompt the model
+   cannot describe at all (unknown snapshot, a wrapped line, a scrolled-back view, text too long for the buffer),
+   a cursor left of where the prompt ended, and the moment a clear/cd/re-type sequence is in flight — typing into
+   that would land the path in the middle of a line being erased. */
 static void fm_send_path(void)
 {
     Term *t = cur_term();
@@ -1453,7 +1463,7 @@ static void fm_send_path(void)
         return;
     }
     char probe[FM_LINE_MAX];
-    if (term_prompt_line(t, probe, sizeof probe) != 1) {
+    if (!term_prompt_line_typed(t, probe, sizeof probe)) {
         klog(L_DEBUG, "fm: not typing the path — the input line is not one I can describe");
         return;
     }
@@ -1476,8 +1486,9 @@ static void fm_sel_changed(void)
     W.dirty = 1;
 }
 
-/* Open the selected entry: descend into a directory, or type a file's quoted path at the prompt. One
-   function because the `open` key and the second click of a double-click must never drift apart. */
+/* Open the selected entry: descend into a directory, and on anything else do NOTHING (s95 — it used to type
+   a file's quoted path here; that moved to its own key, `fm_key_path`). One function because the `open` key and
+   the second click of a double-click must never drift apart. */
 static void fm_open_sel(void)
 {
     unsigned long seq = 0;
@@ -1488,8 +1499,6 @@ static void fm_open_sel(void)
     if (e && (e->kind == FMK_DIR || e->kind == FMK_SYMLINK)) {
         int changed = fm_go_sel(&g_fm, &seq);
         fm_nav(changed, seq, "open");
-    } else {
-        fm_send_path();
     }
 }
 
@@ -1519,10 +1528,10 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
     if (bind_match(&k->home, base, mods))     { fm_home(&g_fm); fm_sel_changed(); return 1; }
     if (bind_match(&k->end, base, mods))      { fm_end(&g_fm); fm_sel_changed(); return 1; }
     /* Left is "up one level" and Right is "into this one" — the two arrows a user reads off any file
-       manager. Right deliberately does NOTHING to a file: unlike `open` it never types a path, so holding
-       it down through a listing cannot write anything at the prompt. fm_go_sel() is the model's own answer
-       to "is this a directory I can enter" (it stats a symlink, and returns 0 for a plain file or a
-       dangling link), so no second classification is invented here. */
+       manager. Right and `open` do NOTHING to a file: neither types anything, so holding either down through
+       a listing cannot write at the prompt. fm_go_sel() is the model's own answer to "is this a directory I
+       can enter" (it stats a symlink, and returns 0 for a plain file or a dangling link), so no second
+       classification is invented here. */
     if (bind_match(&k->left, base, mods)) {
         int changed = fm_parent(&g_fm, &seq);   /* fills seq — see fm_nav */
         fm_nav(changed, seq, "parent");
@@ -1537,6 +1546,10 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
         return 0;
     }
     if (bind_match(&k->open, base, mods))     { fm_open_sel(); return 0; }
+    /* The only band key that touches the shell's line, and the user asked for it by name (s95): it types the
+       selected entry's quoted path at the cursor and stops there — no CR, so nothing is ever run. A one-shot
+       (return 0): holding it must not type the same path over and over. */
+    if (bind_match(&k->path, base, mods))     { fm_send_path(); return 0; }
     if (bind_match(&k->parent, base, mods)) {
         int changed = fm_parent(&g_fm, &seq);   /* fills seq — see fm_nav */
         fm_nav(changed, seq, "parent");
@@ -1555,7 +1568,8 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
    painter's own metrics, so a click always lands on the line it lands on — including in a pane too
    short for its header and footer, where the entries start at row 0.
    One click selects; a second click on the SAME entry within FM_DCLICK_MS also opens it (a directory is
-   entered, a file behaves exactly as `open` does). Any other click resets the pair, so a click on the
+   entered; a file does nothing, exactly as the `open` key — a path is typed by `fm_key_path` and by nothing
+   a mouse click can do). Any other click resets the pair, so a click on the
    header, on the preview, or on a different row cannot be the second half of a double-click. */
 static void fm_pointer_select(int hit, int btn, uint32_t time)
 {

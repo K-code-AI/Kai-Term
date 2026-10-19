@@ -94,9 +94,12 @@ void config_default(Config *c)
     keybind_parse_plain("Left",      &c->fm_key.left);
     keybind_parse_plain("Right",     &c->fm_key.right);
     keybind_parse_plain("Return",    &c->fm_key.open);
+    keybind_parse_plain("p",         &c->fm_key.path);
     keybind_parse_plain("BackSpace", &c->fm_key.parent);
     keybind_parse_plain("r",         &c->fm_key.refresh);
-    keybind_parse_plain("p",         &c->fm_key.preview);
+    /* `p` used to be the preview toggle; it is the path key now (s95), and the toggle moved to `v`.
+       Both are rebindable, and `none` unbinds either. */
+    keybind_parse_plain("v",         &c->fm_key.preview);
     keybind_parse_plain(".",         &c->fm_key.hidden);
     keybind_parse_plain("Escape",    &c->fm_key.quit);
     c->loglevel = L_WARN;
@@ -482,11 +485,18 @@ static void apply(Config *c, const char *key, char *val)
         /* Back to the parent directory — the arrow the user expects to mean "up one level". */
         set_fm_keybind(&c->fm_key.left, key, val);
     } else if (!strcmp(key, "fm_key_right")) {
-        /* Into the highlighted directory. Unlike fm_key_open this never types anything: on a file it
-           does nothing at all, which is what makes holding Right through a listing safe. */
+        /* Into the highlighted directory; on a file it does nothing at all, which is what makes
+           holding Right through a listing safe. Same on a file as fm_key_open. */
         set_fm_keybind(&c->fm_key.right, key, val);
     } else if (!strcmp(key, "fm_key_open")) {
+        /* Enter: descend into the selected directory. On a file it does nothing at all — typing the
+           path is fm_key_path's job now (s95), so no key in the band writes at the prompt by
+           accident. */
         set_fm_keybind(&c->fm_key.open, key, val);
+    } else if (!strcmp(key, "fm_key_path")) {
+        /* Type the selected entry's quoted path at the shell prompt, without a newline — the only
+           file-manager key that touches the prompt at all, and it never runs anything. */
+        set_fm_keybind(&c->fm_key.path, key, val);
     } else if (!strcmp(key, "fm_key_parent")) {
         set_fm_keybind(&c->fm_key.parent, key, val);
     } else if (!strcmp(key, "fm_key_refresh")) {

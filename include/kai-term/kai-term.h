@@ -539,12 +539,15 @@ int keymods_parse(const char *spec, unsigned *mods);
 int keybind_parse_plain(const char *spec, KeyBind *out);
 
 /* The keys the file manager uses while it has the keyboard. Grouped in one struct because they are
-   fourteen actions of one feature, and main.c matches them as a set. */
+   fifteen actions of one feature, and main.c matches them as a set. */
 typedef struct {
     KeyBind up, down, pageup, pagedown, home, end;   /* move the selection */
     KeyBind left;      /* go to the parent directory (the same action BackSpace has always had) */
-    KeyBind right;     /* descend into the selected directory — and NOTHING on a file, unlike open */
-    KeyBind open;      /* Enter: descend into the selected directory, else type its path */
+    KeyBind right;     /* descend into the selected directory — and NOTHING on a file */
+    KeyBind open;      /* Enter: descend into the selected directory, and NOTHING on a file (s95 —
+                          typing a file's path moved to `path`, so no key here writes at the prompt
+                          unless the user asked for exactly that) */
+    KeyBind path;      /* type the selected entry's quoted path at the prompt, without running it */
     KeyBind parent;    /* Backspace: go to the parent directory */
     KeyBind refresh;     /* re-read the current directory */
     KeyBind preview;     /* show / hide the preview pane */
