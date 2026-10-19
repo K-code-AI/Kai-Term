@@ -35,9 +35,9 @@ window)
   `app_wheel()` + `ptr_button()` + `send_key()` + `fm_wheel()` in main.c. Switches: `wheel_sends_keys`,
   `click_moves_cursor` (default 1). Pinned by 31 new `test_vt` checks and 27 new `test_fm` checks; the preview
   resize clamp was A/B'd (`.scratch/s96/clampab`: 1 failure on the old placement, 0 here).
-- **s90-s95 are all committed on `main` and pushed; `main` == `origin/main`. The s96 work (mouse wheel/click in
-  full-screen programs, preview-pane scrolling) is UNCOMMITTED in the tree** — read the remote state with
-  `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
+- **s90-s96 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
+  the push: `git status -sb` shows no ahead/behind and `git diff --stat main origin/main` is empty). Read the
+  remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
   follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks)
   was confirmed by the user in their own window (2026-10-20).
 - **s95 changed the file manager's key layout, by request — implemented, green, measured headless and CONFIRMED
@@ -333,6 +333,21 @@ and the two settings rows; the stale "over the band it walks the listing" wheel 
 no scrolling" limitation were corrected; ISSUES.md gained three Fixed entries. Verified by set difference, not by
 eye: the 53 keys `apply()` in `src/config.c` and the 53 rows of README's settings table are the same set (`diff`
 empty both ways), and `usage()`'s six options and README's option table are the same six, short and long.
+
+### s96 close-out — re-measured from a clean tree, committed and pushed
+
+`make clean && make -j8` -> exit 0, no warning line at all. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0:
+`CLI: 62 checks, 0 failures, 10 skipped`, `test_vt` **845 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
+`test_fm` **274 checks, 0 failures**. `make asan` -> exit 0 with the same three counts and no ASan/UBSan report.
+No untracked file outside the git-ignored `bin/` and `build/`.
+
+One commit holds the code, the tests and the three docs (the convention since s95). Pushed; verified afterwards
+rather than asserted: `git fetch` first (the user commits on GitHub too — nothing had arrived), `git status -sb`
+shows no ahead/behind, `git rev-list --left-right --count origin/main...main` is `0 0`, `git diff --stat main
+origin/main` is empty, and the working tree is clean.
+
+**Left open, and it is the user's report, not a defect I found:** the stray-`h` hypothesis — see "Current Task
+(s97)" at the top of this file. Nothing has been measured there yet.
 
 ## Previous Task (s95 — CLOSED: the user asked to CHANGE a design decision, not fix a bug. "If I pre-type some text and then use the file manager, pressing enter on a file doesn't append it's path to the prompt. can we change that? … cat ' /path/to/somefile.txt'" and, when I called it a defect: "it is not a bug, it was a design decision, But we are changing it." Shipped as the `p` key; the user's verdict on their own window: "The feature works". See s95 entries 1-8.)
 
