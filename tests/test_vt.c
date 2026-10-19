@@ -318,6 +318,45 @@ static int tpl_check_names(const char *path, const char *const *names, int n)
     return bad;
 }
 
+/* Counts the "\x1b" + hex-digit trap in a C source. A hex escape in C consumes EVERY following hex digit, so
+   an ESC followed by 'c' written as one escape becomes 0x1bc — out of range for a char, and gcc says so — and
+   the test feeds a single 0xbc byte, checks nothing, and still passes. That happened twice in this file (the
+   prompt group fixed it, the palette group walked back into it in s102) and the "0 warnings" claim never
+   covered the TEST build. Returns -1 when the file cannot be opened, so a moved file fails loudly. Comments
+   are skipped (block and line, tracked across lines) so prose ABOUT the trap is not counted as the trap, and a
+   match preceded by another backslash is skipped because that is a message quoting it. A slash-star inside a
+   string literal would confuse the comment tracking — nothing in this tree does that, and the probe check
+   below pins the rules that matter. */
+static int src_hexesc_count(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    int n = 0, in_block = 0;
+    char line[4096];
+    while (fgets(line, sizeof line, f)) {
+        for (char *p = line; *p; ) {
+            if (in_block) {
+                if (p[0] == '*' && p[1] == '/') { in_block = 0; p += 2; continue; }
+                p++;
+                continue;
+            }
+            if (p[0] == '/' && p[1] == '*') { in_block = 1; p += 2; continue; }
+            if (p[0] == '/' && p[1] == '/') break;
+            if (p[0] == '\\' && p[1] == 'x' && p[2] == '1' && p[3] == 'b') {
+                if (p > line && p[-1] == '\\') { p += 4; continue; }   /* a quoted mention, not an escape */
+                if (isxdigit((unsigned char)p[4]))
+                    n++;
+                p += 4;
+                continue;
+            }
+            p++;
+        }
+    }
+    fclose(f);
+    return n;
+}
+
 /* The names src/config.c compares inside ONE function body. The config surface is a strcmp ladder, so that
    ladder IS the list of accepted names — deriving it here is what keeps the check honest when a setting is
    added: the shipped template must gain the line, not a hand-copied list in this file. A body ends at the
@@ -4167,8 +4206,12 @@ int main(void)
               "palette: term_init() does NOT refill the palette — a second tab keeps the theme (on the old "
               "per-Term palette this is the built-in 0xffcc5555)");
 
-        /* Nor does a full reset: `reset` at the prompt sends ESC c. */
-        feed("\x1bc");
+        /* Nor does a full reset: `reset` at the prompt sends ESC c. Two escapes on purpose — "\x1bc" is ONE
+           hex escape (0x1bc, out of range for a char, and gcc says so), which feeds a single 0xbc byte and
+           checks nothing about RIS. That trap was already recorded above (the prompt group) and was walked
+           into again here, because the "0 warnings" measurement covered `make -j8` (src only) and never the
+           test build; the `hex escape` group below is what keeps it from happening a third time. */
+        feed("\x1b" "c");
         feed("\x1b[31mR\x1b[0m");
         CHECK(cellfg(0, 0) == 0xffe07f70u,
               "palette: ESC c / RIS rebuilds the pen but does NOT wipe the palette");
@@ -4205,6 +4248,49 @@ int main(void)
         feed("\x1b[31mR\x1b[0m");
         CHECK(cellfg(0, 0) == 0xffcc5555u,
               "palette: after a reset SGR 31 is the built-in red again — the block leaves no state behind");
+    }
+
+    /* ---------- source hygiene: the "\x1bc" hex-escape trap (see src_hexesc_count) ----------
+       Every C file in the project, src and tests alike. Feeding ESC plus a hex-letter control byte takes TWO
+       escapes ("\x1b" "c"); one escape swallows the letter and the test then feeds one out-of-range byte. */
+    {
+        static const char *scan[] = {
+            "src/vt.c", "src/main.c", "src/render.c", "src/config.c", "src/fm.c", "src/mux.c",
+            "src/layout.c", "src/img.c", "src/font.c", "src/pty.c", "src/shellint.c",
+            "tests/test_vt.c", "tests/test_fm.c", "tests/test_render.c", "tests/dbg.c",
+        };
+        int bad = 0, unread = 0;
+        for (size_t i = 0; i < sizeof scan / sizeof scan[0]; i++) {
+            int hits = src_hexesc_count(scan[i]);
+            if (hits < 0) {
+                printf("FAIL: hex escape: cannot open %s\n", scan[i]);
+                unread++;
+            } else if (hits) {
+                printf("FAIL: hex escape: %s has %d occurrence(s) of an escape swallowing a hex letter\n",
+                       scan[i], hits);
+                bad += hits;
+            }
+        }
+        CHECK(unread == 0, "hex escape: every scanned source file was readable");
+        CHECK(bad == 0, "hex escape: no source writes an escape whose hex digits swallow a control letter");
+
+        /* Not vacuous, and the two skip rules do not blind it: the same scan run over a file this test writes
+           finds the trap once, ignores the correct two-escape form and a non-hex letter, and ignores the
+           comment. The probe's text is built from a QUOTED backslash so this source stays clean. */
+        char ppath[128];
+        snprintf(ppath, sizeof ppath, "/tmp/kai-term-hexesc-%ld.txt", (long)getpid());
+        FILE *w = fopen(ppath, "w");
+        if (w) {
+            fputs("feed(\"\\x1b\" \"c\");\n", w);      /* correct: two escapes -> not counted */
+            fputs("feed(\"\\x1bc\");\n", w);           /* the trap -> counted */
+            fputs("feed(\"\\x1bG\");\n", w);           /* G is not a hex digit -> not counted */
+            fputs("/* \\x1bc in a comment is prose, not code */\n", w);
+            fclose(w);
+            CHECK(src_hexesc_count(ppath) == 1, "hex escape: the scan finds the trap and only the trap");
+            remove(ppath);
+        } else {
+            CHECK(0, "hex escape: the probe file could not be written");
+        }
     }
 
     printf("%d checks, %d failures\n", checks, fails);

@@ -22,11 +22,11 @@ The four items this file was once holding for the user's eye were answered 2026-
 `background = 1c1c22`, bare hex, and `opacity = 1`), and the s98 clipboard-source paste fix, the file manager's
 preview-pane key scrolling and the 75 % band's look all work in their window.
 
-Re-measured 2026-10-22 (s102, from `make clean`): `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **973
-checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **293 checks, 0 failures**; the new
-`./bin/test_render` **15 checks, 0 failures** (it did not exist before s102); `KAI_TERM_TEST_NO_WINDOW=1 make test`
-exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no
-sanitizer report. The windowed group of
+Re-measured 2026-10-19 (s103, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
+(`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **977 checks,
+0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **296 checks, 0 failures**; `./bin/test_render`
+**25 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` +
+those four); `make asan` exit 0 with the same counts and no sanitizer report. The windowed group of
 `tests/cli_test.sh` (**117 checks / 0 failures / 0 skipped**, last measured that way in s99) was skipped again —
 the user at the machine. That leaves only its own half uncovered: `main()`'s argv handling (`-c/--config`,
 `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing /
@@ -49,6 +49,20 @@ The full investigation of each — the probes, the wrong theories, the measureme
 Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
 the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**A test check that fed the wrong bytes and stayed green — the `\x1bc` hex-escape trap (2026-10-19, s103).** No user
+report and no product symptom: the defect was in the suite, and it matters because it made a claim about behaviour
+unverified. `tests/test_vt.c` wrote `feed("\x1bc")`; in C a hex escape consumes every following hex digit, so that is
+ONE escape (0x1bc, out of range for `char`) and the parser was handed a single 0xbc byte — a printable character —
+instead of ESC followed by `c`. The check named "ESC c / RIS rebuilds the pen but does NOT wipe the palette" therefore
+never sent a reset, and it passed on the buggy pre-refactor code for an unrelated reason, so the A/B could not see it
+either. Cause in one line: the warning that names it (`hex escape sequence out of range`) was never measured, because
+the "0 warnings" claim covered `make -j8` (which builds only `src/`) and never the test build. Fix: write the two
+escapes separately (`"\x1b" "c"`), and measure the warnings of BOTH builds. Kept out by a `hex escape` group in
+`tests/test_vt.c` that scans every C file in the project for an `\x1b` followed by a hex digit (comments and quoted
+mentions skipped, non-vacuity pinned with a probe file the test writes). Proven to bite by mutation: restoring the
+old form fails that check, and making RIS wipe the palette fails the palette check — `.scratch/s103/ab_hex/` and
+`.scratch/s103/ab_ris/`.
 
 **The 256-colour cube's brightest level wrapped to near-black — 91 of the 216 entries (2026-10-22, s102).** No user
 report: found by measuring the palette while writing checks for the theme work, because a check written around an

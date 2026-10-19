@@ -17,23 +17,27 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s102 — build and every suite green, no open bug. s102 step 0 (the dead
-`cursor_color =`) is done in code and in checks; its LOOK is not yet confirmed by the user. Steps 1-7 wait on the
-eight questions in "Current Task")
+## Current Status (re-measured 2026-10-19, s103 — build and every suite green, no open bug. s103 is mid-step-1
+(themes): `selection_color =` is now a real key, and a test-only defect was found and fixed. Dates in the older
+journal entries run ahead of the host clock (git log is the authority for order, not those dates)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
-  -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`).
+  -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for `make bin/test_vt bin/dbg bin/test_fm
+  bin/test_render`. Measure BOTH: the s102 claim covered only `make -j8` (src), and the test build was carrying a
+  warning (`hex escape sequence out of range`) that made one palette check feed the wrong bytes while still
+  passing. The command worth copying is
+  `make clean && make -j8 2>&1 | grep -ciE 'warning|error'` then `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
 - **Suites:** `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 67 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **973 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
-  0 failures**, `./bin/test_render` **15 checks, 0 failures** (new in s102: the renderer's pure colour
-  decisions, no display and no GL context). `make asan` exit 0, same four counts, 0 sanitizer reports. With a
+  `./bin/test_vt` **977 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **296 checks,
+  0 failures**, `./bin/test_render` **25 checks, 0 failures** (the renderer's pure colour decisions, no display and
+  no GL context; new in s102, extended in s103). `make asan` exit 0, same four counts, 0 sanitizer reports. With a
   display and spare VRAM,
   `tests/cli_test.sh` reports **117 checks / 0 failures / 0 skipped**. What its windowed group alone covers is
   `main()`'s own argv handling — `-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e` — and
   that a real launch applies the multiplexing / display / file-manager keys and the band's share of the window. The
   config SEARCH order and the split-by-name rules are NOT exclusive to it: `tests/test_vt.c` covers those headless
   (13 `cfgsearch` checks + the `config split` group). A no-window "0 failures" therefore leaves only the argv half
-  uncovered (last full windowed run measured in s99; s100 and s101 skipped it — the user at the machine). **Re-diff
+  uncovered (last full windowed run measured in s99; s100-s103 skipped it — the user at the machine). **Re-diff
   these numbers, do not copy them.**
 - **No open bug.** The one that was filed — `cursor_color =` parsed, was stored, was parse-tested and reached no
   pixel — is fixed and A/B'd (5 of the 15 new checks fail on the pre-fix renderer, 0 on this tree); ISSUES.md "Fixed"
@@ -71,11 +75,42 @@ eight questions in "Current Task")
   verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
   a new Open item with a reproduction.
 
-## Current Task (s102 — IN PROGRESS. Step 0 (the dead `cursor_color =`) is DONE in code, checks, A/B and docs; only
-the user's look-verdict is outstanding. Steps 1-7 are UNBLOCKED: all eight questions were answered 2026-10-22, and
-the answers are recorded under "The eight questions" below — they change the plan in four places (no `cursor_style`
-key, no primary-selection work, plain-click URLs, an interactive overwrite prompt). The facts in each block were
-measured against this tree.)
+## Current Task (s103 — IN PROGRESS: step 1, themes. The tree arrived with an UNCOMMITTED half-recorded feature in
+it — `selection_color =` — and with two RED checks in `bin/test_render`; the first job was to finish, verify and
+commit that, because a theme cannot paint a highlight the code cannot configure. The s102 plan (steps 1-7, below)
+is still the plan: all eight questions were answered 2026-10-22 and the answers change four details (no
+`cursor_style` key, no primary-selection work, plain-click URLs, an interactive overwrite prompt). The facts in each
+block were measured against this tree.)
+
+### s103 step 1c — `selection_color =` becomes a real key (theme prerequisite). STATUS: found in the tree
+
+What the tree contained when this session opened (uncommitted, not in the journal, so it is recorded here):
+`Config.selection_color` (default `SEL_BG`), a `selection_color =` line in the parser and in the shipped template,
+`Render.selection_color` passed from `main.c` into `render_init()`, `render_chrome()` deriving `sel_bg`,
+`item_on_bg` and `border` from it instead of the macro, and `fm_paint()` taking a `sel` argument so the file
+manager's selected row uses the same value. README gained its row. `tests/test_vt.c` bumped the settings-name count
+29 -> 30 and added the template default check; `tests/test_fm.c` gained the "uses the colour it was handed" checks;
+`tests/test_render.c` gained the three-places check and comment-skipping in its source scanner.
+
+Verified by re-measurement at the top of this session, not from the journal: `make clean && make -j8` exit 0 with 0
+warning lines, but `KAI_TERM_TEST_NO_WINDOW=1 make test` **RED** — `test_vt` 974/0, `dbg` MODEL OK, `test_fm` 296/0,
+`test_render` **23 checks, 2 failures** (`tests/test_render.c:234` and `:236`, the scanner self-pin).
+Cause, measured: the two probe tokens were named *inside the CHECK calls that counted them*, so the scan of
+`tests/test_render.c` counted its own arguments — 3 for the code token (declaration, `(void)` cast, CHECK argument)
+and 1 for the comment token (CHECK argument), against expected 1 and 0. Fix: the checks no longer scan this file; the
+test writes a probe file it controls and scans that, and every mention of a probe token in this source is split by
+string concatenation so the scanner never sees the whole word. That also pins the line-comment rule, which the
+self-scan could not.
+
+Next: A/B the new checks against the pre-change tree (DONE — `test_render` 5 of 25, `test_fm` 1 of 296, `test_vt` 2
+of 974 fail there; 0 here; harness `.scratch/s103/ab_sel/`), then commit (DONE, `5c1f58d`). Then step 1 proper:
+`src/theme.c` (theme file, `theme =` key, precedence theme-then-conf), then `--import-theme`, then OSC 4/10/11/104
+behind `osc_colors =`.
+
+**Also found and fixed in this session (commit after `5c1f58d`):** the TEST build was not covered by the
+"0 warning lines" measurement, and it was carrying `hex escape sequence out of range` — `feed("\x1bc")` is ONE
+escape (0x1bc), so the s102 palette check named "ESC c / RIS does not wipe the palette" had never sent a reset. See
+the s103 part 2 journal entry and the ISSUES.md "Fixed" entry; the new `hex escape` group is the gate.
 
 ### 0. The dead `cursor_color =` (ISSUES.md "Open") — DONE 2026-10-22, except the user's look-verdict
 
@@ -812,6 +847,54 @@ the visual verdicts (theme colours, cursor look, bell flash) to the user.
   Verified: `make -j8` exit 0 / 0 warnings; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI 67/0/13`, `test_vt`
   973/0, `dbg` MODEL OK, `test_fm` 293/0, `test_render` 15/0. README needs no change: it already claims 256-colour
   support, and this fix is what makes that claim true.
+
+- **2026-10-19, s103 part 1 — the tree opened RED and half-recorded: `selection_color =` finished, and the source
+  scanner that hid it from its own author.** Re-measured before anything else, as the journal demands:
+  `make clean && make -j8` exit 0 / 0 warnings, but `KAI_TERM_TEST_NO_WINDOW=1 make test` **failed** —
+  `test_render` 23 checks / **2 failures** (`tests/test_render.c:234`, `:236`). The uncommitted work in the tree was
+  the theme prerequisite: `Config.selection_color` (default `SEL_BG`) parsed from a new `selection_color =` line,
+  carried into `Render` through `render_init()`, used by `render_chrome()` for the selection band, the visible
+  session's tab-bar item and the focus border, and handed to `fm_paint()` as a fourth argument so the file manager's
+  selected row is the same colour. That part was sound; what was not was its own scanner self-pin.
+  **Root cause of the two failures, measured:** the probe tokens were named inside the `CHECK` calls that counted
+  them, and a `CHECK` line is code — so the scan of `tests/test_render.c` found 3 occurrences of the "code" token
+  (declaration, `(void)` cast, CHECK argument) and 1 of the "comment" token (the CHECK argument), against expected 1
+  and 0. A self-scan cannot pin a token counter: the test is always part of the corpus. Fix: the checks now scan a
+  probe file the test writes (3 code uses, a block comment, a two-line block comment, a `//` comment) and every
+  mention of a probe token in this source is split by string concatenation, so the file can never count itself. That
+  also let the line-comment and multi-line-block rules get pinned, which the self-scan could not do at all.
+  **A/B of the whole `selection_color` change** (HEAD's `src/` + the new tests/header/template, with the plumbing
+  added only where it must be to compile — `render_init()` takes the value and assigns it but `render_chrome()`
+  still reads `SEL_BG`, `fm_paint()` takes `sel` and ignores it, `config_default()` sets the field with no parse
+  line; run with CWD set so the source scans read the A/B tree): **`test_render` 5 of 25 fail, `test_fm` 1 of 296,
+  `test_vt` 2 of 974** (the settings-name count 29 vs 30, and the template name-coverage). 0 on this tree. Harness:
+  `/home/kaida/Project/.scratch/s103/ab_sel/`.
+
+- **2026-10-19, s103 part 2 — a check that fed the wrong bytes and stayed green: the `\x1bc` trap, twice.**
+  Compiling the TEST binaries (not `make -j8`, which only builds `src/`) printed
+  `tests/test_vt.c:4171: warning: hex escape sequence out of range`. In C a hex escape takes every following hex
+  digit, so `"\x1bc"` is ONE escape, 0x1bc, out of range for `char` — the palette group's "ESC c / RIS does not wipe
+  the palette" check was feeding a single 0xbc byte, i.e. printing a character, and **RIS was never tested**. It
+  passed on the old per-Term palette for an unrelated reason (the `term_init()` just before it had already restored
+  the built-ins), which is why the s102 A/B could not see it. This trap is already documented in this file (the
+  prompt group writes `"\x1b" "c"` and says why) — s102 walked back into it, and the "0 warning lines" claim never
+  covered the test build, so nothing reported it.
+  Fixed: `feed("\x1b" "c")`. Verified it is not vacuous by **mutation**, not by argument: with `term_palette_reset()`
+  inserted into the RIS handler (`case 'c':` in `src/vt.c`), that check FAILS (and the painted-cell one with it);
+  on this tree it passes. Harness: `.scratch/s103/ab_ris/`.
+  **New gate so it cannot happen a third time:** a `hex escape` group in `tests/test_vt.c` — `src_hexesc_count()` walks
+  every C file in the project (11 in `src/`, 4 in `tests/`), skips comments (block and line, tracked across lines) so
+  prose about the trap is not counted, and skips a match preceded by another backslash so a message quoting it is not
+  counted either. Non-vacuity pinned the same way as the other source scans: the same function run over a probe file
+  the test writes returns exactly 1 (the trap) while the correct two-escape form, a non-hex letter and a comment
+  return 0. **A/B by mutation:** restoring the s102 form in a scratch copy makes the suite report
+  `hex escape: tests/test_vt.c has 1 occurrence(s)` and 1 failure — while the palette check itself stays green, which
+  is exactly the hole. Harness: `.scratch/s103/ab_hex/`.
+  Verified after both parts, from `make clean`: `make -j8` exit 0 / **0 warnings**, and the test build
+  (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 / **0 warnings** — both measured, which is the
+  change of habit this entry is about. `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI 67/0/13`,
+  **`test_vt` 977/0**, `dbg` MODEL OK, **`test_fm` 296/0**, **`test_render` 25/0**; `make asan` exit 0, same four
+  counts, no sanitizer report.
 
 ## Next Steps
 
