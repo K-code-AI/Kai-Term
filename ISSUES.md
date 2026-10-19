@@ -9,9 +9,8 @@ Invariants" — read those, not the history.
 ## Open
 
 **No open bug.** The last one — a visible frame around the grid, because the `padding` margin and the blank cells
-read two different background colours — was fixed and A/B'd in s101 (see "Fixed", first entry). The visual verdict
-is the user's: they have the report in their own window and the standing preference is that the look is judged
-there, not by a pixel harness.
+read two different background colours — was fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed",
+first entry).
 
 The four items this file was once holding for the user's eye were answered 2026-10-22 ("1. yes / 2. good /
 3. works good"): the two-file config split is theirs (they asked for it), the background change their own
@@ -63,7 +62,7 @@ three patch-overs that existed only because of the split (`pen.* = conf.*` after
 `paint_blank_cells()` with its startup / `tab_open` / `zoom_apply` calls) are gone. 14 new checks; A/B'd in both
 directions — 7 of them fail against the reported state (`HEAD`'s `vt.c` plus the new API) and 2 fail against a
 deliberately divergent variant where the paint sites read the runtime value but `cell_pristine()` still compares
-`DEF_BG`. **Visual confirmation is the user's, still outstanding.**
+`DEF_BG`. **Confirmed in the user's window 2026-10-22** ("It's fixed, you can push").
 
 **A `background = #1c1c22` line set nothing at all — the config reader cut the value at the `#` (2026-10-22, s99).**
 The comment rule was "whitespace before a `#` is enough", which is exactly the shape of a colour value, so the line

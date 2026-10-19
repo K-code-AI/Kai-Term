@@ -17,8 +17,8 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s101 — build and every suite green. No open bug; the s101 colour fix
-awaits only the user's look)
+## Current Status (re-measured 2026-10-22, s101 — build and every suite green, no open bug; the s101 colour fix is
+user-confirmed in their own window)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`).
@@ -28,12 +28,12 @@ awaits only the user's look)
   `tests/cli_test.sh` reports **117 checks / 0 failures / 0 skipped** — the only run in which the config-search,
   `kai-term.bind` and `-b` checks execute at all, so a no-window "0 failures" does not cover them (last measured
   that way in s99; s100 and s101 skipped it — the user at the machine). **Re-diff these numbers, do not copy them.**
-- **No open bug.** The last one, the visible frame around the grid, is fixed (s101): one runtime value
+- **No open bug.** The last one, the visible frame around the grid, is fixed (s101) and **confirmed by the user in
+  their own window** ("It's fixed, you can push", 2026-10-22): one runtime value
   (`term_set_default_colors()` / `term_default_fg()` / `term_default_bg()` in `src/vt.c`) now owns the default ink
   and paper, so the `background =` line covers the cells as well as the `padding` margin glClear paints. A/B'd both
-  ways (7 of the 14 new checks fail on the reported state, 2 fail on a sentinel-divergent variant). **Outstanding:
-  the user's confirmation that the frame is gone in their window** — the look is theirs to judge, and the windowed
-  group of `tests/cli_test.sh` was not run (they are at the machine).
+  ways (7 of the 14 new checks fail on the reported state, 2 fail on a sentinel-divergent variant, and the end-to-end
+  probe prints match=1 where the old code prints match=0).
 - **No open question.** The four items this journal and ISSUES.md were holding for the user's eye were answered
   2026-10-22 ("1. yes / 2. good / 3. works good" — the s100 era entry): the two-file config split is theirs, the
   background change their own config file now produces is accepted, and the s98 Firefox paste fix, the preview-pane
@@ -61,8 +61,8 @@ awaits only the user's look)
   verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
   a new Open item with a reproduction.
 
-## Current Task (s101 — code DONE 2026-10-22; one thing left: the user's look. The diagnosis below is measured, not
-a guess — do not re-derive it.)
+## Current Task (none open. The s101 border fix is complete — code, checks, docs, the user's confirmation and the
+push. The diagnosis below is measured, not a guess — do not re-derive it.)
 
 **The report, verbatim:** "Some border seems to have appeared recently in the recent change, It's probably the
 padding to prevent cutting glyph corner, But would it be possible for it to be the exact same color as the
@@ -91,9 +91,8 @@ deleted, `cell_pristine()` deliberately kept in step, `DEF_FG` fixed for the sam
 left alone and documented, README + template + the 14 checks, and the two A/B runs (7 checks fail on the reported
 state, 2 on a sentinel-divergent variant).
 
-**Left:** the user's confirmation that the frame is gone in their window (standing preference: the look is judged
-there, never by a pixel harness). The s101 source, test and doc changes are committed; the push waits for that
-answer.
+**Closed 2026-10-22:** the user's verdict is in — "It's fixed, you can push". The frame is gone in their window
+(`background = 1c1c22`, `padding = 8`), and the commit is pushed.
 
 
 ## Progress Journal (root causes of fixed bugs: git history)
@@ -423,19 +422,24 @@ answer.
   at `cy=0 cx=1` (scroll_off moved to 1), not `cy=1` — the first version of that check was red for that reason and
   the probe said so in one run. `tests/test_vt.c` 944 -> 958 checks, 0 failures; `./bin/dbg` MODEL OK;
   `./bin/test_fm` 293; `KAI_TERM_TEST_NO_WINDOW=1 make test` green; `make -j8` 0 warnings.
-  **Not yet verified:** the look, which is the user's call (standing preference), and the windowed group of
-  `tests/cli_test.sh`.
+  **User-confirmed in their own window 2026-10-22** ("It's fixed, you can push") — the look is theirs to judge and
+  they judged it. The windowed group of `tests/cli_test.sh` was not run (they were at the machine).
+
+- **2026-10-22, s101 close-out — the confirmation and the push.** The user reported the frame gone in their window and
+  said to push. `git fetch` first (the user commits on GitHub too): `origin/main` was still at `aec8add`, nothing to
+  merge; `git push` then `git status -sb` to verify `## main...origin/main` with no ahead/behind marker rather than
+  trusting the push output. Docs-only follow-up commit: the "outstanding / not yet verified" sentences in this file's
+  Current Status, Current Task, Next Steps and s101 era entry, and in ISSUES.md's Open + Fixed entries, now say what
+  is true — confirmed by the user. Re-ran the suites after the doc edits: `make -j8` 0 warnings, `CLI: 67 checks,
+  0 failures, 13 skipped`, `test_vt` 958 / 0, `dbg` MODEL OK, `test_fm` 293 / 0.
 
 ## Next Steps
 
-0. **s101 — the visible border around the grid: DONE in code, ONE thing left.** The fix and its 14 checks are in
-   (see the s101 era entry and ISSUES.md "Fixed"). Left for the next session:
-   a. **Ask the user whether the frame is gone in their window** (`background = 1c1c22`, `padding = 8`). Nothing
-   else about it is open — do not re-derive the diagnosis and do not run a pixel harness to judge the look.
-   b. If they confirm it, this era entry and ISSUES.md's "Visual confirmation … outstanding" sentence are the only
-      places still saying it is unconfirmed; update both and commit.
-   c. The windowed group of `tests/cli_test.sh` (117 checks with a display) has not been run since s99. Run it only
-      when the user is away and VRAM has room — it maps real windows.
+0. **s101 — the visible border around the grid: CLOSED.** Fixed, A/B'd, documented, and confirmed by the user in
+   their own window ("It's fixed, you can push", 2026-10-22); pushed. Nothing about it is owed — do not re-derive the
+   diagnosis and do not run a pixel harness to judge a look the user has already judged.
+   a. The windowed group of `tests/cli_test.sh` (117 checks with a display) has not been run since s99. Run it
+      only when the user is away and VRAM has room — it maps real windows.
 
 0. **s99/s98 — all four open items were put to the user and answered on 2026-10-22 ("1. yes / 2. good / 3. works
    good", the s100 era entry). Nothing here is owed any more; what follows is the diagnosis recipe, not a to-do.**
