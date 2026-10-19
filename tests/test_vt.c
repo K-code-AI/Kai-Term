@@ -4126,6 +4126,31 @@ int main(void)
         CHECK(pal[16] == 0xff000000u && pal[232] == 0xff080808u && pal[255] == 0xffeeeeeeu,
               "palette: the computed parts are the cube's first entry and the grey ramp's ends");
 
+        /* The 6x6x6 cube, at the entries an application actually uses. This pinned a real defect: the level
+           formula was 55 + 41 * level, which is 260 at level 5, and 260 << 16 leaves 0x04 in the channel —
+           91 of the 216 entries came out near-black (measured before the fix: 196 = ff040000,
+           226 = ff050400, 231 = ff050504). Alpha stayed 0xff, so no alpha check could ever have seen it. */
+        CHECK(pal[196] == 0xffff0000u && pal[46] == 0xff00ff00u && pal[21] == 0xff0000ffu,
+              "palette: 196/46/21 are full red/green/blue, the cube's top level is 255");
+        CHECK(pal[226] == 0xffffff00u && pal[231] == 0xffffffffu && pal[233] == 0xff121212u,
+              "palette: 226 is yellow, 231 is white, and the ramp steps by 10 (233 = 0x12)");
+        /* The class rather than one instance: the six levels of each channel must increase and end at 255.
+           The wrap made them DROP at level 5, which is what a check like this catches for every channel.
+           Entry for (r,g,b) is 16 + 36r + 6g + b, so the red levels sit at stride 36, green at 6, blue at 1. */
+        for (int sh = 0; sh < 24; sh += 8) {
+            int stride = (sh == 16) ? 36 : (sh == 8) ? 6 : 1;
+            int prev = -1, drops = 0, top = 0;
+            for (int L = 0; L < 6; L++) {
+                int v = (int)((term_palette()[16 + stride * L] >> sh) & 0xff);
+                if (v <= prev)
+                    drops++;
+                prev = v;
+                top = v;
+            }
+            CHECK(drops == 0 && top == 255,
+                  "palette: each channel's six cube levels increase and end at 255 (no wrap)");
+        }
+
         /* A theme sets an entry; the parser must then use it. */
         term_set_palette_entry(1, 0xffe07f70u);          /* the user's "13th Floor" red */
         term_init(&T, 6, 40, 20);

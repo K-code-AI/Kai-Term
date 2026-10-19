@@ -180,20 +180,23 @@ static int g_palette_ready;
 
 static void palette_fill_builtin(void)
 {
-    /* xterm 16 base colors, then 6x6x232 cube, then grayscale ramp */
+    /* xterm 16 base colors, then 6x6x6 cube, then grayscale ramp.
+       The cube's six levels are 0, 95, 135, 175, 215, 255 — the set almost every terminal and almost every
+       256-colour chart uses, so 196 is red, 46 is green, 226 is yellow and 231 is white. It is written as a
+       table rather than a formula on purpose: the formula this function used to have, 55 + 41 * level, gives
+       260 at level 5, and 260 << 16 puts 0x04 in the red byte — 91 of the 216 entries came out near-black
+       (measured: 196 was ff040000, 226 was ff050400, 231 was ff050504). A table cannot overflow. */
     static const uint32_t base16[16] = {
         0xff000000, 0xffcc5555, 0xff55cc55, 0xffcccc55,
         0xff5555cc, 0xffcc55cc, 0xff55cccc, 0xffcccccc,
         0xff777777, 0xffff5555, 0xff55ff55, 0xffffff55,
         0xff5555ff, 0xffff55ff, 0xff55ffff, 0xffffffff,
     };
+    static const int cube6[6] = { 0, 95, 135, 175, 215, 255 };
     memcpy(g_palette, base16, sizeof(base16));
     for (int i = 0; i < 216; i++) {
-        int r = i / 36, g = (i / 6) % 6, b = i % 6;
-        int rv = r ? 55 + 41 * r : 0;
-        int gv = g ? 55 + 41 * g : 0;
-        int bv = b ? 55 + 41 * b : 0;
-        g_palette[16 + i] = 0xff000000u | (uint32_t)(rv << 16 | gv << 8 | bv);
+        int r = cube6[i / 36], g = cube6[(i / 6) % 6], b = cube6[i % 6];
+        g_palette[16 + i] = 0xff000000u | (uint32_t)(r << 16 | g << 8 | b);
     }
     for (int i = 0; i < 24; i++) {
         int v = 8 + i * 10;

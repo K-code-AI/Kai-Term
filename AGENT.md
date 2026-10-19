@@ -24,7 +24,7 @@ eight questions in "Current Task")
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`).
 - **Suites:** `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 67 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **968 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
+  `./bin/test_vt` **973 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
   0 failures**, `./bin/test_render` **15 checks, 0 failures** (new in s102: the renderer's pure colour
   decisions, no display and no GL context). `make asan` exit 0, same four counts, 0 sanitizer reports. With a
   display and spare VRAM,
@@ -791,6 +791,28 @@ the visual verdicts (theme colours, cursor look, bell flash) to the user.
   `SGR 38;5;196` paints near-black. That is why the new checks do NOT pin cube values yet — a check written around an
   assumed `0xffd70000` would have been red on arrival. Filed and fixed in the next entry.
 
+- **2026-10-22, s102 step 1b — the 6x6x6 cube's top level wrapped to near-black (91 of 216 entries).** The probe
+  `.scratch/s102/cube.c` printed level, raw channel and resulting ARGB for every entry with a level-5 channel, and that
+  is what turned "I'll pin the cube values" into a bug report: the formula was `55 + 41 * level`, so level 5 gave **260**,
+  and `260 << 16` leaves `0x04` in the channel. Measured on the pre-fix tree: entry 196 (bright red in every chart) was
+  `ff040000`, 226 (bright yellow) `ff050400`, 231 (the cube's white) `ff050504` — `SGR 38;5;196` painted near-black, so
+  vim/neovim colorschemes, htop, bat, delta and pygments were drawing dark where they mean bright. Alpha stayed `0xff`
+  because the carry landed on a bit already set, which is why nothing in the suite could ever have noticed: no check
+  asserted on a cube value, and the alpha channel looked right.
+  Fix: the six levels are a table `{ 0, 95, 135, 175, 215, 255 }` — the set almost every terminal and almost every
+  256-colour chart uses — because a table cannot overflow. 5 new checks (968 -> **973, 0 failures**): the entries
+  applications actually use (196, 46, 21, 226, 231, 233) and, for the class rather than one instance, each channel's six
+  levels must strictly increase and end at 255 — the wrap made them DROP, so that check catches every channel and every
+  future off-by-one in the table. **A/B against the pre-fix `src/vt.c`: all 5 fail there**, 0 on this tree.
+  My own mistake, caught by inspection before it was ever run: the first version of the per-channel loop computed the
+  entry index as `16 + 36 * L * stride`, which is not the cube's layout (the entry for (r,g,b) is `16 + 36r + 6g + b`, so
+  one axis' levels sit at stride 36, 6 and 1). Rewritten as `16 + stride * L` with the stride chosen per shift, and that
+  is the version the A/B measured. Whether the wrong one would have passed is unknown — it was never executed — but a
+  check that walks a table must derive its indices from the same layout the producer uses, or it can pass on nothing.
+  Verified: `make -j8` exit 0 / 0 warnings; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI 67/0/13`, `test_vt`
+  973/0, `dbg` MODEL OK, `test_fm` 293/0, `test_render` 15/0. README needs no change: it already claims 256-colour
+  support, and this fix is what makes that claim true.
+
 ## Next Steps
 
 0. **s102 — step 0 (the dead `cursor_color =`) is DONE: code, checks, A/B, ISSUES.md, README, template.** Two things
@@ -939,7 +961,7 @@ Kai-Term/
 ├── config/kai-term.bind         # the shipped KEY-BINDING template: all 24 names at their built-in default
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 968 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
+├── tests/test_vt.c              # 973 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
 ├── tests/test_fm.c              # 293 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/test_render.c          # 15 checks: the renderer's pure colour decisions (no display, no GL call)
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
@@ -1001,7 +1023,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 968 checks: parser (including a C0 byte inside a control sequence — executed, sequence
+- `tests/test_vt.c` — 973 checks: parser (including a C0 byte inside a control sequence — executed, sequence
   still collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
   (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
   ordering), grid, selection, alt screen,
@@ -1699,6 +1721,16 @@ after `ptr_*` hit-tested bar then panes.
   `HISTFILE=/tmp/...`) and make the needle something no history can already contain (a pid in the file name).
   Same class as every other "the harness caused the symptom" entry: when a check passes on the code you expect
   it to fail, suspect the check before you believe the result (s95).
+- **A computed constant is a claim — print it before you pin it or write prose about it.** The 256-colour cube's level
+  formula `55 + 41 * level` looks plausible, is wrong at level 5 (260), and the shift hides the overflow in a way that
+  leaves alpha looking perfect: 91 of 216 entries were near-black, entry 196 was `ff040000`, and no check had ever
+  asserted on a cube value so the suite was green for the whole life of the project. The probe took one minute
+  (`.scratch/s102/cube.c`) and both found the bug and prevented me from writing five checks around values I had assumed
+  (`0xffd70000` for 196). Same shape as every other entry here: measure, then write the check.
+- **A check that walks a table must use the producer's index layout.** The cube entry for (r,g,b) is `16 + 36r + 6g + b`;
+  a loop that computes `16 + 36 * L * stride` looks like it is sweeping the levels of one channel and is actually reading
+  something else. Derive the stride from the layout (36 / 6 / 1), and confirm the check fails on the broken code — a
+  check that never fails is decoration.
 - **"The parser knows this key" is never evidence that the key does anything.** `cursor_color =` is defaulted
   (`src/config.c:44`), parsed (`src/config.c:463-464`) and stored in `Config`, and no line of code anywhere reads it —
   `src/render.c` draws the cursor from the `CURSOR_COL` macro and `render_init()` is handed only `bg`/`fg`. Every test

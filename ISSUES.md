@@ -8,10 +8,10 @@ Invariants" — read those, not the history.
 
 ## Open
 
-**No open bug.** The last one found was `cursor_color =` being dead config — a key that parsed, was stored and was
-asserted on by the suite while no pixel ever read it. Fixed and A/B'd in s102 (first entry under "Fixed"). Its
-shape is the one worth remembering: a config key is not implemented at the parser, it is implemented where the
-value is used.
+**No open bug.** The last two found were both colour plumbing: `cursor_color =` being dead config, and the 256-colour
+cube's top level overflowing. Both fixed and A/B'd in s102 (the first two entries under "Fixed"). The shape worth
+remembering: a config key is not implemented at the parser, it is implemented where the value is used — and a
+computed colour must be measured, not assumed.
 
 The frame around the grid — the `padding` margin and the blank cells reading two different background colours — was
 fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed").
@@ -22,7 +22,7 @@ The four items this file was once holding for the user's eye were answered 2026-
 `background = 1c1c22`, bare hex, and `opacity = 1`), and the s98 clipboard-source paste fix, the file manager's
 preview-pane key scrolling and the 75 % band's look all work in their window.
 
-Re-measured 2026-10-22 (s102, from `make clean`): `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **958
+Re-measured 2026-10-22 (s102, from `make clean`): `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **973
 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **293 checks, 0 failures**; the new
 `./bin/test_render` **15 checks, 0 failures** (it did not exist before s102); `KAI_TERM_TEST_NO_WINDOW=1 make test`
 exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no
@@ -49,6 +49,19 @@ The full investigation of each — the probes, the wrong theories, the measureme
 Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
 the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**The 256-colour cube's brightest level wrapped to near-black — 91 of the 216 entries (2026-10-22, s102).** No user
+report: found by measuring the palette while writing checks for the theme work, because a check written around an
+assumed value would have been red on arrival. `SGR 38;5;196` (bright red in every chart) painted `#040000`, `38;5;226`
+(bright yellow) painted `#050400`, and `38;5;231` (the cube's white) painted `#050504` — so any application using the
+top cube level (vim/neovim colorschemes, htop, bat, delta, pygments) drew near-black instead. Cause in one line: the
+cube's level formula was `55 + 41 * level`, which is **260** at level 5, and `260 << 16` leaves `0x04` in the channel;
+alpha stayed `0xff` (the carry landed on a bit already set), so no alpha check could ever have seen it. Fix: the six
+levels are a table `{ 0, 95, 135, 175, 215, 255 }` — the set almost every terminal and almost every 256-colour chart
+uses — and a table cannot overflow. Kept out by 5 checks: the entries applications use (196, 46, 21, 226, 231, 233)
+and, for the class rather than one instance, each channel's six levels must strictly increase and end at 255 (the wrap
+made them DROP). A/B against the pre-fix `src/vt.c`: **all 5 fail there**, 0 here. Probe: `.scratch/s102/cube.c`
+prints the level, the raw channel value and the resulting ARGB for every entry with a level-5 channel.
 
 **`cursor_color =` was dead config — parsed, stored, tested, and read by nothing (2026-10-22, s102).** Symptom, derived
 from the code and never seen in a window before the fix: `cursor_color = ff0000` in `~/.config/kai-term/kai-term.conf`
