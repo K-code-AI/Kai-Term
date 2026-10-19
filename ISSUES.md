@@ -8,21 +8,13 @@ Invariants" — read those, not the history.
 
 ## Open
 
-**`cursor_color =` is dead config — the key parses, is stored, is tested, and nothing reads it (2026-10-22, found
-while planning s102; fix folded into s102 step 1).** Expected symptom (derived from the code, NOT yet observed in a
-window — this one is a grep result, not a screenshot): set `cursor_color = ff0000` in
-`~/.config/kai-term/kai-term.conf`, restart, and the cursor block stays the built-in `#d8d8d8`. Measured cause: the
-value is defaulted (`src/config.c:44`), parsed (`src/config.c:463-464`) and stored (`Config.cursor_color`,
-`include/kai-term/kai-term.h:652`), and **read nowhere** — `src/render.c` uses the `CURSOR_COL` macro at lines 1093,
-1135 and 1288, and `render_init()` receives only `bg` and `fg` (`src/render.c:256`, `src/main.c:2818`). The suite
-cannot see it: the three tests that name the key (`tests/test_vt.c:2149/2154/2196`) all assert on *parsing*, and the
-template parity check compares parse results field by field, so it passes while the key does nothing. Same failure
-shape as the padding-margin border (a configured colour that never reaches the renderer), found the same way — follow
-the value from the parser to the pixel. Fix: carry it into `Render` and use it at those sites, which is exactly what
-the palette work in s102 step 1 does anyway; add a check that the value reaches the renderer, not just the struct.
+**No open bug.** The last one found was `cursor_color =` being dead config — a key that parsed, was stored and was
+asserted on by the suite while no pixel ever read it. Fixed and A/B'd in s102 (first entry under "Fixed"). Its
+shape is the one worth remembering: a config key is not implemented at the parser, it is implemented where the
+value is used.
 
-**No other open bug.** The frame around the grid — the `padding` margin and the blank cells reading two different
-background colours — was fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed", first entry).
+The frame around the grid — the `padding` margin and the blank cells reading two different background colours — was
+fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed").
 
 The four items this file was once holding for the user's eye were answered 2026-10-22 ("1. yes / 2. good /
 3. works good"): the two-file config split is theirs (they asked for it), the background change their own
@@ -30,10 +22,11 @@ The four items this file was once holding for the user's eye were answered 2026-
 `background = 1c1c22`, bare hex, and `opacity = 1`), and the s98 clipboard-source paste fix, the file manager's
 preview-pane key scrolling and the 75 % band's look all work in their window.
 
-Re-measured 2026-10-22 (s101, from `make clean`): `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **958
-checks, 0 failures** (was 944 before the s101 colour checks); `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm`
-**293 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped`
-+ those three); `make asan` exit 0 with the same counts and no sanitizer report. The windowed group of
+Re-measured 2026-10-22 (s102, from `make clean`): `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **958
+checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **293 checks, 0 failures**; the new
+`./bin/test_render` **15 checks, 0 failures** (it did not exist before s102); `KAI_TERM_TEST_NO_WINDOW=1 make test`
+exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no
+sanitizer report. The windowed group of
 `tests/cli_test.sh` (**117 checks / 0 failures / 0 skipped**, last measured that way in s99) was skipped again —
 the user at the machine. That leaves only its own half uncovered: `main()`'s argv handling (`-c/--config`,
 `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing /
@@ -53,9 +46,28 @@ reproduces.
 
 One entry per bug: what the user saw, the cause in one line, what fixed it, and what now keeps it from coming back.
 The full investigation of each — the probes, the wrong theories, the measurements that settled them — is AGENT.md's
-Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`); the rule each
-one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at the time, not
-current totals.
+Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
+the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
+the time, not current totals.
+
+**`cursor_color =` was dead config — parsed, stored, tested, and read by nothing (2026-10-22, s102).** Symptom, derived
+from the code and never seen in a window before the fix: `cursor_color = ff0000` in `~/.config/kai-term/kai-term.conf`
+changed nothing, the cursor stayed `#d8d8d8`. Cause in one line: the renderer took the colour from the compile-time
+`CURSOR_COL` macro and `render_init()` was handed only `bg` and `fg`, so the value stopped in `Config`. The suite could
+not see it because every check that named the key asserted on the PARSED value, and the template parity check compares
+parsed values field by field. Fix: `Render.cursor_color`, passed by `src/main.c` from `conf.cursor_color`, and the six
+chrome-colour expressions of a frame moved out of `render_draw()` into one pure `render_chrome(const Render *,
+Chrome *)` — the seam a colour check can stand on. Kept out by checks, not by eye: `tests/test_render.c` (new binary,
+15 checks) asserts the configured value is what an active pane's cursor is drawn with, that an inactive session's
+cursor is that value mixed with the configured background, that the built-in default still yields `#d8d8d8`, and that
+`src/render.c` contains zero `CURSOR_COL` tokens (the scan also counts `SEL_BG`, so the zero means something). A/B:
+against the pre-fix renderer — same `Chrome` function, still reading the macro, with `main()` not passing the argument
+— **5 of those 15 checks fail**; on the fixed tree, 0. The extraction itself was proven behaviour-free first:
+`.scratch/s102/chrome_probe.c` recomputes the six expressions exactly as they were written inside `render_draw()` and
+compares all eight `Chrome` fields over 25 bg×fg pairs — 200 comparisons, 0 differ. Not covered by any headless test:
+the `render_init()` call itself, which lives in `main()` (in no linked test) — pinned there by a source scan instead.
+**The look has not been confirmed by the user yet**: the value now reaches the renderer, but whether the configured
+colour is what they want on screen is theirs to judge.
 
 **A frame around the grid: the `padding` margin and the blank cells were two different background colours
 (2026-10-22, s101).** The user's words: "Some border seems to have appeared recently in the recent change, It's

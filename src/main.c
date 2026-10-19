@@ -2814,9 +2814,12 @@ static int wayland_setup(int init_w, int init_h)
         return -1;
     }
     /* conf.fg goes to the renderer because the tab bar's colours are mixed from the CONFIGURED palette:
-       an application may repaint its own cells but not the chrome that names its tab (see Render.fg). */
+       an application may repaint its own cells but not the chrome that names its tab (see Render.fg).
+       conf.cursor_color goes with it for the same reason in the other direction: the key was in the
+       config file, the parser and the struct for weeks and reached no pixel, because the renderer drew
+       the cursor from the CURSOR_COL macro (see Render.cursor_color, and ISSUES.md). */
     if (render_init(&rend, W.display, W.egl_window, init_w, init_h, conf.opacity, conf.bg,
-                    conf.fg) < 0) {
+                    conf.fg, conf.cursor_color) < 0) {
         klog(L_ERROR, "render_init failed");
         return -1;
     }

@@ -254,7 +254,7 @@ static void set_clear_color(Render *r)
 }
 
 int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
-                uint32_t bg, uint32_t fg)
+                uint32_t bg, uint32_t fg, uint32_t cursor_color)
 {
     memset(r, 0, sizeof(*r));
     r->vw = w;
@@ -344,6 +344,7 @@ int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, flo
     r->opacity = fclamp_(opacity, 0.0f, 1.0f);
     r->bg = bg;
     r->fg = fg;   /* the tab bar's text colour (see Render.fg) */
+    r->cursor_color = cursor_color;   /* the `cursor_color =` line (see Render.cursor_color) */
     r->ecfg = malloc(sizeof(cfg));
     if (r->ecfg)
         memcpy(r->ecfg, &cfg, sizeof(cfg));
@@ -675,8 +676,8 @@ void render_chrome(const Render *r, Chrome *out)
     out->item_off_fg = mix_c(r->fg, r->bg, 45);
     out->item_on_bg  = SEL_BG;
     out->sep         = mix_c(r->fg, r->bg, 65);
-    out->cursor      = CURSOR_COL;
-    out->cursor_off  = mix_c(CURSOR_COL, r->bg, 55);
+    out->cursor      = r->cursor_color;
+    out->cursor_off  = mix_c(r->cursor_color, r->bg, 55);
     out->border      = SEL_BG;
 }
 

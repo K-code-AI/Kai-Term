@@ -1346,6 +1346,12 @@ typedef struct Render {
                                     the inactive item / separator colours are mixed from. Chrome colours
                                     come from the CONFIG, never from a cell's pen — an application can
                                     repaint its own cells but not the bar that names its tab. */
+    uint32_t cursor_color;       /* the `cursor_color =` line: the colour the visible session's cursor is
+                                    drawn with, and the base the dimmed cursor of a drawn-but-not-visible
+                                    session is mixed from. It lives HERE and not only in Config because a
+                                    configured colour that never reaches the renderer is not implemented —
+                                    this very key parsed, was stored, was tested at the parser and was read
+                                    by nothing (ISSUES.md, s102). */
     void *ecfg;                  /* EGLConfig */
     void *nwin;                  /* EGLNativeWindowType (wl_egl_window) */
     /* Texture uploads fail when the GPU is out of memory (this box runs a local LLM that holds most of
@@ -1391,10 +1397,10 @@ int  term_visible_images(Term *t, ImgView *out, int cap);
 int  term_image_count(const Term *t);
 
 /* ---------- renderer (EGL + GL) ---------- */
-/* Every CHROME colour of one frame, derived from the configured palette in Render (bg/fg) and from
-   nothing else: the selection band, the tab bar's items and separators, the focus border, and the
-   cursor of the visible session and of a session that is drawn but not the visible one. An application
-   may repaint its own cells but never the chrome that names its tab (see Render.fg).
+/* Every CHROME colour of one frame, derived from the configured palette in Render (bg/fg/cursor_color)
+   and from nothing else: the selection band, the tab bar's items and separators, the focus border, and
+   the cursor of the visible session and of a session that is drawn but not the visible one. An
+   application may repaint its own cells but never the chrome that names its tab (see Render.fg).
    It is a function rather than six locals inside render_draw() for one reason: a configured colour that
    stops in the parser is invisible to every test that only reads Config, so the check has to sit where
    the value becomes a vertex colour. Pure — no GL, no font, no Term, no allocation — so
@@ -1411,7 +1417,7 @@ typedef struct Chrome {
 void render_chrome(const Render *r, Chrome *out);
 
 int  render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
-                 uint32_t bg, uint32_t fg);
+                 uint32_t bg, uint32_t fg, uint32_t cursor_color);
 /* Draw one frame: the tab bar (if the layout says so), every pane's grid, and the file-manager band if
    the layout has one. Two vertex batches (backgrounds, then bands + glyphs + chrome) with one draw call
    per application picture between them — see the header comment of src/render.c for why the frame cannot

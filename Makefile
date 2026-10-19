@@ -59,10 +59,19 @@ bin/dbg: tests/dbg.c build/vt.o build/img.o build/mux.o build/layout.o build/con
 bin/test_fm: tests/test_fm.c build/fm.o build/vt.o build/img.o build/shellint.o | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-test: bin/test_vt bin/dbg bin/test_fm test-cli
+# The renderer's colour decisions are testable without a display: render_chrome() reads a Render struct and
+# nothing else (no EGL, no GL, no font, no Term). The binary links render.o plus everything render.o needs
+# to LINK (fm.o font.o img.o vt.o shellint.o layout.o mux.o, and config.o because the test starts from a
+# real config_default()), but calls nothing that touches a context — that is the seam the dead
+# `cursor_color =` bug needed, see tests/test_render.c.
+bin/test_render: tests/test_render.c build/render.o build/fm.o build/font.o build/img.o build/vt.o build/shellint.o build/layout.o build/mux.o build/config.o $(HDRS) | bin
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+test: bin/test_vt bin/dbg bin/test_fm bin/test_render test-cli
 	./bin/test_vt
 	./bin/dbg
 	./bin/test_fm
+	./bin/test_render
 
 # The option parser lives in main() in src/main.c, which is not linked into bin/test_vt, so the
 # command-line surface can only be checked by running the real binary. tests/cli_test.sh does exactly
@@ -85,10 +94,14 @@ bin/dbg_asan: tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c
 bin/test_fm_asan: tests/test_fm.c src/fm.c src/vt.c src/img.c src/shellint.c $(HDRS) | bin
 	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_fm.c src/fm.c src/vt.c src/img.c src/shellint.c $(LDLIBS)
 
-asan: bin/test_vt_asan bin/dbg_asan bin/test_fm_asan
+bin/test_render_asan: tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c $(LDLIBS)
+
+asan: bin/test_vt_asan bin/dbg_asan bin/test_fm_asan bin/test_render_asan
 	./bin/test_vt_asan
 	./bin/dbg_asan
 	./bin/test_fm_asan
+	./bin/test_render_asan
 
 run: $(BIN)
 	./$(BIN)

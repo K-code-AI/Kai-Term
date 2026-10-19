@@ -17,14 +17,17 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s101 — build and every suite green. One small open bug (dead
-`cursor_color =`, filed in ISSUES.md); s102 is planned in "Current Task", not started)
+## Current Status (re-measured 2026-10-22, s102 — build and every suite green, no open bug. s102 step 0 (the dead
+`cursor_color =`) is done in code and in checks; its LOOK is not yet confirmed by the user. Steps 1-7 wait on the
+eight questions in "Current Task")
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`).
 - **Suites:** `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 67 checks, 0 failures, 13 skipped`,
   `./bin/test_vt` **958 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
-  0 failures**. `make asan` exit 0, same three counts, 0 sanitizer reports. With a display and spare VRAM,
+  0 failures**, `./bin/test_render` **15 checks, 0 failures** (new in s102: the renderer's pure colour
+  decisions, no display and no GL context). `make asan` exit 0, same four counts, 0 sanitizer reports. With a
+  display and spare VRAM,
   `tests/cli_test.sh` reports **117 checks / 0 failures / 0 skipped**. What its windowed group alone covers is
   `main()`'s own argv handling — `-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e` — and
   that a real launch applies the multiplexing / display / file-manager keys and the band's share of the window. The
@@ -32,10 +35,10 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   (13 `cfgsearch` checks + the `config split` group). A no-window "0 failures" therefore leaves only the argv half
   uncovered (last full windowed run measured in s99; s100 and s101 skipped it — the user at the machine). **Re-diff
   these numbers, do not copy them.**
-- **One open bug, small and filed (ISSUES.md "Open"): `cursor_color =` is dead config.** Parsed, stored and
-  parse-tested, never read — `src/render.c` uses the `CURSOR_COL` macro and `render_init()` takes only `bg`/`fg`. Same
-  class as the border bug below and fixed by the same move (pass the configured value to the renderer); it is folded
-  into s102 step 1, where the palette becomes runtime state anyway.
+- **No open bug.** The one that was filed — `cursor_color =` parsed, was stored, was parse-tested and reached no
+  pixel — is fixed and A/B'd (5 of the 15 new checks fail on the pre-fix renderer, 0 on this tree); ISSUES.md "Fixed"
+  carries it. **What is still owed on it: the user's eye.** The value now reaches the renderer, but nobody has looked
+  at a configured cursor colour on a real window — hand that verdict to them, do not map a window to judge it here.
 - **No open question from s101.** The border fix is **user-confirmed in their own window** ("It's fixed, you can
   push", 2026-10-22): one runtime value (`term_set_default_colors()` / `term_default_fg()` / `term_default_bg()` in
   `src/vt.c`) now owns the default ink and paper, so the `background =` line covers the cells as well as the
@@ -68,11 +71,11 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
   a new Open item with a reproduction.
 
-## Current Task (s102 — IN PROGRESS. Step 0, the filed `cursor_color =` bug, is being done now because none of the
-eight open questions can change it. Steps 1-7 are still NOT STARTED and stay that way until the user answers the
-questions at the end. The facts in each block were measured against this tree.)
+## Current Task (s102 — IN PROGRESS. Step 0, the filed `cursor_color =` bug, is DONE (code, checks, A/B, docs) —
+only the user's look-verdict is outstanding. Steps 1-7 are still NOT STARTED and stay that way until the user
+answers the questions at the end. The facts in each block were measured against this tree.)
 
-### 0. The dead `cursor_color =` (ISSUES.md "Open") — IN PROGRESS, no user decision needed
+### 0. The dead `cursor_color =` (ISSUES.md "Open") — DONE 2026-10-22, except the user's look-verdict
 
 Objective: make the configured cursor colour reach the pixel, in the shape step 1 needs anyway, and pin it with a
 check at the CONSUMER (the renderer), not at the parser — that is the whole lesson of this bug.
@@ -93,8 +96,9 @@ Planned steps, each build + every suite before the next:
 5. ISSUES.md: move to "Fixed" only after the A/B and the suites; README already documents the key (line 405), so no
    doc change is needed — the fix makes the existing line true.
 
-What is NOT in this step: the `g_palette[256]` refactor, a theme file, `--import-theme`, and any new config key. All
-of those wait for the answers below.
+What is NOT in this step and still waits for the answers below: the `g_palette[256]` refactor, a theme file,
+`--import-theme`, and any new config key. `SEL_BG` is still a compile-time macro — `tests/test_render.c` pins that on
+purpose, so step 1 must change that check deliberately when a selection colour becomes configurable.
 
 **Dropped on the user's word — do not re-propose these:** scrollback search ("not really usefull imo");
 HiDPI / fractional scaling (their `~/.config/niri/config.kdl` sets no `output { scale }`, so the output is at scale 1
@@ -696,12 +700,46 @@ the visual verdicts (theme colours, cursor look, bell flash) to the user.
   and the compiler says `conflicting types for 'ch'`, not shadow. `SEL_BG` and `CURSOR_COL` are still macros here on
   purpose; part 2 replaces the cursor one with the configured value.
 
+- **2026-10-22, s102 step 0 part 2 — `cursor_color =` reaches the pixel, and a test binary for the renderer.**
+  `Render` gained `cursor_color`, `render_init()` takes it, `src/main.c` passes `conf.cursor_color`, and
+  `render_chrome()` derives the cursor from `r->cursor_color` instead of the macro — the visible session's cursor is
+  the configured colour, a drawn-but-not-visible session's is that colour mixed 55 % toward the configured background.
+  `SEL_BG` deliberately stayed a macro (no selection colour key exists yet; that is step 1's decision).
+  New `tests/test_render.c` → `bin/test_render`, added to `make test` and to `make asan` (`bin/test_render_asan`):
+  it links `render.o` + what `render.o` needs to link, but calls only the pure function, so it needs no display, no
+  EGL and no GL context. **15 checks, 0 failures.**
+  **A/B, the part that makes those checks mean anything:** built the same test against the pre-fix renderer — commit
+  `757b54f`'s `src/render.c`, i.e. the extraction with `render_chrome()` still reading `CURSOR_COL`, given the new
+  `render_init()` parameter and NOT assigning it (that is exactly the reported state: the value arrives and is
+  ignored), plus that commit's `src/main.c` — and ran it with the CWD set so the source scans read those files:
+  **5 of the 15 fail** (active cursor, inactive mix, two-values-differ, the `CURSOR_COL` token count, the `main.c`
+  argument scan), the other 10 pass on both, which is what shows they pin invariants rather than the change. On this
+  tree: 0 failures.
+  Two of the checks are **source scans**, and that is honest rather than lazy: the one link that cannot be executed
+  headless is the `render_init()` call, because it lives in `main()`, which is in no linked test. So
+  `src_word_count("src/render.c", "CURSOR_COL") == 0` (whole tokens, so `chrome` cannot match `ch`) with a companion
+  check that the same scan finds `SEL_BG` — without that companion the zero could pass on an empty read. Plus
+  `src_call_passes_arg("src/main.c", "render_init(", "conf.cursor_color")`.
+  Two mistakes of my own, both caught by running things: the first version compared a `Chrome` from an earlier config
+  against one from a later one, so "opacity does not change the chrome colours" failed on a stale expected value —
+  the fix was to compare each pair that differs in exactly one field; and `bin/test_render` failed to link until
+  `config.o` was added (the test starts from a real `config_default()`).
+  Verified from `make clean`: `make -j8` exit 0, **0 warning lines**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 —
+  `CLI: 67 checks, 0 failures, 13 skipped`, `test_vt` 958 / 0, `dbg` MODEL OK, `test_fm` 293 / 0, **`test_render`
+  15 / 0**; `make asan` exit 0, same four counts, no sanitizer report. Docs: ISSUES.md Open → Fixed, README's
+  `cursor_color` row and the shipped template's comment now say what the key does (including the dimmed inactive-session
+  cursor). **Not verified: the look.** No window was mapped — the user is at the machine, and a colour's correctness
+  is their judgement, not a screenshot's.
+
 ## Next Steps
 
-0. **s102 — the seven features the user agreed to. Plan in "Current Task", NOT started, and it opens with eight
-   questions that are the user's.** Do not start step 1 until they are answered; the plan already records what was
-   measured, so do not re-derive it, and it records what the user rejected (search, scaling, OSC 52, IME), so do not
-   re-propose those.
+0. **s102 — step 0 (the dead `cursor_color =`) is DONE: code, checks, A/B, ISSUES.md, README, template.** Two things
+   are owed before anything else happens: (a) **put the eight questions in "Current Task" to the user** — step 1
+   (themes) cannot be designed without the precedence and OSC answers; (b) **get the look verdict on the cursor
+   colour** — set `cursor_color = ff0000` in their own `~/.config/kai-term/kai-term.conf` and have them look at it.
+   Then the seven features the user agreed to, plan in "Current Task", steps 1-7 NOT started. Do not start step 1
+   until the questions are answered; the plan already records what was measured, so do not re-derive it, and it
+   records what the user rejected (search, scaling, OSC 52, IME), so do not re-propose those.
 
 0. **s101 — the visible border around the grid: CLOSED.** Fixed, A/B'd, documented, and confirmed by the user in
    their own window ("It's fixed, you can push", 2026-10-22); pushed. Nothing about it is owed — do not re-derive the
@@ -843,10 +881,11 @@ Kai-Term/
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
 ├── tests/test_vt.c              # 958 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
 ├── tests/test_fm.c              # 293 checks: the file-manager model, previews, decoders, band geometry
+├── tests/test_render.c          # 15 checks: the renderer's pure colour decisions (no display, no GL call)
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # 117 checks driving the REAL bin/kai-term; ONE probe launch gates the
 │                                # window checks, KAI_TERM_TEST_NO_WINDOW=1 skips them entirely
-├── bin/                         # kai-term, test_vt, dbg (+ *_asan)          [generated, git-ignored]
+├── bin/                         # kai-term, test_vt, dbg, test_fm, test_render (+ *_asan)  [generated, git-ignored]
 └── build/                       # *.o + generated/xdg-shell-*                [generated, git-ignored]
 ```
 
@@ -938,6 +977,16 @@ Kai-Term/
   directory listing, both ends clamp, a new preview starts at the top, a pane with no body has nothing to scroll,
   and a resize pulls the scroll back inside what the NEW pane can show), and the band's rects inside
   `layout_compute()`.
+- `tests/test_render.c` — 15 checks, the only coverage of the renderer's colour decisions that needs no display:
+  it links `render.o` (plus `fm.o font.o img.o vt.o shellint.o layout.o mux.o config.o`, which is what `render.o`
+  needs to LINK) and calls only `render_chrome()`, which reads a `Render` struct and nothing else — never
+  `render_init()`, never a GL call. Covers: the configured `cursor_color` is what an active pane's cursor is drawn
+  with, an inactive session's cursor is that colour mixed with the configured background, the built-in default still
+  yields `CURSOR_COL`, two different values change both, a different background moves the dimmed colour but not the
+  active one, window opacity never reaches these values, and the selection band / active bar item / focus border are
+  still `SEL_BG` (pinned so step 1 must change it on purpose). The last four checks are SOURCE SCANS of
+  `src/render.c` and `src/main.c` — the honest way to cover the `render_init()` call, which lives in `main()` and so
+  is in no linked test; the `CURSOR_COL == 0` scan has a companion that proves the scan finds `SEL_BG`.
 - `Makefile` — pkg-config-driven; `-Iinclude/kai-term -Ibuild/generated`; output dirs via order-only
   prerequisites so they never force rebuilds; generates xdg-shell bindings with `wayland-scanner`.
 
