@@ -19,10 +19,11 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
 
 ## Current Status (re-measured 2026-10-20, s95 — build and every suite green; the file manager's path key is implemented and measured headless in fish/bash/zsh, NOT yet seen by the user's eye)
 
-- **s90-s94 are committed and pushed; the s95 work is committed on `main` but NOT yet pushed** — read the real
-  state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's follow
-  fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks) was
-  confirmed by the user in their own window (2026-10-20).
+- **s90-s95 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
+  the push: `git status -sb` shows no ahead/behind and `git diff --stat main origin/main` is empty). Read the
+  remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
+  follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks)
+  was confirmed by the user in their own window (2026-10-20).
 - **s95 changed the file manager's key layout, by request — implemented, green, measured headless, NOT yet seen
   by the user's eye.** `p` (`fm_key_path`) types the selected entry's quoted path at the cursor; the preview
   toggle moved to `v`; `Return` on a file does nothing (it used to type the path), and so does a double-click.
@@ -311,10 +312,13 @@ OK, `test_fm` 247 / 0, `make asan` clean; README settings rows vs `apply()`'s ke
 **Not verified, and nobody should claim it:** the user has not seen this in their window. Everything above is
 headless or a unit check. The in-window questions only they can answer: does `p` feel right next to `v`, does the
 path land where they expect with the cursor mid-line, and does the one-shot (no auto-repeat) behave.
-**Committed on `main`, NOT pushed** — `git status -sb` says `[ahead 1]`; the push is the user's call (they also
-commit on GitHub, so `git fetch` first). The commit also carries the AGENT.md corrections s94 had left uncommitted.
-**Next action:** hand it to the user to try (`make && ./bin/kai-term -d`, `Ctrl+Shift+F`, type `cat `, press `p`
-on a file). If they confirm, the only follow-ups worth offering are the ones already in Next Steps.
+**Committed and pushed** (2026-10-20, after the user said "It's good, You can push"): `git fetch` first (they
+also commit on GitHub) -> nothing to take, `git push origin main` exit 0, then verified with `git status -sb`
+(`## main...origin/main`, no ahead/behind) and `git diff --stat main origin/main` (empty). Working tree clean.
+**Their "It's good" is approval of the change, NOT a report of having run it** — nothing in the message says
+they pressed `p` in their window, so the in-window item below stays open and must not be written up as a
+user-confirmed feature.
+**Next action:** none pending in the repo. If they ever report something off, the recipe is in Next Steps 1b.
 
 **Also owed by s94 entry 4 (found while reading, now PAID — see s95 entry 6):** its planned steps (3)-(5), a
 `build.sh` beside `.scratch/s90b/intgate.c` plus a rebuild and a re-run of every mode from there, had never been
@@ -1937,3 +1941,11 @@ after `ptr_*` hit-tested bar then panes.
   at the TOP of the picture area (one big enough to fill it), and only the A/B — the new test file against
   `git show HEAD:src/fm.c` — showed that. When a check is written to pin a bug, run it against the code that
   had the bug and report the failure count (s88: 8 failures there, 0 here).
+- **A harness that types into the user's real shell history pollutes its own later runs.** The s95 path gate ran
+  real fish/bash/zsh in a pty, so its commands landed in `~/.config/fish/fish_history` and `~/.bash_history`.
+  Two separate false greens followed: a later run's autosuggestion ghost was a command an EARLIER run had typed
+  (the row check passed on the machine that typed nothing), and in ghost mode Enter printed the expected output
+  because fish's own suggestion completed the command. Run shells with their history redirected (`fish --private`,
+  `HISTFILE=/tmp/...`) and make the needle something no history can already contain (a pid in the file name).
+  Same class as every other "the harness caused the symptom" entry: when a check passes on the code you expect
+  it to fail, suspect the check before you believe the result (s95).
