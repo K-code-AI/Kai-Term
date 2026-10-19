@@ -17,15 +17,16 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s95 — build and every suite green; the file manager's path key is implemented and measured headless in fish/bash/zsh, NOT yet seen by the user's eye)
+## Current Status (re-measured 2026-10-20, s95 — build and every suite green; the file manager's path key is implemented, measured headless in fish/bash/zsh AND confirmed working by the user in their own window)
 
 - **s90-s95 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
   the push: `git status -sb` shows no ahead/behind and `git diff --stat main origin/main` is empty). Read the
   remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
   follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks)
   was confirmed by the user in their own window (2026-10-20).
-- **s95 changed the file manager's key layout, by request — implemented, green, measured headless, NOT yet seen
-  by the user's eye.** `p` (`fm_key_path`) types the selected entry's quoted path at the cursor; the preview
+- **s95 changed the file manager's key layout, by request — implemented, green, measured headless and CONFIRMED
+  BY THE USER IN THEIR OWN WINDOW** ("The feature works", 2026-10-20 — their verdict on the behaviour, not on how
+  anything looks). `p` (`fm_key_path`) types the selected entry's quoted path at the cursor; the preview
   toggle moved to `v`; `Return` on a file does nothing (it used to type the path), and so does a double-click.
   The gate in `fm_send_path()` is now the non-strict `term_prompt_line_typed()`, which is what makes it work
   after a half-typed command, through fish's autosuggestion ghost, and at a cursor parked mid-line — the three
@@ -103,7 +104,8 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   as expected", 2026-10-17); zoom (no stale prompt lines), padding, fullscreen refresh, black-window/no-input
   fix, heavy-output segfault fix, transparency, bracketed paste, `clear` drops scrollback, shell start dir,
   color emoji, text selection, `app_id`, several instances at once, window resize, key-hold repeat, clipboard
-  interop both directions.
+  interop both directions; the file manager's path key `p` and the `Return`-does-nothing change ("The feature
+  works", 2026-10-20, s95).
 - Verified at model+live level (not all re-checked by hand): reflow on width change, color emoji + grapheme
   clusters, whole-glyph selection with no band over unwritten space, compositor transparency, CSI 3 J +
   startup dir, client-side key repeat, draw/commit + event-loop pacing.
@@ -112,7 +114,7 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s95 — CLOSED in code, AWAITING THE USER'S EYE: the user asked to CHANGE a design decision, not fix a bug. "If I pre-type some text and then use the file manager, pressing enter on a file doesn't append it's path to the prompt. can we change that? … cat ' /path/to/somefile.txt'" and, when I called it a defect: "it is not a bug, it was a design decision, But we are changing it.")
+## Current Task (s95 — CLOSED: the user asked to CHANGE a design decision, not fix a bug. "If I pre-type some text and then use the file manager, pressing enter on a file doesn't append it's path to the prompt. can we change that? … cat ' /path/to/somefile.txt'" and, when I called it a defect: "it is not a bug, it was a design decision, But we are changing it." Shipped as the `p` key; the user's verdict on their own window: "The feature works". See s95 entries 1-8.)
 
 **Objective:** `Return` on a file in the browser must type its quoted path at the prompt **even when the line
 already holds text**, so `cat ` + Enter-on-`somefile.txt` gives `cat '/path/to/somefile.txt'`. Today
@@ -309,16 +311,32 @@ both key tables, the settings row, a worked table of what `p` does to a line) an
 the change made false, plus a note that the defaults changed). Build 0 warnings; `test_vt` 814 / 0, `dbg` MODEL
 OK, `test_fm` 247 / 0, `make asan` clean; README settings rows vs `apply()`'s keys re-diffed by set difference
 (51 = 51, `diff` empty); the `cd` follow proven unchanged by `diffgate.sh` + all six integration modes.
-**Not verified, and nobody should claim it:** the user has not seen this in their window. Everything above is
-headless or a unit check. The in-window questions only they can answer: does `p` feel right next to `v`, does the
-path land where they expect with the cursor mid-line, and does the one-shot (no auto-repeat) behave.
+**Now confirmed by the user in their own window** (2026-10-20): "The feature works". That is the project's
+highest evidence class and it retires "not yet seen by the user's eye" for this feature. Read narrowly and
+honestly: it is a verdict on the BEHAVIOUR (the path lands where they wanted, nothing ran), it says nothing about
+how the band LOOKS — that separate item is still open (Next Steps 1) — and they did not report on the mid-line
+cursor case, the ghost case or the one-shot/auto-repeat behaviour specifically. Those stay covered by the headless
+matrix and the unit checks, not by their eye.
 **Committed and pushed** (2026-10-20, after the user said "It's good, You can push"): `git fetch` first (they
 also commit on GitHub) -> nothing to take, `git push origin main` exit 0, then verified with `git status -sb`
 (`## main...origin/main`, no ahead/behind) and `git diff --stat main origin/main` (empty). Working tree clean.
-**Their "It's good" is approval of the change, NOT a report of having run it** — nothing in the message says
-they pressed `p` in their window, so the in-window item below stays open and must not be written up as a
-user-confirmed feature.
 **Next action:** none pending in the repo. If they ever report something off, the recipe is in Next Steps 1b.
+
+### s95 entry 8 — the user's verdict in their own window
+
+**Verbatim (2026-10-20): "The feature works"** — after the push, in their own Kai-Term, with fish as the login
+shell. That is the project's highest evidence class, and it is the reason the path key moved from "measured
+headless" to "user-confirmed" in Current Status, in the user-confirmed list, in the s95 close-out and in Next
+Steps 1b.
+**What it does NOT cover, deliberately left open:** how the band looks (Next Steps 1, still the one visual item
+never judged), and the specific edge cases they never mentioned — a cursor parked mid-line, the autosuggestion
+ghost, holding `p` (the one-shot). Those remain covered by `.scratch/s95/pathgate.c` and the 11 `test_vt.c`
+checks, and are written that way in the journal so a later session does not read "the user confirmed it" as
+"the user confirmed every case".
+**Docs changed:** AGENT.md only (Current Status heading + s95 bullet + the confirmed list + the close-out +
+Next Steps 1b + the Current Task heading). README and ISSUES.md needed nothing — they describe behaviour, and
+the behaviour they describe is what was confirmed.
+**Nothing in the source changed**, so no rebuild or re-run was owed; the suites quoted above still stand.
 
 **Also owed by s94 entry 4 (found while reading, now PAID — see s95 entry 6):** its planned steps (3)-(5), a
 `build.sh` beside `.scratch/s90b/intgate.c` plus a rebuild and a re-run of every mode from there, had never been
@@ -1259,7 +1277,8 @@ one verified change and push.
    `fm: dropping stale …`, `fm: keyboard -> …` and `graphics: … + the file-manager preview`, not from the
    shader. One decision they may want to revisit, flagged and one line to change: `fm_follow` sends `cd <path>`
    unprompted. (`Return` typing a path is no longer one of them — s95 moved that to `p` at their request.)
-1b. **The path key (s95) is built, green and measured headless; the open item is the user's eye.** The recipe:
+1b. **The path key (s95) is done: built, green, measured headless AND confirmed by the user in their own window**
+   ("The feature works", 2026-10-20). Nothing is owed here but a diagnosis if a report ever arrives. The recipe:
    `./bin/kai-term -d`, `Ctrl+Shift+F`, type `cat `, press `p` on a file — the prompt must read
    `cat '/path/to/file'` with the cursor after it and nothing executed. With `-d` the line is
    `fm: typed the selected path at the prompt: <path>`; a refusal logs
