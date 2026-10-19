@@ -7,14 +7,23 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 ## Open
 
 **No open bug.** The user's report that opened this — the mouse wheel doing nothing inside `nano` — is fixed and
-confirmed in their own window; see the three s96 entries at the top of "Fixed".
+confirmed in their own window; see the three s96 entries at the top of "Fixed". Their stray-`h` report is also
+fixed (the C0-inside-CSI entry); **it still needs their eye in their own window**, because the trigger is a paste
+whose text contains escape sequences and only they can say whether the `h` is gone. If it is not gone, the next
+place to look is already measured and is NOT a Kai-Term bug: pasting text that contains an escape sequence while
+the application has not yet asked for DEC mode 2004 hands that sequence to the shell, which echoes back the
+`2004h` — see "Known limitations" — "Paste". Two different mechanisms, one symptom; only the first one was ours
+to fix.
 
-Re-measured 2026-10-21 (s96, after the mouse-in-full-screen work): `make -j8` exit 0 with **0 warnings**;
-`./bin/test_vt` **845 checks, 0 failures**; `./bin/dbg` **MODEL OK
-(0 problems)**; `./bin/test_fm` **274 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+Re-measured 2026-10-21 (s97, after the C0-inside-CSI parser fix, from `make clean`): `make -j8` exit 0 with
+**0 warnings**; `./bin/test_vt` **859 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+`./bin/test_fm` **274 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
-sanitizer report; `tests/cli_test.sh` 95 checks / 0 failures / 0 skipped when the probe launch can draw (the
-window-opening group is skipped on a box whose video memory is spoken for, so it was not re-run here).
+sanitizer report; `tests/cli_test.sh` **96 checks / 0 failures / 0 skipped** — the probe launch could draw
+here, so the window-opening group ran (it is skipped on a box whose video memory is spoken for). The 96 is
+not a change to the suite: s95 added one check (`fm_key_path = none` unbinds) and the 95 written here in s96
+had never been re-diffed — `git show 3ece4e7:tests/cli_test.sh` reports 95, `git show HEAD:tests/cli_test.sh`
+reports 96, both against this same binary.
 No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 **Fixed and confirmed by the user in their own window (2026-10-19):** a second file-manager navigation on top
@@ -27,8 +36,8 @@ The behaviour the user asked for on 2026-10-19 — clear the prompt, `cd`, put t
 
 Everything else below is current behaviour, not a bug.
 
-The integrated file manager (README "File manager") is built, wired into the window and covered by 247
-model/layout/config checks plus the 814 passing ones in the VT/config suite; its input routing was verified
+The integrated file manager (README "File manager") is built, wired into the window and covered by 274
+model/layout/config checks plus the 859 passing ones in the VT/config suite; its input routing was verified
 live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
 file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
 at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s71-s79 journal
@@ -54,6 +63,31 @@ To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` log
 not filed; it is not a bug until it reproduces.
 
 ## Fixed
+
+**A stray `h` nobody typed, and a mode silently not applied: a C0 control byte inside a control sequence ended
+the sequence (2026-10-21, s97).** Reported by the user, who also guessed the shape of it: "the h can happen from
+opening Kai-Term and trying to paste … I just can't reproduce it at will", and, in nano, the paste produced nano's
+own `Flawed paste`. What was actually wrong, measured (`.scratch/s97/hprobe2`, real `term_parse()`): `PS_CSI`'s
+handling of a C0 byte inside a control sequence was `state = PS_GROUND; i--;` — it ENDED the sequence at the
+control byte. That does two damaging things at once: the mode the sequence was setting is never applied, and the
+REST of the sequence is printed as text. `ESC [ ? 2004 <TAB> h` left `bracketed_paste` at 0 and painted an `h`;
+`ESC [ ? 1049 <TAB> h` never entered the alternate screen and painted an `h`; `ESC [ ? 1 <TAB> h` left DECCKM off
+and painted an `h`. `h` is the final byte of every mode-ENABLING sequence (`?2004h`, `?1049h`, `?25h`, `?1h`),
+which is exactly why the leaked character is an `h`. DEC VT500 and xterm both EXECUTE the control byte and KEEP
+collecting the sequence; that is what `exec_c0()` now does, shared by the ground state and by CSI (the two states
+used to have separate, disagreeing copies of the rule, and CSI's copy was missing). ESC stays the exception: it
+cancels the sequence and starts a new escape. Verified: 14 new checks in `tests/test_vt.c` (845 -> 859, 0
+failures), A/B'd against `git show HEAD:src/vt.c` — **9 failures on the old parser, 0 on the new**
+(`.scratch/s97/test_vt_old`).
+
+**What the user's other clue was, and it is not a Kai-Term bug (documented, not fixed):** nano's `Flawed paste`
+reproduces when the PASTED TEXT contains an escape sequence — nano refuses the whole block and drops everything
+after the escape (measured, `.scratch/s97/hprobe`: pasting `AA\e[?2004hBB` into nano 9.2 shows `[ Flawed paste ]`
+and inserts only `AA`). Kai-Term's own write pattern is not the cause: nano accepts the paste even when
+`paste_flush()` sends it as three separate writes (`ESC[200~`, the text, `ESC[201~`), and even chunked at 4096
+bytes like the real code does (`.scratch/s97/flawed`, cases A/B/C/G2 clean). So the clue says the clipboard holds
+text copied out of a terminal — which matters because of the limitation noted under "Paste": such text is only
+protected by the bracketed-paste delimiters, and those are sent only when the application has asked for mode 2004.
 
 **The mouse wheel did nothing inside `nano` / `less` / `man`, and was dead in every program that DID ask for the
 mouse (2026-10-21, s96).** Symptom, reported by the user: "When opening a file with nano or similar program it
@@ -234,6 +268,29 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   warning, because the whole block must be buffered before delimiters can surround it.
 - **Bracketed paste is per application:** the delimiters are sent only when the app has DEC mode 2004 on.
   A shell/readline with bracketed paste off correctly keeps getting raw line-by-line pastes.
+
+**Paste**
+
+- **A paste is wrapped in `ESC[200~`/`ESC[201~` only while the application holds DEC mode 2004, and at startup
+  there is a window in which it does not.** Measured from the pty spawn (`.scratch/s97/fishtime`, and section B
+  of `.scratch/s97/hprobe2`): bash and zsh turn the mode on ~20 ms after the shell starts, fish ~200 ms — and
+  fish only once the terminal has answered its startup queries (a probe that leaves those queries unanswered
+  watches fish stall and reports "never", which is a property of the probe, not of fish). A paste flushed before
+  that moment goes out RAW. That is the shape of the user's report: "the h can happen from opening Kai-Term and
+  trying to paste … I just can't reproduce it at will". The same unwrapped path is taken for a paste over
+  `PASTE_BUF_MAX` (8 MiB) — see "Selection / clipboard" above.
+- **Raw-pasting text that itself contains an escape sequence puts characters on the line that nobody typed.**
+  Measured (`.scratch/s97/hprobe`, a real shell in a pty): pasting `AA\e[?2004hBB` into bash WITH the delimiters
+  leaves the inert literal `AA^[[?2004hBB` on the line; the same bytes WITHOUT them leave `AA2004hBB`, and Enter
+  runs `AA2004hBB` (`bash: AA2004hBB: command not found`). The `h` is the final byte of `\e[?2004h` — the
+  character the user reported. The sequence is interpreted by the SHELL (readline), not by Kai-Term's parser:
+  Kai-Term wrote the bytes to the pty and the shell echoed what it made of them. Text copied out of a terminal is
+  the usual source of such clipboard content. Kai-Term cannot know that the clipboard holds escape bytes; the
+  delimiters are the protection, and asking for them is the application's decision.
+- **nano answers such a paste with its own `[ Flawed paste ]`** and inserts nothing after the escape (measured,
+  nano 9.2, `.scratch/s97/hprobe`). Kai-Term's write pattern is not the cause: nano accepts the same block when
+  `paste_flush()` sends it as three separate writes (`ESC[200~`, the text, `ESC[201~`) and when chunked at 4096
+  bytes like the real code does (`.scratch/s97/flawed`, cases A/B/C/G2 clean). See the s97 entry under "Fixed".
 
 **Sessions / layout**
 

@@ -20,6 +20,20 @@ static void feed(const char *s)
     term_parse(&T, (const uint8_t *)s, strlen(s));
 }
 
+/* Is there ANY glyph in the viewport? Used to prove a control sequence was consumed rather than printed:
+   a parser that abandons a sequence mid-way paints its remaining bytes, and the final byte of every
+   mode-ENABLING sequence (\e[?2004h, \e[?1049h, \e[?1h, \e[?25h) is an `h`. */
+static int grid_has_glyph(void)
+{
+    for (int y = 0; y < T.g.rows; y++) {
+        Cell *r = grid_vprow(&T.g, y);
+        for (int x = 0; x < T.g.cols; x++)
+            if (r[x].ch)
+                return 1;
+    }
+    return 0;
+}
+
 /* What src/main.c really does with a keystroke: the bytes go to the pty (and term_note_input() tells the
    model they are outstanding), and what the tty echoes back arrives LATER, as a separate term_parse.
    Feeding an echo without noting the input would test a state the real program can never be in. */
@@ -1010,6 +1024,65 @@ int main(void)
     CHECK(kn == 6 && small[kn] == 0 && !memcmp(small, "\x1b[B\x1b[B", 6),
           "keyclick: a short buffer gets whole presses, never half an escape sequence");
     CHECK(term_click_arrow_keys(&T, 3, 0, small, 3) == 0, "keyclick: a buffer that cannot hold one press sends nothing");
+
+    /* --- a C0 control byte INSIDE a control sequence: execute it, keep collecting ---
+       DEC VT500 / xterm. The parser used to end the sequence at the control byte instead, which did two
+       things at once: the mode the sequence was setting was never applied, AND the rest of the sequence was
+       printed as text. Measured 2026-10-21 (.scratch/s97/hprobe2) before the fix: ESC [ ? 2004 <TAB> h left
+       bracketed_paste at 0 and painted an `h`; ESC [ ? 1049 <TAB> h never entered the alternate screen and
+       painted an `h`; ESC [ ? 1 <TAB> h left DECCKM off and painted an `h`. A stray `h` nobody typed is the
+       user-visible symptom (report 2026-10-21), because `h` is what every mode-ENABLING sequence ends with. */
+    term_destroy(&T);
+    term_init(&T, 24, 80, 100);
+    feed("\x1b[?2004\x09h");
+    CHECK(T.bracketed_paste == 1, "C0 inside CSI (TAB): the sequence still applies its mode");
+    CHECK(!grid_has_glyph(), "C0 inside CSI (TAB): nothing of the sequence is printed");
+    CHECK(T.cx == 8, "C0 inside CSI (TAB): the TAB itself was executed");
+
+    term_destroy(&T);
+    term_init(&T, 24, 80, 100);
+    feed("\x1b[?2004\x0ah");
+    CHECK(T.bracketed_paste == 1 && T.cy == 1,
+          "C0 inside CSI (LF): the LF moved the cursor AND the mode was still applied");
+    CHECK(!grid_has_glyph(), "C0 inside CSI (LF): nothing of the sequence is printed");
+
+    term_destroy(&T);
+    term_init(&T, 24, 80, 100);
+    feed("\x1b[?2004\x0dh");
+    CHECK(T.bracketed_paste == 1 && T.cx == 0, "C0 inside CSI (CR): executed, and the mode applied");
+    CHECK(!grid_has_glyph(), "C0 inside CSI (CR): nothing printed");
+
+    term_destroy(&T);
+    term_init(&T, 24, 80, 100);
+    feed("\x1b[?1\x09h");
+    CHECK(T.app_cursor == 1 && !grid_has_glyph(), "C0 inside CSI: DECCKM survives a TAB in the sequence");
+
+    term_destroy(&T);
+    term_init(&T, 24, 80, 100);
+    feed("\x1b[?1049\x09h");
+    CHECK(T.alt_screen == 1 && !grid_has_glyph(),
+          "C0 inside CSI: the alternate screen is entered even with a TAB in the sequence");
+
+    /* ESC is the exception: it CANCELS the sequence and starts a new escape (xterm does the same), so the
+       mode is NOT applied -- but the abandoned bytes must still not be painted. */
+    term_destroy(&T);
+    term_init(&T, 24, 80, 100);
+    feed("\x1b[?2004\x1bh");
+    CHECK(T.bracketed_paste == 0, "ESC inside CSI cancels the sequence, so the mode is not set");
+    CHECK(!grid_has_glyph(), "ESC inside CSI: the abandoned bytes are never printed");
+
+    /* And the ordinary case a pty read boundary produces -- a sequence split across bursts with NO control
+       byte in it -- must keep working. (A probe that hand-counted the length once fed the NUL terminator
+       and reported this case as broken; it is not. Always strlen.) */
+    term_destroy(&T);
+    term_init(&T, 24, 80, 100);
+    term_parse(&T, (const uint8_t *)"\x1b[?2004", 7);
+    CHECK(T.bracketed_paste == 0, "a CSI sequence left incomplete at the end of a burst stays open");
+    term_parse(&T, (const uint8_t *)"h", 1);
+    CHECK(T.bracketed_paste == 1 && !grid_has_glyph(),
+          "and the next burst finishes it: mode applied, nothing printed");
+    feed("\x1b[?2004l");   /* leave the mode off, as the tests below this one expect to find it */
+    CHECK(T.bracketed_paste == 0, "C0-inside-CSI checks leave bracketed paste off again");
 
     /* --- empty/omitted params --- */
     feed("\x1b[2J\x1b[H");

@@ -2996,6 +2996,40 @@ static void osc_end(Parser *ps)
     }
 }
 
+/* One C0 control byte, executed the way the VT says. Shared by the ground state and by a control
+   sequence that a C0 byte arrives inside of (DEC VT500: the control is executed and the sequence keeps
+   collecting; ESC is the exception and is handled by the caller, because it cancels the sequence).
+   Keeping it in one place is what makes the two states agree -- they used to disagree, and the CSI copy
+   of the rule was missing entirely. */
+static void exec_c0(Term *t, uint8_t b)
+{
+    switch (b) {
+    case 0x07: break;                                    /* BEL: nothing to do here */
+    case 0x08:                                           /* BS */
+        if (t->cx > 0)
+            t->cx--;
+        cluster_invalidate(t);
+        t->wrap_next = 0;
+        break;
+    case 0x09: {                                         /* HT: next tab stop */
+        int next = ((t->cx / 8) + 1) * 8;
+        t->cx = imin_(next, t->g.cols - 1);
+        cluster_invalidate(t);
+        t->wrap_next = 0;
+        break;
+    }
+    case 0x0a: case 0x0b: case 0x0c:                     /* LF / VT / FF */
+        linefeed(t);
+        break;
+    case 0x0d:                                           /* CR */
+        t->cx = 0;
+        cluster_invalidate(t);
+        t->wrap_next = 0;
+        break;
+    default: break;                                      /* every other C0: ignored */
+    }
+}
+
 void term_parse(Term *t, const uint8_t *buf, size_t len)
 {
     Parser *ps = &t->ps;
@@ -3019,18 +3053,7 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
 
         case PS_GROUND:
             if (b == 0x1b) { ps->state = PS_ESC; continue; }
-            if (b == 0x07) continue;                      /* BEL */
-            if (b == 0x08) { if (t->cx > 0) t->cx--; cluster_invalidate(t); t->wrap_next = 0; continue; }
-            if (b == 0x09) {                              /* HT */
-                int next = ((t->cx / 8) + 1) * 8;
-                t->cx = imin_(next, t->g.cols - 1);
-                cluster_invalidate(t);
-                t->wrap_next = 0;
-                continue;
-            }
-            if (b == 0x0a || b == 0x0b || b == 0x0c) { linefeed(t); continue; }
-            if (b == 0x0d) { t->cx = 0; cluster_invalidate(t); t->wrap_next = 0; continue; }
-            if (b < 0x20) continue;
+            if (b < 0x20) { exec_c0(t, b); continue; }
             if (b < 0x80) { putch(t, b); continue; }
             if (b >= 0xc2 && b <= 0xdf) { ps->utf8_cp = b & 0x1f; ps->utf8_need = 1; ps->state = PS_UTF8; continue; }
             if (b >= 0xe0 && b <= 0xef) { ps->utf8_cp = b & 0x0f; ps->utf8_need = 2; ps->state = PS_UTF8; continue; }
@@ -3128,9 +3151,18 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
                 ps->state = PS_GROUND;
                 continue;
             }
-            /* C0 inside CSI: execute it, leave CSI (simple, safe) */
-            ps->state = PS_GROUND;
-            i--;
+            /* ESC cancels the sequence and starts a new escape (xterm does the same); the bytes after it
+               belong to the new sequence, not to this one. */
+            if (b == 0x1b) { ps->state = PS_ESC; continue; }
+            /* Any other C0 inside a control sequence is EXECUTED and the sequence KEEPS collecting --
+               DEC VT500 / xterm. It used to do `state = PS_GROUND; i--;`, which ended the sequence at the
+               control byte, so the mode it was setting was never applied AND its remaining bytes were
+               printed as text. Measured 2026-10-21 (.scratch/s97/hprobe2): ESC [ ? 2004 <TAB> h left
+               bracketed_paste at 0 and painted an `h` into the grid; ESC [ ? 1049 <TAB> h never entered the
+               alternate screen and painted `h`; ESC [ ? 1 <TAB> h left DECCKM off and painted `h`. A final
+               byte of `h` is what every mode-ENABLING sequence ends with, which is why the leaked character
+               the user sees is an `h`. */
+            if (b < 0x20) { exec_c0(t, b); continue; }
             continue;
 
         case PS_OSC:

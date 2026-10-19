@@ -17,10 +17,25 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-21, s96 — build and every suite green; the mouse wheel and a click work
-inside full-screen programs and the preview pane scrolls, measured headless AND confirmed by the user in their own
-window)
+## Current Status (re-measured 2026-10-21, s97 — build and every suite green; a C0 control byte inside a control
+sequence is now EXECUTED instead of ending the sequence, so a mode is no longer silently dropped and the
+sequence's final byte no longer lands on the screen as a stray `h`. Green and A/B'd, but NOT yet seen in the
+user's own window)
 
+- **s97 (the stray `h` nobody typed) is fixed in the parser, green, and A/B'd — and it is NOT yet confirmed in
+  the user's own window** (their report, 2026-10-21: "the h can happen from opening Kai-Term and trying to paste
+  … I just can't reproduce it at will", plus nano's own `Flawed paste`). What was wrong: `PS_CSI`'s handling of a
+  C0 byte inside a control sequence was `state = PS_GROUND; i--;` — it ENDED the sequence at the control byte, so
+  the mode being set was never applied AND the rest of the sequence was printed as text. `h` is the final byte of
+  every mode-ENABLING sequence (`?2004h`, `?1049h`, `?25h`, `?1h`), which is why the leaked character is an `h`.
+  DEC VT500 and xterm EXECUTE the control byte and KEEP collecting; that is what `exec_c0()` (new, file-local in
+  `src/vt.c`) now does for the ground state and for CSI, which had separate disagreeing copies of the rule.
+  ESC stays the exception: it cancels the sequence. Pinned by 14 new `test_vt` checks (845 -> 859); A/B against
+  `git show HEAD:src/vt.c` gives **9 failures on the old parser, 0 on the new**.
+  **The other half of their symptom is a measured limitation, not a bug:** pasting text that itself contains an
+  escape sequence while the app has not yet asked for DEC mode 2004 hands that sequence to the SHELL, which
+  echoes back `2004h` (`.scratch/s97/hprobe`). Two mechanisms, one symptom — see ISSUES.md "Known limitations" —
+  "Paste".
 - **s96 (the mouse inside full-screen programs) is implemented, wired, green and CONFIRMED BY THE USER IN THEIR
   OWN WINDOW** (2026-10-21: "I tested it and now I can scroll in nano", "nano --mouse works as expected", "I
   confirm it to be good"). What it is: DECCKM (`ESC[?1h`) is honoured and saved/restored across the alternate
@@ -35,7 +50,7 @@ window)
   `app_wheel()` + `ptr_button()` + `send_key()` + `fm_wheel()` in main.c. Switches: `wheel_sends_keys`,
   `click_moves_cursor` (default 1). Pinned by 31 new `test_vt` checks and 27 new `test_fm` checks; the preview
   resize clamp was A/B'd (`.scratch/s96/clampab`: 1 failure on the old placement, 0 here).
-- **s90-s96 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
+- **s90-s97 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
   the push: `git status -sb` shows no ahead/behind and `git diff --stat main origin/main` is empty). Read the
   remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
   follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks)
@@ -52,10 +67,12 @@ window)
   `.scratch/s90b/diffgate.sh` reports all seven copied functions byte-identical to `main.c`, and all six
   integration modes still end `MATCH` with `typed text INTACT`.
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **845 checks, 0 failures**,
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **859 checks, 0 failures**,
   `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **274 checks, 0 failures**;
   `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
-  `make asan` exit 0 with the same counts and 0 sanitizer reports.
+  `make asan` exit 0 with the same counts and 0 sanitizer reports. When the probe launch can draw,
+  `tests/cli_test.sh` reports **96 checks / 0 failures / 0 skipped** — 95 before s95 added the
+  `fm_key_path = none` unbind check; re-diff that number, do not copy it from here.
 - **Shell integration (s90-s92) is implemented, wired, and CONFIRMED BY THE USER IN THEIR OWN WINDOW for all
   three shells (2026-10-20): "I verified the shell integration, Fish Bash and Zsh are working as expected now.
   Perfect"** — that closes the one thing s92/s93 owed, including zsh, whose script had never been run anywhere
@@ -133,7 +150,7 @@ window)
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s97 — OPEN, nothing done yet: the user's hypothesis about a stray `h` reaching the prompt)
+## Current Task (s97 — CLOSED: the user's stray `h` nobody typed. Their hypothesis named a mechanism Kai-Term does not have (nothing in our parser writes to our own pty), but it pointed at a real one: `PS_CSI` ENDED a control sequence when a C0 byte arrived inside it, so the mode being set was never applied AND the rest of the sequence was printed as text — and `h` is the final byte of every mode-ENABLING sequence. Fixed with one shared `exec_c0()`, pinned by 14 checks, A/B'd (9 failures on the old parser, 0 on the new). Their second clue, nano's `Flawed paste`, is measured and is NOT a Kai-Term bug. NOT yet confirmed in the user's own window. See s97 entries 1-5 and the close-out.)
 
 **The user's report, in their words (2026-10-21):** they suspect the trailing `h` of the sequence a shell sends to
 enable bracketed paste is being leaked into the input as a keystroke. Their proposed mechanism, verbatim in
@@ -141,40 +158,137 @@ substance: (1) the terminal is sent `\e[?2004h`; (2) the parser catches `\e[?200
 `bracketed_paste_enabled = true`; (3) **the bug they suspect** — the parser changes state before consuming the
 final character, or fails to discard the `h`, so the `h` "gets accidentally leaked or fed back into the PTY input
 queue as a raw keyboard stroke"; (4) because bracketed paste just turned on, the emulator decides to wrap incoming
-input in paste brackets; (5) the leaked `h` comes back as `\e[200~h\e[201~`.
+input in paste brackets; (5) the leaked `h` comes back as `\e[200~h\e[201~`. Their two other clues: "the h can
+happen from opening Kai-Term and trying to paste … I just can't reproduce it at will", and, in nano, the paste
+produced nano's own `Flawed paste`.
 
-**What is right and what is wrong in it, before any code is read** (this is a reading of the mechanism, not a
-verdict — nothing has been measured yet):
+### s97 entry 1 — the hypothesis, read before any code: right shape, wrong direction
+
 - The SHAPE is plausible and matches a real class of parser bug: a state machine that acts on a sequence and then
   re-processes its last byte, or that leaves one byte in the buffer, produces exactly "a character nobody typed".
-- The DIRECTION is wrong: Kai-Term does not send `\e[?2004h` to itself. That sequence arrives **from the shell**,
+  **This part was right, and it is what the fix had to satisfy.**
+- The DIRECTION was wrong: Kai-Term does not send `\e[?2004h` to itself. That sequence arrives **from the shell**,
   in bytes read out of the pty, and `term_parse()` consumes them. There is no path in which our parser writes to
   our own pty input queue, so step 3's "fed back into the PTY input queue" cannot happen as described.
-- What CAN happen, and is what to look for: the `h` is parsed as part of the private-mode sequence but then also
-  reaches the text path, so it lands **in the grid** (a visible `h` on the prompt line) — or the parser's
-  parameter/final-byte handling leaves one byte over and the NEXT burst starts one byte off. Either way the
-  symptom is a character in the terminal that nobody typed, which is what the user is seeing.
-- Step 4-5's bracket wrapping is a separate question worth checking on its own: `paste_wrap()` only adds
-  `ESC[200~`/`ESC[201~` around a **paste** the user performs, never around a stray grid character, so a leaked `h`
-  would not normally be bracketed. If the user is literally seeing `\e[200~h\e[201~` on the line, that points at a
-  different path than a leaked final byte and is itself a clue.
+- What could happen, and is what was looked for: the sequence is mishandled so its remaining bytes reach the text
+  path and land **in the grid** — a visible `h` on the prompt line. That is exactly what was found (entry 3),
+  though the trigger is not the plain sequence the user guessed but a C0 byte arriving inside it.
+- Step 4-5's bracket wrapping was checked on its own: `paste_wrap()` only adds `ESC[200~`/`ESC[201~` around a
+  **paste** the user performs, never around a stray grid character, so a leaked `h` is not bracketed. The user was
+  not reporting the literal text `\e[200~h\e[201~`, so that branch is closed.
 
-**Planned steps (MEASURE first, headless, no window — the standing rule):**
-1. Read the parser's actual path for a private-mode sequence end to end: the CSI/DCS state machine in `src/vt.c`
-   (`csi_dispatch`'s `h`/`l` loops, where `p == 2004` sets `t->bracketed_paste`, the parameter collector, and what
-   happens to the final byte). Note `p == 1` (DECCKM) and `p == 2004` sit in the SAME loops, added in s96 — so if
-   the final byte were mishandled, s96 changed what is at stake.
-2. A probe that feeds `\e[?2004h` (and `\e[?2004l`, and the combined forms real shells send, e.g.
-   `\e[?1004;2004h`) through the real `term_parse()` and prints the grid, the cursor, and `bracketed_paste` after
-   each — the question is whether any cell gains an `h` and whether `cx` moves. Also feed it split across bursts
-   (`\e[?200` + `4h`) because that is where a leftover byte would show.
-3. Check the same for the neighbouring sequences a shell sends at startup (`\e[?1h`, `\e[?1049h`, `\e[?2004h`, and
-   the APC integration announcement `shellint.c` writes), since the user's symptom appears at the prompt.
-4. Only after the measurement: fix, pin with checks in `tests/test_vt.c`, and A/B the check against the code that
-   had the bug.
-**Also worth asking the user:** exactly what they see (a bare `h` on the line, or the literal text
-`\e[200~h\e[201~`), and in which shell — that single detail decides whether this is a leaked final byte or a
-paste-wrapping bug, and it is the difference between two very different probes.
+### s97 entry 2 — MEASURED first: nano's `Flawed paste` is about the CONTENT of the paste, not about how Kai-Term writes it
+
+`.scratch/s97/flawed.c` — real `nano 9.2` in a pty, real `src/pty.c` + real `term_parse()`, no window. The question
+was whether Kai-Term's write pattern is what makes nano complain, since `paste_flush()` writes `ESC[200~`, then the
+text in 4096-byte chunks, then `ESC[201~`, as separate `write()` calls. Eight cases:
+
+| case | what was sent | `Flawed paste`? | text landed? |
+|---|---|---|---|
+| A | balanced, ONE write | no | yes |
+| B | balanced, THREE writes (what `paste_flush` does), no delay | no | yes |
+| C | balanced, three writes with 20 ms gaps | no | yes |
+| D | start bracket, NO end bracket | no | **no** |
+| E | end bracket, NO start bracket | no | yes |
+| F | end bracket split mid-sequence | no | yes |
+| G1 | 9 KB chunked, NO end bracket | no | **no** |
+| G2 | 9 KB chunked exactly like `paste_flush`, WITH end bracket | no | yes |
+
+**No case produced `Flawed paste`** — the write pattern is exonerated. (D and G1 lose the text, which is nano
+waiting for a closing bracket that never arrives; that is the `PASTE_BUF_MAX`/unterminated shape, not a bug.) So the
+remaining candidate was the clipboard CONTENT, and `.scratch/s97/hprobe.c` confirmed it: pasting `AA\e[?2004hBB`
+into nano 9.2 puts `[ Flawed paste ]` on the screen and inserts only `AA` — everything after the escape is dropped.
+nano refuses a paste block that contains an escape sequence. That is nano's diagnostic, not ours.
+
+### s97 entry 3 — the bug, measured: a C0 byte INSIDE a control sequence ENDED the sequence
+
+`src/vt.c`, `PS_CSI`, the branch for a C0 byte inside a control sequence, as found:
+
+```c
+/* C0 inside CSI: execute it, leave CSI (simple, safe) */
+ps->state = PS_GROUND;
+i--;
+```
+
+The comment says "execute it"; the code does not — it leaves the sequence and re-processes the control byte in the
+ground state, abandoning everything still to come. That does two damaging things at once: **the mode the sequence
+was setting is never applied**, and **the REST of the sequence is printed as text**. Measured with
+`.scratch/s97/hprobe2` built against `git show HEAD:src/vt.c` (kept as `.scratch/s97/hprobe2_old`):
+
+```
+C0 TAB inside: \e[?2004<TAB>h    row0 |h         | bracketed=0
+DECCKM:        \e[?1<TAB>h       row0 |h         | app_cursor=0
+alt screen:    \e[?1049<TAB>h    row0 |h         | alt=0
+```
+
+`h` is the final byte of every mode-ENABLING sequence (`?2004h`, `?1049h`, `?25h`, `?1h`) — which is exactly why the
+character the user keeps finding on their line is an `h`. DEC VT500 and xterm both EXECUTE the control byte and KEEP
+collecting the sequence; ESC is the one exception, cancelling the sequence and starting a new escape.
+
+**The probe that got this wrong, and why it matters:** v3 (`.scratch/s97/csiC0.c`) hand-counted its lengths, so
+`term_parse(&T, "\e[?2004", 8)` fed the NUL terminator — the literal is 7 bytes. It therefore reported the ordinary
+pty-boundary case — a sequence split across bursts with NO control byte in it — as broken (`bracketed=0`, an `h`
+painted). v4 (`hprobe2`) uses `strlen()` throughout and shows that case is fine: `burst1=\e[?2004` + `burst2=h`
+leaves `bracketed=1` and paints nothing. The old pitfall, again: when a check fails on code you believe is correct,
+suspect the check. The durable check in `tests/test_vt.c` now pins the split case precisely so it cannot be
+"fixed" into a bug later.
+
+### s97 entry 4 — the fix: ONE `exec_c0()` shared by the ground state and by CSI, 14 checks, A/B 9 -> 0
+
+The rule was written twice and the two copies disagreed — the ground state had it, CSI's copy was missing. So the
+fix removes the duplication rather than patching one copy: a file-local `exec_c0(Term *t, uint8_t b)` in `src/vt.c`
+handles BEL/BS/HT/LF/VT/FF/CR (and ignores every other C0), and both states call it. `PS_GROUND`'s five inline `if`s
+became `if (b < 0x20) { exec_c0(t, b); continue; }`; `PS_CSI` gained `if (b == 0x1b) { ps->state = PS_ESC; continue; }`
+followed by `if (b < 0x20) { exec_c0(t, b); continue; }`. ESC is handled by the caller because it cancels rather than
+executes.
+
+14 new checks in `tests/test_vt.c` (845 -> 859): TAB / LF / CR inside `\e[?2004h` each assert the mode IS applied,
+nothing of the sequence is painted, and the control byte itself was executed (`cx == 8` for the TAB, `cy == 1` for
+the LF, `cx == 0` for the CR); DECCKM (`\e[?1<TAB>h`) and the alternate screen (`\e[?1049<TAB>h`) survive a TAB in
+the sequence; ESC inside CSI leaves the mode OFF but still paints nothing; and the split-burst case with no C0 still
+applies its mode. The new helper for that is `grid_has_glyph()` — "is there ANY glyph in the viewport" — which is
+what proves a sequence was consumed rather than printed.
+
+**A/B, as always:** the new test file against `git show HEAD:src/vt.c` -> `859 checks, 9 failures`; against the
+fixed `src/vt.c` -> `859 checks, 0 failures`. The 9 are the new checks; the old parser fails exactly them.
+
+### s97 entry 5 — the OTHER half of the symptom, measured: how long bracketed paste is OFF after a shell starts
+
+The user's own framing — "from opening Kai-Term and trying to paste", "can't reproduce it at will" — is the shape of
+a startup race, and `paste_flush()` wraps a paste only when the application already holds DEC mode 2004. Measured
+from the pty spawn (`.scratch/s97/fishtime`, and section B of `.scratch/s97/hprobe2`): **bash ~20 ms, zsh ~20 ms,
+fish ~200 ms** before `bracketed_paste` turns 1. A paste flushed before that goes out RAW, and then an escape
+sequence inside the pasted text is keystrokes to the shell: pasting `AA\e[?2004hBB` into bash with the delimiters
+leaves the inert literal `AA^[[?2004hBB`, while the same bytes without them leave `AA2004hBB` on the line and Enter
+runs `AA2004hBB` (`.scratch/s97/hprobe`). That is a second, independent way to get a stray `h`, and it is not ours
+to fix — the delimiters are the protection and asking for them is the application's decision. Documented in ISSUES.md
+"Known limitations" — "Paste".
+
+**The fish number needed a better probe, and the first one was the lesson.** `.scratch/s97/fishdiag` shows fish's
+first 83 bytes are terminal QUERIES (`CSI ? u`, `CSI > 0 q`, `OSC 11 ; ? ST`, `CSI ? 1049 h`, two `DCS + q … ST`,
+`CSI ? 1049 l`, `CSI 0 c`) and fish paints nothing until they are answered or time out. `hprobe2` section B never
+answered them, so it reported "fish: bracketed paste NEVER within 3 s" — a property of the probe, not of fish.
+`fishtime` drains the response queue the way `src/main.c` does and measures 200 ms. A probe that hosts a shell must
+answer that shell's queries or it is measuring a shell that never started.
+
+### s97 close-out — re-measured from a clean tree, committed and pushed
+
+`make clean && make -j8` -> exit 0, no warning line at all. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0:
+`CLI: 62 checks, 0 failures, 10 skipped`, `test_vt` **859 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
+`test_fm` **274 checks, 0 failures**. `make asan` -> exit 0 with the same three counts and no ASan/UBSan report.
+`tests/cli_test.sh` with a display available -> **96 checks, 0 failures, 0 skipped** (the 95 written in s96 was
+stale: s95 added the `fm_key_path = none` unbind check; `git show 3ece4e7:tests/cli_test.sh` counts 95 and
+`git show HEAD:tests/cli_test.sh` counts 96 against the same binary — both re-run here to prove the difference is
+the suite, not the machine). No untracked file outside the git-ignored `bin/` and `build/`.
+
+One commit holds the code, the tests and the two docs (the convention since s95). Pushed; verified afterwards rather
+than asserted: `git fetch` first (the user commits on GitHub too), `git status -sb` shows no ahead/behind,
+`git rev-list --left-right --count origin/main...main` is `0 0`, `git diff --stat main origin/main` is empty, and
+the working tree is clean.
+
+**Left open, and it belongs to the user:** the fix is green and A/B'd, but only their eye can say whether the `h` is
+gone from their own window. If it is not gone, the next place to look is already measured and is not a Kai-Term bug
+— the raw-paste window in entry 5 and the ISSUES.md "Paste" limitations.
 
 ## Previous Task (s96 — CLOSED: the user asked for the mouse wheel to work inside full-screen programs. "When opening a file with nano or similar program it would be nice to be able to scroll with the mouse. Also scrolling in the preview pane of the file manager would be really good if possible when over a text." Then, comparing with kitty: "In kitty I can't click, but I can scroll. So I want scrolling in Kai-Term too when using nano and clicking could be a nice bonus." Shipped, and their verdict in their own window: "I confirm it to be good". See s96 entries 1-4.)
 
@@ -1539,6 +1653,17 @@ one verified change and push.
    reports. If a click lands one row off, that is the end-of-line clamp in `term_click_arrow_keys()` meeting a
    program whose arrow keys do not preserve the column (measured on nano; a program that wraps Right differently
    is the known limit). Both halves are config, not code: `wheel_sends_keys`, `click_moves_cursor`.
+1d. **The stray `h` (s97): the parser bug is fixed, green and A/B'd — what is owed is the user's eye.** Their
+   report was "the h can happen from opening Kai-Term and trying to paste … I just can't reproduce it at will".
+   Ask them to paste the same way they did before and say whether the `h` is gone. If it is NOT gone, do not
+   re-open the parser: the second mechanism is already measured and is not ours to fix — a paste flushed before the
+   application asks for DEC mode 2004 (bash/zsh ~20 ms, fish ~200 ms after the shell starts) goes out RAW, and an
+   escape sequence inside the pasted text is then interpreted by the shell, which echoes back `2004h`
+   (`.scratch/s97/hprobe`). Reproduce that in one line: `printf 'AA\e[?2004hBB' | wl-copy`, paste into a fresh
+   Kai-Term at a bash prompt — with the delimiters the line reads `AA^[[?2004hBB` (inert), without them it reads
+   `AA2004hBB`. The parser rule is under "Architecture & Invariants" — "Parser (vt.c.)"; the checks are the
+   `C0 inside CSI` group in `tests/test_vt.c`, and `grid_has_glyph()` is what proves a sequence was consumed
+   rather than printed.
 2. **Shell integration (s90-s92) is done: wired, green, measured headless AND confirmed by the user's eye in
    their own window for fish, bash and zsh (2026-10-20).** Nothing is owed here but a diagnosis if a report ever
    arrives. The recipe: run `./bin/kai-term -d`, browse into a directory with the band open, and read the log —
@@ -1617,10 +1742,10 @@ Kai-Term/
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 845 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
+├── tests/test_vt.c              # 859 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
 ├── tests/test_fm.c              # 274 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
-├── tests/cli_test.sh            # 95 checks driving the REAL bin/kai-term; ONE probe launch gates the
+├── tests/cli_test.sh            # 96 checks driving the REAL bin/kai-term; ONE probe launch gates the
 │                                # window checks, KAI_TERM_TEST_NO_WINDOW=1 skips them entirely
 ├── bin/                         # kai-term, test_vt, dbg (+ *_asan)          [generated, git-ignored]
 └── build/                       # *.o + generated/xdg-shell-*                [generated, git-ignored]
@@ -1673,7 +1798,9 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 845 checks: parser, grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J,
+- `tests/test_vt.c` — 859 checks: parser (including a C0 byte inside a control sequence — executed, sequence
+  still collecting, nothing painted — and a CSI sequence split across two bursts), grid, selection, alt screen,
+  `live_off`, emoji clusters, CSI 3 J,
   bracketed paste, `term_init` guard, reflow, `term_grid_geometry`, zoom/alt-screen row-shrink,
   `mouse_sgr_button` and `mouse_wheel_button` (the SGR button order and the 64/65 wheel codes), DECCKM
   (`app_cursor` set/cleared by `ESC[?1h`/`ESC[?1l`, saved and restored across the alternate screen,
@@ -1802,6 +1929,22 @@ after `ptr_*` hit-tested bar then panes.
   inside a listener).
 - Chrome colours come from CONFIGURED palette (`Render.fg`/`Render.bg`), never from a `Term`'s pen — that
   is application's current SGR state and would let `printf '\e[31m'` repaint bar that names its tab.
+
+**Parser (vt.c).**
+
+- **A C0 control byte inside a control sequence is EXECUTED and the sequence KEEPS collecting** (DEC VT500 and
+  xterm both do this). ESC is the one exception: it CANCELS the sequence and starts a new escape, so it is handled
+  by the caller and never reaches the shared executor. ONE file-local `exec_c0()` is what both `PS_GROUND` and
+  `PS_CSI` call — the rule used to exist in two copies that disagreed (CSI's copy was `state = PS_GROUND; i--;`,
+  which ENDED the sequence), and that is why the states drifted. Ending a sequence at a control byte does two
+  damages at once: the mode the sequence was setting is silently never applied, and the sequence's remaining bytes
+  are painted as text. Because every mode-ENABLING sequence ends in `h` (`?2004h`, `?1049h`, `?25h`, `?1h`), the
+  painted character is an `h` — a stray `h` on the user's line is the visible half of an invisible mode bug.
+  Pinned by 14 checks, which also pin the OPPOSITE case: a CSI sequence split across two pty reads with NO control
+  byte in it must stay open and finish in the second burst. Do not "simplify" either one.
+- **A sequence is only complete when its final byte arrives; a burst boundary never ends one.** `term_parse()`
+  re-enters with `ps->state` intact, and that is the whole mechanism — a probe or a fix that treats the end of a
+  read as the end of a sequence invents a bug (see the pitfall on hand-counted lengths).
 
 **Grid model (vt.c).**
 
@@ -2229,6 +2372,18 @@ after `ptr_*` hit-tested bar then panes.
   Home key), `ESC O H` prints a literal `H` (SS3 is not implemented here), `ESC [ 1 ~` is ignored, and `CSI G`
   is the one that moves within the row. Same class of mistake in the probe itself: `"\\e[H"` in C sends a
   backslash and an `e`, which read for two minutes like a parser bug.
+- **Never hand-count a length into `term_parse()` — use `strlen()`.** `.scratch/s97/csiC0.c` wrote
+  `term_parse(&T, "\e[?2004", 8)`: that literal is **7** bytes (ESC `[` `?` `2` `0` `0` `4`), so the hand-counted
+  8 fed the NUL terminator as an extra byte. The probe then reported a perfectly good case as broken — a CSI
+  sequence split across two pty reads came back as "mode not applied, an `h` painted". `strlen()` in v4
+  (`.scratch/s97/hprobe2.c`) showed that case was never broken. Same shape as every other entry here: the check
+  invented the bug, and the A/B against the real code is what caught it.
+- **A probe that hosts a shell must answer that shell's queries, or it is measuring a shell that never started.**
+  `.scratch/s97/hprobe2` section B reported "fish: bracketed paste NEVER within 3 s". `.scratch/s97/fishdiag`
+  shows why that was the probe: fish's first 83 bytes are terminal QUERIES (`CSI ? u`, `CSI > 0 q`, `OSC 11 ; ?`,
+  `DCS + q …`, `CSI 0 c`) and fish paints nothing until they are answered or time out. `.scratch/s97/fishtime`
+  drains the response queue the way `src/main.c` does and measures 200 ms. Any headless measurement of shell
+  STARTUP behaviour that never writes back to the pty is measuring a stalled shell, not a slow one.
 - **A check that passes on the buggy code pins nothing.** `ink_in_box()` — "no glyph may sit inside the box the
   picture is drawn into" — passed against the pre-fix `src/fm.c` when it was written around a small centred
   8x8 preview: that picture happened to land below the metadata. The overlap needs a picture whose box starts
