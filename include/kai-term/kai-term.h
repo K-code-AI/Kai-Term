@@ -1391,6 +1391,25 @@ int  term_visible_images(Term *t, ImgView *out, int cap);
 int  term_image_count(const Term *t);
 
 /* ---------- renderer (EGL + GL) ---------- */
+/* Every CHROME colour of one frame, derived from the configured palette in Render (bg/fg) and from
+   nothing else: the selection band, the tab bar's items and separators, the focus border, and the
+   cursor of the visible session and of a session that is drawn but not the visible one. An application
+   may repaint its own cells but never the chrome that names its tab (see Render.fg).
+   It is a function rather than six locals inside render_draw() for one reason: a configured colour that
+   stops in the parser is invisible to every test that only reads Config, so the check has to sit where
+   the value becomes a vertex colour. Pure — no GL, no font, no Term, no allocation — so
+   tests/test_render.c calls it with no display and no context. */
+typedef struct Chrome {
+    uint32_t sel_bg;                      /* selection band; also the shader's u_sel uniform */
+    uint32_t item_off_bg, item_off_fg;    /* a bar item that is not the visible session */
+    uint32_t item_on_bg;                  /* the visible session's bar item */
+    uint32_t sep;                         /* the bar's separators */
+    uint32_t cursor;                      /* the visible session's cursor */
+    uint32_t cursor_off;                  /* a drawn-but-not-visible session: cursor mixed toward bg */
+    uint32_t border;                      /* the focus border */
+} Chrome;
+void render_chrome(const Render *r, Chrome *out);
+
 int  render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
                  uint32_t bg, uint32_t fg);
 /* Draw one frame: the tab bar (if the layout says so), every pane's grid, and the file-manager band if

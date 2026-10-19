@@ -68,9 +68,33 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
   a new Open item with a reproduction.
 
-## Current Task (s102 — PLANNED, NOT STARTED. Seven features the user agreed to on 2026-10-22, in the order below.
-Nothing has been written. The facts in each block were measured against this tree; the open questions at the end are
-the user's and must be answered before step 1 is started.)
+## Current Task (s102 — IN PROGRESS. Step 0, the filed `cursor_color =` bug, is being done now because none of the
+eight open questions can change it. Steps 1-7 are still NOT STARTED and stay that way until the user answers the
+questions at the end. The facts in each block were measured against this tree.)
+
+### 0. The dead `cursor_color =` (ISSUES.md "Open") — IN PROGRESS, no user decision needed
+
+Objective: make the configured cursor colour reach the pixel, in the shape step 1 needs anyway, and pin it with a
+check at the CONSUMER (the renderer), not at the parser — that is the whole lesson of this bug.
+
+Planned steps, each build + every suite before the next:
+1. Extract the per-frame chrome-colour derivation out of `render_draw()` into a pure `render_chrome(const Render *,
+   Chrome *)` in `src/render.c` (no GL, no font). Expected: identical colours, every suite unchanged — this step
+   must be provably behaviour-free.
+2. `Render` gains `cursor_color`; `render_init()` takes it; `src/main.c` passes `conf.cursor_color`; the three
+   `CURSOR_COL` reads in the derivation become `r->cursor_color`. `SEL_BG` stays a macro — a selection colour is not
+   a config key yet, that is step 1's decision.
+3. New `tests/test_render.c` + `bin/test_render` (links `render.o` + `fm.o font.o img.o vt.o shellint.o`; it calls
+   ONLY the pure function, never `render_init`, so it needs no display and no GL context) and a `make test` entry.
+   Checks: the configured value is what an active pane's cursor is drawn with; the inactive-session colour is that
+   value mixed with the configured bg; the built-in default still yields `CURSOR_COL`.
+4. A/B: the new test against `git show HEAD:src/render.c` plus a shim `render_chrome()` that keeps the OLD macro
+   behaviour, and report the failure count. Without that the new checks pin nothing.
+5. ISSUES.md: move to "Fixed" only after the A/B and the suites; README already documents the key (line 405), so no
+   doc change is needed — the fix makes the existing line true.
+
+What is NOT in this step: the `g_palette[256]` refactor, a theme file, `--import-theme`, and any new config key. All
+of those wait for the answers below.
 
 **Dropped on the user's word — do not re-propose these:** scrollback search ("not really usefull imo");
 HiDPI / fractional scaling (their `~/.config/niri/config.kdl` sets no `output { scale }`, so the output is at scale 1
@@ -656,6 +680,21 @@ the visual verdicts (theme colours, cursor look, bell flash) to the user.
   only has to sniff and map the *other* formats. Plan (7 features, measured facts, per-feature pitfalls and checks,
   8 open questions for the user) is in "Current Task". No source, test or README change in this entry — README must
   not document unimplemented features.
+
+- **2026-10-22, s102 step 0 part 1 — the seam a colour check needs, proven behaviour-free.** Started the filed
+  `cursor_color =` bug, because none of the eight open questions can change it. The bug cannot be pinned from
+  `Config` (that is exactly what the existing tests read and what stayed green), so the fix first needs a place to
+  stand: the six chrome-colour expressions inside `render_draw()` moved into one pure `render_chrome(const Render *,
+  Chrome *)` in `src/render.c` (declared in `kai-term.h`, `Chrome` next to `Render`). No GL, no font, no Term, no
+  allocation — a test can call it with a `Render` it filled by hand.
+  Verified, not assumed: `make -j8` exit 0 with 0 warning lines; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 with
+  `CLI: 67 checks, 0 failures, 13 skipped`, `test_vt` 958 / 0, `dbg` MODEL OK, `test_fm` 293 / 0 — the same counts as
+  the pre-change baseline re-measured at the top of this session. And a probe, because "the counts did not move" is
+  not evidence about colours: `.scratch/s102/chrome_probe.c` recomputes the six expressions exactly as they were
+  written before the move and compares all eight `Chrome` fields over 25 bg×fg pairs — **200 comparisons, 0 differ**.
+  Pitfall found on the way: the local cannot be called `ch` — `render_draw()` already uses `ch` for the cell height,
+  and the compiler says `conflicting types for 'ch'`, not shadow. `SEL_BG` and `CURSOR_COL` are still macros here on
+  purpose; part 2 replaces the cursor one with the configured value.
 
 ## Next Steps
 

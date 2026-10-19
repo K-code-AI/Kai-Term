@@ -664,6 +664,22 @@ static uint32_t mix_c(uint32_t a, uint32_t b, int k100)
     return out;
 }
 
+/* One place derives every CHROME colour of a frame. See the comment on Chrome in kai-term.h: the point of
+   making it a function is that a configured colour can then be checked where it becomes a vertex colour,
+   not only where it is parsed (the dead `cursor_color =` bug, ISSUES.md). Nothing here reads a font, a
+   Term or GL state, so bin/test_render.c can call it with no display and no context. */
+void render_chrome(const Render *r, Chrome *out)
+{
+    out->sel_bg      = SEL_BG;
+    out->item_off_bg = mix_c(r->bg, r->fg, 10);
+    out->item_off_fg = mix_c(r->fg, r->bg, 45);
+    out->item_on_bg  = SEL_BG;
+    out->sep         = mix_c(r->fg, r->bg, 65);
+    out->cursor      = CURSOR_COL;
+    out->cursor_off  = mix_c(CURSOR_COL, r->bg, 55);
+    out->border      = SEL_BG;
+}
+
 /* Decode one UTF-8 sequence of a tab-bar label. A tab's title arrives through OSC 0/2, so a label is
    arbitrary UTF-8; a stray continuation byte becomes U+FFFD, which the font draws as its notdef box. */
 static uint32_t next_cp(const char **pp)
@@ -1079,19 +1095,15 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
        ARGB, so the alpha is scaled here and carried to the shader in a_bg.a. Ink keeps alpha 1 (see
        fs_src), only the background becomes see-through. opacity == 1 leaves every value untouched. */
     float selc[4];
-    col2f(SEL_BG, selc);
+    Chrome chrome;
+    render_chrome(r, &chrome);
+    col2f(chrome.sel_bg, selc);
     selc[3] *= r->opacity;
 
-    /* Chrome colours, mixed from the configured palette (Render.bg/Render.fg): the visible session's bar
-       item uses the selection highlight, the others a background nudged toward the foreground with dimmed
-       text, and the cursor of a session that is DRAWN but not the visible one is dimmed too — so a
-       side-by-side window still shows which session the keyboard talks to. */
-    uint32_t item_off_bg = mix_c(r->bg, r->fg, 10);
-    uint32_t item_off_fg = mix_c(r->fg, r->bg, 45);
-    uint32_t item_on_bg  = SEL_BG;
-    uint32_t sep_col     = mix_c(r->fg, r->bg, 65);
-    uint32_t cur_off     = mix_c(CURSOR_COL, r->bg, 55);
-    uint32_t border_col  = SEL_BG;
+    /* The rest of the chrome colours come from render_chrome() (see Chrome in kai-term.h): the visible
+       session's bar item uses the selection highlight, the others a background nudged toward the
+       foreground with dimmed text, and the cursor of a session that is DRAWN but not the visible one is
+       dimmed too — so a side-by-side window still shows which session the keyboard talks to. */
 
     /* Staging space: at most 3 quads per grid cell (background + band + glyph), at most
        (BAR_LABEL_MAX + 2) per bar item (label glyphs + background + separator), and 4 for the border. */
@@ -1132,7 +1144,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
             continue;
         PaneDraw pd;
         pane_prepare(r, t, &lay->pane[p], f, &pd);
-        uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? CURSOR_COL : cur_off;
+        uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? chrome.cursor : chrome.cursor_off;
         for (int y = 0; y < pd.nrows; y++) {
             const Cell *row = grid_vprow(pd.g, y);
             for (int x = 0; x < pd.ncols; x++) {
@@ -1198,13 +1210,13 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         bar_gl = (float)r->vh - (float)lay->bar_y - (float)lay->bar_h;
         for (int i = 0; i < lay->nitem; i++) {
             const BarItem *it = &lay->item[i];
-            col2f(it->active ? item_on_bg : item_off_bg, bg);
+            col2f(it->active ? chrome.item_on_bg : chrome.item_off_bg, bg);
             bg[3] *= r->opacity;
             emit_quad(&vp, (float)it->x, bar_gl, (float)it->w, (float)lay->bar_h,
                       du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f, white, bg, 0.0f, 0.0f, 0.0f);
             nquads++;
             if (i > 0) {
-                col2f(sep_col, bg);
+                col2f(chrome.sep, bg);
                 bg[3] *= r->opacity;
                 emit_quad(&vp, (float)it->x, bar_gl, 1.0f, (float)lay->bar_h,
                           du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f, white, bg, 0.0f, 0.0f, 0.0f);
@@ -1285,7 +1297,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                 float band1 = hl_on ? pd.gx + hl0 + hlw : 0.0f;
                 int is_cursor = t->show_cursor && pd.g->scroll_off == pd.g->live_off &&
                                 x == t->cx && y == t->cy;
-                uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? CURSOR_COL : cur_off;
+                uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? chrome.cursor : chrome.cursor_off;
                 if (is_cursor) {
                     uint32_t oldbg = cellbg;
                     if (hl_on) {
@@ -1351,8 +1363,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     if (lay->bar_on) {
         for (int i = 0; i < lay->nitem; i++) {
             const BarItem *it = &lay->item[i];
-            col2f(it->active ? r->fg : item_off_fg, fg);
-            col2f(it->active ? item_on_bg : item_off_bg, bg);
+            col2f(it->active ? r->fg : chrome.item_off_fg, fg);
+            col2f(it->active ? chrome.item_on_bg : chrome.item_off_bg, bg);
             bg[3] *= r->opacity;
             float px0 = (float)it->x;
             int col = 0;
@@ -1379,7 +1391,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
        would be noise). With it on, exactly one of the three regions gets the frame — the browser, the
        preview, or the terminal pane — because Ctrl+Shift+Up/Down move the keyboard between them and a
        switch the user cannot see is a switch the user will not notice. */
-    col2f(border_col, bg);
+    col2f(chrome.border, bg);
     bg[3] *= r->opacity;
     if (fm && fm->on && lay->fm.on) {
         int x, y, w, h;
