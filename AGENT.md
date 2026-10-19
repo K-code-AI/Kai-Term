@@ -17,8 +17,8 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s101 — build and every suite green, no open bug; the s101 colour fix is
-user-confirmed in their own window)
+## Current Status (re-measured 2026-10-22, s101 — build and every suite green. One small open bug (dead
+`cursor_color =`, filed in ISSUES.md); s102 is planned in "Current Task", not started)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`).
@@ -32,12 +32,15 @@ user-confirmed in their own window)
   (13 `cfgsearch` checks + the `config split` group). A no-window "0 failures" therefore leaves only the argv half
   uncovered (last full windowed run measured in s99; s100 and s101 skipped it — the user at the machine). **Re-diff
   these numbers, do not copy them.**
-- **No open bug.** The last one, the visible frame around the grid, is fixed (s101) and **confirmed by the user in
-  their own window** ("It's fixed, you can push", 2026-10-22): one runtime value
-  (`term_set_default_colors()` / `term_default_fg()` / `term_default_bg()` in `src/vt.c`) now owns the default ink
-  and paper, so the `background =` line covers the cells as well as the `padding` margin glClear paints. A/B'd both
-  ways (7 of the 14 new checks fail on the reported state, 2 fail on a sentinel-divergent variant, and the end-to-end
-  probe prints match=1 where the old code prints match=0).
+- **One open bug, small and filed (ISSUES.md "Open"): `cursor_color =` is dead config.** Parsed, stored and
+  parse-tested, never read — `src/render.c` uses the `CURSOR_COL` macro and `render_init()` takes only `bg`/`fg`. Same
+  class as the border bug below and fixed by the same move (pass the configured value to the renderer); it is folded
+  into s102 step 1, where the palette becomes runtime state anyway.
+- **No open question from s101.** The border fix is **user-confirmed in their own window** ("It's fixed, you can
+  push", 2026-10-22): one runtime value (`term_set_default_colors()` / `term_default_fg()` / `term_default_bg()` in
+  `src/vt.c`) now owns the default ink and paper, so the `background =` line covers the cells as well as the
+  `padding` margin glClear paints. A/B'd both ways (7 of the 14 new checks fail on the reported state, 2 fail on a
+  sentinel-divergent variant, and the end-to-end probe prints match=1 where the old code prints match=0).
 - **No open question.** The four items this journal and ISSUES.md were holding for the user's eye were answered
   2026-10-22 ("1. yes / 2. good / 3. works good" — the s100 era entry): the two-file config split is theirs, the
   background change their own config file now produces is accepted, and the s98 Firefox paste fix, the preview-pane
@@ -65,39 +68,209 @@ user-confirmed in their own window)
   verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
   a new Open item with a reproduction.
 
-## Current Task (none open. The s101 border fix is complete — code, checks, docs, the user's confirmation and the
-push. The diagnosis below is measured, not a guess — do not re-derive it.)
+## Current Task (s102 — PLANNED, NOT STARTED. Seven features the user agreed to on 2026-10-22, in the order below.
+Nothing has been written. The facts in each block were measured against this tree; the open questions at the end are
+the user's and must be answered before step 1 is started.)
 
-**The report, verbatim:** "Some border seems to have appeared recently in the recent change, It's probably the
-padding to prevent cutting glyph corner, But would it be possible for it to be the exact same color as the
-background ? they should use the same config line to set their background color." Their hypothesis and their
-requested design were both right.
+**Dropped on the user's word — do not re-propose these:** scrollback search ("not really usefull imo");
+HiDPI / fractional scaling (their `~/.config/niri/config.kdl` sets no `output { scale }`, so the output is at scale 1
+and `wl_surface_set_buffer_scale(W.surface, 1)` at `src/main.c:2809` is exactly right — nothing is stretched or
+blurry for them, and `zwp_fractional_scale`/`wp_viewporter` are 0 hits and stay 0 hits); OSC 52 (they paste inside
+tmux, ssh and ssh>termux already — that is the *local* clipboard, typed into the pty, and has always worked; OSC 52
+is the remote→local **copy-out** direction, which they don't need); IME (`zwp_text_input_v1`, 0 hits, they don't type
+CJK).
 
-**Measured cause.** `.scratch/s100/border/bgprobe.c` (no window, no GL; loads their own config file with the shipped
-reader and prints the two numbers the renderer uses):
+### 1. Themes: the palette becomes runtime state, then a theme file, then `--import-theme FILE`
 
-    built-in default  conf.bg = ff101014   DEF_BG = ff101014   match=1
-    user's file       conf.bg = ff1c1c22   DEF_BG = ff101014   match=0
+**Measured starting point.** `palette[256]` is a **`Term` field** (`include/kai-term/kai-term.h:271`) filled inside
+`term_init()` from a `static const base16[16]` (`src/vt.c:830-847`, then the 6×6×6 cube and the 24-step grey ramp,
+computed). `term_init()` memsets the whole `Term` — that is the exact shape of the s101 bug, so the palette must
+become file-scope `g_palette[256]` + `term_set_palette()` / `term_palette()`, the same pattern as
+`g_def_fg`/`g_def_bg` (`src/vt.c:168-177`). Only entries **0-15** are themeable; the cube (16-231) and the ramp
+(232-255) stay computed — they are identical in every terminal and no theme in the wild touches them.
+`SEL_BG` (`kai-term.h:32`) and `CURSOR_COL` (`kai-term.h:31`) are compile-time macros read at `src/render.c:1082,
+1091, 1093, 1094, 1135, 1288`; a theme has to replace those too. `osc_end()` (`src/vt.c:3125-3163`) handles only
+OSC 0/1/2, so today **no program can change any colour at all**.
 
-Three background-ish values live in the tree and two were in play: `Config.bg` (the `background =` line) ->
-`Render.bg` -> `set_clear_color()`, which paints the `Config.padding` margin and the whole-cell remainder, and also
-the tab bar, the file-manager band and the current pen; `DEF_BG` -> what `src/vt.c` put in every blank, erased,
-scrolled-in and reflowed cell, which pass 1 of `render_draw()` paints as the grid's interior; and
-`palette[0] = ff000000`, what `SGR 40` / `48;5;0` paint, not involved. So the frame was `#1c1c22` around `#101014`.
-It "appeared recently" only because with the built-in defaults the two are the same number: the s99 `#` fix made
-their `background =` line take effect for the first time and revealed this older, latent defect. Ruled out by
-measurement, so nobody chases it again: niri's focus ring (`width 4`, `active-color "#7fc8ff"`, `prefer-no-csd`,
-drawn as a solid rectangle *behind* windows that shows through semitransparent ones) — their file says
-`opacity = 1`, and the probe puts the difference inside Kai-Term's own two colours.
+**Bug to fix in the same pass (filed in ISSUES.md "Open"): `cursor_color =` is dead config.** It is defaulted
+(`src/config.c:44`), parsed (`src/config.c:463-464`), stored (`kai-term.h:652`) and **never read**: `src/render.c`
+uses the `CURSOR_COL` macro and `render_init()` takes only `bg`/`fg` (`src/render.c:256`, `src/main.c:2818`). Every
+test that mentions it tests *parsing* (`tests/test_vt.c:2149/2154/2196`), and the template parity check compares
+parse results, so it stays green while the key does nothing. Fix = pass it to `Render` and use it at those six
+sites.
 
-**What was done:** all 8 planned steps — see the s101 era entry for the API, the 17 sites, the three patch-overs
-deleted, `cell_pristine()` deliberately kept in step, `DEF_FG` fixed for the same reason as `DEF_BG`, `palette[0]`
-left alone and documented, README + template + the 14 checks, and the two A/B runs (7 checks fail on the reported
-state, 2 on a sentinel-divergent variant).
+**Native format = Kai-Term's own `key = value`, in a third file.** `config_find()` already searches per **file name**
+across `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term`, `/etc/kai-term` (`src/config.c:585` comment), so a theme is
+nearly free. `theme = NAME` resolves to `NAME.theme` in `<each of those dirs>/kai-term/themes/`; `theme = /path` or a
+relative path opens directly. Precedence: **theme file, then `kai-term.conf`, then `kai-term.bind`**, so an explicit
+`background =` line still beats a theme, and the log names which file set the final value (the readers already log
+their sources).
 
-**Closed 2026-10-22:** the user's verdict is in — "It's fixed, you can push". The frame is gone in their window
-(`background = 1c1c22`, `padding = 8`), and the commit is pushed.
+**Key names: use the kitty spelling as primary, with Kai-Term's own spelling as an alias.** That is what makes the
+kitty corpus drop-in — the user's "13th Floor" file below is already valid except for two keys with nowhere to go.
+Accepted: `foreground`, `background`, `cursor` (alias `cursor_color`), `selection_background` (alias
+`selection_color`), `color0`…`color15`. `parse_color()` already takes `#RRGGBB`, `0xRRGGBB`, bare `RRGGBB` and
+`AARRGGBB`, so no new colour code.
 
+**Deliberately NOT in `apply_setting()`:** the `colorN` names. The template-coverage check derives the accepted
+settings names from that strcmp ladder (`cfg_names_of("src/config.c", "static void apply_setting(", …)`,
+`tests/test_vt.c:2270`) and demands a commented template line for every name — 16 more lines in `kai-term.conf` for a
+knob nobody tweaks by hand. Put them in the theme parser only, and give that parser its own derived name list, same
+technique.
+
+**`kai-term --import-theme FILE`.** The importer lives in a testable function (new `src/theme.c`, or
+`src/config.c`) — **not** in `main()`; `main()` is in no linked test, so the flag would be the only coverage
+(same reasoning as "Geometry lives in `src/layout.c`, not main.c"). It sniffs the format from the first bytes, maps
+the names, writes `~/.config/kai-term/themes/<name>.theme`, refuses to overwrite unless told, and **logs every key it
+dropped**. Sniff: `<plist`/`Red Component` → iTerm2; leading `{` → JSON (Windows Terminal / VS Code);
+`[colors.primary]` → alacritty; `[Color Scheme]`/`ColorBackground=` → Konsole/XFCE4; `colorN:` or `XTerm*`/`*.` →
+Xresources; otherwise `key value` → kitty. Nothing matched → refuse and list what was looked for; never guess.
+`<name>` comes from a `name =` key when present, else the file's basename.
+
+**Acceptance case — the user's own theme, verbatim (kitty spelling, "13th Floor"):**
+
+    color0 #bdaaad   color1 #e07f70   color2 #9eae80   color3 #d0af63
+    color4 #849caf   color5 #b78ea6   color6 #7bb2aa   color7 #f2e2c8
+    color8 #c5b4b7   color9 #e48e81   color10 #aab88f  color11 #d6b976
+    color12 #93a8b9  color13 #c09cb1  color14 #8bbbb4  color15 #f4e5cf
+    background #4a0710
+    selection_foreground #4a0710
+    cursor #e48e81
+    cursor_text_color #4a0710
+    foreground #f2e2c8
+    selection_background #f2e2c8
+
+(That is their file reflowed onto fewer lines for this document; the importer must accept it as one key per line.)
+Expected: 16 palette entries + `background` + `foreground` + `cursor` → `cursor_color` + `selection_background` →
+`selection_color` applied; `selection_foreground` and `cursor_text_color` reported as dropped (Kai-Term has no
+per-cell "text on this colour" concept — the glyph colour there is the cell's own fg).
+
+**Optional, cheap once the palette is runtime state:** OSC 4 (set an entry), OSC 10/11 (set/query fg/bg), OSC 104
+(reset). That is what lets `pywal`-style tools theme a live Kai-Term with no file at all. Ask the user before
+building it — it is a security-relevant capability (any program in the terminal can repaint the window).
+
+### 2. Cursor: a thin bar, classic blink
+
+The user's words: "A thin rectangle, the most classic blinking cursor". Today the cursor **is** the cell's background
+quad, emitted in pass 1 (`src/render.c:1143-1152`), and pass 2/3 re-tint the glyph on the cursor cell
+(`src/render.c:1286-1292`); `cur_off = mix_c(CURSOR_COL, r->bg, 55)` is the unfocused-session colour.
+
+- A bar/underline must be a **separate quad**, not the cell background. Emit it in **batch B between the selection
+  bands and the glyphs** (batch B is one draw call where the later quad simply wins, so glyphs must come after it or
+  the bar hides the character). Keep the existing rule that the cursor is hidden exactly where a band is painted —
+  the comment at `src/render.c:1150-1152` says pass 1 and pass 2 must match, and a bar that forgets it re-creates
+  that bug.
+- New keys: `cursor_style = block|bar|underline` (default `bar`, since that is what they asked for — confirm),
+  `cursor_width = 2` px for the bar (clamped 1..cell_w/3), `cursor_blink = 500` ms half-period, `0` = steady.
+- Blink needs a **fourth timerfd** (there are three: frame `tfd` `src/main.c:3053`, key repeat `krfd`
+  `src/main.c:1966-2002`, paste watchdog `pwfd` `src/main.c:2488-2497`). A tick must set `W.dirty` and go through
+  `redraw()` on the normal path — never swap inside a Wayland listener, and never arm a `wl_surface_frame` callback
+  without attaching a buffer (the frame-pacing rules in "Architecture & Invariants"). Blink phase is window state
+  (`W`), **not** `Term` state: `term_init()` memsets `Term`, and DEC 25l (`show_cursor = 0`) must still hide it.
+  Classic behaviour blinks only while the window has focus — worth doing, it also stops a 2 Hz redraw on an idle
+  unfocused window.
+- DECSCUSR (`CSI <n> SP q`, the *application* asks for block/bar/underline) is 0 hits today. Optional; the query
+  plumbing already exists (`CSI c`, `CSI 6 n`). Ask the user — vim/neovim/fish set it, and honouring it means an app
+  can override their chosen style.
+
+### 3. Double-click selects a word, triple-click a line (on by default)
+
+The user's rule, verbatim: "a word is everything no separated by a space, but we don't take the trailing ',' or '.'".
+So: maximal run of non-space cells around the clicked cell, then strip trailing `,` and `.`.
+
+- The double-click detector already exists for the file manager and should be copied, not reinvented:
+  `#define FM_DCLICK_MS 500` (`src/main.c:233`) and the same-row/same-entry test at `src/main.c:1596-1598`, using the
+  `time` argument `ptr_button()` already receives (`src/main.c:2177`).
+- Selection endpoints are set through `sel_set_endpoints()` (`src/main.c:2064`) with fractional 0..1000 offsets; a
+  word/line selection uses whole cells (0 and 1000). `SelSpan` (`kai-term.h:512-515`) and `sel_band_pixels()` need no
+  change, and `term_selection_text()` already trims trailing spaces, so a line selection that reaches the right edge
+  copies cleanly.
+- **The interaction that must be handled:** on release of a click that never moved, `src/main.c:2259-2274` synthesises
+  cursor-key presses for a program that owns its screen (`click_moves_cursor` + `term_wants_key_mouse`). A double
+  click inside nano would walk its cursor twice. The second press of a double/triple click must mark the gesture as a
+  word/line selection and suppress that synthesis on release. `Shift` already means "selection, not click".
+- New key: `click_selects_word = 1` (they asked for on-by-default). Triple-click = the whole logical row; decide
+  whether it includes the trailing blanks (they copy as nothing anyway) and whether it extends to the next **physical**
+  row when the line soft-wrapped (`Grid.wrap` knows).
+- Needs a headless check: a word spanning a wide glyph (CJK/emoji occupies 2 cells, `ATTR_WIDE` continuation) must not
+  be cut in half — the same wide-pair rule reflow uses.
+
+### 4. Ask before quitting when something is still running
+
+Today `toplevel_close()` (`src/main.c:1758-1762`) sets `W.running = 0` immediately, closing the last tab does the same
+(`src/main.c:759-762`), and both close the pty master and `kill(child, SIGHUP)` (`src/main.c:753/755`, `3330-3340`).
+So whatever was running dies with no warning.
+
+- How to know something is running: `tcgetpgrp(mfd)` on the pty **master** fd returns the pty's foreground process
+  group. Kai-Term never calls `tcsetpgrp` (measured: 0 hits in `src/`), so the shell owns that value and it is
+  trustworthy: idle at the prompt ⇒ `tcgetpgrp(mfd) == tb->pty.child`; a command running ⇒ it does not. **Verify this
+  with a probe before writing the gate** (`.scratch/s102/fgprobe.c`: spawn a shell on a pty, read `tcgetpgrp` idle,
+  then with `sleep 30` running) — it is one syscall and it is the whole feature's correctness.
+- New key: `confirm_quit = running|always|never`, default `running`. Same gate on **closing a tab**
+  (`key_close_tab`, and the bar's middle-click close at `src/main.c:2192`), which is where work is lost more often.
+- The prompt itself is chrome, drawn in the grid with the same font/colours as the tab bar and the band — one row,
+  modal, keyboard-driven (Enter/`y` confirms, Esc/`n` cancels), and it must swallow keys without fighting the
+  file-manager keyboard handover (`FM_FOCUS_*`) or the key-repeat timer. Log the decision either way.
+- Multi-session case: if two sessions have something running, the message must say how many and which, and confirm
+  must apply to all of them, not just the visible one.
+
+### 5. Middle-click paste (opt-in, off by default)
+
+The user: "I actually hate middle click paste, but we could add it as an option (off by default)". `wl_primary*` is
+0 hits — on Wayland the **client** owns the primary selection, niri will not do it. So this needs a second
+`wl_data_device` selection: offer the selection as primary on `WL_POINTER_BUTTON` release when the option is on, and
+paste from the primary offer on middle press. Ordering in `ptr_button()` matters: the bar's middle-click-closes-a-tab
+(`src/main.c:2192`), the file-manager band, and an application that grabbed the mouse (`src/main.c:2232`) all come
+first and must keep winning. New key: `middle_click_paste = 0`.
+
+### 6. Visual bell
+
+`BEL` is swallowed today: `case 0x07: break;   /* BEL: nothing to do here */` in `exec_c0()`
+(`src/vt.c:3179`). Programs ring it on real failures — readline's ambiguous completion and empty Enter, `sudo` on a
+wrong password, `less`/`man` on a failed search, vim on an error.
+
+Cheapest honest implementation, no new dependency and no GL blending: `exec_c0` sets a per-Term "bell rang" flag;
+`main.c` turns it into a deadline; `render_draw()` emits **one extra quad in batch A, after every cell background** —
+so it covers the backgrounds but sits under batch B (bands, glyphs, labels, border), which means the text stays
+readable while the field flashes. Colour = `mix_c(bg, fg, small)`. A margin flash is not an option: s101 made the
+margin the same colour as the cells. New key: `bell = visual|off`. Ask whether it defaults on.
+
+### 7. URLs: Ctrl+click opens
+
+0 hits for OSC 8 and for any URL detection. **Do not store URIs in `Cell`** — `Cell` is allocated per column per row
+and reflow moves cells around; a per-row list of `(col_start, col_end)` runs computed lazily is the cheap shape.
+Recommended first version: at Ctrl+click time, take the logical line (reflow already knows the `Grid.wrap` marks),
+scan it for `http://` / `https://`, take the run containing the clicked cell, stop at whitespace, strip trailing
+punctuation. No storage, no reflow interaction, no per-frame cost. Opening needs a decision (below): `xdg-open` means
+fork/exec from the terminal process.
+
+### Open questions — the user's, answer before starting step 1
+
+1. **Theme precedence**: theme file → `kai-term.conf` → `kai-term.bind` (my proposal: an explicit `background =` still
+   beats a theme). Or should a theme win outright?
+2. **OSC 4 / 10 / 11 / 104**: build them with the palette, or leave the palette file-only? Any program in the terminal
+   could then repaint the window.
+3. **Cursor**: default `cursor_style = bar` for everyone, or keep `block` as the default and let them set `bar`?
+   Bar width fixed at 2 px, or scaled with the font so it survives a zoom? Blink on by default at 500 ms half-period?
+   Honour DECSCUSR (apps may then override the style they chose)?
+4. **Word selection**: strip only `,` and `.` as they said, or also `:;!?)]}"'` (a trailing `)` from `(foo)` and a
+   trailing `:` from `path:` are common)? Leading punctuation kept? Triple-click on a soft-wrapped line — one logical
+   line or one screen row?
+5. **Middle-click**: paste the **primary** selection (Wayland-correct, but empty unless they select with the mouse)
+   or the **clipboard** (what Ctrl+Shift+C copies — usually what people actually want)?
+6. **Bell**: default on or off?
+7. **URLs**: open with `xdg-open`, or a configurable `url_opener` command, or print the URL and let them copy it?
+8. **`--import-theme`**: overwrite an existing theme of the same name, or refuse and require a new name?
+
+### Rules for the whole session
+
+One feature per commit, each: edit → AGENT.md → build → every suite → commit; never commit red. Every new config key
+needs a line in the shipped template **and** a value check in the template-parity group, or the name-coverage check
+fails (that check is what caught a deleted `padding = 8` line in s99). Re-measure and re-quote the check counts every
+time — do not copy them from this file. Probe first, then write the check around what the probe printed (the s101
+reflow check and the `tcgetpgrp` gate both need this). A/B every new check against the code that lacks the feature and
+report the failure count. Do not map windows while the user is at the machine: `KAI_TERM_TEST_NO_WINDOW=1`, and hand
+the visual verdicts (theme colours, cursor look, bell flash) to the user.
 
 ## Progress Journal (root causes of fixed bugs: git history)
 
@@ -398,7 +571,16 @@ state, 2 on a sentinel-divergent variant).
   The user's report and the diagnosis are in "Current Task"; the fix is the shape the plan predicted.
   `src/vt.c` gained file-scope `g_def_fg`/`g_def_bg` (initialised to `DEF_FG`/`DEF_BG`) with
   `term_set_default_colors(fg, bg)` + `term_default_fg()`/`term_default_bg()`, and every `DEF_FG`/`DEF_BG` use in
-  that file became a read of them: `row_new_cols`, `row_fillblank`, `row_resize` (both the grown columns and its
+  that file became a read of them. Three background-ish numbers exist and only two were in play: `Config.bg` (the
+  `background =` line) -> `Render.bg` -> `set_clear_color()`, which paints the `Config.padding` margin and the
+  whole-cell remainder; `DEF_BG` -> what `src/vt.c` put in every blank, erased, scrolled-in and reflowed cell, which
+  pass 1 of `render_draw()` paints as the grid's interior; and `palette[0] = ff000000`, what `SGR 40`/`48;5;0` paint,
+  not involved. So the frame was `ff1c1c22` around `ff101014`. It "appeared recently" only because with the built-in
+  defaults the two are the same number — the s99 `#` fix made their `background =` line take effect for the first
+  time. Ruled out by measurement before writing any code: niri's focus ring (`width 4`, `active-color "#7fc8ff"`,
+  `prefer-no-csd`, drawn as a solid rectangle *behind* windows that shows through semitransparent ones) — their file
+  says `opacity = 1`, and the probe puts the difference inside Kai-Term's own two colours.
+  The sites that changed: `row_new_cols`, `row_fillblank`, `row_resize` (both the grown columns and its
   `bg == 0` repair), reflow's fresh rows, the four `grid_blank_slot(…, DEF_BG)` calls in `grid_resize_rows`,
   `pen_default()` (so `term_init` and `ESC c`), `SGR 39/49`, and the `cell_pristine()` sentinel — the last one on
   purpose: the paint colour and the "never written" sentinel must be one variable, not two that can drift.
@@ -450,7 +632,37 @@ state, 2 on a sentinel-divergent variant).
   display / file-manager keys and the band's share. Both files now say that. Docs only — no source touched, suites
   not re-run (nothing they exercise changed).
 
+- **2026-10-22, s102 planning — a feature survey measured before it was proposed, and the plan.** The user asked what
+  is missing and then chose from the list, so every candidate was grepped for first rather than asserted; the counts
+  below are hits in `src/` + `include/` and they are what the plan rests on: `zwp_fractional_scale`/`wp_viewporter` 0,
+  `wl_primary` 0, OSC 52 0, OSC 8 / any URL detection 0, DECSCUSR 0, `zwp_text_input` 0, `tcgetpgrp` 0, and `BEL` is
+  `case 0x07: break;` at `src/vt.c:3179`. Two claims of mine were **wrong and the user corrected them with facts about
+  their own machine**: scaling — their `~/.config/niri/config.kdl` sets no `output { scale }`, so scale is 1 and
+  `wl_surface_set_buffer_scale(…, 1)` is right, nothing is blurry, so the feature is pointless here; and OSC 52 —
+  what they already do (paste inside tmux / ssh / ssh>termux) is the *local* clipboard typed into the pty, a different
+  direction from the remote→local copy-out OSC 52 provides. Lesson worth keeping: a missing-protocol grep proves the
+  code is absent, it does not prove the user is missing anything — check what their setup actually asks for before
+  ranking it. Scrollback search and IME were dropped on their word.
+  **Found while reading the colour paths: `cursor_color =` is dead config** — defaulted (`src/config.c:44`), parsed
+  (`src/config.c:463-464`), stored (`kai-term.h:652`), and read nowhere; `src/render.c` uses the `CURSOR_COL` macro at
+  six sites and `render_init()` takes only `bg`/`fg`. Every test naming it tests *parsing*, and the template parity
+  check compares parse results, so the suite is green while the key does nothing — the same failure shape as the
+  border bug, and the reason "the parser has the key" is never evidence "the key works". Filed in ISSUES.md "Open",
+  folded into s102 step 1.
+  **The user's own theme file is the acceptance case** for the importer (kitty spelling, "13th Floor"): 16 `colorN`,
+  `background`, `foreground`, `cursor`, `selection_background`, plus `selection_foreground` and `cursor_text_color`
+  which have nowhere to go and must be reported as dropped. That file is what decided the native format: use the
+  kitty spelling as primary with Kai-Term's own spelling as an alias, so the kitty corpus is drop-in and the importer
+  only has to sniff and map the *other* formats. Plan (7 features, measured facts, per-feature pitfalls and checks,
+  8 open questions for the user) is in "Current Task". No source, test or README change in this entry — README must
+  not document unimplemented features.
+
 ## Next Steps
+
+0. **s102 — the seven features the user agreed to. Plan in "Current Task", NOT started, and it opens with eight
+   questions that are the user's.** Do not start step 1 until they are answered; the plan already records what was
+   measured, so do not re-derive it, and it records what the user rejected (search, scaling, OSC 52, IME), so do not
+   re-propose those.
 
 0. **s101 — the visible border around the grid: CLOSED.** Fixed, A/B'd, documented, and confirmed by the user in
    their own window ("It's fixed, you can push", 2026-10-22); pushed. Nothing about it is owed — do not re-derive the
@@ -1333,3 +1545,10 @@ after `ptr_*` hit-tested bar then panes.
   `HISTFILE=/tmp/...`) and make the needle something no history can already contain (a pid in the file name).
   Same class as every other "the harness caused the symptom" entry: when a check passes on the code you expect
   it to fail, suspect the check before you believe the result (s95).
+- **"The parser knows this key" is never evidence that the key does anything.** `cursor_color =` is defaulted
+  (`src/config.c:44`), parsed (`src/config.c:463-464`) and stored in `Config`, and no line of code anywhere reads it —
+  `src/render.c` draws the cursor from the `CURSOR_COL` macro and `render_init()` is handed only `bg`/`fg`. Every test
+  naming it asserts on the PARSED value, and the template parity check compares parsed values field by field, so the
+  whole suite is green while the feature is absent. A config key is only implemented at its far end: trace the value
+  from `apply_setting()` to the pixel that reads it (the s101 border bug was the same shape — a configured colour that
+  reached `glClear` but not the cells). When adding a key, write the check at the consumer, not at the parser.

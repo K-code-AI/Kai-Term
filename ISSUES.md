@@ -8,9 +8,21 @@ Invariants" — read those, not the history.
 
 ## Open
 
-**No open bug.** The last one — a visible frame around the grid, because the `padding` margin and the blank cells
-read two different background colours — was fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed",
-first entry).
+**`cursor_color =` is dead config — the key parses, is stored, is tested, and nothing reads it (2026-10-22, found
+while planning s102; fix folded into s102 step 1).** Expected symptom (derived from the code, NOT yet observed in a
+window — this one is a grep result, not a screenshot): set `cursor_color = ff0000` in
+`~/.config/kai-term/kai-term.conf`, restart, and the cursor block stays the built-in `#d8d8d8`. Measured cause: the
+value is defaulted (`src/config.c:44`), parsed (`src/config.c:463-464`) and stored (`Config.cursor_color`,
+`include/kai-term/kai-term.h:652`), and **read nowhere** — `src/render.c` uses the `CURSOR_COL` macro at lines 1093,
+1135 and 1288, and `render_init()` receives only `bg` and `fg` (`src/render.c:256`, `src/main.c:2818`). The suite
+cannot see it: the three tests that name the key (`tests/test_vt.c:2149/2154/2196`) all assert on *parsing*, and the
+template parity check compares parse results field by field, so it passes while the key does nothing. Same failure
+shape as the padding-margin border (a configured colour that never reaches the renderer), found the same way — follow
+the value from the parser to the pixel. Fix: carry it into `Render` and use it at those sites, which is exactly what
+the palette work in s102 step 1 does anyway; add a check that the value reaches the renderer, not just the struct.
+
+**No other open bug.** The frame around the grid — the `padding` margin and the blank cells reading two different
+background colours — was fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed", first entry).
 
 The four items this file was once holding for the user's eye were answered 2026-10-22 ("1. yes / 2. good /
 3. works good"): the two-file config split is theirs (they asked for it), the background change their own
