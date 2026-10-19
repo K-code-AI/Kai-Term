@@ -462,6 +462,8 @@ Selection works a whole character at a time: a highlighted range always covers c
 
 When an application enables bracketed paste, multiline clipboard content is sent as a single paste operation rather than being executed line by line.
 
+Applications offer clipboard text under several names, and which bytes arrive depends on the name chosen. Kai-Term asks for the most specific text type it is offered (`text/plain;charset=utf-8`, then `UTF8_STRING`, then `text/plain`) rather than whichever the source happened to advertise last, and it repairs what comes back before typing it: text served as UTF-16 is converted to UTF-8, and NUL bytes are never sent to the shell. This is what makes pasting from applications such as Firefox land as the text you copied instead of as a stray character. Plain `Ctrl`+`V` is not Kai-Term's — it goes to the shell, which reads the clipboard itself.
+
 Holding a key down repeats it: the first repeat arrives after `repeat_delay` milliseconds and further
 repeats follow at `repeat_rate` per second. Repeating works for everything typed into the shell — text,
 `Backspace`, arrows, `Enter`, `Tab`, `Escape`, function keys, and `Ctrl` combinations — as well as

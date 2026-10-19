@@ -1752,6 +1752,154 @@ int paste_wrap(int bracketed, const char *text, size_t len, char *out, size_t ca
     return (int)o;
 }
 
+/* ---------- clipboard text policy (pure, unit-testable; src/main.c calls these) ----------
+
+   A clipboard source decides, alone, which mime types it advertises and what bytes it serves for
+   each. Two independent defects live at that boundary, and both were reported by the user as "a
+   stray character when I paste":
+
+   1. WHICH TYPE TO ASK FOR. A source may advertise several text types. The old rule kept the LAST
+      one advertised, which is not a preference — it is an accident of the source's enumeration
+      order. `clipboard_mime_rank()` makes the choice explicit.
+
+   2. WHAT BYTES COME BACK. Firefox on Wayland serves UTF-16 code units under a UTF-8 label. Written
+      to the pty verbatim, the NUL bytes of UTF-16LE arrive as keystrokes: bash's bracketed-paste
+      reader stops at the first NUL, so pasting "http://127.0.0.1:8080" leaves a single `h` on the
+      line (measured, .scratch/s98/nulprobe), and zsh inserts them and paints every NUL as `^@`
+      (`h^@t^@t^@p^@:...`, the user's exact report). A NUL must never reach the pty.
+
+   Both are pure byte functions so the semantics are pinned in tests/test_vt.c without a display. */
+
+/* Preference order for a text mime type: 0 = not text, higher = ask for this one. */
+int clipboard_mime_rank(const char *mime)
+{
+    if (!mime)
+        return 0;
+    if (!strcmp(mime, "text/plain;charset=utf-8")) return 5;
+    if (!strcmp(mime, "UTF8_STRING"))              return 4;
+    if (!strcmp(mime, "text/plain"))               return 3;
+    if (!strncmp(mime, "text/plain;charset=", 19)) return 2;   /* some other declared charset */
+    if (!strncmp(mime, "text/plain", 10))          return 2;   /* text/plain;foo=bar and friends */
+    if (!strncmp(mime, "text/", 5))                return 1;   /* text/html, text/rtf: better than nothing */
+    return 0;
+}
+
+/* Append one code point as UTF-8. Returns bytes written, 0 if cap is short or cp is not encodable. */
+static size_t utf8_append(uint32_t cp, char *out, size_t cap)
+{
+    if (!out || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+        return 0;
+    if (cp < 0x80) {
+        if (cap < 1) return 0;
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        if (cap < 2) return 0;
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        if (cap < 3) return 0;
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    if (cap < 4) return 0;
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+int paste_repair(const char *in, size_t len, char *out, size_t cap)
+{
+    if (!in || !out)
+        return -1;
+    /* Nothing to do — the overwhelmingly common case — only when the block holds no NUL at all. */
+    if (!memchr(in, 0, len)) {
+        if (cap < len)
+            return -1;
+        if (len)
+            memcpy(out, in, len);
+        return (int)len;
+    }
+
+    /* UTF-16 or plain NUL-polluted bytes? A BOM decides outright; without one, the parity of the
+       NULs does: UTF-16LE puts a NUL after every ASCII character (odd offsets), UTF-16BE before
+       every one of them (even offsets). Anything else is treated as text with stray NULs. */
+    int be = 0, le = 0;
+    size_t start = 0;
+    if (len >= 2 && (unsigned char)in[0] == 0xFF && (unsigned char)in[1] == 0xFE) {
+        le = 1; start = 2;
+    } else if (len >= 2 && (unsigned char)in[0] == 0xFE && (unsigned char)in[1] == 0xFF) {
+        be = 1; start = 2;
+    } else {
+        size_t nul_odd = 0, nul_even = 0;
+        for (size_t i = 0; i < len; i++)
+            if (!in[i]) {
+                if (i & 1)
+                    nul_odd++;
+                else
+                    nul_even++;
+            }
+        /* Only a DENSE, one-sided pattern is UTF-16: UTF-16 text carries a NUL in at least every
+           other byte. Anything sparser must not be decoded — a lone stray NUL in an otherwise
+           ordinary block would turn good text into garbage, which is worse than the NUL we were
+           removing. Ambiguous input therefore gets NUL-stripped only. */
+        size_t nuls = nul_odd + nul_even;
+        if (nuls * 2 >= len) {
+            if (nul_odd > nul_even)
+                le = 1;
+            else if (nul_even > nul_odd)
+                be = 1;
+        }
+    }
+
+    size_t o = 0;
+    if (le || be) {
+        /* UTF-16 -> UTF-8. Worst case is 2 bytes in -> 3 bytes out, so cap must be >= len/2*3 + 3
+           for a full decode; the caller sizes it that way. A short cap is reported, not truncated. */
+        for (size_t i = start; i + 1 < len; i += 2) {
+            uint32_t hi = le ? ((uint32_t)(unsigned char)in[i] | ((uint32_t)(unsigned char)in[i + 1] << 8))
+                             : (((uint32_t)(unsigned char)in[i] << 8) | (uint32_t)(unsigned char)in[i + 1]);
+            uint32_t cp = hi;
+            if (hi >= 0xD800 && hi <= 0xDBFF) {
+                uint32_t lo = 0;
+                if (i + 3 < len)
+                    lo = le ? ((uint32_t)(unsigned char)in[i + 2] | ((uint32_t)(unsigned char)in[i + 3] << 8))
+                            : (((uint32_t)(unsigned char)in[i + 2] << 8) | (uint32_t)(unsigned char)in[i + 3]);
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
+                    i += 2;
+                } else {
+                    cp = 0xFFFD;
+                }
+            } else if (hi >= 0xD800 && hi <= 0xDFFF) {
+                cp = 0xFFFD;                       /* lone surrogate: one replacement char, not garbage */
+            }
+            if (!cp)                               /* a NUL code point never reaches the pty */
+                continue;
+            size_t n = utf8_append(cp, out + o, cap - o);
+            if (!n)
+                return -1;
+            o += n;
+        }
+        return (int)o;
+    }
+
+    /* Not UTF-16: strip the NUL bytes and keep every other byte exactly as it arrived. */
+    if (cap < len)
+        return -1;
+    for (size_t i = 0; i < len; i++)
+        if (in[i])
+            out[o++] = in[i];
+    return (int)o;
+}
+
 /* CSI 3 J — "erase saved lines" (the terminfo E3 capability; `clear` emits ESC[2J then ESC[3J).
    It drops the SCROLLBACK and leaves the viewport exactly as it is, so the prompt stays on screen:
    1. the viewport rows move to the top slots of row[] (they keep their buffers),

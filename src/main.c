@@ -265,8 +265,8 @@ static struct wl_data_source *clip_source;
 static struct wl_data_offer *sel_offer;    /* current clipboard selection offer (may be NULL) */
 static char sel_offer_mime[128];           /* a text mime offered by sel_offer */
 static int sel_offer_text;                 /* 1 when sel_offer offers a text mime */
-static char last_offer_mime[128];          /* text mime recorded from the most recent data_offer */
-static int last_offer_text;
+static char last_offer_mime[128];          /* the BEST text mime recorded from the most recent data_offer */
+static int last_offer_text;                /* its clipboard_mime_rank() (0 = no text type seen) */
 static int paste_fd[2] = { -1, -1 };       /* pipe: [0] read end (in epoll), [1] given to receive */
 /* The whole paste is buffered before it reaches the PTY: the ESC[200~ / ESC[201~ delimiters have to
    surround the ENTIRE block, so the text cannot be streamed through as it arrives. */
@@ -2432,12 +2432,17 @@ static const struct wl_data_source_listener source_listener = {
     .cancelled = source_cancelled,
 };
 
-/* A data offer (from another client's selection): record whether it offers text. */
+/* A data offer (from another client's selection): record the best text mime it offers. */
 static void offer_offer(void *d, struct wl_data_offer *o, const char *mime)
 {
     (void)d; (void)o;
-    if (mime && (!strncmp(mime, "text/", 5) || !strcmp(mime, "UTF8_STRING"))) {
-        last_offer_text = 1;
+    /* Keep the BEST advertised text type, not the LAST one. Which types a source advertises, and in
+       what order, is entirely the source's business — Firefox offers text/plain, text/html,
+       text/x-moz-url and text/plain;charset=utf-8 in an order of its own — and the type asked for
+       decides what bytes come back. The old rule let the last advertisement win. */
+    int r = clipboard_mime_rank(mime);
+    if (r > last_offer_text) {
+        last_offer_text = r;
         snprintf(last_offer_mime, sizeof(last_offer_mime), "%s", mime);
     }
 }
@@ -2593,6 +2598,34 @@ static void paste_flush(void)
         return;
     if (fm_cd_state != FMCD_IDLE)
         fm_cd_abort("a paste was inserted at the prompt");
+    /* A NUL byte must never reach the pty. Firefox on Wayland serves UTF-16 code units under a
+       UTF-8 label, and pasting those bytes verbatim is what the user reported as "a stray h":
+       bash's bracketed-paste reader stops at the first NUL, so "http://127.0.0.1:8080" arrives as a
+       single `h`, and zsh inserts them all and paints every NUL as `^@` (measured, s98). Repair the
+       block — decode UTF-16 to UTF-8, otherwise drop the NULs — before any of it is written. */
+    if (memchr(paste_buf, 0, paste_len)) {
+        size_t cap = paste_len * 3 / 2 + 8;
+        char *tmp = malloc(cap);
+        int n = tmp ? paste_repair(paste_buf, paste_len, tmp, cap) : -1;
+        if (n >= 0) {
+            klog(L_DEBUG, "paste: %zu clipboard bytes contained NUL, repaired to %zu",
+                 paste_len, (size_t)n);
+            free(paste_buf);
+            paste_buf = tmp;
+            paste_len = (size_t)n;
+        } else {
+            /* Should not happen (cap is sized to always fit). Never send the NULs: strip them here. */
+            free(tmp);
+            size_t o = 0;
+            for (size_t i = 0; i < paste_len; i++)
+                if (paste_buf[i])
+                    paste_buf[o++] = paste_buf[i];
+            klog(L_WARN, "paste: clipboard block contained NUL bytes; %zu stripped", paste_len - o);
+            paste_len = o;
+        }
+        if (!paste_len)
+            return;
+    }
     int bracketed = cur_term()->bracketed_paste && !paste_overflow;
     static const char start[] = PASTE_START, end[] = PASTE_END;
     Pty *pp = cur_pty();

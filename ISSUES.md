@@ -6,22 +6,22 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** The user's report that opened this — the mouse wheel doing nothing inside `nano` — is fixed and
-confirmed in their own window; see the three s96 entries at the top of "Fixed". Their stray-`h` report is also
-fixed (the C0-inside-CSI entry); **it still needs their eye in their own window**, because the trigger is a paste
-whose text contains escape sequences and only they can say whether the `h` is gone. If it is not gone, the next
-place to look is already measured and is NOT a Kai-Term bug: pasting text that contains an escape sequence while
-the application has not yet asked for DEC mode 2004 hands that sequence to the shell, which echoes back the
-`2004h` — see "Known limitations" — "Paste". Two different mechanisms, one symptom; only the first one was ours
-to fix.
+**No open bug.** The user's stray-`h`-when-pasting report is now explained and fixed — the cause was the
+clipboard SOURCE, not the parser (see the s98 entry at the top of "Fixed": Firefox advertises
+`text/x-moz-url-priv` last and serves UTF-16 under it, and Kai-Term was asking for the last type advertised).
+It is reproduced and A/B'd end-to-end against the user's real Firefox clipboard, but **it still needs their eye
+in their own window**. The earlier s97 explanation of that report (an escape sequence inside the pasted text,
+hitting a startup window where bracketed paste is off) was measured and is real behaviour, but it was NOT what
+the user was hitting — the "Paste" limitations below keep it as the measured fact it is, without the claim that
+it explained their report.
 
-Re-measured 2026-10-21 (s97, after the C0-inside-CSI parser fix, from `make clean`): `make -j8` exit 0 with
-**0 warnings**; `./bin/test_vt` **859 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+Re-measured 2026-10-21 (s98, after the clipboard-source fix, from `make clean`): `make -j8` exit 0 with
+**0 warnings**; `./bin/test_vt` **878 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
 `./bin/test_fm` **274 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
 (`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
 sanitizer report; `tests/cli_test.sh` **96 checks / 0 failures / 0 skipped** — the probe launch could draw
 here, so the window-opening group ran (it is skipped on a box whose video memory is spoken for). The 96 is
-not a change to the suite: s95 added one check (`fm_key_path = none` unbinds) and the 95 written here in s96
+not a change to the suite: s95 added one check (`fm_key_path = none` unbinds) and the 95 written in s96
 had never been re-diffed — `git show 3ece4e7:tests/cli_test.sh` reports 95, `git show HEAD:tests/cli_test.sh`
 reports 96, both against this same binary.
 No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
@@ -37,7 +37,7 @@ The behaviour the user asked for on 2026-10-19 — clear the prompt, `cd`, put t
 Everything else below is current behaviour, not a bug.
 
 The integrated file manager (README "File manager") is built, wired into the window and covered by 274
-model/layout/config checks plus the 859 passing ones in the VT/config suite; its input routing was verified
+model/layout/config checks plus the 878 passing ones in the VT/config suite; its input routing was verified
 live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
 file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
 at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s71-s79 journal
@@ -63,6 +63,41 @@ To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` log
 not filed; it is not a bug until it reproduces.
 
 ## Fixed
+
+**Pasting from Firefox put `h` on the bash prompt and `h^@t^@t^@p^@…` on the zsh prompt: Kai-Term asked the
+clipboard for the wrong mime type, and then wrote UTF-16 bytes to the pty (2026-10-21, s98).** Reported by the
+user, who narrowed it down far better than I had: the source matters ("some source no matter the text copied will
+result in an h when pasted, while the same text from another source will paste properly"), the way it is pasted
+matters (Ctrl+V works, Ctrl+Shift+V does not), and the source is Firefox. All three clues were the diagnosis; I
+had the mechanism wrong twice before measuring it.
+
+What was actually wrong, measured against the user's real Firefox selection (`.scratch/s98/ab.sh`, Kai-Term run
+with `cat > capture` as its shell so the file holds exactly the bytes Kai-Term wrote to the pty): Firefox
+advertises `text/plain;charset=utf-8`, `UTF8_STRING`, `COMPOUND_TEXT`, `TEXT`, `text/plain`, `STRING`,
+`text/plain;charset=utf-8`, `text/plain`, `text/x-moz-url-priv`, `SAVE_TARGETS` — and `offer_offer()` overwrote
+the recorded type for every one of them, so **the last advertised type won**. `text/x-moz-url-priv` starts with
+`text/`, so it qualified, and Firefox serves it as **UTF-16LE**: `68 00 74 00 74 00 70 00 3a 00 …`. Kai-Term
+buffered those 42 bytes and wrote them verbatim into the bracketed paste. bash's bracketed-paste reader stops at
+the first NUL, so the line shows a single `h`; zsh inserts every byte and paints each NUL as `^@`, so the line
+shows `h^@t^@t^@p^@…` — both reproduced exactly (`.scratch/s98/nulprobe`). A/B on the same clipboard: **old
+binary writes 42 UTF-16 bytes, fixed binary writes the 6 clean UTF-8 bytes** it should.
+
+Two fixes, because two things were wrong. (1) `clipboard_mime_rank()` — ask for the BEST advertised text type
+(`text/plain;charset=utf-8` > `UTF8_STRING` > `text/plain` > other `text/plain` variants > other `text/*`), never
+the last one advertised. (2) `paste_repair()` — a NUL byte must never reach the pty: a block whose NULs are dense
+and one-sided (or BOM-prefixed) is UTF-16 and is decoded to UTF-8; anything else is NUL-stripped. Verified
+end-to-end for a source that offers only UTF-16 and cannot be dodged by picking a better type: **33 UTF-16 bytes
+in, 17 clean bytes out**, logging `paste: 33 clipboard bytes contained NUL, repaired to 17`. 19 new checks
+(859 -> 878, 0 failures), `make asan` clean.
+
+**Why Ctrl+V worked and Ctrl+Shift+V did not** — the user's own clue, and the best diagnostic in the whole
+report: Kai-Term does not handle plain Ctrl+V at all, it sends the key to the shell, and the shell's own paste
+(`fish_clipboard_paste` -> `wl-paste`, bash/zsh command substitution) **drops NUL bytes on its way into a
+variable**. Kai-Term's path writes the clipboard to the pty verbatim, NULs included. Same clipboard, same source,
+one path sanitises and one does not.
+
+**The s97 C0-inside-CSI fix stands on its own** (it is a real parser bug, pinned by 14 checks) but it was not what
+the user was hitting. See the entry below and the s97 journal entries.
 
 **A stray `h` nobody typed, and a mode silently not applied: a C0 control byte inside a control sequence ended
 the sequence (2026-10-21, s97).** Reported by the user, who also guessed the shape of it: "the h can happen from
@@ -263,7 +298,8 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
 - **Only `text/plain` is offered on copy** (one mime type requested on paste), and
   `wl_data_offer_accept()` is never called before `wl_data_offer_receive()`. niri tolerates both
   (`wl-copy` text reaches the PTY byte-for-byte), but a compositor that matches mime types strictly could
-  refuse. First things to check if pasting from other apps breaks.
+  refuse. First things to check if pasting from other apps breaks. On the PASTE side the type is now chosen by
+  preference (`clipboard_mime_rank()`), not by "whichever the source advertised last" — see "Paste" below.
 - **A paste over `PASTE_BUF_MAX` (8 MiB) is sent unwrapped** — no `ESC[200~`/`ESC[201~` — with a log
   warning, because the whole block must be buffered before delimiters can surround it.
 - **Bracketed paste is per application:** the delimiters are sent only when the app has DEC mode 2004 on.
@@ -271,26 +307,43 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
 
 **Paste**
 
+- **What a clipboard source advertises, and serves under each name, is entirely the source's business.** Kai-Term
+  asks for the best text type it is offered (`clipboard_mime_rank()`: `text/plain;charset=utf-8` > `UTF8_STRING` >
+  `text/plain` > other `text/plain` variants > other `text/*`) and repairs what comes back (`paste_repair()`: a NUL
+  byte never reaches the pty; dense one-sided NULs or a BOM mean UTF-16, which is decoded to UTF-8). Firefox is the
+  measured case — it advertises `text/x-moz-url-priv` last and serves it as UTF-16LE. Two things a source can do
+  still get through:
+  - **UTF-16 with no BOM and no NULs at all** (e.g. UTF-16 of CJK text) is undetectable and is pasted as mojibake.
+    There is no reliable way to tell it from UTF-8 without a BOM; a source that labels it correctly is fine.
+  - **A block whose NULs are sparse** (not at least half the bytes) is treated as text with stray NULs and only
+    NUL-stripped, never decoded — guessing UTF-16 on ambiguous input would turn good text into garbage.
+  If a paste ever arrives wrong, the first thing to measure is the SOURCE, not the parser: `wl-paste -l` for the
+  types, and `wl-paste --type <one>` piped to `od -c` for the bytes it actually serves under each name.
 - **A paste is wrapped in `ESC[200~`/`ESC[201~` only while the application holds DEC mode 2004, and at startup
   there is a window in which it does not.** Measured from the pty spawn (`.scratch/s97/fishtime`, and section B
   of `.scratch/s97/hprobe2`): bash and zsh turn the mode on ~20 ms after the shell starts, fish ~200 ms — and
   fish only once the terminal has answered its startup queries (a probe that leaves those queries unanswered
   watches fish stall and reports "never", which is a property of the probe, not of fish). A paste flushed before
-  that moment goes out RAW. That is the shape of the user's report: "the h can happen from opening Kai-Term and
-  trying to paste … I just can't reproduce it at will". The same unwrapped path is taken for a paste over
-  `PASTE_BUF_MAX` (8 MiB) — see "Selection / clipboard" above.
+  that moment goes out RAW. The same unwrapped path is taken for a paste over `PASTE_BUF_MAX` (8 MiB) — see
+  "Selection / clipboard" above.
 - **Raw-pasting text that itself contains an escape sequence puts characters on the line that nobody typed.**
   Measured (`.scratch/s97/hprobe`, a real shell in a pty): pasting `AA\e[?2004hBB` into bash WITH the delimiters
   leaves the inert literal `AA^[[?2004hBB` on the line; the same bytes WITHOUT them leave `AA2004hBB`, and Enter
-  runs `AA2004hBB` (`bash: AA2004hBB: command not found`). The `h` is the final byte of `\e[?2004h` — the
-  character the user reported. The sequence is interpreted by the SHELL (readline), not by Kai-Term's parser:
-  Kai-Term wrote the bytes to the pty and the shell echoed what it made of them. Text copied out of a terminal is
-  the usual source of such clipboard content. Kai-Term cannot know that the clipboard holds escape bytes; the
-  delimiters are the protection, and asking for them is the application's decision.
-- **nano answers such a paste with its own `[ Flawed paste ]`** and inserts nothing after the escape (measured,
-  nano 9.2, `.scratch/s97/hprobe`). Kai-Term's write pattern is not the cause: nano accepts the same block when
-  `paste_flush()` sends it as three separate writes (`ESC[200~`, the text, `ESC[201~`) and when chunked at 4096
-  bytes like the real code does (`.scratch/s97/flawed`, cases A/B/C/G2 clean). See the s97 entry under "Fixed".
+  runs `AA2004hBB` (`bash: AA2004hBB: command not found`). The sequence is interpreted by the SHELL (readline), not
+  by Kai-Term's parser: Kai-Term wrote the bytes to the pty and the shell echoed what it made of them. Text copied
+  out of a terminal is the usual source of such clipboard content. Kai-Term cannot know that the clipboard holds
+  escape bytes; the delimiters are the protection, and asking for them is the application's decision. **This was
+  measured in s97 as a candidate explanation of the user's stray `h` and it is NOT what they were hitting** — the
+  real cause was the clipboard mime type (see the s98 entry under "Fixed"). It is kept here as the real behaviour
+  it is, not as their diagnosis.
+- **nano answers a paste whose text contains an escape sequence with its own `[ Flawed paste ]`** and inserts
+  nothing after the escape (measured, nano 9.2, `.scratch/s97/hprobe`). Kai-Term's write pattern is not the cause:
+  nano accepts the same block when `paste_flush()` sends it as three separate writes (`ESC[200~`, the text,
+  `ESC[201~`) and when chunked at 4096 bytes like the real code does (`.scratch/s97/flawed`, cases A/B/C/G2 clean).
+- **Plain `Ctrl`+`V` is not Kai-Term's** — only `Ctrl`+`Shift`+`V` is. Plain Ctrl+V goes to the shell, which does its
+  own clipboard read (`fish_clipboard_paste` -> `wl-paste`; bash/zsh via command substitution), and that path drops
+  NUL bytes. The two paths can therefore give different results from the same clipboard; that difference is a
+  diagnostic, not a bug (measured, s98 — it is how the user localised this to Kai-Term's own paste path).
 
 **Sessions / layout**
 

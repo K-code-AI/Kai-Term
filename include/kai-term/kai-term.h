@@ -535,6 +535,18 @@ void term_set_clear_scrollback(int on);
    truncating it. Pure byte math, so it is unit-testable without a display. */
 int paste_wrap(int bracketed, const char *text, size_t len, char *out, size_t cap);
 
+/* Which text mime type to ask a clipboard source for: 0 = not text, higher = preferred. A source may
+   advertise several; picking "the last one advertised" is an accident of its enumeration order. */
+int clipboard_mime_rank(const char *mime);
+
+/* Repair a clipboard block before it is written to the PTY: a NUL byte must never reach the pty, and
+   a source that serves UTF-16 (Firefox on Wayland labels UTF-16 code units as UTF-8) is decoded to
+   UTF-8 rather than pasted as NUL-littered keystrokes. Copies `in` (len bytes, not NUL-terminated)
+   into out (cap bytes) and returns the new length, or -1 when out is too small — the caller then
+   sends what it has rather than a truncated block. cap >= len*3/2 + 8 always suffices. When the
+   block holds no NUL at all it is copied through byte-for-byte, unchanged. */
+int paste_repair(const char *in, size_t len, char *out, size_t cap);
+
 /* ---------- configurable key bindings ---------- */
 
 /* Modifier bits a binding may name. Deliberately NOT xkbcommon's masks: the config parser must not

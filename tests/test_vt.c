@@ -1566,6 +1566,108 @@ int main(void)
         CHECK(paste_wrap(1, "x", 1, pb, 11) == -1, "brackets alone do not fit in 11 bytes");
     }
 
+    /* --- clipboard bytes a source serves WRONG (reported by the user as "a stray h when I paste",
+       with the source being Firefox). Measured in .scratch/s98/nulprobe: the UTF-16LE bytes for
+       "http://127.0.0.1:8080" written verbatim into a bracketed paste leave bash's line holding a
+       single `h` (readline's bracketed reader stops at the first NUL) and zsh's line holding
+       `h^@t^@t^@p^@...` (zle paints every NUL as ^@) — the user's two reports, reproduced exactly.
+       A NUL byte must never reach the pty. --- */
+    {
+        char u16[64], out[256];
+        size_t u16len = 0;
+        const char *url = "http://127.0.0.1:8080";
+        for (const char *p = url; *p; p++) { u16[u16len++] = *p; u16[u16len++] = 0; }
+
+        int n = paste_repair(u16, u16len, out, sizeof(out));
+        CHECK(n == (int)strlen(url) && !memcmp(out, url, strlen(url)),
+              "paste_repair: UTF-16LE with no BOM decodes to the text the user meant to paste");
+        CHECK(n > 0 && memchr(out, 0, (size_t)n) == NULL,
+              "paste_repair: no NUL survives on its way to the pty");
+
+        /* the same block with a BOM in front */
+        char bom[80];
+        size_t blen = 0;
+        bom[blen++] = (char)0xFF; bom[blen++] = (char)0xFE;
+        memcpy(bom + blen, u16, u16len); blen += u16len;
+        n = paste_repair(bom, blen, out, sizeof(out));
+        CHECK(n == (int)strlen(url) && !memcmp(out, url, strlen(url)),
+              "paste_repair: a UTF-16LE BOM is consumed, not pasted as a character");
+
+        /* big-endian, with and without the BOM */
+        char be16[64];
+        size_t belen = 0;
+        for (const char *p = url; *p; p++) { be16[belen++] = 0; be16[belen++] = *p; }
+        n = paste_repair(be16, belen, out, sizeof(out));
+        CHECK(n == (int)strlen(url) && !memcmp(out, url, strlen(url)),
+              "paste_repair: UTF-16BE (NULs at even offsets) decodes too");
+        char bebom[80];
+        size_t bblen = 0;
+        bebom[bblen++] = (char)0xFE; bebom[bblen++] = (char)0xFF;
+        memcpy(bebom + bblen, be16, belen); bblen += belen;
+        n = paste_repair(bebom, bblen, out, sizeof(out));
+        CHECK(n == (int)strlen(url) && !memcmp(out, url, strlen(url)),
+              "paste_repair: a UTF-16BE BOM is consumed too");
+
+        /* non-ASCII and astral: the surrogate pair for U+1F600 must come out as one 4-byte char.
+           Carried with a BOM, which is what makes a short block unambiguous. */
+        char smile[8] = { (char)0xFF, (char)0xFE, (char)0x3D, (char)0xD8, (char)0x00, (char)0xDE };
+        n = paste_repair(smile, 6, out, sizeof(out));
+        CHECK(n == 4 && (unsigned char)out[0] == 0xF0 && (unsigned char)out[1] == 0x9F &&
+              (unsigned char)out[2] == 0x98 && (unsigned char)out[3] == 0x80,
+              "paste_repair: a UTF-16 surrogate pair becomes one UTF-8 code point");
+        char lone[6] = { (char)0xFF, (char)0xFE, (char)0x3D, (char)0xD8, 'a', 0 };  /* high, then no low */
+        n = paste_repair(lone, 6, out, sizeof(out));
+        CHECK(n == 4 && (unsigned char)out[0] == 0xEF && (unsigned char)out[1] == 0xBF &&
+              (unsigned char)out[2] == 0xBD && out[3] == 'a',
+              "paste_repair: a lone surrogate becomes one replacement char, and the next unit survives");
+
+        /* a block too sparse to be sure about is NEVER decoded — it is only NUL-stripped */
+        char sparse[6] = { (char)0x3D, (char)0xD8, (char)0x00, (char)0xDE, 'x', 0 };
+        n = paste_repair(sparse, 6, out, sizeof(out));
+        CHECK(n == 4 && memchr(out, 0, (size_t)n) == NULL,
+              "paste_repair: sparse NULs are stripped, never guessed at as UTF-16");
+
+        /* the ordinary case must be untouched, byte for byte */
+        const char *clean = "ls -la\r\n";
+        n = paste_repair(clean, strlen(clean), out, sizeof(out));
+        CHECK(n == (int)strlen(clean) && !memcmp(out, clean, strlen(clean)),
+              "paste_repair: a block with no NUL is copied through unchanged");
+
+        /* a stray NUL in ordinary text is stripped, NOT decoded as UTF-16 */
+        const char *stray = "echo hello there and keep going";
+        char polluted[64];
+        size_t plen = strlen(stray);
+        memcpy(polluted, stray, plen);
+        polluted[3] = 0;                       /* one NUL at an even offset */
+        n = paste_repair(polluted, plen, out, sizeof(out));
+        CHECK(n == (int)plen - 1 && memchr(out, 0, (size_t)n) == NULL &&
+              !memcmp(out, "ech hello there and keep going", plen - 1),
+              "paste_repair: one stray NUL is stripped, not read as UTF-16");
+
+        /* short output buffer is reported, never a truncated paste */
+        CHECK(paste_repair(u16, u16len, out, 4) == -1, "paste_repair: too small = -1");
+        CHECK(paste_repair(clean, strlen(clean), out, strlen(clean) - 1) == -1,
+              "paste_repair: even a copy needs room for the whole block");
+        /* the caller's sizing rule: len*3/2 + 8 always suffices */
+        CHECK(paste_repair(u16, u16len, out, u16len * 3 / 2 + 8) == (int)strlen(url),
+              "paste_repair: the caller's cap formula is enough for a full decode");
+    }
+
+    /* --- which mime type to ask a clipboard source for. The old rule kept the LAST advertised type,
+       so a source enumerating text/plain before text/html got HTML asked for. --- */
+    CHECK(clipboard_mime_rank("text/plain;charset=utf-8") > clipboard_mime_rank("text/plain"),
+          "mime rank: an explicit utf-8 beats a bare text/plain");
+    CHECK(clipboard_mime_rank("text/plain") > clipboard_mime_rank("text/html"),
+          "mime rank: text/plain beats text/html, whatever order the source advertised them in");
+    CHECK(clipboard_mime_rank("text/plain;charset=utf-8") > clipboard_mime_rank("UTF8_STRING"),
+          "mime rank: utf-8 explicit beats the bare UTF8_STRING atom");
+    CHECK(clipboard_mime_rank("text/html") == 1 && clipboard_mime_rank("text/rtf") == 1,
+          "mime rank: any other text/* is still accepted as a last resort");
+    CHECK(clipboard_mime_rank("image/png") == 0 && clipboard_mime_rank("application/json") == 0 &&
+          clipboard_mime_rank(NULL) == 0, "mime rank: non-text is not text");
+    CHECK(clipboard_mime_rank("text/plain;charset=iso-8859-1") == 2 &&
+          clipboard_mime_rank("text/plain;dnd=1") == 2, "mime rank: text/plain variants rank below the exact names");
+
     /* term_init frees the grid it rebuilds (the RIS leak fix), but it must not free a grid that never
        existed: on a stack Term holding garbage that was a free() of a bogus pointer. */
     {

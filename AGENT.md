@@ -17,25 +17,26 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-21, s97 — build and every suite green; a C0 control byte inside a control
-sequence is now EXECUTED instead of ending the sequence, so a mode is no longer silently dropped and the
-sequence's final byte no longer lands on the screen as a stray `h`. Green and A/B'd, but NOT yet seen in the
-user's own window)
+## Current Status (re-measured 2026-10-21, s98 — build and every suite green; a paste from a clipboard source
+that advertises several text types (Firefox) now asks for the BEST one instead of the LAST one, and a NUL byte can
+never reach the pty. Reproduced and A/B'd end-to-end against the user's real Firefox clipboard, but NOT yet seen
+in the user's own window)
 
-- **s97 (the stray `h` nobody typed) is fixed in the parser, green, and A/B'd — and it is NOT yet confirmed in
-  the user's own window** (their report, 2026-10-21: "the h can happen from opening Kai-Term and trying to paste
-  … I just can't reproduce it at will", plus nano's own `Flawed paste`). What was wrong: `PS_CSI`'s handling of a
-  C0 byte inside a control sequence was `state = PS_GROUND; i--;` — it ENDED the sequence at the control byte, so
-  the mode being set was never applied AND the rest of the sequence was printed as text. `h` is the final byte of
-  every mode-ENABLING sequence (`?2004h`, `?1049h`, `?25h`, `?1h`), which is why the leaked character is an `h`.
-  DEC VT500 and xterm EXECUTE the control byte and KEEP collecting; that is what `exec_c0()` (new, file-local in
-  `src/vt.c`) now does for the ground state and for CSI, which had separate disagreeing copies of the rule.
-  ESC stays the exception: it cancels the sequence. Pinned by 14 new `test_vt` checks (845 -> 859); A/B against
-  `git show HEAD:src/vt.c` gives **9 failures on the old parser, 0 on the new**.
-  **The other half of their symptom is a measured limitation, not a bug:** pasting text that itself contains an
-  escape sequence while the app has not yet asked for DEC mode 2004 hands that sequence to the SHELL, which
-  echoes back `2004h` (`.scratch/s97/hprobe`). Two mechanisms, one symptom — see ISSUES.md "Known limitations" —
-  "Paste".
+- **s98 (pasting from Firefox put `h` on the bash prompt and `h^@t^@t^@p^@…` on the zsh prompt) is fixed,
+  reproduced, and A/B'd end-to-end — NOT yet confirmed in the user's own window.** The cause was the clipboard
+  SOURCE, not the parser, and the user localised it: the source matters, the paste key matters, the source is
+  Firefox. Measured against their real selection: Firefox advertises ten types ending `text/x-moz-url-priv`,
+  `offer_offer()` overwrote the recorded type for every `text/*` one so **the last advertised won**, and Firefox
+  serves that type as **UTF-16LE** (`68 00 74 00 74 00 70 00 3a 00 …`). Those 42 bytes went verbatim into the
+  bracketed paste; bash's bracketed reader stops at the first NUL (one `h`), zsh inserts them all and paints each
+  NUL as `^@`. Two fixes: `clipboard_mime_rank()` (ask for the best type, never the last) and `paste_repair()`
+  (decode UTF-16, otherwise strip NULs — a NUL must never reach the pty). A/B on the same clipboard: old writes
+  42 UTF-16 bytes, new writes the 6 clean UTF-8 bytes. Safety net proven on a source that offers ONLY UTF-16:
+  33 bytes in, 17 out. 19 new checks (859 -> 878). Both live in `src/vt.c` as pure functions; the call sites are
+  `offer_offer()` and `paste_flush()` in `src/main.c`.
+  **The s97 C0-inside-CSI fix stands on its own** (a real parser bug, 14 checks) but it was not what the user was
+  hitting, and the s97 "escape sequence in the pasted text" story is NOT their diagnosis — see ISSUES.md
+  "Known limitations" — "Paste".
 - **s96 (the mouse inside full-screen programs) is implemented, wired, green and CONFIRMED BY THE USER IN THEIR
   OWN WINDOW** (2026-10-21: "I tested it and now I can scroll in nano", "nano --mouse works as expected", "I
   confirm it to be good"). What it is: DECCKM (`ESC[?1h`) is honoured and saved/restored across the alternate
@@ -50,7 +51,7 @@ user's own window)
   `app_wheel()` + `ptr_button()` + `send_key()` + `fm_wheel()` in main.c. Switches: `wheel_sends_keys`,
   `click_moves_cursor` (default 1). Pinned by 31 new `test_vt` checks and 27 new `test_fm` checks; the preview
   resize clamp was A/B'd (`.scratch/s96/clampab`: 1 failure on the old placement, 0 here).
-- **s90-s97 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
+- **s90-s98 are all committed on `main` and pushed; `main` == `origin/main`, working tree clean** (verified after
   the push: `git status -sb` shows no ahead/behind and `git diff --stat main origin/main` is empty). Read the
   remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
   follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks)
@@ -67,7 +68,7 @@ user's own window)
   `.scratch/s90b/diffgate.sh` reports all seven copied functions byte-identical to `main.c`, and all six
   integration modes still end `MATCH` with `typed text INTACT`.
 - `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **859 checks, 0 failures**,
+  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **878 checks, 0 failures**,
   `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **274 checks, 0 failures**;
   `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
   `make asan` exit 0 with the same counts and 0 sanitizer reports. When the probe launch can draw,
@@ -150,7 +151,119 @@ user's own window)
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s97 — CLOSED: the user's stray `h` nobody typed. Their hypothesis named a mechanism Kai-Term does not have (nothing in our parser writes to our own pty), but it pointed at a real one: `PS_CSI` ENDED a control sequence when a C0 byte arrived inside it, so the mode being set was never applied AND the rest of the sequence was printed as text — and `h` is the final byte of every mode-ENABLING sequence. Fixed with one shared `exec_c0()`, pinned by 14 checks, A/B'd (9 failures on the old parser, 0 on the new). Their second clue, nano's `Flawed paste`, is measured and is NOT a Kai-Term bug. NOT yet confirmed in the user's own window. See s97 entries 1-5 and the close-out.)
+## Current Task (s98 — CLOSED: the user's stray `h` when pasting, finally traced to the clipboard SOURCE. Their three clues did the diagnosis: the source matters, the paste key matters (Ctrl+V works, Ctrl+Shift+V does not), and the source is Firefox. Measured against their real selection: Firefox advertises `text/x-moz-url-priv` LAST and serves it as UTF-16LE, and `offer_offer()` kept the last advertised type — so Kai-Term asked for UTF-16 and wrote it verbatim to the pty. bash's bracketed reader stops at the first NUL (`h`); zsh paints every NUL as `^@` (`h^@t^@t^@p^@…`). Fixed with `clipboard_mime_rank()` + `paste_repair()`, 19 checks, A/B'd end-to-end. I had the mechanism wrong TWICE before measuring the source; the s97 fix is real but was not this bug. NOT yet confirmed in the user's own window. See s98 entries 1-4 and the close-out.)
+
+### s98 entry 1 — what I got wrong, and the clue that fixed it
+
+Two wrong mechanisms were asserted before anything was measured, and both are in the record so the next reader
+does not repeat them:
+
+1. **"An escape sequence inside the pasted text, during the startup window where bracketed paste is off."** That
+   behaviour is real (measured in s97) but it is not what the user was hitting. Their clipboard held
+   `printf 'AA\e[?2004hBB' | wl-copy` — 32 bytes of **literal backslash-and-e**, no ESC byte at all. A story about
+   an escape sequence cannot apply, and kitty pasting it verbatim proved that.
+2. **"The source serves UTF-16 and the shells strip NULs, so raw UTF-16 explains it."** Half right, and the probe
+   said no: feeding raw UTF-16LE to bash *without* the bracketed delimiters produced the full correct text in both
+   shells. The delimiters were the missing variable — with them, bash stops at the first NUL.
+
+The clue that broke it open was the user's own: **"pasting with ctrl+v works perfectly … what's the difference
+between those 2?"** Kai-Term handles only Ctrl+Shift+V (`send_key()` requires `shift_held`); plain Ctrl+V goes to
+the shell, whose own paste path (`fish_clipboard_paste` -> `wl-paste`, bash/zsh command substitution) **drops NUL
+bytes** on the way into a variable. Same clipboard, two paths, one sanitises. That localised the bug to Kai-Term's
+own paste path — and "the source matters" localised it to the mime type.
+
+**Lesson, and it is the same lesson as every other entry in this file: measure the SOURCE before theorising about
+the parser.** `wl-paste -l` and `wl-paste --type <name> | od -c` answer it in ten seconds. I ran them only after
+two wrong answers.
+
+### s98 entry 2 — MEASURED: what Firefox actually offers and actually serves
+
+The user's live Firefox selection, every advertised type and the bytes served under each:
+
+```
+text/plain;charset=utf-8  ->  61 73 64 61 73 64 0a          ("asdasd", correct UTF-8)
+UTF8_STRING               ->  61 73 64 61 73 64 0a
+COMPOUND_TEXT             ->  (empty)
+TEXT                      ->  61 73 64 61 73 64 0a
+text/plain                ->  61 73 64 61 73 64 0a
+STRING                    ->  61 73 64 61 73 64 0a
+text/plain;charset=utf-8  ->  61 73 64 61 73 64 0a
+text/plain                ->  61 73 64 61 73 64 0a
+text/x-moz-url-priv       ->  68 00 74 00 74 00 70 00 3a 00 2f 00 2f 00 31 00 32 00 37 00 …   <-- UTF-16LE
+SAVE_TARGETS              ->  (empty)
+```
+
+`offer_offer()` overwrote the recorded mime for **every** type starting with `text/`, so the LAST advertisement won.
+`text/x-moz-url-priv` qualifies (it starts with `text/`) and Firefox serves it as UTF-16LE — the user's
+`http://127.0.0.1:8080`, still in their clipboard. Kai-Term asked for it, buffered 42 bytes, and wrote them
+verbatim into the bracketed paste.
+
+Reproducing the two symptoms exactly (`.scratch/s98/nulprobe.c`, real `src/pty.c` + real `term_parse()`, no
+window, UTF-16LE inside `ESC[200~ … ESC[201~`):
+
+```
+bash:  row 0 |kaida@k-gentoo /tmp $ h                      <- readline's bracketed reader stops at the first NUL
+zsh:   row 0 |k-gentoo% h^@t^@t^@p^@:^@/^@/^@1^@2^@7^@.^@0^@.^@0^@.^@1^@:^   <- zle paints each NUL as ^@
+```
+
+That zsh line is the user's report character for character.
+
+### s98 entry 3 — the two fixes
+
+**(1) Ask for the best type, never the last one.** `clipboard_mime_rank()` in `src/vt.c` (pure, unit-tested):
+`text/plain;charset=utf-8` (5) > `UTF8_STRING` (4) > `text/plain` (3) > other `text/plain` variants (2) > any other
+`text/*` (1) > not text (0). `offer_offer()` keeps the highest rank seen instead of the last name seen.
+
+**(2) A NUL byte must never reach the pty.** `paste_repair(in, len, out, cap)` in `src/vt.c`: no NUL anywhere →
+copy through byte-for-byte, unchanged (the common case, and the only case that must stay untouched). Otherwise a
+BOM decides UTF-16 outright; without one, only a **dense, one-sided** NUL pattern counts (`nuls*2 >= len`, NULs
+mostly at odd offsets = LE, mostly even = BE) and is decoded to UTF-8 with surrogate pairs and lone surrogates
+handled; anything sparser is NUL-stripped only, because guessing UTF-16 on ambiguous input turns good text into
+garbage. `paste_flush()` calls it before writing anything, sizes `cap` as `len*3/2 + 8` (UTF-16 2 bytes can become
+UTF-8 3 bytes), and logs `paste: N clipboard bytes contained NUL, repaired to M`.
+
+19 new checks (859 -> 878, 0 failures): UTF-16LE with and without a BOM, UTF-16BE with and without, a surrogate
+pair becoming one 4-byte code point, a lone surrogate becoming one replacement char with the NEXT unit surviving,
+sparse NULs stripped rather than decoded, a stray NUL stripped, clean text untouched, short cap refused rather than
+truncated, and the ranking order itself.
+
+### s98 entry 4 — verified end-to-end, against the user's real clipboard
+
+`.scratch/s98/ab.sh` runs Kai-Term with `cat > capture` as its shell, so the capture file holds exactly the bytes
+Kai-Term wrote to the pty, and injects Ctrl+Shift+V through the real compositor (uinput). Against the user's live
+Firefox selection:
+
+| binary | bytes written to the pty |
+|---|---|
+| OLD (`src/main.c` at HEAD) | `68 00 74 00 74 00 70 00 3a 00 …` — **42 bytes of UTF-16LE** |
+| NEW (fixed) | `61 73 64 61 73 64` — **6 clean UTF-8 bytes** |
+
+`.scratch/s98/net.sh` proves the safety net on a source that cannot be dodged by picking a better type
+(`wl-copy -t text/plain` forcing UTF-16 bytes under the only advertised name): OLD writes 33 UTF-16 bytes, NEW
+writes 17 clean ones, logging `paste: 33 clipboard bytes contained NUL, repaired to 17`.
+
+**Harness traps hit and fixed on the way** (all of them made a run lie): `pkill -f clipowner` matched the shell
+running it and killed the whole command; a background job spawned with `&` makes this shell tool swallow ALL of the
+call's output, so background-and-report must be split across calls or put in a script file; `cat > file` is
+fully buffered when stdout is a file, so killing it discards the capture — send Ctrl-D and let it exit; and after a
+FAILED `make` the old `bin/test_vt` still ran and cheerfully reported "859 checks, 0 failures" for code that had not
+been rebuilt.
+
+### s98 close-out — re-measured from a clean tree, committed and pushed
+
+`make clean && make -j8` -> exit 0, no warning line at all. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0:
+`CLI: 62 checks, 0 failures, 10 skipped`, `test_vt` **878 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
+`test_fm` **274 checks, 0 failures**. `make asan` -> exit 0 with the same three counts and no ASan/UBSan report.
+No untracked file outside the git-ignored `bin/` and `build/`.
+
+One commit holds the code, the tests and the two docs. Pushed; verified afterwards rather than asserted: `git fetch`
+first, `git status -sb` shows no ahead/behind, `git rev-list --left-right --count origin/main...main` is `0 0`,
+`git diff --stat main origin/main` is empty, and the working tree is clean.
+
+**Left open, and it belongs to the user:** the fix is A/B'd against their own clipboard, but only their eye can say
+the `h` is gone from their window.
+
+## Previous Task (s97 — CLOSED: the user's stray `h` nobody typed. Their hypothesis named a mechanism Kai-Term does not have (nothing in our parser writes to our own pty), but it pointed at a real one: `PS_CSI` ENDED a control sequence when a C0 byte arrived inside it, so the mode being set was never applied AND the rest of the sequence was printed as text — and `h` is the final byte of every mode-ENABLING sequence. Fixed with one shared `exec_c0()`, pinned by 14 checks, A/B'd (9 failures on the old parser, 0 on the new). Their second clue, nano's `Flawed paste`, is measured and is NOT a Kai-Term bug. NOT yet confirmed in the user's own window. See s97 entries 1-5 and the close-out.)
 
 **The user's report, in their words (2026-10-21):** they suspect the trailing `h` of the sequence a shell sends to
 enable bracketed paste is being leaked into the input as a keystroke. Their proposed mechanism, verbatim in
@@ -1742,7 +1855,7 @@ Kai-Term/
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 859 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
+├── tests/test_vt.c              # 878 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
 ├── tests/test_fm.c              # 274 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # 96 checks driving the REAL bin/kai-term; ONE probe launch gates the
@@ -1798,8 +1911,10 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 859 checks: parser (including a C0 byte inside a control sequence — executed, sequence
-  still collecting, nothing painted — and a CSI sequence split across two bursts), grid, selection, alt screen,
+- `tests/test_vt.c` — 878 checks: parser (including a C0 byte inside a control sequence — executed, sequence
+  still collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
+  (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
+  ordering), grid, selection, alt screen,
   `live_off`, emoji clusters, CSI 3 J,
   bracketed paste, `term_init` guard, reflow, `term_grid_geometry`, zoom/alt-screen row-shrink,
   `mouse_sgr_button` and `mouse_wheel_button` (the SGR button order and the 64/65 wheel codes), DECCKM
@@ -1945,6 +2060,29 @@ after `ptr_*` hit-tested bar then panes.
 - **A sequence is only complete when its final byte arrives; a burst boundary never ends one.** `term_parse()`
   re-enters with `ps->state` intact, and that is the whole mechanism — a probe or a fix that treats the end of a
   read as the end of a sequence invents a bug (see the pitfall on hand-counted lengths).
+
+**Clipboard (main.c + the paste helpers in vt.c).**
+
+- **A NUL byte must never reach the pty.** `paste_flush()` runs `paste_repair()` on the buffered clipboard block
+  before writing any of it. A source may serve UTF-16 under a UTF-8 label (Firefox does, under
+  `text/x-moz-url-priv`), and UTF-16 written verbatim into a bracketed paste is what the user saw as a stray `h`:
+  bash's bracketed reader stops at the first NUL, zsh inserts every byte and paints each NUL as `^@`. Repair only
+  when the block actually contains a NUL — a block with none is copied through byte-for-byte, unchanged.
+- **Which mime type to ask for is a preference, not an enumeration accident.** `clipboard_mime_rank()` decides;
+  `offer_offer()` keeps the highest rank seen. The old rule overwrote the recorded type for every `text/*` name, so
+  the LAST type the source advertised won — with Firefox that is `text/x-moz-url-priv`, which is UTF-16. Never
+  "fix" this back to last-wins or first-wins: both are at the source's mercy.
+- **UTF-16 is decoded only when the evidence is unambiguous** — a BOM, or NULs that are dense (`nuls*2 >= len`) and
+  one-sided. Sparse NULs are stripped, not decoded: guessing on ambiguous input turns good text into garbage, which
+  is worse than the NUL being removed. UTF-16 with no BOM and no NULs at all is undetectable and is a documented
+  limitation, not a bug to chase.
+- **`Ctrl`+`Shift`+`V` is Kai-Term's paste; plain `Ctrl`+`V` is the shell's.** Only the first is intercepted
+  (`send_key()` gates on `shift_held`). The shell's path reads the clipboard itself and drops NUL bytes, so the two
+  can differ from the same clipboard — when a user reports "one works and the other doesn't", that difference is the
+  diagnosis, not a second bug.
+- **When a paste arrives wrong, measure the SOURCE before the parser:** `wl-paste -l` for the advertised types and
+  `wl-paste --type <name> | od -c` for the bytes served under each. That single command pair settles in seconds what
+  cost two wrong theories here.
 
 **Grid model (vt.c).**
 
@@ -2372,6 +2510,25 @@ after `ptr_*` hit-tested bar then panes.
   Home key), `ESC O H` prints a literal `H` (SS3 is not implemented here), `ESC [ 1 ~` is ignored, and `CSI G`
   is the one that moves within the row. Same class of mistake in the probe itself: `"\\e[H"` in C sends a
   backslash and an `e`, which read for two minutes like a parser bug.
+- **When a bug is in what someone ELSE hands you, measure that someone before theorising about your own code.**
+  The stray-`h` report got two confident wrong explanations (a leaked parser byte, then an escape sequence in the
+  pasted text) before one command pair settled it: `wl-paste -l` and `wl-paste --type <name> | od -c`. Both wrong
+  theories were internally consistent and neither had been tested against the actual clipboard. The user's own clues
+  — "the source matters", "ctrl+v works but ctrl+shift+v does not" — pointed straight at it; a report that
+  distinguishes two paths is telling you which path to instrument. Related: the s97 C0-inside-CSI fix was a real bug
+  found while chasing this one, so "I found and fixed something" is not evidence that the reported bug is explained.
+  Confirm the reported symptom is reproduced, then confirm it is gone.
+- **A failed build leaves the previous binary in place, and it will happily pass.** `make -j8` errored on a C
+  mistake, the very next command ran `./bin/test_vt` and it printed `859 checks, 0 failures` — for code that had
+  never been rebuilt. Check the build exit status (and that the check count actually moved) before believing any
+  green run.
+- **`pkill -f <name>` matches the shell that runs it.** `pkill -f clipowner` killed the whole command line, output
+  and all. Use `pkill -x <name>`, or put the sequence in a script file.
+- **A background job spawned with `&` makes this shell tool swallow the call's entire output** — even the `echo`s
+  that follow it. Split "start the daemon" and "query it" into separate calls, or run the whole scenario from a
+  script file.
+- **`cat > file` is fully buffered when stdout is a file**, so killing the `cat` that captures a paste discards the
+  capture and the run reports 0 bytes. Close its stdin (Ctrl+D) and let it exit normally.
 - **Never hand-count a length into `term_parse()` — use `strlen()`.** `.scratch/s97/csiC0.c` wrote
   `term_parse(&T, "\e[?2004", 8)`: that literal is **7** bytes (ESC `[` `?` `2` `0` `0` `4`), so the hand-counted
   8 fed the NUL terminator as an extra byte. The probe then reported a perfectly good case as broken — a CSI
