@@ -1,9 +1,13 @@
-/* Kai-Term — configuration: simple "key = value" file. */
+/* Kai-Term — configuration. Two files, one `key = value` syntax: kai-term.conf holds the settings (how the
+   terminal looks and behaves), kai-term.bind holds the key bindings. Both are searched for in
+   $XDG_CONFIG_HOME/kai-term, then ~/.config/kai-term, then /etc/kai-term — first one found wins, and none
+   found anywhere means the built-in defaults below. */
 #include "kai-term.h"
 
 #include <ctype.h>
 #include <errno.h>
 #include <strings.h>     /* strcasecmp for the boolean config values */
+#include <sys/stat.h>    /* stat(): config_find() only accepts a real regular file */
 #include <unistd.h>
 
 static uint32_t parse_color(const char *s, uint32_t fallback)
@@ -356,7 +360,91 @@ static void set_fm_keybind(KeyBind *kb, const char *key, const char *val)
     *kb = parsed;
 }
 
-static void apply(Config *c, const char *key, char *val)
+/* ---------- the two halves of the config surface ----------
+   A SETTING (how the terminal looks and behaves) lives in kai-term.conf; a KEY BINDING (which key does
+   which action) lives in kai-term.bind. One `key = value` syntax and one line reader serve both files;
+   what differs is which NAMES each file accepts, and that is exactly what the two functions below decide.
+   The split is by NAME, never by "which file was open": a kai-term.conf written before the split keeps
+   working (apply() logs where the line belongs now), and the bind file is read LAST, so for a name both
+   files set the bind file wins. */
+
+/* Every key that names a key binding. Returns 1 when `key` is one of them (and has been applied), 0 when
+   it is not — the caller then tries apply_setting(). */
+static int apply_bind_key(Config *c, const char *key, char *val)
+{
+    if (!strcmp(key, "key_new_tab")) {
+        set_keybind(&c->key_new_tab, key, val);
+    } else if (!strcmp(key, "key_close_tab")) {
+        set_keybind(&c->key_close_tab, key, val);
+    } else if (!strcmp(key, "key_next_tab")) {
+        set_keybind(&c->key_next_tab, key, val);
+    } else if (!strcmp(key, "key_prev_tab")) {
+        set_keybind(&c->key_prev_tab, key, val);
+    } else if (!strcmp(key, "key_tab_prefix")) {
+        /* prefix + a digit 1-9 jumps to that tab; empty / none / off disables the shortcut */
+        if (!val[0] || !strcasecmp(val, "none") || !strcasecmp(val, "off") ||
+            !strcasecmp(val, "no") || !strcmp(val, "0")) {
+            c->tab_prefix_mods = 0;
+            klog(L_INFO, "config: key_tab_prefix disabled");
+        } else if (!keymods_parse(val, &c->tab_prefix_mods)) {
+            klog(L_WARN, "config: key_tab_prefix = '%s' is not a modifier list (for example "
+                         "Ctrl+Shift); keeping the current one", val);
+        }
+    } else if (!strcmp(key, "key_toggle_layout")) {
+        set_keybind(&c->key_toggle_layout, key, val);
+    } else if (!strcmp(key, "key_file_manager")) {
+        set_keybind(&c->key_file_manager, key, val);
+    } else if (!strcmp(key, "key_fm_focus")) {
+        set_keybind(&c->key_fm_focus, key, val);
+    } else if (!strcmp(key, "key_fm_release")) {
+        set_keybind(&c->key_fm_release, key, val);
+    } else if (!strcmp(key, "fm_key_up")) {
+        set_fm_keybind(&c->fm_key.up, key, val);
+    } else if (!strcmp(key, "fm_key_down")) {
+        set_fm_keybind(&c->fm_key.down, key, val);
+    } else if (!strcmp(key, "fm_key_pageup")) {
+        set_fm_keybind(&c->fm_key.pageup, key, val);
+    } else if (!strcmp(key, "fm_key_pagedown")) {
+        set_fm_keybind(&c->fm_key.pagedown, key, val);
+    } else if (!strcmp(key, "fm_key_home")) {
+        set_fm_keybind(&c->fm_key.home, key, val);
+    } else if (!strcmp(key, "fm_key_end")) {
+        set_fm_keybind(&c->fm_key.end, key, val);
+    } else if (!strcmp(key, "fm_key_left")) {
+        /* Back to the parent directory — the arrow the user expects to mean "up one level". */
+        set_fm_keybind(&c->fm_key.left, key, val);
+    } else if (!strcmp(key, "fm_key_right")) {
+        /* Into the highlighted directory; on a file it does nothing at all, which is what makes
+           holding Right through a listing safe. Same on a file as fm_key_open. */
+        set_fm_keybind(&c->fm_key.right, key, val);
+    } else if (!strcmp(key, "fm_key_open")) {
+        /* Enter: descend into the selected directory. On a file it does nothing at all — typing the
+           path is fm_key_path's job now (s95), so no key in the band writes at the prompt by
+           accident. */
+        set_fm_keybind(&c->fm_key.open, key, val);
+    } else if (!strcmp(key, "fm_key_path")) {
+        /* Type the selected entry's quoted path at the shell prompt, without a newline — the only
+           file-manager key that touches the prompt at all, and it never runs anything. */
+        set_fm_keybind(&c->fm_key.path, key, val);
+    } else if (!strcmp(key, "fm_key_parent")) {
+        set_fm_keybind(&c->fm_key.parent, key, val);
+    } else if (!strcmp(key, "fm_key_refresh")) {
+        set_fm_keybind(&c->fm_key.refresh, key, val);
+    } else if (!strcmp(key, "fm_key_preview")) {
+        set_fm_keybind(&c->fm_key.preview, key, val);
+    } else if (!strcmp(key, "fm_key_hidden")) {
+        set_fm_keybind(&c->fm_key.hidden, key, val);
+    } else if (!strcmp(key, "fm_key_quit")) {
+        set_fm_keybind(&c->fm_key.quit, key, val);
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+/* Everything that is NOT a key binding. The unknown-key line stays here: a name neither table knows is
+   the one case worth reporting, and it is reported once, from apply(). */
+static void apply_setting(Config *c, const char *key, char *val)
 {
     if (!strcmp(key, "font")) {
         snprintf(c->font, sizeof(c->font), "%s", val);
@@ -422,24 +510,6 @@ static void apply(Config *c, const char *key, char *val)
         /* How many sessions one window may hold. Clamped to 1..TAB_MAX: 0 would mean a terminal that
            cannot open its own first tab. */
         c->max_tabs = iclamp_(atoi(val), 1, TAB_MAX);
-    } else if (!strcmp(key, "key_new_tab")) {
-        set_keybind(&c->key_new_tab, key, val);
-    } else if (!strcmp(key, "key_close_tab")) {
-        set_keybind(&c->key_close_tab, key, val);
-    } else if (!strcmp(key, "key_next_tab")) {
-        set_keybind(&c->key_next_tab, key, val);
-    } else if (!strcmp(key, "key_prev_tab")) {
-        set_keybind(&c->key_prev_tab, key, val);
-    } else if (!strcmp(key, "key_tab_prefix")) {
-        /* prefix + a digit 1-9 jumps to that tab; empty / none / off disables the shortcut */
-        if (!val[0] || !strcasecmp(val, "none") || !strcasecmp(val, "off") ||
-            !strcasecmp(val, "no") || !strcmp(val, "0")) {
-            c->tab_prefix_mods = 0;
-            klog(L_INFO, "config: key_tab_prefix disabled");
-        } else if (!keymods_parse(val, &c->tab_prefix_mods)) {
-            klog(L_WARN, "config: key_tab_prefix = '%s' is not a modifier list (for example "
-                         "Ctrl+Shift); keeping the current one", val);
-        }
     } else if (!strcmp(key, "tab_bar")) {
         /* off = never draw the bar (the window title and the keyboard are the only way to see the other
            sessions), auto (default) = draw it from the second session on, always = also with one session. */
@@ -459,8 +529,6 @@ static void apply(Config *c, const char *key, char *val)
         /* Sessions drawn side by side at most. More sessions than that are still open and still listed in
            the bar; the shown window of panes slides to contain the visible one. */
         c->split_max = iclamp_(atoi(val), 1, TAB_MAX);
-    } else if (!strcmp(key, "key_toggle_layout")) {
-        set_keybind(&c->key_toggle_layout, key, val);
     } else if (!strcmp(key, "file_manager")) {
         /* Start with the file manager shown. Off by default; the toggle is Ctrl+Shift+F. */
         c->fm_on = cfg_bool(val) ? 1 : 0;
@@ -478,50 +546,6 @@ static void apply(Config *c, const char *key, char *val)
         /* Navigating the browser also sends `cd <path>` to the shell, so the prompt lands in the
            directory being browsed. Off = the shell stays wherever the user left it. */
         c->fm_follow = cfg_bool(val) ? 1 : 0;
-    } else if (!strcmp(key, "key_file_manager")) {
-        set_keybind(&c->key_file_manager, key, val);
-    } else if (!strcmp(key, "key_fm_focus")) {
-        set_keybind(&c->key_fm_focus, key, val);
-    } else if (!strcmp(key, "key_fm_release")) {
-        set_keybind(&c->key_fm_release, key, val);
-    } else if (!strcmp(key, "fm_key_up")) {
-        set_fm_keybind(&c->fm_key.up, key, val);
-    } else if (!strcmp(key, "fm_key_down")) {
-        set_fm_keybind(&c->fm_key.down, key, val);
-    } else if (!strcmp(key, "fm_key_pageup")) {
-        set_fm_keybind(&c->fm_key.pageup, key, val);
-    } else if (!strcmp(key, "fm_key_pagedown")) {
-        set_fm_keybind(&c->fm_key.pagedown, key, val);
-    } else if (!strcmp(key, "fm_key_home")) {
-        set_fm_keybind(&c->fm_key.home, key, val);
-    } else if (!strcmp(key, "fm_key_end")) {
-        set_fm_keybind(&c->fm_key.end, key, val);
-    } else if (!strcmp(key, "fm_key_left")) {
-        /* Back to the parent directory — the arrow the user expects to mean "up one level". */
-        set_fm_keybind(&c->fm_key.left, key, val);
-    } else if (!strcmp(key, "fm_key_right")) {
-        /* Into the highlighted directory; on a file it does nothing at all, which is what makes
-           holding Right through a listing safe. Same on a file as fm_key_open. */
-        set_fm_keybind(&c->fm_key.right, key, val);
-    } else if (!strcmp(key, "fm_key_open")) {
-        /* Enter: descend into the selected directory. On a file it does nothing at all — typing the
-           path is fm_key_path's job now (s95), so no key in the band writes at the prompt by
-           accident. */
-        set_fm_keybind(&c->fm_key.open, key, val);
-    } else if (!strcmp(key, "fm_key_path")) {
-        /* Type the selected entry's quoted path at the shell prompt, without a newline — the only
-           file-manager key that touches the prompt at all, and it never runs anything. */
-        set_fm_keybind(&c->fm_key.path, key, val);
-    } else if (!strcmp(key, "fm_key_parent")) {
-        set_fm_keybind(&c->fm_key.parent, key, val);
-    } else if (!strcmp(key, "fm_key_refresh")) {
-        set_fm_keybind(&c->fm_key.refresh, key, val);
-    } else if (!strcmp(key, "fm_key_preview")) {
-        set_fm_keybind(&c->fm_key.preview, key, val);
-    } else if (!strcmp(key, "fm_key_hidden")) {
-        set_fm_keybind(&c->fm_key.hidden, key, val);
-    } else if (!strcmp(key, "fm_key_quit")) {
-        set_fm_keybind(&c->fm_key.quit, key, val);
     } else if (!strcmp(key, "log")) {
         c->loglevel = iclamp_(atoi(val), L_ERROR, L_DEBUG);
     } else {
@@ -529,22 +553,74 @@ static void apply(Config *c, const char *key, char *val)
     }
 }
 
-void config_load(Config *c, const char *path)
+/* One line of either file. `from_bind_file` says which file it came from, and the only thing that decides
+   is which NAMES are accepted there: a binding written in kai-term.conf is applied and pointed at
+   kai-term.bind, a setting written in kai-term.bind is refused and pointed at kai-term.conf. Either way
+   the line is never silently dropped. */
+static void apply(Config *c, const char *key, char *val, int from_bind_file)
 {
-    char defpath[4096];
-    if (!path) {
-        const char *xdg = getenv("XDG_CONFIG_HOME");
-        if (xdg && *xdg)
-            snprintf(defpath, sizeof(defpath), "%s/kai-term/kai-term.conf", xdg);
-        else
-            snprintf(defpath, sizeof(defpath), "%s/.config/kai-term/kai-term.conf",
-                     getenv("HOME") ? getenv("HOME") : ".");
-        path = defpath;
+    if (apply_bind_key(c, key, val)) {
+        if (!from_bind_file)
+            klog(L_INFO, "config: %s = '%s' is a key binding — those live in kai-term.bind now "
+                         "(the line still works, and kai-term.bind wins for a name both files set)",
+                 key, val);
+        return;
     }
+    if (from_bind_file) {
+        klog(L_WARN, "config: '%s' is not a key binding — kai-term.bind holds bindings only; that "
+                     "setting belongs in kai-term.conf", key);
+        return;
+    }
+    apply_setting(c, key, val);
+}
 
+/* Where one config file comes from. The first directory below that holds `name` wins and the rest are
+   never opened, so a user's own file is never mixed with the system's:
+
+       $XDG_CONFIG_HOME/kai-term/   (only when XDG_CONFIG_HOME is set and non-empty)
+       ~/.config/kai-term/
+       /etc/kai-term/
+
+   Nothing found anywhere leaves `out` EMPTY, which is how the callers know to keep the built-in defaults
+   rather than open a path that does not exist. The search is per FILE NAME, not per directory: a user who
+   has a kai-term.conf in ~/.config and no kai-term.bind there still gets the system-wide bindings from
+   /etc/kai-term, which is the point of shipping a bind file distro-side. A directory, a FIFO or a dangling
+   symlink named kai-term.conf is not a config file, so S_ISREG is checked and the search moves on. */
+void config_find(const char *name, char *out, size_t cap)
+{
+    out[0] = 0;
+    char cand[3][4096];
+    int n = 0;
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) {
+        snprintf(cand[n], sizeof cand[0], "%s/kai-term/%s", xdg, name);
+        n++;
+    }
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        snprintf(cand[n], sizeof cand[0], "%s/.config/kai-term/%s", home, name);
+        n++;
+    }
+    snprintf(cand[n], sizeof cand[0], "/etc/kai-term/%s", name);
+    n++;
+    for (int i = 0; i < n; i++) {
+        struct stat st;
+        if (stat(cand[i], &st) == 0 && S_ISREG(st.st_mode)) {
+            snprintf(out, cap, "%s", cand[i]);
+            return;
+        }
+    }
+}
+
+/* Read one file of either kind. `from_bind_file` decides which NAMES are accepted there (see apply()): a
+   binding in kai-term.conf is applied with a pointer at where it belongs now, a setting in kai-term.bind
+   is refused with the same pointer. Nothing is ever silently dropped. */
+static void config_read(Config *c, const char *path, int from_bind_file)
+{
     FILE *f = fopen(path, "r");
     if (!f) {
-        klog(L_INFO, "no config file at %s (using defaults)", path);
+        klog(L_INFO, "no %s file at %s (using defaults)",
+             from_bind_file ? "binding" : "config", path);
         return;
     }
 
@@ -552,12 +628,24 @@ void config_load(Config *c, const char *path)
     int lineno = 0;
     while (fgets(line, sizeof(line), f)) {
         lineno++;
-        /* '#' starts a comment only at the start of the line or after whitespace, so a value such
-           as working_dir = /home/me/my#project survives; "value # note" is still stripped. */
+        /* '#' starts a comment in two cases: nothing but whitespace comes before it (a comment line),
+           or whitespace comes before it AND whitespace or the end of the line comes after it (a trailing
+           note). The second half of that rule is what makes a colour work: `background = #1c1c22` has a
+           space before the '#', and the old "whitespace before it is enough" rule cut the line right
+           there, so the documented colour syntax set NOTHING at all — measured, Config.bg stayed at its
+           default with that line in the file, and an empty value is not even worth a warning because
+           "foreground =" is a legal way to ask for the default. `working_dir = /home/me/my#project`
+           still survives (no whitespace before the '#'), and `value # note` is still stripped. */
         for (char *hash = line; *hash; hash++) {
             if (*hash != '#')
                 continue;
-            if (hash == line || hash[-1] == ' ' || hash[-1] == '\t') {
+            int only_ws_before = 1;
+            for (char *p = line; p < hash; p++)
+                if (!isspace((unsigned char)*p))
+                    only_ws_before = 0;
+            if (only_ws_before ||
+                ((hash[-1] == ' ' || hash[-1] == '\t') &&
+                 (hash[1] == 0 || isspace((unsigned char)hash[1])))) {
                 *hash = 0;
                 break;
             }
@@ -578,8 +666,42 @@ void config_load(Config *c, const char *path)
             klog(L_WARN, "config:%d: empty key", lineno);
             continue;
         }
-        apply(c, key, val);
+        apply(c, key, val, from_bind_file);
     }
     fclose(f);
-    klog(L_INFO, "config loaded from %s", path);
+    klog(L_INFO, "%s loaded from %s", from_bind_file ? "bindings" : "config", path);
+}
+
+/* The settings file. `path` NULL means the searched one (config_find); an explicit path — what -c gives —
+   skips the search entirely and says nothing about the other locations. */
+void config_load(Config *c, const char *path)
+{
+    char found[4096];
+    if (!path) {
+        config_find("kai-term.conf", found, sizeof found);
+        if (!found[0]) {
+            klog(L_INFO, "no kai-term.conf in $XDG_CONFIG_HOME/kai-term, ~/.config/kai-term or "
+                         "/etc/kai-term — using the built-in defaults");
+            return;
+        }
+        path = found;
+    }
+    config_read(c, path, 0);
+}
+
+/* The key-binding file, read AFTER the settings file so a name both files set ends up as the bind file
+   says. Same search order, same syntax, its own -b override. */
+void config_load_binds(Config *c, const char *path)
+{
+    char found[4096];
+    if (!path) {
+        config_find("kai-term.bind", found, sizeof found);
+        if (!found[0]) {
+            klog(L_INFO, "no kai-term.bind in $XDG_CONFIG_HOME/kai-term, ~/.config/kai-term or "
+                         "/etc/kai-term — using the built-in key bindings");
+            return;
+        }
+        path = found;
+    }
+    config_read(c, path, 1);
 }

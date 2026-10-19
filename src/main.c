@@ -1525,6 +1525,23 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
     const FmKeys *k = &conf.fm_key;
     unsigned long seq = 0;
 
+    /* The preview pane owns the keyboard: the four scroll keys move the PREVIEWED TEXT, not the listing.
+       That is what makes a long file readable in the pane that exists to read it — the wheel over that
+       pane already scrolls it (fm_wheel), and without these keys the only way to reach the bottom of a
+       file was to drag the mouse onto the pane first. Same bindings as the browser's scroll keys on
+       purpose: one action per key, and WHICH body it scrolls is decided by the focus, so there is no
+       second set of names to keep in sync in kai-term.bind.
+       `Up`/`Down` deliberately keep moving the LISTING selection here: they change which file is being
+       previewed, which is the one thing the preview pane cannot do for itself, and the user can still
+       reach any line of the current file with Page/Home/End. A preview with nothing to scroll (an image,
+       plain metadata) does not move at all — fm_preview_scroll() clamps to 0 for it. */
+    if (g_fm.focus == FM_FOCUS_PREVIEW) {
+        if (bind_match(&k->pageup, base, mods))   { fm_preview_page(&g_fm, -1); W.dirty = 1; return 1; }
+        if (bind_match(&k->pagedown, base, mods)) { fm_preview_page(&g_fm, +1); W.dirty = 1; return 1; }
+        if (bind_match(&k->home, base, mods))     { fm_preview_top(&g_fm); W.dirty = 1; return 1; }
+        if (bind_match(&k->end, base, mods))      { fm_preview_bottom(&g_fm); W.dirty = 1; return 1; }
+    }
+
     if (bind_match(&k->up, base, mods))       { fm_move(&g_fm, -1); fm_sel_changed(); return 1; }
     if (bind_match(&k->down, base, mods))     { fm_move(&g_fm, +1); fm_sel_changed(); return 1; }
     if (bind_match(&k->pageup, base, mods))   { fm_page(&g_fm, -1); fm_sel_changed(); return 1; }
@@ -2863,20 +2880,25 @@ static void wayland_destroy(void)
    terminal LOOKS (font, size, grid, colours, opacity) is a persistent preference and lives in the
    config file; the flags that stay are the per-launch ones (what to run, where to start, which config
    to read, debug). Flags that were dropped in the past are NOT special-cased: they are simply unknown
-   options, and an unknown option produces one generic message plus the option list. */
+   options, and an unknown option produces one generic message plus the option list.
+   Two files name the persistent preferences: kai-term.conf (settings) and kai-term.bind (key bindings).
+   -c points at the first, -b at the second; each is searched for independently, so pointing at one does
+   not silence the other. */
 static void usage(const char *argv0, FILE *out)
 {
     fprintf(out,
             "usage: %s [OPTION]...\n\n"
-            "  -e, --exec COMMAND      run COMMAND instead of the default shell\n"
-            "  -w, --workingdir DIR    start the shell in DIR (default: $HOME)\n"
-            "  -c, --config FILE       read FILE instead of ~/.config/kai-term/kai-term.conf\n"
-            "  -d, --debug             enable debug logging\n"
-            "  -v, --version           print the version and exit\n"
-            "  -h, --help              show this help and exit\n\n"
+            "  -e, --exec COMMAND       run COMMAND instead of the default shell\n"
+            "  -w, --workingdir DIR     start the shell in DIR (default: $HOME)\n"
+            "  -c, --config FILE        read FILE instead of the searched kai-term.conf\n"
+            "  -b, --binds FILE         read FILE instead of the searched kai-term.bind\n"
+            "  -d, --debug              enable debug logging\n"
+            "  -v, --version            print the version and exit\n"
+            "  -h, --help               show this help and exit\n\n"
             "Long options also accept the --name=VALUE form.\n"
-            "Font, font size, columns, rows, scrollback, colours and opacity are set in the\n"
-            "configuration file only; command-line options override everything else.\n",
+            "Settings live in kai-term.conf, key bindings in kai-term.bind; each is read from the first\n"
+            "of $XDG_CONFIG_HOME/kai-term, ~/.config/kai-term and /etc/kai-term that holds it, and the\n"
+            "built-in defaults cover a file none of those has. Command-line options override everything.\n",
             argv0);
 }
 
@@ -2908,6 +2930,7 @@ int main(int argc, char **argv)
 {
     config_default(&conf);
     const char *opt_config = NULL;
+    const char *opt_binds = NULL;
     const char *opt_wdir = NULL;
     int opt_debug = 0;
 
@@ -2937,6 +2960,11 @@ int main(int argc, char **argv)
             if (!v)
                 return 1;
             opt_config = v;
+        } else if (!strcmp(a, "-b") || longopt(a, "--binds", &val)) {
+            const char *v = opt_value(val, argv, &i, argc, a);
+            if (!v)
+                return 1;
+            opt_binds = v;
         } else {
             /* One generic path for every option Kai-Term does not take, including the flags that were
                dropped in the past: no per-flag explanation, just the message and the option list. */
@@ -2946,12 +2974,14 @@ int main(int argc, char **argv)
         }
     }
 
-    /* -d must also cover the diagnostics config_load() itself prints, which run BEFORE the file's
+    /* -d must also cover the diagnostics the two config readers print, which run BEFORE the file's
        own `log =` value is known: raise the level first, then settle on the final one (the CLI still
-       beats the file, see the opt_debug handling below and the session-43 precedence fix). */
+       beats the file, see the opt_debug handling below and the session-43 precedence fix).
+       The binding file is read SECOND on purpose: for a name both files set, kai-term.bind wins. */
     if (opt_debug)
         kai_term_loglevel = L_DEBUG;
     config_load(&conf, opt_config);
+    config_load_binds(&conf, opt_binds);
     if (opt_debug)
         conf.loglevel = L_DEBUG;
     kai_term_loglevel = conf.loglevel;

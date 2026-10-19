@@ -1610,6 +1610,38 @@ void fm_preview_scroll(FileMgr *fm, int delta)
     fm->dirty = 1;
 }
 
+/* Rows one page of the preview body fills: everything below the header the pane can show. This is the
+   SAME arithmetic fm_preview_scroll_max() uses for "how much is already on screen", because a Page key
+   must move by exactly what the user can see — a page that is one row short leaves a gap between
+   presses, and one row too long skips a line. Kept as its own function so the keyboard path in main.c
+   never re-derives the header size (the standing rule: preview_head_rows() has one owner). */
+int fm_preview_page_rows(const FileMgr *fm)
+{
+    int visible = fm->prev.rows - preview_head_rows(fm->pv);
+    return imax_(visible, 1);
+}
+
+/* Page_Up / Page_Down over the preview body. One page = fm_preview_page_rows() lines, so a held Page key
+   walks the file with no line shown twice and none skipped. Clamped by fm_preview_scroll(), so the first
+   and last page land exactly on the first and last line. */
+void fm_preview_page(FileMgr *fm, int pages)
+{
+    fm_preview_scroll(fm, pages * fm_preview_page_rows(fm));
+}
+
+/* Home / End: the first line and the last line of the body. Asking past either end is how the clamp is
+   done — no separate "where is the bottom" arithmetic here, which is what would drift from
+   fm_preview_scroll_max() if the row budget ever changed. */
+void fm_preview_top(FileMgr *fm)
+{
+    fm_preview_scroll(fm, -(fm->pv_scroll + 1));
+}
+
+void fm_preview_bottom(FileMgr *fm)
+{
+    fm_preview_scroll(fm, fm_preview_scroll_max(fm) + 1);
+}
+
 /* The header lines every preview starts with: what is being previewed, and what it is. */
 static void paint_preview_head(FileMgr *fm, uint32_t fg, uint32_t bg, int *row_out)
 {

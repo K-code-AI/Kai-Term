@@ -547,7 +547,11 @@ int clipboard_mime_rank(const char *mime);
    block holds no NUL at all it is copied through byte-for-byte, unchanged. */
 int paste_repair(const char *in, size_t len, char *out, size_t cap);
 
-/* ---------- configurable key bindings ---------- */
+/* ---------- configurable key bindings ----------
+   Every name below is a line in kai-term.bind, not in kai-term.conf (config_load_binds reads the former,
+   config_load the latter; see the config section). The names are the same `key = value` syntax, and a
+   binding left in an older kai-term.conf is still honoured — the split is about where a line BELONGS, not
+   about breaking the file a user already wrote. */
 
 /* Modifier bits a binding may name. Deliberately NOT xkbcommon's masks: the config parser must not
    depend on xkbcommon (it is linked into the unit tests), and src/main.c translates the effective
@@ -709,7 +713,17 @@ typedef struct Config {
 } Config;
 
 void config_default(Config *c);
-void config_load(Config *c, const char *path);   /* NULL path -> default location */
+/* The settings file. `path` NULL -> the searched kai-term.conf (see config_find); an explicit path (what
+   -c gives) is read as-is and skips the search. */
+void config_load(Config *c, const char *path);
+/* The key-binding file — every `key_*` / `fm_key_*` name lives there. `path` NULL -> the searched
+   kai-term.bind. main.c reads it AFTER config_load(), so for a name both files set the bind file wins;
+   a binding still written in kai-term.conf is honoured (with a log line saying where it belongs now),
+   and a non-binding setting written in kai-term.bind is refused for the same reason. */
+void config_load_binds(Config *c, const char *path);
+/* The first of $XDG_CONFIG_HOME/kai-term, ~/.config/kai-term, /etc/kai-term that holds a REGULAR file
+   called `name`; empty `out` when none of them does, which means "use the built-in defaults". */
+void config_find(const char *name, char *out, size_t cap);
 /* Expand a leading "~" (or "~/...") to $HOME and copy the result into out. */
 void expand_tilde(const char *in, char *out, size_t cap);
 
@@ -1154,6 +1168,16 @@ int  fm_row_pos(const FileMgr *fm, int row);
    It is reset by fm_install_preview(): a new file starts at its beginning. */
 void fm_preview_scroll(FileMgr *fm, int delta);
 int  fm_preview_scroll_max(const FileMgr *fm);
+/* The same scroll, driven by KEYS while the preview pane owns the keyboard (main.c routes the band's
+   Page_Up/Page_Down/Home/End here in that state, and to fm_page()/fm_home()/fm_end() in the browser).
+   fm_preview_page_rows() is what one page means: the body rows the pane shows at once, so a held Page
+   key walks the file with no line shown twice and none skipped. fm_preview_top()/fm_preview_bottom()
+   are Home and End. All three go through fm_preview_scroll(), so the clamp has one owner and a preview
+   with no body (an image, plain metadata) simply does not move. */
+int  fm_preview_page_rows(const FileMgr *fm);
+void fm_preview_page(FileMgr *fm, int pages);   /* pages < 0 = toward the top */
+void fm_preview_top(FileMgr *fm);
+void fm_preview_bottom(FileMgr *fm);
 
 /* ---- preview: build (worker thread) then install (main thread) ---- */
 FmPreview *fm_preview_build(const char *path, unsigned long seq);

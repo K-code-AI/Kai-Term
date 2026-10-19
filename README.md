@@ -45,7 +45,8 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   anything else, and the shell below follows the directory you browse into, keeping whatever you had already
   typed at the prompt. The listing starts with a `..` row, one click selects and a double-click opens.
   One key drops the selected entry's quoted path onto your half-typed command without running it. One
-  shortcut shows the band, another moves the keyboard between the browser and the terminal.
+  shortcut shows the band, another moves the keyboard between the browser and the terminal. While the
+  preview pane has the keyboard, `Page_Up`/`Page_Down`/`Home`/`End` scroll the previewed text.
 - **Shell integration** — A fish, bash or zsh that Kai-Term starts is loaded with a small script of its own,
   which lets the file manager ask the shell to change its **own** working directory: your half-typed command is
   never erased, never re-typed and never sees a `cd`, and the shell confirms the directory it entered. A shell
@@ -55,7 +56,9 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
 - **Font zoom** — Increase or decrease the font size without resizing the window.
 - **System clipboard** — Copy and paste use the standard Wayland clipboard, so text copied in Kai-Term
   pastes into other applications and text copied anywhere else pastes into Kai-Term.
-- **Configuration** — A simple configuration file and command-line options.
+- **Configuration** — Two plain-text files: `kai-term.conf` for the settings and `kai-term.bind` for the
+  key bindings, read from `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term` or `/etc/kai-term`, with a
+  commented template of every default in [`config/`](config) in the source tree.
 
 ## Requirements
 
@@ -133,7 +136,8 @@ The default startup directory is the user's home directory. You can change it in
 |---|---|---|
 | `-e COMMAND` | `--exec COMMAND` | Run a command instead of the default shell |
 | `-w DIR` | `--workingdir DIR` | Set the startup directory for this launch |
-| `-c FILE` | `--config FILE` | Specify a configuration file |
+| `-c FILE` | `--config FILE` | Read the settings from FILE instead of the searched `kai-term.conf` |
+| `-b FILE` | `--binds FILE` | Read the key bindings from FILE instead of the searched `kai-term.bind` |
 | `-d` | `--debug` | Enable debug logging |
 | `-v` | `--version` | Print the version and exit |
 | `-h` | `--help` | Show the option list and exit |
@@ -206,7 +210,7 @@ line saying why there is no preview — never as garbage and never as an error t
 | Key (default) | In the browser |
 |---|---|
 | `Up` / `Down` | move the selection (holding the key walks the list) |
-| `Page_Up` / `Page_Down`, `Home` / `End` | move by a page, to the first / last entry |
+| `Page_Up` / `Page_Down`, `Home` / `End` | move by a page, to the first / last entry — with the **preview pane** focused they scroll the previewed text instead (see below) |
 | `Left` | go to the parent directory |
 | `Right` | enter the highlighted directory — and **nothing at all** on a file, so holding it cannot write at your prompt |
 | `Return` | open the highlighted directory — and **nothing at all** on a file, so holding it cannot write at your prompt |
@@ -220,7 +224,17 @@ line saying why there is no preview — never as garbage and never as an error t
 | mouse wheel | over the browser it walks the listing; over the preview pane it scrolls that pane's contents (a file's text, or a directory's entries); over the terminal it scrolls history as usual — except inside a full-screen program that never asked for the mouse, where it becomes cursor keys (see below) |
 
 `Ctrl`+`Shift`+`Up` gives the keyboard to the browser, `Ctrl`+`Shift`+`Down` gives it back to the terminal.
-While the browser has the keyboard the keys above belong to it **and no other key reaches the terminal** —
+
+The **preview pane** takes the keyboard too: a click on it, or the wheel over it, focuses it, and while it
+has the keyboard `Page_Up`/`Page_Down` scroll the previewed text by one page and `Home`/`End` jump to its
+first and last line — which is what makes a long file readable in the pane that exists to read it. One page
+is exactly what the pane shows at once, so holding `Page_Down` walks a file with no line shown twice and
+none skipped. `Up`/`Down` keep moving the browser's selection there, because that is how you change which
+entry is being previewed. A preview with nothing to scroll — a picture, or a metadata-only preview — does
+not move at all.
+
+While the band has the keyboard — browser or preview — the keys above belong to it **and no other key
+reaches the terminal** —
 typing with the band focused cannot write into a shell you are not looking at. The window's own shortcuts
 (new session, close, switch, zoom, copy, paste, `Shift`+`PageUp`/`PageDown` scrolling) keep working from
 either side, because they belong to the window and not to the text. The moment the terminal has the keyboard
@@ -344,17 +358,40 @@ ask for with `ESC[?1h`, so the arrow keys did nothing in them before.
 
 ## Configuration
 
-The default configuration file is:
+Kai-Term reads two plain-text files, both in the same `key = value` format:
 
-```text
-~/.config/kai-term/kai-term.conf
-```
+| File | Holds |
+|---|---|
+| `kai-term.conf` | the settings — font, grid, colours, shell, mouse, sessions, file manager, logging |
+| `kai-term.bind` | the key bindings — every `key_*` and `fm_key_*` name |
 
-If `XDG_CONFIG_HOME` is set, Kai-Term uses `$XDG_CONFIG_HOME/kai-term/kai-term.conf` instead. Use `-c FILE` to specify another location.
+### Where the files come from
 
-Settings use a simple `key = value` format.
+Each file is searched for in this order, and the first location that holds it wins — the rest are never
+opened, so your own file is never mixed with the system's:
 
-### Available settings
+1. `$XDG_CONFIG_HOME/kai-term/`
+2. `~/.config/kai-term/`
+3. `/etc/kai-term/`
+
+If no location holds a file at all, the built-in defaults are used. The two files are searched
+**independently**: a `kai-term.conf` in `~/.config/kai-term` and no `kai-term.bind` there still picks up
+the system-wide bindings from `/etc/kai-term`. `-c FILE` and `-b FILE` name one file explicitly and skip
+its search.
+
+`kai-term.bind` is read **after** `kai-term.conf`, so for a name both files set, the bind file wins. A
+binding left in an older `kai-term.conf` is still honoured (the log line says where the line belongs now),
+and a setting written in `kai-term.bind` is refused out loud rather than ignored.
+
+### Templates
+
+[`config/kai-term.conf`](config/kai-term.conf) and [`config/kai-term.bind`](config/kai-term.bind) in the
+source tree list every name with its built-in default and say what it does. Copy them to one of the
+locations above and change what you want — a line left at its default does exactly nothing. The test suite
+loads both files and compares every value with the compiled-in defaults, so the templates cannot drift
+from the program.
+
+### Settings (`kai-term.conf`)
 
 | Setting | Default | Description |
 |---|---|---|
@@ -381,26 +418,50 @@ Settings use a simple `key = value` format.
 | `max_tabs` | `8` | Sessions one window may hold (clamped to 1–64) |
 | `tab_bar` | `auto` | `off` never draws the tab bar, `auto` draws it from the second session on, `always` also with one session |
 | `split_max` | `4` | Sessions drawn side by side at most; more sessions stay open and stay listed in the bar |
+| `file_manager` | `0` | Show the file-manager band from startup instead of only when the shortcut is pressed |
+| `fm_size` | `75` | Percent of the window's text area the band asks for (clamped to 10–95, and shrunk further so the terminal keeps at least 3 rows; if even that does not fit, the band is dropped for that frame) |
+| `fm_preview` | `1` | Show the preview pane next to the browser (`v` toggles it at runtime; off means the browser is full width) |
+| `fm_show_hidden` | `0` | Include dotfiles in the listing from the start (`.` toggles it at runtime) |
+| `fm_follow` | `1` | Browsing into a directory also sends `cd '<path>'` to the shell |
+| `log` | `1` | Log level: 0 = error, 1 = warning, 2 = info, 3 = debug |
+
+Font size, grid dimensions, scrollback limits, opacity, the key-repeat timings and the file-manager band
+height have defined valid ranges; out-of-range values are clamped to the nearest valid one. Invalid
+configuration values should be corrected according to the application's diagnostics.
+
+A `#` starts a comment when only whitespace comes before it, or when whitespace comes before **and** after
+it. That is what makes `background = #101014` a colour and `value # note` a note, while
+`working_dir = /home/me/my#project` keeps its value.
+
+### Key bindings (`kai-term.bind`)
+
+A binding is written as modifiers joined by `+` and one key, for example `Ctrl+Shift+T`, `Alt+Right`,
+`Super+Return`, `Ctrl+Shift+F5`. Named keys are the arrows, `Home`, `End`, `Page_Up`, `Page_Down`,
+`Insert`, `Delete`, `BackSpace`, `Tab`, `Return`, `Escape`, `Space` and `F1`–`F12`; any other character
+stands for itself. `none` (or empty, `0`, `off`, `no`) unbinds an action.
+
+A binding with **no modifier** is refused, so it cannot swallow ordinary typing — with one exception: the
+`fm_key_*` bindings, which are matched only while the file manager owns the keyboard. With the file
+manager closed, or with the terminal focused, `Up`, `r` and `Escape` reach the shell exactly as before.
+`key_tab_prefix` is the other shape: it names modifiers only, and you press them with a digit `1`–`9`.
+
+| Binding | Default | Action |
+|---|---|---|
 | `key_new_tab` | `Ctrl+Shift+T` | Open another session (`none` unbinds it) |
 | `key_close_tab` | `Ctrl+Shift+W` | Close the visible session (`none` unbinds it) |
 | `key_next_tab` | `Ctrl+Shift+Right` | Show the next session |
 | `key_prev_tab` | `Ctrl+Shift+Left` | Show the previous session |
 | `key_tab_prefix` | `Ctrl+Shift` | Hold these and press `1`–`9` to jump to that session (`none` disables it) |
 | `key_toggle_layout` | `Ctrl+Shift+S` | Switch between the one-session view and the side-by-side view |
-| `file_manager` | `0` | Show the file-manager band from startup instead of only when the shortcut is pressed |
-| `fm_size` | `75` | Percent of the window's text area the band asks for (clamped to 10–95, and shrunk further so the terminal keeps at least 3 rows; if even that does not fit, the band is dropped for that frame) |
-| `fm_preview` | `1` | Show the preview pane next to the browser (`v` toggles it at runtime; off means the browser is full width) |
-| `fm_show_hidden` | `0` | Include dotfiles in the listing from the start (`.` toggles it at runtime) |
-| `fm_follow` | `1` | Browsing into a directory also sends `cd '<path>'` to the shell |
 | `key_file_manager` | `Ctrl+Shift+F` | Show / hide the file manager (`none` unbinds it) |
 | `key_fm_focus` | `Ctrl+Shift+Up` | Give the keyboard to the browser (`none` unbinds it) |
 | `key_fm_release` | `Ctrl+Shift+Down` | Give the keyboard back to the terminal (`none` unbinds it) |
 | `fm_key_up` | `Up` | Move the selection up |
 | `fm_key_down` | `Down` | Move the selection down |
-| `fm_key_pageup` | `Page_Up` | Move up one page |
-| `fm_key_pagedown` | `Page_Down` | Move down one page |
-| `fm_key_home` | `Home` | Select the first entry |
-| `fm_key_end` | `End` | Select the last entry |
+| `fm_key_pageup` | `Page_Up` | Move up one page — or scroll the preview up one page, when the preview pane has the keyboard |
+| `fm_key_pagedown` | `Page_Down` | Move down one page — or scroll the preview down one page, when the preview pane has the keyboard |
+| `fm_key_home` | `Home` | Select the first entry — or the first line of the previewed text, when the preview pane has the keyboard |
+| `fm_key_end` | `End` | Select the last entry — or the last line of the previewed text, when the preview pane has the keyboard |
 | `fm_key_left` | `Left` | Go to the parent directory |
 | `fm_key_right` | `Right` | Enter the highlighted directory (does nothing to a file) |
 | `fm_key_open` | `Return` | Open the highlighted directory (does nothing to a file) |
@@ -410,18 +471,10 @@ Settings use a simple `key = value` format.
 | `fm_key_preview` | `v` | Show / hide the preview pane |
 | `fm_key_hidden` | `.` | Show / hide dotfiles |
 | `fm_key_quit` | `Escape` | Close the file manager |
-| `log` | `1` | Log level: 0 = error, 1 = warning, 2 = info, 3 = debug |
-
-Font size, grid dimensions, scrollback limits, opacity, the key-repeat timings and the file-manager band
-height have defined valid ranges; out-of-range values are clamped to the nearest valid one. Invalid
-configuration values should be corrected according to the application's diagnostics.
-
-The `fm_key_*` bindings are the one place a key with **no modifier** is allowed. That is safe only because
-those keys are matched while the file manager owns the keyboard — with the file manager closed, or with the
-terminal focused, `Up`, `r` and `Escape` reach the shell exactly as before. Every other binding still
-requires modifiers, and `none` unbinds any of them.
 
 ### Example configuration
+
+`~/.config/kai-term/kai-term.conf`:
 
 ```ini
 font = JetBrains Mono
@@ -430,6 +483,15 @@ cols = 100
 rows = 30
 background = #1c1c22
 opacity = 0.95
+```
+
+`~/.config/kai-term/kai-term.bind`:
+
+```ini
+key_new_tab = Super+T
+fm_key_up = k
+fm_key_down = j
+fm_key_path = none
 ```
 
 ## Keyboard shortcuts
@@ -476,23 +538,28 @@ listing); its one-shot keys — open, go up, go into a directory, refresh, previ
 ### File-manager keys
 
 These belong to the file manager only while it owns the keyboard, and every one of them is configurable
-(`fm_key_*`). With the file manager closed, or with the terminal focused, the same keys go to the shell
-unchanged.
+(`fm_key_*` in `kai-term.bind`). With the file manager closed, or with the terminal focused, the same keys
+go to the shell unchanged. Clicking the preview pane, or using the wheel over it, gives the keyboard to
+that pane.
 
-| Key | Action |
-|---|---|
-| `Up` / `Down` | Move the selection (hold to walk the list) |
-| `Page_Up` / `Page_Down` | Move by one page |
-| `Home` / `End` | First / last entry |
-| `Left` | Go to the parent directory |
-| `Right` | Enter the highlighted directory; on a file it does nothing |
-| `Return` | Open the highlighted directory; on a file it does nothing |
-| `p` | Type the selected entry's quoted path at your prompt, at the cursor, without pressing Enter |
-| `BackSpace` | Go to the parent directory |
-| `r` | Re-read the current directory |
-| `v` | Show / hide the preview pane |
-| `.` | Show / hide dotfiles |
-| `Escape` | Close the file manager |
+| Key | Action (browser focused) | Action (preview focused) |
+|---|---|---|
+| `Up` / `Down` | Move the selection (hold to walk the list) | same — this is how you change which entry is previewed |
+| `Page_Up` / `Page_Down` | Move by one page | scroll the previewed text by one page |
+| `Home` / `End` | First / last entry | first / last line of the previewed text |
+| `Left` | Go to the parent directory | same |
+| `Right` | Enter the highlighted directory; on a file it does nothing | same |
+| `Return` | Open the highlighted directory; on a file it does nothing | same |
+| `p` | Type the selected entry's quoted path at your prompt, at the cursor, without pressing Enter | same |
+| `BackSpace` | Go to the parent directory | same |
+| `r` | Re-read the current directory | same |
+| `v` | Show / hide the preview pane | same |
+| `.` | Show / hide dotfiles | same |
+| `Escape` | Close the file manager | same |
+
+The mouse wheel scrolls the preview body too, and a preview with nothing to scroll (a picture, or a
+metadata-only preview) does not move at all. One page is exactly what the pane shows at once, so a held
+`Page_Down` walks a file with no line shown twice and none skipped.
 
 ## Sessions and layouts
 
@@ -514,12 +581,12 @@ resize and no re-wrap of its scrollback.
 Closing the last session exits Kai-Term; a session whose shell exits closes by itself and the others keep
 running.
 
-The shortcuts are configurable, and a binding is written as modifiers joined by `+` and one key, for example
-`Ctrl+Shift+T`, `Alt+Right`, `Super+Return`, `Ctrl+Shift+F5`. Named keys are the arrows, `Home`, `End`,
-`Page_Up`, `Page_Down`, `Insert`, `Delete`, `BackSpace`, `Tab`, `Return`, `Escape`, `Space` and `F1`–`F12`;
-any other character stands for itself. A binding with no modifier is refused, so it cannot swallow ordinary
-typing, and `none` unbinds an action. `key_tab_prefix` is the modifier half of the `1`–`9` jump: with the
-default `Ctrl+Shift`, pressing `Ctrl+Shift+3` shows the third session.
+The shortcuts are configurable, in `kai-term.bind`, and a binding is written as modifiers joined by `+` and
+one key, for example `Ctrl+Shift+T`, `Alt+Right`, `Super+Return`, `Ctrl+Shift+F5`. Named keys are the
+arrows, `Home`, `End`, `Page_Up`, `Page_Down`, `Insert`, `Delete`, `BackSpace`, `Tab`, `Return`, `Escape`,
+`Space` and `F1`–`F12`; any other character stands for itself. A binding with no modifier is refused, so it
+cannot swallow ordinary typing, and `none` unbinds an action. `key_tab_prefix` is the modifier half of the
+`1`–`9` jump: with the default `Ctrl+Shift`, pressing `Ctrl+Shift+3` shows the third session.
 
 ## Documentation
 

@@ -1,6 +1,7 @@
 /* Kai-Term — unit tests for VT parser + grid (no display needed). */
 #include "kai-term.h"
 
+#include <ctype.h>           /* the config-template name scan (same classes src/config.c uses) */
 #include <sys/stat.h>        /* the shell-integration directory: created, 0700, removed again */
 #include <unistd.h>          /* access() on a request file that must or must not exist */
 
@@ -251,6 +252,110 @@ static KImage *img_by_id(Term *t, int id)
         if (im->app_id == id)
             return im;
     return NULL;
+}
+
+/* ---------- the shipped config templates: which NAMES they list ----------
+   Loading a template and comparing every field with config_default() proves the VALUES are right, but it
+   cannot see a MISSING line: a template that stopped mentioning `padding` still loads to exactly the
+   default, so the check stays green while the file claims to hold every default. This scans the key lines
+   themselves, in both directions — every name the parser accepts must be listed, and every name listed must
+   be one the parser accepts (a typo in a shipped template would only ever log a warning in the user's copy).
+   A line counts as a key line when it starts (after blanks) with a letter and the name is followed by `=`,
+   which is the shape src/config.c parses; comment lines, prose and blank lines do not. */
+static int tpl_check_names(const char *path, const char *const *names, int n)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        printf("FAIL: template: cannot read %s\n", path);
+        return 1;
+    }
+    int *seen = calloc((size_t)n, sizeof *seen);
+    CHECK(seen != NULL, "template: the name-coverage scan has its tally");
+    if (!seen) {
+        fclose(f);
+        return 1;
+    }
+
+    int bad = 0;
+    char line[4096];
+    while (fgets(line, sizeof line, f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (!isalpha((unsigned char)*p))
+            continue;
+        char *end = p;
+        while (isalnum((unsigned char)*end) || *end == '_')
+            end++;
+        char *gap = end;
+        while (*gap == ' ' || *gap == '\t')
+            gap++;
+        if (*gap != '=')
+            continue;
+        *end = 0;
+        int idx = -1;
+        for (int i = 0; i < n; i++)
+            if (!strcmp(names[i], p)) {
+                idx = i;
+                break;
+            }
+        if (idx < 0) {
+            printf("FAIL: template: %s lists '%s', which the config parser does not know\n", path, p);
+            bad++;
+        } else if (seen[idx]++) {
+            printf("FAIL: template: %s lists %s more than once\n", path, names[idx]);
+            bad++;
+        }
+    }
+    fclose(f);
+    for (int i = 0; i < n; i++)
+        if (!seen[i]) {
+            printf("FAIL: template: %s does not list %s — the file says it holds every default\n",
+                   path, names[i]);
+            bad++;
+        }
+    free(seen);
+    return bad;
+}
+
+/* The names src/config.c compares inside ONE function body. The config surface is a strcmp ladder, so that
+   ladder IS the list of accepted names — deriving it here is what keeps the check honest when a setting is
+   added: the shipped template must gain the line, not a hand-copied list in this file. A body ends at the
+   column-0 `}` (verified: neither ladder contains one before its end). Returns the count, or -1 when the
+   signature is not found, so a rename fails loudly instead of quietly checking nothing. */
+static int cfg_names_of(const char *src_path, const char *sig, const char *names[], int cap)
+{
+    FILE *f = fopen(src_path, "r");
+    if (!f)
+        return -1;
+    char line[4096];
+    int in = 0, n = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (!in) {
+            if (!strncmp(line, sig, strlen(sig)))
+                in = 1;
+            continue;
+        }
+        if (line[0] == '}')
+            break;
+        const char *marker = "strcmp(key, \"";
+        const char *q = strstr(line, marker);
+        if (!q)
+            continue;
+        q += strlen(marker);
+        const char *e = strchr(q, '"');
+        if (!e || e == q || n >= cap)
+            break;
+        size_t len = (size_t)(e - q);
+        char *buf = malloc(len + 1);
+        if (!buf)
+            break;
+        memcpy(buf, q, len);
+        buf[len] = 0;
+        names[n++] = buf;
+    }
+    fclose(f);
+    return in ? n : -1;
 }
 
 /* the ImgView slot one application id was placed in, or -1 */
@@ -1578,10 +1683,10 @@ int main(void)
         const char *url = "http://127.0.0.1:8080";
         for (const char *p = url; *p; p++) { u16[u16len++] = *p; u16[u16len++] = 0; }
 
-        int n = paste_repair(u16, u16len, out, sizeof(out));
-        CHECK(n == (int)strlen(url) && !memcmp(out, url, strlen(url)),
+        int rn = paste_repair(u16, u16len, out, sizeof(out));
+        CHECK(rn == (int)strlen(url) && !memcmp(out, url, strlen(url)),
               "paste_repair: UTF-16LE with no BOM decodes to the text the user meant to paste");
-        CHECK(n > 0 && memchr(out, 0, (size_t)n) == NULL,
+        CHECK(rn > 0 && memchr(out, 0, (size_t)rn) == NULL,
               "paste_repair: no NUL survives on its way to the pty");
 
         /* the same block with a BOM in front */
@@ -1832,6 +1937,353 @@ int main(void)
             CHECK(c.repeat_delay == 0, "config: a negative repeat_delay clamps to 0 (off)");
             CHECK(c.repeat_rate == 200, "config: repeat_rate is clamped to at most 200/s");
             remove(path);
+        }
+    }
+
+    /* ---------- config: the search order, and the binding file ----------------------------------
+       Two things are pinned here, and neither needs a display:
+         1. WHERE a file comes from — $XDG_CONFIG_HOME/kai-term, then ~/.config/kai-term, then
+            /etc/kai-term, first one found wins, and nothing found at all means the built-in defaults.
+         2. That the search is not just a path printer: config_load(NULL) / config_load_binds(NULL)
+            read what it found, each file searched on its own.
+       HOME and XDG_CONFIG_HOME are pointed at a scratch tree for the duration of the block and put back
+       exactly as they were (XDG_CONFIG_HOME included being ABSENT if it was absent), because every later
+       check in this binary reads the real environment. The tree is built and removed with mkdir/rmdir,
+       never through a shell, so no path here depends on quoting; and every path is spelled out from
+       `base`, which keeps each snprintf provably inside its buffer. */
+    {
+        char base[128];
+        snprintf(base, sizeof base, "/tmp/kterm_cfg_%d", (int)getpid());
+        char xdg_root[256], d_xdg[256], f_xdg[256];
+        char d_home[256], f_home[256], f_home_bind[256];
+        snprintf(xdg_root, sizeof xdg_root, "%s/xdg", base);
+        snprintf(d_xdg, sizeof d_xdg, "%s/xdg/kai-term", base);
+        snprintf(f_xdg, sizeof f_xdg, "%s/xdg/kai-term/kai-term.conf", base);
+        snprintf(d_home, sizeof d_home, "%s/.config/kai-term", base);
+        snprintf(f_home, sizeof f_home, "%s/.config/kai-term/kai-term.conf", base);
+        snprintf(f_home_bind, sizeof f_home_bind, "%s/.config/kai-term/kai-term.bind", base);
+
+        char save_xdg[4096], save_home[4096];
+        int had_xdg = getenv("XDG_CONFIG_HOME") != NULL;
+        snprintf(save_xdg, sizeof save_xdg, "%s", getenv("XDG_CONFIG_HOME") ? getenv("XDG_CONFIG_HOME") : "");
+        snprintf(save_home, sizeof save_home, "%s", getenv("HOME") ? getenv("HOME") : "");
+
+        mkdir(base, 0700);
+        mkdir(xdg_root, 0700);
+        mkdir(d_xdg, 0700);
+        snprintf(d_home, sizeof d_home, "%s/.config", base);      mkdir(d_home, 0700);
+        snprintf(d_home, sizeof d_home, "%s/.config/kai-term", base); mkdir(d_home, 0700);
+
+        setenv("XDG_CONFIG_HOME", xdg_root, 1);   /* the CONFIG ROOT: <root>/kai-term/<file> */
+        setenv("HOME", base, 1);                  /* so ~/.config/kai-term IS the scratch one */
+
+        char found[4096];
+        struct stat sst;
+        int etc_has_it = stat("/etc/kai-term/kai-term.conf", &sst) == 0 && S_ISREG(sst.st_mode);
+        config_find("kai-term.conf", found, sizeof found);
+        CHECK(found[0] == 0 || !strcmp(found, "/etc/kai-term/kai-term.conf"),
+              "cfgsearch: with nothing in XDG or HOME the only answer is /etc/kai-term or nothing");
+        CHECK(etc_has_it || found[0] == 0,
+              "cfgsearch: that answer exists — /etc/kai-term is asked last, and never invented");
+
+        FILE *sf = fopen(f_home, "w");
+        CHECK(sf != NULL, "cfgsearch: the scratch HOME config is writable");
+        if (sf) { fputs("app_id = from-home\n", sf); fclose(sf); }
+        config_find("kai-term.conf", found, sizeof found);
+        CHECK(!strcmp(found, f_home), "cfgsearch: with nothing in XDG, ~/.config/kai-term is used");
+
+        sf = fopen(f_xdg, "w");
+        CHECK(sf != NULL, "cfgsearch: the scratch XDG config is writable");
+        if (sf) { fputs("app_id = from-xdg\n", sf); fclose(sf); }
+        config_find("kai-term.conf", found, sizeof found);
+        CHECK(!strcmp(found, f_xdg), "cfgsearch: XDG wins when both hold the file");
+
+        /* An empty XDG_CONFIG_HOME counts as "not set", and a DIRECTORY named kai-term.conf is not a
+           config file — both must fall through to the next location rather than resolve to something
+           that cannot be read as settings. */
+        setenv("XDG_CONFIG_HOME", "", 1);
+        config_find("kai-term.conf", found, sizeof found);
+        CHECK(!strcmp(found, f_home), "cfgsearch: an empty XDG_CONFIG_HOME means 'not set'");
+        setenv("XDG_CONFIG_HOME", xdg_root, 1);
+        remove(f_xdg);
+        mkdir(f_xdg, 0700);
+        config_find("kai-term.conf", found, sizeof found);
+        CHECK(!strcmp(found, f_home), "cfgsearch: a directory named kai-term.conf is skipped");
+        rmdir(f_xdg);
+
+        /* And the search feeds the loader: config_load(NULL) reads the file it found. */
+        Config c;
+        config_default(&c);
+        config_load(&c, NULL);
+        CHECK(!strcmp(c.app_id, "from-home"), "cfgsearch: config_load(NULL) reads the searched file");
+
+        /* The binding file is searched INDEPENDENTLY, so a user with a kai-term.conf in ~/.config and no
+           kai-term.bind there still gets the system-wide bindings instead of the built-in ones. */
+        sf = fopen(f_home_bind, "w");
+        CHECK(sf != NULL, "cfgsearch: the scratch bind file is writable");
+        if (sf) { fputs("key_new_tab = Alt+N\n", sf); fclose(sf); }
+        config_find("kai-term.bind", found, sizeof found);
+        CHECK(!strcmp(found, f_home_bind), "cfgsearch: kai-term.bind is searched the same way");
+        config_default(&c);
+        config_load(&c, NULL);
+        config_load_binds(&c, NULL);
+        CHECK(!strcmp(c.app_id, "from-home"), "cfgsearch: the settings file still applied");
+        CHECK(c.key_new_tab.set && c.key_new_tab.sym == 'n' && c.key_new_tab.mods == KB_ALT,
+              "cfgsearch: and the searched bind file applied its binding");
+
+        /* Tear the tree down: every file before its directory, so each rmdir succeeds. */
+        if (had_xdg)
+            setenv("XDG_CONFIG_HOME", save_xdg, 1);
+        else
+            unsetenv("XDG_CONFIG_HOME");
+        setenv("HOME", save_home, 1);
+        remove(f_home);
+        remove(f_home_bind);
+        rmdir(d_xdg);
+        rmdir(d_home);
+        rmdir(xdg_root);
+        snprintf(d_home, sizeof d_home, "%s/.config", base);
+        rmdir(d_home);
+        rmdir(base);
+    }
+
+    /* --- config: which NAME lives in which file, and which file wins ---------------------------
+       The split is by name, not by "the last file read wins for everything": a binding in kai-term.conf
+       keeps working (files written before the split must not silently lose their bindings), the bind
+       file is read last so it wins for the same name, and a SETTING written in the bind file is refused
+       out loud instead of being ignored as an unknown key. */
+    {
+        Config c;
+        const char *cf = "/tmp/kterm_test_split.conf";
+        const char *bf = "/tmp/kterm_test_split.bind";
+        FILE *f = fopen(cf, "w");
+        CHECK(f != NULL, "config split: the temp files are writable");
+        if (f) {
+            fclose(f);
+
+            /* A binding read from its own file. */
+            f = fopen(cf, "w"); fputs("font_size = 20\n", f); fclose(f);
+            f = fopen(bf, "w"); fputs("key_new_tab = Alt+N\nfm_key_up = k\n", f); fclose(f);
+            config_default(&c);
+            config_load(&c, cf);
+            config_load_binds(&c, bf);
+            CHECK(c.font_size == 20, "config split: the settings file still sets a setting");
+            CHECK(c.key_new_tab.set && c.key_new_tab.sym == 'n' && c.key_new_tab.mods == KB_ALT,
+                  "config split: key_new_tab comes from kai-term.bind");
+            CHECK(c.fm_key.up.set && c.fm_key.up.sym == 'k' && c.fm_key.up.mods == 0,
+                  "config split: a bare file-manager key is legal in kai-term.bind");
+
+            /* Both files name the same binding: the bind file is read last and wins. */
+            f = fopen(cf, "w"); fputs("key_new_tab = Ctrl+Alt+J\n", f); fclose(f);
+            f = fopen(bf, "w"); fputs("key_new_tab = Alt+N\n", f); fclose(f);
+            config_default(&c);
+            config_load(&c, cf);
+            config_load_binds(&c, bf);
+            CHECK(c.key_new_tab.set && c.key_new_tab.sym == 'n' && c.key_new_tab.mods == KB_ALT,
+                  "config split: kai-term.bind wins over the same name in kai-term.conf");
+
+            /* A binding left in kai-term.conf is still honoured — that is the compatibility half. */
+            f = fopen(cf, "w"); fputs("key_close_tab = Alt+W\nfm_key_path = none\n", f); fclose(f);
+            f = fopen(bf, "w"); fputs("# no bindings here\n", f); fclose(f);
+            config_default(&c);
+            config_load(&c, cf);
+            config_load_binds(&c, bf);
+            CHECK(c.key_close_tab.set && c.key_close_tab.sym == 'w' && c.key_close_tab.mods == KB_ALT,
+                  "config split: a binding still written in kai-term.conf is applied");
+            CHECK(!c.fm_key.path.set, "config split: and fm_key_path = none still unbinds it there");
+
+            /* A SETTING in the bind file is refused — and refused as "wrong file", not as an unknown
+               name, so the message cannot send the user hunting for a typo. */
+            f = fopen(cf, "w"); fputs("font_size = 22\n", f); fclose(f);
+            f = fopen(bf, "w"); fputs("font_size = 99\nmax_tabs = 3\n", f); fclose(f);
+            config_default(&c);
+            config_load(&c, cf);
+            config_load_binds(&c, bf);
+            CHECK(c.font_size == 22, "config split: a setting in kai-term.bind does not apply");
+            CHECK(c.max_tabs == 8, "config split: nor does any other setting there");
+
+            /* `none` / empty / 0 unbind from the bind file too. */
+            f = fopen(bf, "w"); fputs("key_tab_prefix = none\nfm_key_quit =\nkey_file_manager = 0\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load_binds(&c, bf);
+            CHECK(c.tab_prefix_mods == 0, "config split: key_tab_prefix = none disables the digit jump");
+            CHECK(!c.fm_key.quit.set, "config split: an empty value unbinds a file-manager key");
+            CHECK(!c.key_file_manager.set, "config split: = 0 unbinds a window-level shortcut");
+
+            remove(cf);
+            remove(bf);
+        }
+    }
+
+    /* --- config: where a '#' starts a comment -------------------------------------------------
+       `background = #1c1c22` is the form README documents and the form the shipped template writes, and
+       the old rule ("whitespace before the '#' is enough") cut that line at the '#', so the colour was
+       never applied and nothing was even logged. A '#' is a comment when only whitespace precedes it, or
+       when whitespace precedes AND follows it; anything else is part of the value. */
+    {
+        Config c;
+        const char *path = "/tmp/kterm_test_hash.conf";
+        FILE *f = fopen(path, "w");
+        CHECK(f != NULL, "config hash: the temp file is writable");
+        if (f) {
+            fclose(f);
+            f = fopen(path, "w");
+            fputs("background = #1c1c22\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.bg == 0xff1c1c22u, "config hash: 'background = #1c1c22' is a colour, not a comment");
+
+            f = fopen(path, "w");
+            fputs("foreground = #ff0000 # the ink\nworking_dir = /tmp/my#project\napp_id = hash-x # note\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.fg == 0xffff0000u, "config hash: a note after a colour is still stripped");
+            CHECK(!strcmp(c.working_dir, "/tmp/my#project"),
+                  "config hash: a '#' inside a value survives (no space before it)");
+            CHECK(!strcmp(c.app_id, "hash-x"), "config hash: 'value # note' is still stripped");
+
+            f = fopen(path, "w");
+            fputs("#whole line\n   # indented, no space after the hash\n\tcursor_color = #00ff00\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(!strcmp(c.app_id, DEF_APP_ID), "config hash: a '#' with only whitespace before it comments the line");
+            CHECK(c.cursor_color == 0xff00ff00u, "config hash: a tab-indented setting is still read");
+
+            f = fopen(path, "w");
+            fputs("background =#0000ff\n", f);      /* no space after '=' at all */
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.bg == 0xff0000ffu, "config hash: 'key =#value' is a colour too");
+            remove(path);
+        }
+    }
+
+    /* --- config: the shipped templates ARE the defaults ---------------------------------------
+       config/kai-term.conf and config/kai-term.bind list every name with the value config_default()
+       gives it. That is only true as long as somebody checks it, and the honest check is to load both
+       files and compare every field of the result with a fresh default Config. Run from the repo root
+       (what `make test` does); from anywhere else the files are not there and the block reports a skip
+       rather than passing on nothing. */
+    {
+        const char *tpl_conf = "config/kai-term.conf";
+        const char *tpl_bind = "config/kai-term.bind";
+        FILE *fa = fopen(tpl_conf, "r");
+        FILE *fb = fopen(tpl_bind, "r");
+        if (fa) fclose(fa);
+        if (fb) fclose(fb);
+        if (!fa || !fb) {
+            printf("SKIP: config templates not found at %s / %s (run from the repo root)\n",
+                   tpl_conf, tpl_bind);
+        } else {
+            Config d, t;
+            config_default(&d);
+            config_default(&t);
+            config_load(&t, tpl_conf);
+            config_load_binds(&t, tpl_bind);
+            CHECK(!strcmp(t.font, d.font), "template: font matches config_default()");
+            CHECK(t.font_size == d.font_size, "template: font_size matches");
+            CHECK(t.cols == d.cols && t.rows == d.rows, "template: cols/rows match");
+            CHECK(t.scrollback == d.scrollback, "template: scrollback matches");
+            CHECK(t.padding == d.padding, "template: padding matches");
+            CHECK(t.opacity == d.opacity, "template: opacity matches");
+            CHECK(t.fg == d.fg, "template: foreground matches");
+            CHECK(t.bg == d.bg, "template: background matches");
+            CHECK(t.cursor_color == d.cursor_color, "template: cursor_color matches");
+            CHECK(!strcmp(t.shell, d.shell), "template: shell matches");
+            CHECK(t.shell_integration == d.shell_integration, "template: shell_integration matches");
+            CHECK(!strcmp(t.working_dir, d.working_dir), "template: working_dir matches");
+            CHECK(!strcmp(t.app_id, d.app_id), "template: app_id matches");
+            CHECK(t.clear_scrollback == d.clear_scrollback, "template: clear_scrollback matches");
+            CHECK(t.copy_on_release == d.copy_on_release, "template: copy_on_release matches");
+            CHECK(t.wheel_sends_keys == d.wheel_sends_keys,
+                  "template: wheel_sends_keys matches");
+            CHECK(t.click_moves_cursor == d.click_moves_cursor,
+                  "template: click_moves_cursor matches");
+            CHECK(t.repeat_delay == d.repeat_delay && t.repeat_rate == d.repeat_rate,
+                  "template: the key-repeat timings match");
+            CHECK(t.max_tabs == d.max_tabs, "template: max_tabs matches");
+            CHECK(t.tab_bar == d.tab_bar, "template: tab_bar matches");
+            CHECK(t.split_max == d.split_max, "template: split_max matches");
+            CHECK(t.fm_on == d.fm_on && t.fm_size == d.fm_size, "template: file_manager/fm_size match");
+            CHECK(t.fm_preview == d.fm_preview && t.fm_show_hidden == d.fm_show_hidden,
+                  "template: fm_preview/fm_show_hidden match");
+            CHECK(t.fm_follow == d.fm_follow, "template: fm_follow matches");
+            CHECK(t.loglevel == d.loglevel, "template: log matches");
+            CHECK(t.tab_prefix_mods == d.tab_prefix_mods, "template: key_tab_prefix matches");
+            const KeyBind pairs[][2] = {
+                { t.key_new_tab, d.key_new_tab },
+                { t.key_close_tab, d.key_close_tab },
+                { t.key_next_tab, d.key_next_tab },
+                { t.key_prev_tab, d.key_prev_tab },
+                { t.key_toggle_layout, d.key_toggle_layout },
+                { t.key_file_manager, d.key_file_manager },
+                { t.key_fm_focus, d.key_fm_focus },
+                { t.key_fm_release, d.key_fm_release },
+                { t.fm_key.up, d.fm_key.up },
+                { t.fm_key.down, d.fm_key.down },
+                { t.fm_key.pageup, d.fm_key.pageup },
+                { t.fm_key.pagedown, d.fm_key.pagedown },
+                { t.fm_key.home, d.fm_key.home },
+                { t.fm_key.end, d.fm_key.end },
+                { t.fm_key.left, d.fm_key.left },
+                { t.fm_key.right, d.fm_key.right },
+                { t.fm_key.open, d.fm_key.open },
+                { t.fm_key.path, d.fm_key.path },
+                { t.fm_key.parent, d.fm_key.parent },
+                { t.fm_key.refresh, d.fm_key.refresh },
+                { t.fm_key.preview, d.fm_key.preview },
+                { t.fm_key.hidden, d.fm_key.hidden },
+                { t.fm_key.quit, d.fm_key.quit },
+            };
+            static const char *pair_names[] = {
+                "key_new_tab", "key_close_tab", "key_next_tab", "key_prev_tab", "key_toggle_layout",
+                "key_file_manager", "key_fm_focus", "key_fm_release", "fm_key_up", "fm_key_down",
+                "fm_key_pageup", "fm_key_pagedown", "fm_key_home", "fm_key_end", "fm_key_left",
+                "fm_key_right", "fm_key_open", "fm_key_path", "fm_key_parent", "fm_key_refresh",
+                "fm_key_preview", "fm_key_hidden", "fm_key_quit",
+            };
+            int bad = 0;
+            for (size_t i = 0; i < sizeof pairs / sizeof pairs[0]; i++)
+                if (pairs[i][0].sym != pairs[i][1].sym || pairs[i][0].mods != pairs[i][1].mods ||
+                    pairs[i][0].set != pairs[i][1].set) {
+                    printf("FAIL: template: %s is %x/%x/%d in the file, %x/%x/%d in the code\n",
+                           pair_names[i], pairs[i][0].sym, pairs[i][0].mods, pairs[i][0].set,
+                           pairs[i][1].sym, pairs[i][1].mods, pairs[i][1].set);
+                    bad++;
+                }
+            CHECK(bad == 0, "template: every binding in kai-term.bind matches config_default()");
+
+            /* --- and the NAMES themselves, in both directions -----------------------------
+               The field-by-field comparison above cannot see a deleted line: a template that stopped
+               mentioning `padding` still loads to exactly the default, so it stays green while the file
+               claims to hold every default. The accepted names are read out of the two strcmp ladders in
+               src/config.c, so this fails when a name is added to the parser and not to the template —
+               the direction a hand-maintained list in this file could never catch. Verified against a
+               plain set difference first (.scratch/s99/names.sh): 29 settings + 24 bindings, empty diff
+               in every direction. */
+            const char *set_names[64], *bind_names[64];
+            int ns = cfg_names_of("src/config.c", "static void apply_setting(", set_names, 64);
+            int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
+            CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
+            CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
+            CHECK(ns == 29 && nb == 24,
+                  "template: the parser accepts 29 settings and 24 bindings — re-diff, do not copy");
+            int nbad = 0;
+            if (ns > 0)
+                nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);
+            if (nb > 0)
+                nbad += tpl_check_names(tpl_bind, (const char *const *)bind_names, nb);
+            CHECK(nbad == 0,
+                  "template: kai-term.conf and kai-term.bind list exactly the names the parser accepts");
+            for (int i = 0; i < ns; i++)
+                free((char *)set_names[i]);
+            for (int i = 0; i < nb; i++)
+                free((char *)bind_names[i]);
         }
     }
 

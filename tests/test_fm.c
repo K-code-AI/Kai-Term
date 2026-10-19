@@ -992,6 +992,89 @@ static void test_preview_scroll(void)
     fm_destroy(&fm);
 }
 
+/* The same body, driven by KEYS while the preview pane owns the keyboard (main.c routes the band's
+   Page_Up/Page_Down/Home/End here when focus == FM_FOCUS_PREVIEW). What these pin is the part the wheel
+   does not exercise: what ONE page is, and that Home/End mean the first and last line of the BODY.
+   A page must be exactly what the pane shows at once — one row short and a held Page key re-shows a
+   line, one row long and it skips one, and both are invisible until the pixels are checked. */
+static void test_preview_keys(void)
+{
+    FileMgr fm;
+    fm_init(&fm, root);
+    fm_set_size(&fm, 40, 12, 30, 12);
+    unsigned long seq = 0;
+    fm_go(&fm, root, &seq);
+    fm_install_scan(&fm, fm_scan_build(root, seq));
+
+    char path[1024];
+    fm_select(&fm, find_pos(&fm, "many.txt"));
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvkeys: a text preview to scroll");
+    CHECK(fm_install_preview(&fm, fm_preview_build(path, seq)) == 1, "pvkeys: and it installs");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+
+    /* 12-row pane, 2 header rows: one page is the 10 body rows, and 40 lines leave 30 rows to scroll. */
+    CHECK(fm_preview_page_rows(&fm) == 12 - 2, "pvkeys: one page is the body the pane shows at once");
+    CHECK(fm_preview_scroll_max(&fm) == 40 - (12 - 2), "pvkeys: and 30 rows are below the fold");
+
+    fm_preview_page(&fm, 1);
+    CHECK(fm.pv_scroll == 10, "pvkeys: Page_Down moves by a whole page, not by a row or by a guess");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "L11") >= 0 && pane_shows(&fm, "L10") < 0,
+          "pvkeys: the page is contiguous - L11 is the new top, no line shown twice");
+    fm_preview_page(&fm, 1);
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "L21") >= 0 && pane_shows(&fm, "L20") < 0,
+          "pvkeys: and the second page continues where the first stopped");
+    fm_preview_page(&fm, -2);
+    CHECK(fm.pv_scroll == 0, "pvkeys: Page_Up the same number of pages is back to the top");
+
+    /* End / Home: the last line and the first line of the body. */
+    fm_preview_bottom(&fm);
+    CHECK(fm.pv_scroll == fm_preview_scroll_max(&fm), "pvkeys: End lands on the last line of the body");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "L40") >= 0, "pvkeys: and the last line is really painted");
+    fm_preview_top(&fm);
+    CHECK(fm.pv_scroll == 0, "pvkeys: Home goes back to the first line");
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "L01") >= 0, "pvkeys: and the first line is really painted");
+
+    /* Repeated End / Home are no-ops, and a page past either end clamps instead of wrapping. */
+    fm_preview_bottom(&fm);
+    fm_preview_bottom(&fm);
+    CHECK(fm.pv_scroll == fm_preview_scroll_max(&fm), "pvkeys: End twice does not go past the bottom");
+    fm_preview_page(&fm, -99);
+    fm_preview_top(&fm);
+    CHECK(fm.pv_scroll == 0, "pvkeys: and a page past the top does not wrap");
+
+    /* A pane too short for its own header still answers a page of at least one row, so a Page key can
+       never be a no-op on a body that has rows to show. */
+    fm_set_size(&fm, 40, 12, 30, 2);
+    CHECK(fm_preview_page_rows(&fm) == 1, "pvkeys: a 2-row pane (header only) still pages by one row");
+    fm_set_size(&fm, 40, 12, 30, 12);
+
+    /* A preview with no body — a picture that failed to decode, so metadata only — has nothing to
+       scroll: the keys must not move a field that the painter never reads. */
+    p_join(path, sizeof path, "broken.png");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    fm_preview_bottom(&fm);
+    fm_preview_page(&fm, 1);
+    CHECK(fm.pv_scroll == 0 && fm_preview_scroll_max(&fm) == 0,
+          "pvkeys: a metadata-only preview does not move at all");
+
+    /* A directory preview pages too — its body is the entry list. */
+    fm_select(&fm, find_pos(&fm, "many"));
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvkeys: a directory preview is asked for");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    fm_preview_bottom(&fm);
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "f8") >= 0, "pvkeys: End reaches the last entry of a directory preview");
+    fm_preview_top(&fm);
+    fm_paint(&fm, BASE_FG, BASE_BG);
+    CHECK(pane_shows(&fm, "f0") >= 0, "pvkeys: and Home is back at the first one");
+
+    fm_destroy(&fm);
+}
+
 /* ---------- the preview picture box ---------- */
 
 /* Glyphs painted INSIDE the box fm_image_fit() reports. The renderer draws the picture into that box and
@@ -1225,6 +1308,7 @@ int main(void)
     test_preview();
     test_paint();
     test_preview_scroll();
+    test_preview_keys();
     test_fit();
 
     /* Undo the chmod before removing the tree, or rmdir fails. */

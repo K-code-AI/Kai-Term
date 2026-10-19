@@ -64,6 +64,23 @@ run_split() {
     stderr_only=$(cat "$sefile")
 }
 
+# run_env <args...> -> same as run(), but $env_home and $env_xdg become HOME and XDG_CONFIG_HOME for THIS
+# launch only — the config-search checks must not read the developer's own ~/.config/kai-term. The
+# assignment-prefix form, NOT env(1): env parses the BINARY's flags as its own options (`-w` is
+# --split-string in coreutils, and `--` does not stop it), so `env HOME=… -w /tmp -e true` never runs
+# anything and every check after it fails. Measured: 10 checks failed that way before this was fixed.
+# An empty $env_xdg sets XDG_CONFIG_HOME to the empty string, which src/config.c reads as "not set" —
+# deterministic, and it cannot leak the developer's value into the run.
+env_home=""
+env_xdg=""
+run_env() {
+    outf="$tmp/o"
+    : > "$outf"
+    HOME="$env_home" XDG_CONFIG_HOME="$env_xdg" $TMO "$BIN" "$@" > "$outf" 2>&1 < /dev/null
+    rc=$?
+    out=$(cat "$outf")
+}
+
 # The R in the last "layout: ... grid CxR per session" line — the rows every session was sized to. Empty
 # when the run logged no layout, which the caller treats as a failure rather than a pass.
 grid_rows() {
@@ -104,7 +121,7 @@ ck "$rc" 0 "-h exit status"
 ck "$(printf '%s\n' "$stdout_only" | sed -n '1p')" "usage: $BIN [OPTION]..." "-h usage line"
 run_split -h
 ck "$stderr_only" "" "-h writes only to stdout"
-for opt in "-e, --exec COMMAND" "-w, --workingdir DIR" "-c, --config FILE" \
+for opt in "-e, --exec COMMAND" "-w, --workingdir DIR" "-c, --config FILE" "-b, --binds FILE" \
            "-d, --debug" "-v, --version" "-h, --help"; do
     run -h
     ck "$(printf '%s\n' "$out" | grep -c -- "$opt")" 1 "-h lists $opt"
@@ -136,7 +153,7 @@ for flag in -C -f -s -r -o -x --bogus; do
 done
 
 # ---------------- options that need an argument ----------------
-for flag in -e -w -c --exec --workingdir --config; do
+for flag in -e -w -c -b --exec --workingdir --config --binds; do
     run_split "$flag"
     ck "$rc" 1 "$flag with no argument exits 1"
     # the message echoes the flag exactly as the user typed it
@@ -225,6 +242,66 @@ if [ "$have_display" = 1 ]; then
     run -d -e true
     ck "$(printf '%s\n' "$out" | grep -c 'file manager')" 0 "the file manager is off by default: the layout line does not mention it"
 
+    # ---- the two config files, and the search order (XDG > ~/.config > /etc > built-in defaults) ----
+    # These run WITHOUT -c, so they exercise the real loader path a user hits: HOME and XDG_CONFIG_HOME
+    # point at a scratch tree, and -w pins the startup directory (HOME moving would otherwise move it).
+    mkdir -p "$tmp/cfg/xdg/kai-term" "$tmp/cfg/home/.config/kai-term" "$tmp/cfg/none"
+    printf 'app_id = search-xdg\n' > "$tmp/cfg/xdg/kai-term/kai-term.conf"
+    printf 'app_id = search-home\n' > "$tmp/cfg/home/.config/kai-term/kai-term.conf"
+    env_home="$tmp/cfg/home"; env_xdg="$tmp/cfg/xdg"
+    run_env -d -w "$tmp" -e true
+    ck "$rc" 0 "a launch with a scratch HOME and XDG_CONFIG_HOME runs"
+    ck "$(printf '%s\n' "$out" | grep -c 'app_id: search-xdg')" 1 \
+       "XDG_CONFIG_HOME wins when it holds kai-term.conf"
+    ck "$(printf '%s\n' "$out" | grep -c 'app_id: search-home')" 0 \
+       "and ~/.config is not read at all once XDG has the file"
+    rm "$tmp/cfg/xdg/kai-term/kai-term.conf"
+    run_env -d -w "$tmp" -e true
+    ck "$(printf '%s\n' "$out" | grep -c 'app_id: search-home')" 1 \
+       "~/.config/kai-term is used when XDG_CONFIG_HOME has nothing"
+    env_home="$tmp/cfg/none"; env_xdg="$tmp/cfg/xdg"
+    run_env -d -w "$tmp" -e true
+    ck "$(printf '%s\n' "$out" | grep -c 'app_id: Kai-Term')" 1 \
+       "nothing anywhere: the built-in default app_id stands"
+    ck "$(printf '%s\n' "$out" | grep -c 'no kai-term.conf in')" 1 \
+       "and the log says which locations were looked at"
+    ck "$(printf '%s\n' "$out" | grep -c 'app_id: search-')" 0 \
+       "and no scratch file was picked up"
+
+    # The binding file: the same search, read AFTER the settings file. (Back to the HOME that holds the
+    # scratch files — the previous case deliberately pointed HOME at an empty tree.)
+    env_home="$tmp/cfg/home"; env_xdg="$tmp/cfg/xdg"
+    printf 'key_close_tab = none\n' > "$tmp/cfg/home/.config/kai-term/kai-term.bind"
+    run_env -d -w "$tmp" -e true
+    ck "$(printf '%s\n' "$out" | grep -c 'config: key_close_tab unbound')" 1 \
+       "a searched kai-term.bind is read"
+    ck "$(printf '%s\n' "$out" | grep -c 'bindings loaded from')" 1 \
+       "and the log names the file it came from"
+    # A SETTING written in the bind file is refused out loud, and it really does not apply.
+    printf 'font_size = 30\n' > "$tmp/cfg/home/.config/kai-term/kai-term.bind"
+    run_env -d -w "$tmp" -e true
+    ck "$(printf '%s\n' "$out" | grep -c 'is not a key binding')" 1 \
+       "a setting in kai-term.bind is refused by name"
+    ck "$(printf '%s\n' "$out" | grep -c 'cell 18x34')" 0 \
+       "and it did not apply — font_size stayed at the default"
+    # A binding left in kai-term.conf still works (files written before the split), and the log points
+    # at where the line belongs now.
+    rm "$tmp/cfg/home/.config/kai-term/kai-term.bind"
+    printf 'app_id = search-home\nkey_close_tab = none\n' > "$tmp/cfg/home/.config/kai-term/kai-term.conf"
+    run_env -d -w "$tmp" -e true
+    ck "$(printf '%s\n' "$out" | grep -c 'config: key_close_tab unbound')" 1 \
+       "a binding still written in kai-term.conf is applied"
+    ck "$(printf '%s\n' "$out" | grep -c 'is a key binding')" 1 \
+       "and the log says those live in kai-term.bind now"
+
+    # -b FILE names the binding file explicitly, in both long forms.
+    printf 'key_close_tab = none\n' > "$tmp/bind"
+    run -c "$tmp/conf" -b "$tmp/bind" -d -e true
+    ck "$rc" 0 "-b FILE runs"
+    ck "$(printf '%s\n' "$out" | grep -c 'config: key_close_tab unbound')" 1 "-b FILE reads that file"
+    run --binds="$tmp/bind" -d -e true
+    ck "$(printf '%s\n' "$out" | grep -c 'config: key_close_tab unbound')" 1 "--binds=FILE reads that file"
+
     # everything at once
     run -c "$tmp/conf" -d -w "$tmp" -e true
     ck "$rc" 0 "combined -c -d -w -e runs"
@@ -232,7 +309,9 @@ if [ "$have_display" = 1 ]; then
     ck "$(printf '%s\n' "$out" | grep -c "shell starts in $tmp")" 1 "combined: -w applied"
 else
     for name in "-c FILE" "--config FILE" "--config=FILE" "-d overrides log" "-w DIR" "-e COMMAND" \
-                "multiplexing keys" "display keys (tab_bar/split_max)" "file manager keys" "combined flags"; do
+                "multiplexing keys" "display keys (tab_bar/split_max)" "file manager keys" \
+                "config search order (XDG/~/.config//etc)" "kai-term.bind searched and applied" \
+                "-b FILE" "combined flags"; do
         skip "$name" "$win_reason"
     done
 fi

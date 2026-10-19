@@ -1,0 +1,108 @@
+# Kai-Term — key bindings (kai-term.bind)
+#
+# The shipped template: every binding, each with the key Kai-Term uses when there is no config file at
+# all. This is the ONLY file that should hold bindings; kai-term.conf holds the settings. Both use the
+# same `key = value` syntax, and this file is read AFTER kai-term.conf, so for a name both files set this
+# one wins. (A binding left in an older kai-term.conf is still honoured — the log line says where it
+# belongs now.)
+#
+# Where this file is read from — the first location that holds it wins, the others are never opened:
+#   $XDG_CONFIG_HOME/kai-term/kai-term.bind
+#   ~/.config/kai-term/kai-term.bind
+#   /etc/kai-term/kai-term.bind
+# If none of them does, the built-in bindings apply, and those are exactly the keys written here.
+# -b FILE reads one specific file and skips that search.
+#
+# Writing a binding
+#   Ctrl+Shift+T              modifiers joined by '+', then one key; order and case do not matter
+#   Alt+Right, Super+F5       a named key or a single character
+#   none                      unbinds the action (empty, 0, off and no do the same)
+#   Modifiers: Ctrl/Control, Shift, Alt/Mod1, Super/Mod4/Win/Gui.
+#   Named keys: Left Right Up Down Home End Page_Up Page_Down Insert Delete BackSpace Tab Return
+#               Escape Space F1-F12. Any other single character stands for itself.
+#   A binding with NO modifier is refused — it would swallow ordinary typing — with one exception: the
+#   fm_key_* lines below, which are matched only while the file manager owns the keyboard, so `Up`, `r`
+#   and `Escape` still reach the shell whenever it does not.
+#   key_tab_prefix is the odd one out: it names MODIFIERS ONLY, and you press them with a digit 1-9.
+
+
+# ---------- sessions (tabs) ----------
+
+# Open another session in this window.
+key_new_tab = Ctrl+Shift+T
+
+# Close the visible session; closing the last one exits Kai-Term.
+key_close_tab = Ctrl+Shift+W
+
+# Show the next / previous session (wraps around).
+key_next_tab = Ctrl+Shift+Right
+key_prev_tab = Ctrl+Shift+Left
+
+# Hold these and press 1-9 to jump to that session. `none` disables the shortcut.
+key_tab_prefix = Ctrl+Shift
+
+# Switch between the one-session view and the side-by-side view.
+key_toggle_layout = Ctrl+Shift+S
+
+
+# ---------- file manager: the window-level shortcuts ----------
+# These carry modifiers like every other terminal binding, because they are live while the TERMINAL has
+# the keyboard too.
+
+# Show / hide the file-manager band.
+key_file_manager = Ctrl+Shift+F
+
+# Give the keyboard to the file manager / give it back to the terminal.
+key_fm_focus = Ctrl+Shift+Up
+key_fm_release = Ctrl+Shift+Down
+
+
+# ---------- file manager: its own keys ----------
+# Matched only while the band owns the keyboard, which is what makes a bare key a legal binding here.
+# With the band closed, or with the terminal focused, all of these reach the shell unchanged.
+
+# Move the selection (hold to walk the list).
+fm_key_up = Up
+fm_key_down = Down
+
+# One page up / down through the listing.
+fm_key_pageup = Page_Up
+fm_key_pagedown = Page_Down
+
+# First / last entry.
+fm_key_home = Home
+fm_key_end = End
+
+# Left is "up one level", Right is "into this one". Right does NOTHING to a file, which is what makes
+# holding it down through a listing safe.
+fm_key_left = Left
+fm_key_right = Right
+
+# Enter: descend into the highlighted directory. On a file it does nothing at all — no key in the band
+# writes at your prompt unless you bound one below.
+fm_key_open = Return
+
+# Type the selected entry's quoted path at your prompt, at the cursor, WITHOUT pressing Enter: Kai-Term
+# never runs a file it was only asked to name. `none` leaves no key that can write at your prompt.
+fm_key_path = p
+
+# Go to the parent directory.
+fm_key_parent = BackSpace
+
+# Re-read the current directory.
+fm_key_refresh = r
+
+# Show / hide the preview pane.
+fm_key_preview = v
+
+# Show / hide dotfiles.
+fm_key_hidden = .
+
+# Close the file manager.
+fm_key_quit = Escape
+
+# While the PREVIEW pane owns the keyboard (a click on it, or the wheel over it), fm_key_pageup,
+# fm_key_pagedown, fm_key_home and fm_key_end scroll the previewed TEXT instead of moving the listing,
+# and they use those same four bindings — one action per key, and which body it scrolls is decided by
+# the focus. fm_key_up / fm_key_down keep changing WHICH entry is previewed. There is nothing to scroll
+# for a picture or a metadata-only preview, so those keys simply do nothing there.
