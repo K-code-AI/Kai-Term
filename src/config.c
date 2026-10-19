@@ -42,6 +42,7 @@ void config_default(Config *c)
     c->fg = DEF_FG;
     c->bg = DEF_BG;
     c->cursor_color = CURSOR_COL;
+    c->selection_color = SEL_BG;
     c->opacity = 1.0f;
     c->shell[0] = 0;           /* empty => $SHELL */
     /* The integration script is handed to a recognised shell only (fish/bash/zsh). On by default: it changes
@@ -462,6 +463,9 @@ static void apply_setting(Config *c, const char *key, char *val)
         c->bg = parse_color(val, c->bg);
     } else if (!strcmp(key, "cursor_color")) {
         c->cursor_color = parse_color(val, c->cursor_color);
+    } else if (!strcmp(key, "selection_color")) {
+        /* The selection band, the tab bar's active item and the focus border — one value, three places. */
+        c->selection_color = parse_color(val, c->selection_color);
     } else if (!strcmp(key, "opacity")) {
         float f = (float)atof(val);
         c->opacity = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);

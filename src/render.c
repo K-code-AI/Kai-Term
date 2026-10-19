@@ -254,7 +254,7 @@ static void set_clear_color(Render *r)
 }
 
 int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
-                uint32_t bg, uint32_t fg, uint32_t cursor_color)
+                uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color)
 {
     memset(r, 0, sizeof(*r));
     r->vw = w;
@@ -345,6 +345,7 @@ int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, flo
     r->bg = bg;
     r->fg = fg;   /* the tab bar's text colour (see Render.fg) */
     r->cursor_color = cursor_color;   /* the `cursor_color =` line (see Render.cursor_color) */
+    r->selection_color = selection_color;   /* the `selection_color =` line (see Render.selection_color) */
     r->ecfg = malloc(sizeof(cfg));
     if (r->ecfg)
         memcpy(r->ecfg, &cfg, sizeof(cfg));
@@ -671,14 +672,14 @@ static uint32_t mix_c(uint32_t a, uint32_t b, int k100)
    Term or GL state, so bin/test_render.c can call it with no display and no context. */
 void render_chrome(const Render *r, Chrome *out)
 {
-    out->sel_bg      = SEL_BG;
+    out->sel_bg      = r->selection_color;
     out->item_off_bg = mix_c(r->bg, r->fg, 10);
     out->item_off_fg = mix_c(r->fg, r->bg, 45);
-    out->item_on_bg  = SEL_BG;
+    out->item_on_bg  = r->selection_color;
     out->sep         = mix_c(r->fg, r->bg, 65);
     out->cursor      = r->cursor_color;
     out->cursor_off  = mix_c(r->cursor_color, r->bg, 55);
-    out->border      = SEL_BG;
+    out->border      = r->selection_color;
 }
 
 /* Decode one UTF-8 sequence of a tab-bar label. A tab's title arrives through OSC 0/2, so a label is

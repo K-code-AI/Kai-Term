@@ -775,7 +775,7 @@ static void test_paint(void)
     fm_go(&fm, root, &seq);
     FmScan *s = fm_scan_build(root, seq);
     fm_install_scan(&fm, s);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(!fm.dirty, "paint: painting clears the dirty flag");
 
     CHECK(pch(&fm.list, 1, 0) == '/', "paint: the header row shows the directory path");
@@ -788,6 +788,17 @@ static void test_paint(void)
           "paint: the selected row is highlighted across its whole width");
     CHECK(selrow + 1 < fm.list.rows - 1 && pbg(&fm.list, 0, selrow + 1) == BASE_BG,
           "paint: an unselected row is not");
+    /* The highlight is the value the CALLER passed, not the SEL_BG macro: that is what lets a theme or a
+       `selection_color =` line change the band too. Written as a different colour on purpose — passing
+       SEL_BG and expecting SEL_BG would also pass if fm.c ignored its argument and used the macro, which
+       is exactly how the dead `cursor_color =` key stayed invisible (ISSUES.md). */
+    fm_paint(&fm, BASE_FG, BASE_BG, 0xff00ff00u);
+    CHECK(pbg(&fm.list, 0, selrow) == 0xff00ff00u && pbg(&fm.list, 20, selrow) == 0xff00ff00u,
+          "paint: the selected row uses the sel colour it was handed, not the SEL_BG macro");
+    CHECK(pbg(&fm.list, 0, selrow + 1) == BASE_BG,
+          "paint: a custom sel colour still leaves the unselected rows alone");
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);   /* restore what the checks below assume */
+    CHECK(pbg(&fm.list, 0, selrow) == SEL_BG, "paint: repainting with the default restores the highlight");
     CHECK(pch(&fm.list, 1, selrow) == (uint32_t)e->name[0], "paint: the selected name starts at column 1");
     CHECK(pch(&fm.list, 2, selrow) == (uint32_t)e->name[1], "paint: and continues cell by cell");
     CHECK(pfg(&fm.list, 1, selrow) == FM_DIR_COL, "paint: a directory name is drawn in the directory colour");
@@ -810,7 +821,7 @@ static void test_paint(void)
     fm_preview_request(&fm, &seq, path, sizeof path);
     FmPreview *pdir = fm_preview_build(path, seq);
     fm_install_preview(&fm, pdir);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     int dir_ink = 0;
     for (int y = 0; y < fm.prev.rows; y++)
         for (int x = 0; x < fm.prev.cols; x++)
@@ -829,7 +840,7 @@ static void test_paint(void)
           "paint: moving the selection asks for a new preview");
     FmPreview *ptxt = fm_preview_build(path, seq);
     CHECK(fm_install_preview(&fm, ptxt) == 1, "paint: and its answer installs");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     int keyword_cells = 0, string_cells = 0;
     for (int y = 0; y < fm.prev.rows; y++)
         for (int x = 0; x < fm.prev.cols; x++) {
@@ -845,7 +856,7 @@ static void test_paint(void)
        the next row. A preview pane that wrapped would push the metadata and the rest of the file off.
        Rows here: 0 name, 1 path+kind, 2 `#include <stdio.h>`, 3 the 54-column line, 4 nothing. */
     fm_set_size(&fm, 40, 12, 20, 12);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     int r3 = 0, r4 = 0;
     for (int x = 0; x < fm.prev.cols; x++) {
         if (pch(&fm.prev, x, 3))
@@ -862,7 +873,7 @@ static void test_paint(void)
     p_join(path2, sizeof path2, "broken.png");
     FmPreview *pbad = fm_preview_build(path2, seq);
     fm_install_preview(&fm, pbad);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     int err_ink = 0;
     for (int y = 0; y < fm.prev.rows; y++)
         for (int x = 0; x < fm.prev.cols; x++)
@@ -872,10 +883,10 @@ static void test_paint(void)
 
     /* Zero-size panes must be paintable (a window can be resized to almost nothing). */
     fm_set_size(&fm, 0, 0, 0, 0);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(fm.list.cell == NULL || fm.list.cols == 0, "paint: a 0x0 pane is skipped, not drawn");
     fm_set_size(&fm, 3, 2, 3, 2);      /* too short for header + footer: the entries win */
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pch(&fm.list, 1, 0) == (uint32_t)vis_at(&fm, fm.top)->name[0],
           "paint: a pane too short for its chrome still shows the entries, starting at the view's top");
 
@@ -921,7 +932,7 @@ static void test_preview_scroll(void)
     fm_select(&fm, pos);
     CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvscroll: a preview is asked for");
     CHECK(fm_install_preview(&fm, fm_preview_build(path, seq)) == 1, "pvscroll: and it installs");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
 
     /* 40 lines, a 12-row pane, 2 header rows: 10 shown, 30 to scroll through. */
     CHECK(fm_preview_scroll_max(&fm) == 40 - (12 - 2), "pvscroll: max is what the pane cannot show");
@@ -930,7 +941,7 @@ static void test_preview_scroll(void)
 
     fm_preview_scroll(&fm, 1);
     CHECK(fm.pv_scroll == 1, "pvscroll: the wheel moves the body down one line");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "L01") < 0 && pane_shows(&fm, "L02") >= 0,
           "pvscroll: the painter obeys it - L02 is the new top line");
 
@@ -940,7 +951,7 @@ static void test_preview_scroll(void)
     CHECK(fm.pv_scroll == 0, "pvscroll: never above the first line");
     fm_preview_scroll(&fm, 1000);
     CHECK(fm.pv_scroll == fm_preview_scroll_max(&fm), "pvscroll: never past the last line");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "L40") >= 0, "pvscroll: the last line is reachable");
 
     /* The resize clamp bites when the pane GROWS: a taller pane shows more of the body, so the range
@@ -982,11 +993,11 @@ static void test_preview_scroll(void)
     int body = fm.pv->n + 1;                 /* the entries (the .. row included) + the count line */
     CHECK(fm_preview_scroll_max(&fm) == body - (5 - 2),
           "pvscroll: a directory preview's body is its entries plus the count line");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "f0") >= 0, "pvscroll: the first entry is painted");
     CHECK(pane_shows(&fm, "f8") < 0, "pvscroll: the last one is below the fold");
     fm_preview_scroll(&fm, 100);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "f8") >= 0, "pvscroll: and the wheel reaches it");
 
     fm_destroy(&fm);
@@ -1010,7 +1021,7 @@ static void test_preview_keys(void)
     fm_select(&fm, find_pos(&fm, "many.txt"));
     CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvkeys: a text preview to scroll");
     CHECK(fm_install_preview(&fm, fm_preview_build(path, seq)) == 1, "pvkeys: and it installs");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
 
     /* 12-row pane, 2 header rows: one page is the 10 body rows, and 40 lines leave 30 rows to scroll. */
     CHECK(fm_preview_page_rows(&fm) == 12 - 2, "pvkeys: one page is the body the pane shows at once");
@@ -1018,11 +1029,11 @@ static void test_preview_keys(void)
 
     fm_preview_page(&fm, 1);
     CHECK(fm.pv_scroll == 10, "pvkeys: Page_Down moves by a whole page, not by a row or by a guess");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "L11") >= 0 && pane_shows(&fm, "L10") < 0,
           "pvkeys: the page is contiguous - L11 is the new top, no line shown twice");
     fm_preview_page(&fm, 1);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "L21") >= 0 && pane_shows(&fm, "L20") < 0,
           "pvkeys: and the second page continues where the first stopped");
     fm_preview_page(&fm, -2);
@@ -1031,11 +1042,11 @@ static void test_preview_keys(void)
     /* End / Home: the last line and the first line of the body. */
     fm_preview_bottom(&fm);
     CHECK(fm.pv_scroll == fm_preview_scroll_max(&fm), "pvkeys: End lands on the last line of the body");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "L40") >= 0, "pvkeys: and the last line is really painted");
     fm_preview_top(&fm);
     CHECK(fm.pv_scroll == 0, "pvkeys: Home goes back to the first line");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "L01") >= 0, "pvkeys: and the first line is really painted");
 
     /* Repeated End / Home are no-ops, and a page past either end clamps instead of wrapping. */
@@ -1066,10 +1077,10 @@ static void test_preview_keys(void)
     CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvkeys: a directory preview is asked for");
     fm_install_preview(&fm, fm_preview_build(path, seq));
     fm_preview_bottom(&fm);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "f8") >= 0, "pvkeys: End reaches the last entry of a directory preview");
     fm_preview_top(&fm);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "f0") >= 0, "pvkeys: and Home is back at the first one");
 
     fm_destroy(&fm);
@@ -1130,7 +1141,7 @@ static void test_fit(void)
     /* The direct pin of the user's complaint: paint the pane, ask where the picture goes, and require
        that no glyph of the pane sits in that box. Before the row budget was shared, the metadata lines
        from row 3 down were painted exactly there. */
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
     CHECK(ink_in_box(&fm, c, r, cols, rows) == 0,
           "fit: no painted glyph sits inside the box the picture is drawn into");
@@ -1154,7 +1165,7 @@ static void test_fit(void)
     wide->nmeta = nmeta;
     fm.pv_req = 4;
     CHECK(fm_install_preview(&fm, wide) == 1, "fit: a picture that fills the pane, with metadata, installs");
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
     CHECK(rows == 10 && cols == 40 && r + rows <= 20,
           "fit: that picture takes the whole area below the metadata");
@@ -1167,7 +1178,7 @@ static void test_fit(void)
     /* A pane too short for header + all the metadata + a row of picture: the metadata is cut back, the
        picture keeps its row, and the two still never share a cell. 5 rows = 2 header + 2 meta + 1 image. */
     fm_set_size(&fm, 40, 40, 40, 5);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
     CHECK(rows > 0 && r == 4, "fit: a short pane keeps the picture a row and gives the metadata only what is left");
     CHECK(ink_in_box(&fm, c, r, cols, rows) == 0,
@@ -1176,14 +1187,14 @@ static void test_fit(void)
 
     /* Header height exactly: every metadata line goes, the picture keeps its one row. */
     fm_set_size(&fm, 40, 40, 40, 3);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
     CHECK(rows > 0 && r == 2 && ink_rows(&fm, 2, r) == 0 && ink_in_box(&fm, c, r, cols, rows) == 0,
           "fit: a pane the height of its header drops ALL the metadata rather than covering the picture");
 
     /* No row left at all: no box, so nothing can overlap. */
     fm_set_size(&fm, 40, 40, 40, 2);
-    fm_paint(&fm, BASE_FG, BASE_BG);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
     CHECK(cols == 0 && rows == 0 && pw == 0 && ph == 0,
           "fit: a pane with no row left for the picture reports no box");

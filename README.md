@@ -403,6 +403,7 @@ from the program.
 | `foreground` | `#e5e5e5` | Default text color — the ink of every cell an application has not colored itself |
 | `background` | `#101014` | Default background color — the one value behind everything an application has not colored: the cells, the `padding` margin, and the pixels left over by whole cells at the bottom and right |
 | `cursor_color` | `#d8d8d8` | Cursor colour. A session that is drawn in the window but is not the one the keyboard talks to gets the same colour dimmed toward `background` |
+| `selection_color` | `#3a4d66` | The selection highlight — and with it the tab bar's active item, the focus border, and the selected row in the file manager's band. One value, so the highlight always means the same thing |
 | `opacity` | `1.0` | Window opacity |
 | `padding` | `8` | Pixels of margin between the window edge and the first/last row and column (`0` puts the text flush against the edge). Applied on all four sides; pixels left over by whole cells still go to the bottom and right. That margin is painted with `background`, so it is invisible unless an application colors the edge cells itself |
 | `shell` | Empty | Shell to run; defaults to `$SHELL` |

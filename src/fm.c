@@ -1473,16 +1473,19 @@ static void entry_colour(const FmEntry *e, uint32_t fg, uint32_t *col, uint32_t 
     }
 }
 
-/* One line of the list pane. */
-static void paint_entry(FileMgr *fm, const FmEntry *e, int y, uint32_t fg, uint32_t bg, int selected)
+/* One line of the list pane. `sel` is the configured highlight colour (Config.selection_color), NOT the
+   SEL_BG macro: the band is part of the terminal's palette, so a theme that changes the selection colour
+   must change it here too — two sources for one visual role is how the s101 frame happened. */
+static void paint_entry(FileMgr *fm, const FmEntry *e, int y, uint32_t fg, uint32_t bg,
+                        uint32_t sel, int selected)
 {
     FmPane *p = &fm->list;
-    uint32_t rowbg = selected ? SEL_BG : bg;
+    uint32_t rowbg = selected ? sel : bg;
     uint32_t col, attr;
     entry_colour(e, fg, &col, &attr);
     /* The selection changes the BACKGROUND only: the entry keeps its kind colour, so a selected
-       directory is still recognisably a directory. Every accent here is light enough to read on
-       SEL_BG, which is dark. */
+       directory is still recognisably a directory. Every accent here is light enough to read on the
+       built-in (dark) selection colour — a user who picks a pale one gets what they asked for. */
     /* the whole row is highlighted, so a click anywhere on it reads as the selection */
     for (int x = 0; x < p->cols; x++)
         put_cell(p, x, y, 0, col, rowbg, 0);
@@ -1498,7 +1501,7 @@ static void paint_entry(FileMgr *fm, const FmEntry *e, int y, uint32_t fg, uint3
     }
 }
 
-static void paint_list(FileMgr *fm, uint32_t fg, uint32_t bg)
+static void paint_list(FileMgr *fm, uint32_t fg, uint32_t bg, uint32_t sel)
 {
     FmPane *p = &fm->list;
     if (!p->cell)
@@ -1518,7 +1521,7 @@ static void paint_list(FileMgr *fm, uint32_t fg, uint32_t bg)
         int pos = fm->top + i;
         if (pos >= fm->nvis)
             break;
-        paint_entry(fm, &fm->ent[fm->vis[pos]], first + i, fg, bg, pos == fm->sel ? 1 : 0);
+        paint_entry(fm, &fm->ent[fm->vis[pos]], first + i, fg, bg, sel, pos == fm->sel ? 1 : 0);
     }
     if (hdr) {
         char foot[FM_ERR_MAX];
@@ -1796,9 +1799,9 @@ static void paint_preview(FileMgr *fm, uint32_t fg, uint32_t bg)
     }
 }
 
-void fm_paint(FileMgr *fm, uint32_t fg, uint32_t bg)
+void fm_paint(FileMgr *fm, uint32_t fg, uint32_t bg, uint32_t sel)
 {
-    paint_list(fm, fg, bg);
+    paint_list(fm, fg, bg, sel);
     paint_preview(fm, fg, bg);
     fm->dirty = 0;
 }

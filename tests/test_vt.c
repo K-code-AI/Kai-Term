@@ -2194,6 +2194,8 @@ int main(void)
             CHECK(t.fg == d.fg, "template: foreground matches");
             CHECK(t.bg == d.bg, "template: background matches");
             CHECK(t.cursor_color == d.cursor_color, "template: cursor_color matches");
+            CHECK(t.selection_color == d.selection_color,
+                  "template: selection_color matches (and the shipped line really is SEL_BG)");
             CHECK(!strcmp(t.shell, d.shell), "template: shell matches");
             CHECK(t.shell_integration == d.shell_integration, "template: shell_integration matches");
             CHECK(!strcmp(t.working_dir, d.working_dir), "template: working_dir matches");
@@ -2264,15 +2266,15 @@ int main(void)
                claims to hold every default. The accepted names are read out of the two strcmp ladders in
                src/config.c, so this fails when a name is added to the parser and not to the template —
                the direction a hand-maintained list in this file could never catch. Verified against a
-               plain set difference first (.scratch/s99/names.sh): 29 settings + 24 bindings, empty diff
-               in every direction. */
+               plain set difference first (.scratch/s99/names.sh): 30 settings + 24 bindings, empty diff
+               in every direction (re-checked by hand when `selection_color` was added in s102). */
             const char *set_names[64], *bind_names[64];
             int ns = cfg_names_of("src/config.c", "static void apply_setting(", set_names, 64);
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 29 && nb == 24,
-                  "template: the parser accepts 29 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 30 && nb == 24,
+                  "template: the parser accepts 30 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);

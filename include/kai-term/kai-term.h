@@ -666,6 +666,9 @@ typedef struct Config {
     int  cols, rows;       /* initial size */
     int  scrollback;
     uint32_t fg, bg, cursor_color;
+    /* The selection highlight, and with it the tab bar's active item and the focus border — all three are the
+       same "highlight" colour and were one compile-time macro (SEL_BG) until themes made it a choice. */
+    uint32_t selection_color;
     float opacity;         /* 0..1 */
     char shell[256];
     /* 1 (default): a recognised shell (fish, bash, zsh) is started with Kai-Term's integration script, which
@@ -1217,9 +1220,10 @@ int  fm_install_preview(FileMgr *fm, FmPreview *pv);   /* same stale-answer rule
 int  fm_preview_request(FileMgr *fm, unsigned long *seq, char *path, size_t cap);
 
 /* ---- painting ---- */
-/* Fill both cell grids from the current state. fg/bg are the CONFIGURED colours, so the file manager
-   matches the terminal instead of inventing a palette. */
-void fm_paint(FileMgr *fm, uint32_t fg, uint32_t bg);
+/* Fill both cell grids from the current state. fg/bg/sel are the CONFIGURED colours, so the file manager
+   matches the terminal instead of inventing a palette — `sel` is the highlight of the selected row, the
+   same value the terminal's selection band uses (never the SEL_BG macro, which is only the default). */
+void fm_paint(FileMgr *fm, uint32_t fg, uint32_t bg, uint32_t sel);
 /* Where the preview picture goes inside the preview pane, in CELLS, aspect ratio preserved for these
  * cell dimensions: the renderer draws the quad and fm.c decides the box, because the box is what a test
  * can check and what keeps a 3000x200 photo from being stretched to the pane. px_w/px_h are the same box
@@ -1368,6 +1372,9 @@ typedef struct Render {
                                     configured colour that never reaches the renderer is not implemented —
                                     this very key parsed, was stored, was tested at the parser and was read
                                     by nothing (ISSUES.md, s102). */
+    uint32_t selection_color;    /* the `selection_color =` line: the selection band (also the shader's
+                                    u_sel uniform), the visible session's tab-bar item, and the focus
+                                    border. Built-in default is the SEL_BG macro. */
     void *ecfg;                  /* EGLConfig */
     void *nwin;                  /* EGLNativeWindowType (wl_egl_window) */
     /* Texture uploads fail when the GPU is out of memory (this box runs a local LLM that holds most of
@@ -1433,7 +1440,7 @@ typedef struct Chrome {
 void render_chrome(const Render *r, Chrome *out);
 
 int  render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
-                 uint32_t bg, uint32_t fg, uint32_t cursor_color);
+                 uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color);
 /* Draw one frame: the tab bar (if the layout says so), every pane's grid, and the file-manager band if
    the layout has one. Two vertex batches (backgrounds, then bands + glyphs + chrome) with one draw call
    per application picture between them — see the header comment of src/render.c for why the frame cannot

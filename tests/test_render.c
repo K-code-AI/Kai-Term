@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>     /* unlink(): the scanner self-pin writes a probe file and removes it */
 
 static int fails, checks;
 
@@ -54,6 +55,7 @@ static void render_from_config(Render *r, const Config *c)
     r->bg = c->bg;
     r->fg = c->fg;
     r->cursor_color = c->cursor_color;
+    r->selection_color = c->selection_color;
 }
 
 /* ---------- the cursor colour reaches the pixel ---------- */
@@ -114,21 +116,34 @@ static void group_cursor_color(void)
     CHECK(g4.cursor == g2.cursor && g4.cursor_off == g2.cursor_off,
           "window opacity does not change the derived chrome colours");
 
-    /* 7. The rest of the chrome is NOT the cursor's colour: the selection band, the bar's active item and
-       the focus border are SEL_BG today. Deliberately pinned — a theme that changes them must change this
-       check on purpose, not by accident. */
+    /* 7. The highlight colour is the configured one, in all three places that mean "this is selected" —
+       the selection band, the visible session's bar item and the focus border. The built-in default is
+       still SEL_BG, so a user who configured nothing sees what they always saw. */
     CHECK(ch.sel_bg == SEL_BG && ch.item_on_bg == SEL_BG && ch.border == SEL_BG,
-          "the selection band, the active bar item and the focus border are still SEL_BG");
-    CHECK(ch.sep == mix_ref(c.fg, c.bg, 65) && ch.item_off_bg == mix_ref(c.bg, c.fg, 10)
-          && ch.item_off_fg == mix_ref(c.fg, c.bg, 45),
-          "the bar's inactive colours are mixed from the configured fg/bg, not from the cursor colour");
+          "default config: the selection band, the active bar item and the focus border are SEL_BG");
+    c.selection_color = 0xff220088u;
+    render_from_config(&r, &c);
+    Chrome g5;
+    render_chrome(&r, &g5);
+    CHECK(g5.sel_bg == 0xff220088u && g5.item_on_bg == 0xff220088u && g5.border == 0xff220088u,
+          "selection_color = 220088: the band, the active bar item AND the focus border all use it");
+    CHECK(g5.cursor == g2.cursor && g5.cursor_off == g2.cursor_off,
+          "a custom selection colour leaves the cursor colours alone (compared with g2: same cursor colour, "
+          "only the highlight differs)");
+    CHECK(g5.sep == mix_ref(c.fg, c.bg, 65) && g5.item_off_bg == mix_ref(c.bg, c.fg, 10)
+          && g5.item_off_fg == mix_ref(c.fg, c.bg, 45),
+          "the bar's inactive colours are mixed from the configured fg/bg, not from the highlight");
 }
 
 /* ---------- the two source scans that cover what no headless test can run ---------- */
 
-/* Count whole-word tokens equal to `word` in a source file; -1 when the file cannot be opened, so a moved
-   file fails loudly instead of quietly checking nothing. Whole tokens only: a plain strstr for "ch" would
-   find "chrome", and a substring match would find CURSOR_COL inside a longer name. */
+/* Count code tokens equal to `word` in a source file; -1 when the file cannot be opened, so a moved
+   file fails loudly instead of quietly checking nothing. Two rules make the count mean what the check
+   claims:
+   - whole tokens only: a plain strstr for "ch" would find "chrome", and a substring match would find
+     CURSOR_COL inside a longer name;
+   - comments are skipped (block and line), because a comment may legitimately NAME a macro while the
+     code never reads it — which is exactly what these checks are about. */
 static int is_wordch(int c)
 {
     return c == '_' || isalnum((unsigned char)c);
@@ -140,14 +155,19 @@ static int src_word_count(const char *path, const char *word)
     if (!f)
         return -1;
     size_t wl = strlen(word);
-    int n = 0;
+    int n = 0, in_block = 0;
     char line[4096];
     while (fgets(line, sizeof line, f)) {
-        for (char *p = line; *p; ) {
-            if (!is_wordch(*p)) {
+        char *p = line;
+        while (*p) {
+            if (in_block) {
+                if (p[0] == '*' && p[1] == '/') { in_block = 0; p += 2; continue; }
                 p++;
                 continue;
             }
+            if (p[0] == '/' && p[1] == '*') { in_block = 1; p += 2; continue; }
+            if (p[0] == '/' && p[1] == '/') break;
+            if (!is_wordch(*p)) { p++; continue; }
             char *s = p;
             while (*p && is_wordch(*p))
                 p++;
@@ -190,20 +210,68 @@ static void group_source_wiring(void)
        is 3 and the check fails; the macro is legitimate only as the DEFAULT (kai-term.h, src/config.c). */
     int in_render = src_word_count("src/render.c", "CURSOR_COL");
     CHECK(in_render == 0, "src/render.c never draws the cursor from the CURSOR_COL macro");
+    /* Same for the highlight, in the renderer AND in the file manager's painter: both must use the value
+       they were handed. On the pre-change tree both counts are non-zero. */
+    CHECK(src_word_count("src/render.c", "SEL_BG") == 0,
+          "src/render.c never paints the highlight from the SEL_BG macro");
+    CHECK(src_word_count("src/fm.c", "SEL_BG") == 0,
+          "src/fm.c never paints the band's selected row from the SEL_BG macro");
     /* Not vacuous: the same scan finds a macro the renderer DOES still use. */
-    CHECK(src_word_count("src/render.c", "SEL_BG") > 0,
-          "the source scan really finds a macro in src/render.c (SEL_BG) — the zero above means something");
-    /* The one link a headless test cannot execute: main() handing the configured value to the renderer. */
-    CHECK(src_call_passes_arg("src/main.c", "render_init(", "conf.cursor_color") == 1,
+    CHECK(src_word_count("src/render.c", "BAR_LABEL_MAX") > 0,
+          "the source scan really finds a macro in src/render.c (BAR_LABEL_MAX) — the zeros above mean something");
+    /* The one link a headless test cannot execute: main() handing the configured value to the renderer and
+       to the band's painter. The call string includes the '&' so a COMMENT that merely names the function
+       (main.c has two) cannot start the scan. */
+    CHECK(src_call_passes_arg("src/main.c", "render_init(&", "conf.cursor_color") == 1,
           "src/main.c passes conf.cursor_color to render_init()");
+    CHECK(src_call_passes_arg("src/main.c", "render_init(&", "conf.selection_color") == 1,
+          "src/main.c passes conf.selection_color to render_init()");
+    CHECK(src_call_passes_arg("src/main.c", "fm_paint(&", "conf.selection_color") == 1,
+          "src/main.c passes conf.selection_color to fm_paint()");
     CHECK(src_word_count("src/config.c", "CURSOR_COL") >= 1,
           "CURSOR_COL survives as the built-in DEFAULT in src/config.c");
+}
+
+/* The scanner itself, pinned — against a file this test writes, NOT against this file. The first version
+   scanned tests/test_render.c itself and came out RED for a reason worth keeping: the CHECK lines that name
+   a probe token are themselves code containing that token, so the scan counted its own argument (3 for the
+   code token — declaration, (void) cast, CHECK argument — and 1 for the comment token, against the expected
+   1 and 0). A probe file this test creates has exactly the occurrences the checks claim, and it can also pin
+   the rules a self-scan could not: a line comment and a block comment spanning several lines. Every mention
+   of a probe token below is split by string concatenation, so this source never holds the whole word and can
+   never count itself. */
+static void group_scanner_selfcheck(void)
+{
+    char path[128];
+    snprintf(path, sizeof path, "/tmp/kai-term-scan-%ld.txt", (long)getpid());
+    FILE *w = fopen(path, "w");
+    if (!w) {
+        CHECK(0, "scanner self-pin: the probe file could not be written");
+        return;
+    }
+    fputs("int SRC_SCAN_" "PROBE_TOKEN = 1;\n", w);                        /* code: 1 */
+    fputs("SRC_SCAN_" "PROBE_TOKEN = SRC_SCAN_" "PROBE_TOKEN + 1;\n", w);  /* code: 2 more */
+    fputs("/* SRC_SCAN_" "COMMENT_TOKEN */\n", w);                         /* block comment */
+    fputs("/* SRC_SCAN_" "COMMENT_TOKEN spans\n   two lines */\n", w);     /* block comment, 2 lines */
+    fputs("// SRC_SCAN_" "COMMENT_TOKEN\n", w);                            /* line comment */
+    fclose(w);
+
+    CHECK(src_word_count(path, "SRC_SCAN_" "PROBE_TOKEN") == 3,
+          "the source scan counts every code use of a token (3 in the probe file)");
+    CHECK(src_word_count(path, "SRC_SCAN_" "COMMENT_TOKEN") == 0,
+          "the source scan ignores a token that appears only in comments (block, multi-line and //)");
+    CHECK(src_word_count(path, "NO_SUCH_TOKEN_IN_THE_FILE") == 0,
+          "the source scan reports 0 for a token that is simply absent");
+    CHECK(src_word_count("tests/no_such_file_here.c", "CURSOR_COL") == -1,
+          "the source scan fails loudly (-1) when the file cannot be opened, so a moved file cannot pass");
+    unlink(path);
 }
 
 int main(void)
 {
     group_cursor_color();
     group_source_wiring();
+    group_scanner_selfcheck();
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

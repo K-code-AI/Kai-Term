@@ -533,7 +533,7 @@ static void redraw(void)
        model says it changed (fm->dirty), which navigation, a new listing, a new preview and a resize
        all set. */
     if (g_fm.on && g_fm.dirty)
-        fm_paint(&g_fm, conf.fg, conf.bg);
+        fm_paint(&g_fm, conf.fg, conf.bg, conf.selection_color);
     int drew = render_draw(&rend, &font, &g_layout, terms, &g_fm);
     if (drew < 0) {
         /* The renderer could not put the glyph atlas in GPU memory even after dropping every picture
@@ -2819,7 +2819,7 @@ static int wayland_setup(int init_w, int init_h)
        config file, the parser and the struct for weeks and reached no pixel, because the renderer drew
        the cursor from the CURSOR_COL macro (see Render.cursor_color, and ISSUES.md). */
     if (render_init(&rend, W.display, W.egl_window, init_w, init_h, conf.opacity, conf.bg,
-                    conf.fg, conf.cursor_color) < 0) {
+                    conf.fg, conf.cursor_color, conf.selection_color) < 0) {
         klog(L_ERROR, "render_init failed");
         return -1;
     }
