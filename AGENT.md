@@ -731,6 +731,25 @@ the visual verdicts (theme colours, cursor look, bell flash) to the user.
   cursor). **Not verified: the look.** No window was mapped — the user is at the machine, and a colour's correctness
   is their judgement, not a screenshot's.
 
+- **2026-10-22, s102 close-out (step 0) — state, push, and what the next session opens with.** The session began by
+  re-measuring rather than trusting this file: `make clean && make -j8` exit 0 / 0 warnings, and
+  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 with exactly the counts the s101 entry quoted — so the tree was where
+  the journal said it was. The previous session's uncommitted AGENT.md/ISSUES.md (the s102 plan and the bug filing)
+  were committed first, so a crash could not lose them. Step 0 then landed as two commits: the behaviour-free seam
+  (`render_chrome()`), then the fix (`Render.cursor_color` + `tests/test_render.c`).
+  **Not pushed.** `git fetch` then `git status -sb` shows `main` ahead of `origin/main` by this session's commits and
+  behind by nothing, so there is nothing to merge — but the user has been the one to say "push" in every recent
+  session, and the cursor colour has not been looked at yet, so the push waits for their word. Read the remote state
+  that way every time, never from a hash or an ahead-count written here.
+  **The next session opens by asking the user, not by writing code.** (1) The eight questions in "Current Task" —
+  theme precedence, OSC 4/10/11/104, the cursor defaults and DECSCUSR, the word-selection punctuation rules and
+  triple-click on a soft-wrapped line, middle-click primary-vs-clipboard, the bell default, how a URL is opened, and
+  whether `--import-theme` may overwrite. Step 1 cannot be designed without the first two. (2) The look verdict on
+  `cursor_color`: put `cursor_color = ff0000` in their own config file and have them look — that closes the last
+  sentence of the ISSUES.md "Fixed" entry. (3) Still owed from earlier sessions and unchanged: the windowed group of
+  `tests/cli_test.sh` (117 checks with a display) has not run since s99, and it maps real windows — run it only when
+  the user is away and `nvidia-smi` shows VRAM free, because their local LLM holds most of it.
+
 ## Next Steps
 
 0. **s102 — step 0 (the dead `cursor_color =`) is DONE: code, checks, A/B, ISSUES.md, README, template.** Two things
