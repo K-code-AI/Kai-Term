@@ -152,6 +152,30 @@ int cluster_is_wide(const uint32_t *seq, int n)
     return 0;
 }
 
+/* The ink and the paper of a cell nothing has painted: DEF_FG/DEF_BG until main.c hands over the
+   configured `foreground =` / `background =` values, before the first Term is created. Process-wide file-scope
+   state rather than a Term field for the same reason as kai_term_loglevel and term_set_clear_scrollback —
+   term_init() memsets the whole Term, and the blank/erase/scroll/reflow paths below have no Config pointer.
+
+   ONE value does two jobs here and they must stay one value:
+     - it is the colour pass 1 of render_draw() paints for every never-written cell (the grid's interior);
+     - it is the sentinel cell_pristine() compares a cell against to decide it was NEVER written, which is what
+       reflow's row_used() measures and what the "no selection band over never-written space" rule asks.
+   Give those two jobs different numbers and a blank cell stops being pristine while still looking blank, so
+   reflow counts trailing blanks as content and selection bands appear over nothing. And give this value a
+   different number from Config.bg — which is what glClear paints the Config.padding margin and the whole-cell
+   remainder with — and the difference draws a visible frame around the grid (the s100/s101 user report). */
+static uint32_t g_def_fg = DEF_FG, g_def_bg = DEF_BG;
+
+void term_set_default_colors(uint32_t fg, uint32_t bg)
+{
+    g_def_fg = fg;
+    g_def_bg = bg;
+}
+
+uint32_t term_default_fg(void) { return g_def_fg; }
+uint32_t term_default_bg(void) { return g_def_bg; }
+
 /* ---------------- grid ---------------- */
 
 static Cell *row_new_cols(int cols)
@@ -160,8 +184,8 @@ static Cell *row_new_cols(int cols)
     if (!r)
         abort();
     for (int x = 0; x < cols; x++) {
-        r[x].fg = DEF_FG;
-        r[x].bg = DEF_BG;
+        r[x].fg = g_def_fg;
+        r[x].bg = g_def_bg;
     }
     return r;
 }
@@ -177,7 +201,7 @@ static void row_fillblank(Grid *g, Cell *r, uint32_t bg)
         r[x].ch = 0;
         r[x].attr = 0;
         r[x].nextra = 0;   /* a blank cell holds no emoji cluster continuation */
-        r[x].fg = DEF_FG;
+        r[x].fg = g_def_fg;
         r[x].bg = bg;
     }
 }
@@ -194,12 +218,12 @@ static void row_resize(Grid *g, Cell **rp, int old_cols)
         r[x].ch = 0;
         r[x].attr = 0;
         r[x].nextra = 0;
-        r[x].fg = DEF_FG;
-        r[x].bg = DEF_BG;
+        r[x].fg = g_def_fg;
+        r[x].bg = g_def_bg;
     }
     for (int x = 0; x < g->cols; x++)
         if (r[x].bg == 0)
-            r[x].bg = DEF_BG;
+            r[x].bg = g_def_bg;
 }
 
 /* Rotate a contiguous range of row[] slots. Both are permutations of the range,
@@ -318,7 +342,7 @@ Cell *grid_vprow(Grid *g, int y)
 /* A cell that was never written to and carries no colour of its own. */
 static int cell_pristine(const Cell *c)
 {
-    return c->ch == 0 && c->nextra == 0 && c->attr == 0 && c->fg == DEF_FG && c->bg == DEF_BG;
+    return c->ch == 0 && c->nextra == 0 && c->attr == 0 && c->fg == g_def_fg && c->bg == g_def_bg;
 }
 
 /* How many leading cells of a row take part in its logical line: the trailing never-written blanks
@@ -412,8 +436,8 @@ static void grid_reflow(Grid *g, int new_cols, int *slot, int *col)
                 while (sk < j && sc >= ulen[sk]) { sk++; sc = 0; }
             }
             for (int k = x; k < new_cols; k++) {  /* calloc blanked them; only the pen is set */
-                nr[k].fg = DEF_FG;
-                nr[k].bg = DEF_BG;
+                nr[k].fg = g_def_fg;
+                nr[k].bg = g_def_bg;
             }
             if (cur_logical == L && out_row < 0 && cstart <= cur_lcol && cur_lcol < pos) {
                 out_row = n;
@@ -525,13 +549,13 @@ static void grid_resize_rows(Grid *g, int rows, int cur_slot)
             int cy = cur_slot >= 0 ? cur_slot - g->scroll_off : -1;   /* cursor's viewport row */
             if (cy >= 0 && cy < g->rows - 1) {
                 /* the viewport's bottom row leaves the screen; its slot becomes free */
-                grid_blank_slot(g, used - 1, DEF_BG);
+                grid_blank_slot(g, used - 1, g_def_bg);
             } else if (g->scroll_off < sb_limit(g)) {
                 g->scroll_off++;
                 g->live_off = g->scroll_off;
             } else {
                 rot_left(g->row, g->wrap, used);
-                grid_blank_slot(g, used - 1, DEF_BG);
+                grid_blank_slot(g, used - 1, g_def_bg);
                 g->row_base++;        /* oldest document row evicted (see KImage) */
                 g->live_off = g->scroll_off;
             }
@@ -553,11 +577,11 @@ static void grid_resize_rows(Grid *g, int rows, int cur_slot)
         if (g->live_off + rows <= g->rcap) {
             g->scroll_off = g->live_off;
             for (int i = used; i < g->scroll_off + rows; i++)
-                grid_blank_slot(g, i, DEF_BG);
+                grid_blank_slot(g, i, g_def_bg);
         } else {
             g->scroll_off = g->rcap - rows;
             for (int i = used; i < g->rcap; i++)
-                grid_blank_slot(g, i, DEF_BG);
+                grid_blank_slot(g, i, g_def_bg);
         }
         g->live_off = iclamp_(g->scroll_off, 0, sb_limit(g));
         g->rows = rows;
@@ -759,8 +783,8 @@ int term_click_arrow_keys(const Term *t, int col, int row, char *out, size_t cap
 
 static void pen_default(Term *t)
 {
-    t->pen.fg = DEF_FG;
-    t->pen.bg = DEF_BG;
+    t->pen.fg = g_def_fg;
+    t->pen.bg = g_def_bg;
     t->pen.attr = 0;
 }
 
@@ -2256,8 +2280,8 @@ static void csi_dispatch(Term *t, int fin)
                 }
                 break;
             }
-            case 39: t->pen.fg = DEF_FG; break;
-            case 49: t->pen.bg = DEF_BG; break;
+            case 39: t->pen.fg = g_def_fg; break;
+            case 49: t->pen.bg = g_def_bg; break;
             case 90: case 91: case 92: case 93:
             case 94: case 95: case 96: case 97:
                 t->pen.fg = t->palette[p - 90 + 8];

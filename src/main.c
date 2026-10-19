@@ -484,23 +484,13 @@ static void snap_to_live(Term *t)
     }
 }
 
-/* Give the never-written cells the configured colours. A fresh grid is entirely blank, so this also
-   initializes a new tab; zooming uses it to fill the columns a smaller font reveals. */
-static void paint_blank_cells(Term *t)
-{
-    for (int y = 0; y < t->g.rows; y++) {
-        Cell *r = grid_vprow(&t->g, y);
-        for (int x = 0; x < t->g.cols; x++)
-            if (r[x].ch == 0) {
-                r[x].bg = conf.bg;
-                r[x].fg = conf.fg;
-            }
-    }
-}
-
 /* Zoom: re-rasterize the font at a new pixel size (window px unchanged, so cols/rows
-   change). Blank viewport cells are re-filled with the configured colors so columns
-   revealed by zooming out then back in match the palette; existing text is left intact. */
+   change); layout_apply() gives every session a new grid and src/vt.c blanks whatever the smaller font
+   reveals with the configured colours (term_set_default_colors, called once after the config is read), so
+   there is nothing to re-paint here. Existing text is left intact.
+   (Until s101 this function looped over the blank cells and re-filled them from Config.bg, because vt.c
+   filled them with the compile-time DEF_BG. That patch-over is half of the two-colour bug the user reported
+   as a border: the cells read DEF_BG, the padding margin reads Config.bg.) */
 static void zoom_apply(int newpx)
 {
     newpx = iclamp_(newpx, 6, 256);
@@ -510,8 +500,6 @@ static void zoom_apply(int newpx)
     if (font_resize(&font, newpx) < 0)
         return;
     layout_apply();   /* new cell px -> new pane rects -> new grid for every session */
-    for (int i = 0; i < mux_count(&mux); i++)
-        paint_blank_cells(&mux.tab[i].term);
     W.dirty = 1;
     klog(L_DEBUG, "zoom: font %dpx, grid %dx%d", conf.font_size, cur_term()->g.cols,
          cur_term()->g.rows);
@@ -729,9 +717,6 @@ static void tab_open(void)
     if (idx < 0)
         return;                       /* mux_open already logged the max_tabs refusal */
     Tab *tb = &mux.tab[idx];
-    tb->term.pen.fg = conf.fg;
-    tb->term.pen.bg = conf.bg;
-    paint_blank_cells(&tb->term);
     layout_apply();                   /* the bar gains an item, and every session gets its pane's grid */
     if (tab_spawn(tb) < 0) {
         mux_close(&mux, idx);
@@ -2987,6 +2972,11 @@ int main(int argc, char **argv)
     kai_term_loglevel = conf.loglevel;
     base_font_size = conf.font_size;
     term_set_clear_scrollback(conf.clear_scrollback);
+    /* Hand the configured ink and paper to src/vt.c BEFORE the first Term exists (mux_open below) and before
+       render_init() clears the window with them. This is what makes ONE `background =` line own both the
+       `padding` margin (glClear) and every blank cell (pass 1's quad); when the two halves read different
+       numbers the difference draws a frame around the grid — the s101 border the user reported. */
+    term_set_default_colors(conf.fg, conf.bg);
 
     /* Where the shell starts: -w DIR beats config working_dir, which beats $HOME. The path is
        resolved and validated in the PARENT so a bad path produces one clean warning instead of a
@@ -3040,8 +3030,6 @@ int main(int argc, char **argv)
     }
     if (mux_open(&mux, conf.rows, conf.cols, conf.scrollback) < 0)
         return 1;
-    cur_term()->pen.bg = conf.bg;
-    cur_term()->pen.fg = conf.fg;
 
     /* The window is asked for the grid PLUS the margin on both sides; the compositor may answer with a
        different pixel size, and layout_apply() then recomputes the panes and cols/rows from what it got.
@@ -3056,10 +3044,6 @@ int main(int argc, char **argv)
     if (wayland_setup(init_w, init_h) < 0)
         return 1;
     layout_apply();        /* the layout, and with it every session's grid, now matches the window */
-
-    /* apply the configured default colors to every (resized) session */
-    for (int i = 0; i < mux_count(&mux); i++)
-        paint_blank_cells(&mux.tab[i].term);
 
     /* epoll loop: wayland fd, one pty master per session, timerfd, signalfd(SIGCHLD). It is created
        BEFORE the first shell is spawned because tab_spawn() is what registers the descriptor — the

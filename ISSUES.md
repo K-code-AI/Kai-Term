@@ -8,19 +8,25 @@ Invariants" — read those, not the history.
 
 ## Open
 
-**No open bug and no open question.** The four items this file was holding for the user's eye were answered
-2026-10-22 ("1. yes / 2. good / 3. works good"): the two-file config split is theirs (they asked for it), the
-background change their own `background = #1c1c22` line now produces is accepted, and the s98 clipboard-source paste
-fix, the file manager's preview-pane key scrolling and the 75 % band's look all work in their window.
+**No open bug.** The last one — a visible frame around the grid, because the `padding` margin and the blank cells
+read two different background colours — was fixed and A/B'd in s101 (see "Fixed", first entry). The visual verdict
+is the user's: they have the report in their own window and the standing preference is that the look is judged
+there, not by a pixel harness.
 
-Re-measured 2026-10-22 (s100, from `make clean`): `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **944
-checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **293 checks, 0 failures**;
-`KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` + those three); `make asan`
-exit 0 with the same counts and no sanitizer report. The windowed group of `tests/cli_test.sh` (**117 checks /
-0 failures / 0 skipped**, last measured that way in s99) was skipped in s100 — VRAM was 11783/12227 MiB used and the
-user at the machine — so the config-search, `kai-term.bind` and `-b` checks have no NEW coverage; they run only when
-a window can be mapped. No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`,
-`tests/`.
+The four items this file was once holding for the user's eye were answered 2026-10-22 ("1. yes / 2. good /
+3. works good"): the two-file config split is theirs (they asked for it), the background change their own
+`background =` line now produces is accepted (they have since edited that file while testing — it now reads
+`background = 1c1c22`, bare hex, and `opacity = 1`), and the s98 clipboard-source paste fix, the file manager's
+preview-pane key scrolling and the 75 % band's look all work in their window.
+
+Re-measured 2026-10-22 (s101, from `make clean`): `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **958
+checks, 0 failures** (was 944 before the s101 colour checks); `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm`
+**293 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped`
++ those three); `make asan` exit 0 with the same counts and no sanitizer report. The windowed group of
+`tests/cli_test.sh` (**117 checks / 0 failures / 0 skipped**, last measured that way in s99) was skipped again —
+the user at the machine — so the config-search, `kai-term.bind` and `-b` checks have no NEW coverage; they run only
+when a window can be mapped. No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`,
+`include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
 what is verified and what is not is AGENT.md's "Current Status". This file carries only: what is broken, what was
@@ -34,9 +40,30 @@ reproduces.
 
 One entry per bug: what the user saw, the cause in one line, what fixed it, and what now keeps it from coming back.
 The full investigation of each — the probes, the wrong theories, the measurements that settled them — is AGENT.md's
-Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`); the rule each
+Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`); the rule each
 one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at the time, not
 current totals.
+
+**A frame around the grid: the `padding` margin and the blank cells were two different background colours
+(2026-10-22, s101).** The user's words: "Some border seems to have appeared recently in the recent change, It's
+probably the padding to prevent cutting glyph corner, But would it be possible for it to be the exact same color as
+the background ? they should use the same config line to set their background color." Their hypothesis and their
+requested design were both right. `glClear` paints the `Config.padding` margin and the whole-cell remainder with
+`Config.bg`, while `src/vt.c` filled every blank, erased, scrolled-in and reflowed cell with the compile-time
+`DEF_BG` — with `background = 1c1c22` in their file that is `ff1c1c22` around `ff101014`, a frame. It "appeared
+recently" because the built-in default for both is the same number: the s99 `#` fix made their `background =` line
+take effect for the first time and revealed this second, older defect (niri's focus ring was ruled out — they have
+`opacity = 1`). Fixed by making ONE runtime value own the default ink and paper: `term_set_default_colors()` /
+`term_default_fg()` / `term_default_bg()` in `src/vt.c`, read by all 17 former `DEF_FG`/`DEF_BG` sites — row
+blanking, `row_resize`, reflow's fresh rows, `grid_blank_slot` in the resize paths, `pen_default()` (`term_init`
+and `ESC c`), `SGR 39/49`, and the `cell_pristine()` sentinel, deliberately included: the colour a blank cell is
+painted with and the value that means "never written" must be one variable, or reflow's `row_used()` and the
+no-band-over-nothing rule drift. `main.c` sets it once after the config readers, before the first Term, and the
+three patch-overs that existed only because of the split (`pen.* = conf.*` after `mux_open`, and
+`paint_blank_cells()` with its startup / `tab_open` / `zoom_apply` calls) are gone. 14 new checks; A/B'd in both
+directions — 7 of them fail against the reported state (`HEAD`'s `vt.c` plus the new API) and 2 fail against a
+deliberately divergent variant where the paint sites read the runtime value but `cell_pristine()` still compares
+`DEF_BG`. **Visual confirmation is the user's, still outstanding.**
 
 **A `background = #1c1c22` line set nothing at all — the config reader cut the value at the `#` (2026-10-22, s99).**
 The comment rule was "whitespace before a `#` is enough", which is exactly the shape of a colour value, so the line

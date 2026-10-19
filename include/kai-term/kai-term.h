@@ -31,6 +31,18 @@ void klog(int level, const char *fmt, ...)
 #define CURSOR_COL  0xffd8d8d8u
 #define SEL_BG      0xff3a4d66u   /* selection highlight background */
 
+/* The ink and the paper Kai-Term uses for a cell nothing has painted. DEF_FG/DEF_BG are the BUILT-IN
+   defaults (config_default() starts Config.fg/Config.bg at them, and the shipped template's parity check
+   compares against them); these three functions are the RUNTIME values every blank, erased, scrolled-in and
+   reflowed cell, and the pen after SGR 39/49 or `ESC c`, actually read. main.c calls the setter once, right
+   after the config is loaded and before the first Term is created, so the `background =` line owns the cells
+   as well as the glClear colour of the `padding` margin — two different numbers there draw a frame around
+   the grid (see the comment on the definition in src/vt.c). Process-wide rather than Term state for the same
+   reason as kai_term_loglevel: term_init() memsets the whole Term. */
+void     term_set_default_colors(uint32_t fg, uint32_t bg);
+uint32_t term_default_fg(void);
+uint32_t term_default_bg(void);
+
 /* Default xdg-shell app_id. Single-sourced here because config_default(), the
    `app_id =` empty-value fallback in config.c and the last-resort fallback in main.c must all agree;
    three string literals that can drift apart is how a default silently changes. */

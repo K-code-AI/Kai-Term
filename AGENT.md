@@ -17,21 +17,27 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s100)
+## Current Status (re-measured 2026-10-22, s101 — build and every suite green. No open bug; the s101 colour fix
+awaits only the user's look)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`).
 - **Suites:** `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 67 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **944 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
+  `./bin/test_vt` **958 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
   0 failures**. `make asan` exit 0, same three counts, 0 sanitizer reports. With a display and spare VRAM,
   `tests/cli_test.sh` reports **117 checks / 0 failures / 0 skipped** — the only run in which the config-search,
   `kai-term.bind` and `-b` checks execute at all, so a no-window "0 failures" does not cover them (last measured
-  that way in s99; s100 skipped it — VRAM 11783/12227 MiB already used by the user's LLM and the user at
-  the machine). **Re-diff these numbers, do not copy them.**
-- **No open bug and no open question.** The four items this journal and ISSUES.md were holding for the user's eye
-  were answered 2026-10-22 ("1. yes / 2. good / 3. works good" — the s100 era entry): the two-file config split is
-  theirs, the background change their own config file now produces is accepted, and the s98 Firefox paste fix, the
-  preview-pane key scrolling and the 75 % band's look all work.
+  that way in s99; s100 and s101 skipped it — the user at the machine). **Re-diff these numbers, do not copy them.**
+- **No open bug.** The last one, the visible frame around the grid, is fixed (s101): one runtime value
+  (`term_set_default_colors()` / `term_default_fg()` / `term_default_bg()` in `src/vt.c`) now owns the default ink
+  and paper, so the `background =` line covers the cells as well as the `padding` margin glClear paints. A/B'd both
+  ways (7 of the 14 new checks fail on the reported state, 2 fail on a sentinel-divergent variant). **Outstanding:
+  the user's confirmation that the frame is gone in their window** — the look is theirs to judge, and the windowed
+  group of `tests/cli_test.sh` was not run (they are at the machine).
+- **No open question.** The four items this journal and ISSUES.md were holding for the user's eye were answered
+  2026-10-22 ("1. yes / 2. good / 3. works good" — the s100 era entry): the two-file config split is theirs, the
+  background change their own config file now produces is accepted, and the s98 Firefox paste fix, the preview-pane
+  key scrolling and the 75 % band's look all work.
 - **Implemented since s88, each green, A/B'd where a bug was claimed, and user-confirmed in their own window:**
   s95 the `p` path key / `v` preview toggle / `Return` doing nothing on a file; s96 DECCKM + the wheel and a click
   inside full-screen programs + the 64/65 wheel codes + preview-pane scrolling; s97 one shared `exec_c0()` (a C0
@@ -55,67 +61,40 @@ multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framewo
   verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
   a new Open item with a reproduction.
 
-## Current Task — none in progress
+## Current Task (s101 — code DONE 2026-10-22; one thing left: the user's look. The diagnosis below is measured, not
+a guess — do not re-derive it.)
 
-s100 is closed: s99 is committed and pushed (verified `main` == `origin/main`), the user answered every open item
-("1. yes / 2. good / 3. works good", recorded in the s100 era entry), and at their request this file was cut from
-2843 to ~1300 lines — the s89-s100 per-step narrative collapsed into era entries, with the durable rules left
-where they always were: Architecture & Invariants, Key Decisions & Pitfalls, Debugging this project, Next Steps.
+**The report, verbatim:** "Some border seems to have appeared recently in the recent change, It's probably the
+padding to prevent cutting glyph corner, But would it be possible for it to be the exact same color as the
+background ? they should use the same config line to set their background color." Their hypothesis and their
+requested design were both right.
 
-**Next action:** nothing pending. If the user reports something, the recipe is in Next Steps 0-4 for that feature.
-If they want work rather than a fix, the standing candidates are Next Steps 5 (housekeeping — the file manager's
-key routing in `main.c` is in no test binary, which is the biggest coverage hole in the tree).
+**Measured cause.** `.scratch/s100/border/bgprobe.c` (no window, no GL; loads their own config file with the shipped
+reader and prints the two numbers the renderer uses):
 
-## Current Task (s100b — CLOSED: ISSUES.md cleanup, asked for by the user: "Yes proceed with that cleanup of
-ISSUES.md". Same treatment the journal just got — the narrative history out, every current fact kept.)
+    built-in default  conf.bg = ff101014   DEF_BG = ff101014   match=1
+    user's file       conf.bg = ff1c1c22   DEF_BG = ff101014   match=0
 
-**Measured before touching anything:** 607 lines / 55620 bytes / 9149 words. Section sizes — Open 51, **Fixed 229**,
-Known limitations 322.
+Three background-ish values live in the tree and two were in play: `Config.bg` (the `background =` line) ->
+`Render.bg` -> `set_clear_color()`, which paints the `Config.padding` margin and the whole-cell remainder, and also
+the tab bar, the file-manager band and the current pen; `DEF_BG` -> what `src/vt.c` put in every blank, erased,
+scrolled-in and reflowed cell, which pass 1 of `render_draw()` paints as the grid's interior; and
+`palette[0] = ff000000`, what `SGR 40` / `48;5;0` paint, not involved. So the frame was `#1c1c22` around `#101014`.
+It "appeared recently" only because with the built-in defaults the two are the same number: the s99 `#` fix made
+their `background =` line take effect for the first time and revealed this older, latent defect. Ruled out by
+measurement, so nobody chases it again: niri's focus ring (`width 4`, `active-color "#7fc8ff"`, `prefer-no-csd`,
+drawn as a solid rectangle *behind* windows that shows through semitransparent ones) — their file says
+`opacity = 1`, and the probe puts the difference inside Kai-Term's own two colours.
 
-**What is wrong with it:** the `Fixed` section is 229 lines of root-cause narrative, which duplicates the AGENT.md
-era entries written this session and the rules under "Architecture & Invariants" — and the file's own header says
-"The history of what was broken and fixed is NOT kept here … The rules those bugs produced are in AGENT.md
-'Architecture & Invariants' — read those, not the history." The header and the body contradicted each other.
-Instruction.md's rule is a **concise** `Fixed` section.
+**What was done:** all 8 planned steps — see the s101 era entry for the API, the 17 sites, the three patch-overs
+deleted, `cell_pristine()` deliberately kept in step, `DEF_FG` fixed for the same reason as `DEF_BG`, `palette[0]`
+left alone and documented, README + template + the 14 checks, and the two A/B runs (7 checks fail on the reported
+state, 2 on a sentinel-divergent variant).
 
-**Planned steps:** (1) verify each Fixed entry's root cause survives in AGENT.md before deleting it — done, all 14
-mechanisms present (`exec_c0`, `clipboard_mime_rank`, `paste_repair`, DECCKM, 64/65, `pv_scroll`, `shell_int_gen`,
-`payload_cannot_insert`, `preview_head_rows`, `fm_size`, the steady-state rule, `glTexImage2D`, `config_find`, the
-template name-coverage check); (2) rewrite `Open` to what belongs there — no open bug, the re-measurement line, the
-filing rule — dropping the feature-status narrative that duplicates AGENT.md's Current Status and README; (3)
-rewrite `Fixed` as one short entry per bug: symptom (the user's words where they gave them), one-line cause, what
-fixed it by name, the verification that was actually done (check counts, A/B failure counts), and where the durable
-rule now lives; (4) leave **Known limitations byte-identical** — it is current behaviour, unique to this file, and
-re-checked against the source; (5) verify: no dangling cross-reference, no stale count, structure clean, suites
-re-run; (6) commit, `git fetch`, push, verify.
-**Expected outcome:** roughly 380-420 lines, `Fixed` ~90 lines, `Known limitations` unchanged, every verified fact
-still stated somewhere in the repo, and the header's claim finally true. **Actual: 490 lines, `Fixed` 136 — see the
-measured-after block below for why the difference is the limitations section, which was deliberately not cut.**
+**Left:** the user's confirmation that the frame is gone in their window (standing preference: the look is judged
+there, never by a pixel harness). The s101 source, test and doc changes are committed; the push waits for that
+answer.
 
-**Measured after the change:** 607 -> **490 lines** (55368 -> 44947 bytes, 9149 -> 7409 words). `Open` 51 -> 24,
-`Fixed` 229 -> 136 (15 entries, one per bug: symptom in the user's words where they gave them, one-line cause, the
-fix by function name, the verification actually done, and where the durable rule lives), `Known limitations` 322 ->
-323. Structure: 3 sections, 0 code fences, 0 trailing-whitespace lines, 0 tabs, ends with a newline, no triple-newline
-run, no dangling cross-reference (the two remaining "the s98 entry" mentions point at this file's own `Fixed`
-section, which still has it). Suites re-run after the edit because the docs quote their counts: `make -j8` exit 0 with
-0 warnings, `KAI_TERM_TEST_NO_WINDOW=1 make test` -> `CLI: 67 checks, 0 failures, 13 skipped`, 944 / 0, MODEL OK,
-293 / 0.
-
-**Deviation from the plan, recorded rather than hidden:** step (4) said `Known limitations` would be byte-identical.
-It is not — auditing it found a real accuracy gap, so one entry was fixed: "The text preview is not a viewer" credited
-only the wheel (s96) and never mentioned the s99 `Page_Up`/`Page_Down`/`Home`/`End` scrolling, which README documents
-and the user has now confirmed. Diffed against HEAD to confirm that is the ONLY hunk in the whole section (1 hunk,
--5/+6 lines). The header was also updated to say where the removed `Fixed` narratives went, which is what makes its
-own "the history is NOT kept here" claim true.
-
-**Judgement call, and it is the user's to overrule:** the remaining bulk is `Known limitations` (323 lines, 58
-bullets). It was not cut. It is current behaviour, it is the only place most of those facts are written down, and
-Instruction.md puts limitations in this file — the narrative history was the fat, and it is gone. If a further cut is
-wanted, the honest candidates are (a) the hard-cap number lists (graphics and file manager), which README could carry
-as a table, and (b) limitation entries that restate an AGENT.md invariant at length — but both trade user-facing
-detail for size, so they need an explicit ask.
-
-**Next action:** none pending. Commit, `git fetch`, push, verify.
 
 ## Progress Journal (root causes of fixed bugs: git history)
 
@@ -412,7 +391,51 @@ detail for size, so they need an explicit ask.
   both in Project Files) were corrected to 944 / 293. The full step-by-step detail of those sessions, including
   every failed probe and wrong theory, is in git history and in `.scratch/s100/AGENT.md.pre-cleanup`.
 
+- **2026-10-22, s101 — the visible border around the grid: one runtime value now owns the default ink and paper.**
+  The user's report and the diagnosis are in "Current Task"; the fix is the shape the plan predicted.
+  `src/vt.c` gained file-scope `g_def_fg`/`g_def_bg` (initialised to `DEF_FG`/`DEF_BG`) with
+  `term_set_default_colors(fg, bg)` + `term_default_fg()`/`term_default_bg()`, and every `DEF_FG`/`DEF_BG` use in
+  that file became a read of them: `row_new_cols`, `row_fillblank`, `row_resize` (both the grown columns and its
+  `bg == 0` repair), reflow's fresh rows, the four `grid_blank_slot(…, DEF_BG)` calls in `grid_resize_rows`,
+  `pen_default()` (so `term_init` and `ESC c`), `SGR 39/49`, and the `cell_pristine()` sentinel — the last one on
+  purpose: the paint colour and the "never written" sentinel must be one variable, not two that can drift.
+  `main.c` calls the setter once, right after the two config readers and before `mux_open()`/`render_init()`.
+  Three patch-overs that existed only because of the split were deleted rather than left behind: the
+  `pen.bg/pen.fg = conf.*` assignments after `mux_open()` in `main()` and in `tab_open()`, and `paint_blank_cells()`
+  with its three call sites (startup, `tab_open`, `zoom_apply`) — vt.c now blanks what a zoom reveals by itself.
+  Keeping them would have left a second writer of the same value, and `paint_blank_cells` was not even faithful: it
+  re-painted every `ch == 0` cell from `Config.bg`, which would have destroyed a blank an application had erased
+  with a colour of its own. `DEF_FG`/`DEF_BG` stay as the built-in defaults (`config_default()` and the template
+  parity check need them) — the constants stayed, the uses became the variable.
+  **Both directions A/B'd, not asserted.** The end-to-end headless evidence is `.scratch/s101/border/bgprobe2.c`:
+  it reads the user's own config with the shipped reader, calls the setter the way `main.c` does, builds a Term, and
+  compares the two numbers that make the picture — `Render.bg` (the glClear colour of the margin) and a blank cell's
+  `bg` (pass 1's quad). New code: `clear=ff1c1c22 blank cell=ff1c1c22 match=1` for their file, for the built-in
+  default, and for a third colour written just to test it (`background = 2050a0`, `padding = 40`, `opacity = 0.5` —
+  both premultiplied identically). Built against `git show HEAD:src/vt.c` plus the new API (the state the user
+  reported) the same probe prints `clear=ff1c1c22 blank cell=ff101014 match=0` and exits 1. In the unit suite, 7 of
+  the 14 new checks fail on that same state — the fresh Term's pen, a never-written cell, `SGR 49`, `SGR 39`,
+  `ESC c`, an erased cell, and the rows/columns a zoom reveals. Against a deliberately divergent variant (paint
+  sites read `g_def_*`, `cell_pristine()` still compares `DEF_BG` — the pitfall the plan warned about): 2 fail, the
+  reflow cursor position and the narrow/wide round trip, which is what shows the sentinel check pins something.
+  The reflow check needed a measurement before it could be written: `.scratch/s101/reflowprobe.c` prints
+  `cy/cx/scroll_off/wrap/bg` per step and shows that a 3-cell line at 40 cols re-broken to 2 cols leaves the cursor
+  at `cy=0 cx=1` (scroll_off moved to 1), not `cy=1` — the first version of that check was red for that reason and
+  the probe said so in one run. `tests/test_vt.c` 944 -> 958 checks, 0 failures; `./bin/dbg` MODEL OK;
+  `./bin/test_fm` 293; `KAI_TERM_TEST_NO_WINDOW=1 make test` green; `make -j8` 0 warnings.
+  **Not yet verified:** the look, which is the user's call (standing preference), and the windowed group of
+  `tests/cli_test.sh`.
+
 ## Next Steps
+
+0. **s101 — the visible border around the grid: DONE in code, ONE thing left.** The fix and its 14 checks are in
+   (see the s101 era entry and ISSUES.md "Fixed"). Left for the next session:
+   a. **Ask the user whether the frame is gone in their window** (`background = 1c1c22`, `padding = 8`). Nothing
+   else about it is open — do not re-derive the diagnosis and do not run a pixel harness to judge the look.
+   b. If they confirm it, this era entry and ISSUES.md's "Visual confirmation … outstanding" sentence are the only
+      places still saying it is unconfirmed; update both and commit.
+   c. The windowed group of `tests/cli_test.sh` (117 checks with a display) has not been run since s99. Run it only
+      when the user is away and VRAM has room — it maps real windows.
 
 0. **s99/s98 — all four open items were put to the user and answered on 2026-10-22 ("1. yes / 2. good / 3. works
    good", the s100 era entry). Nothing here is owed any more; what follows is the diagnosis recipe, not a to-do.**
@@ -546,7 +569,7 @@ Kai-Term/
 ├── config/kai-term.bind         # the shipped KEY-BINDING template: all 24 names at their built-in default
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 944 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
+├── tests/test_vt.c              # 958 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
 ├── tests/test_fm.c              # 293 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # 117 checks driving the REAL bin/kai-term; ONE probe launch gates the
@@ -607,7 +630,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 944 checks: parser (including a C0 byte inside a control sequence — executed, sequence
+- `tests/test_vt.c` — 958 checks: parser (including a C0 byte inside a control sequence — executed, sequence
   still collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
   (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
   ordering), grid, selection, alt screen,
@@ -1044,7 +1067,18 @@ after `ptr_*` hit-tested bar then panes.
   rule (whitespace before is enough) was a bug: it cut `background = #1c1c22` at the `#`, and an empty value is
   legal, so a documented colour line set nothing and logged nothing. `working_dir = /home/me/my#project` keeps
   its value; `value # note` is stripped. Unknown keys log and are ignored; a missing file is not an error.
-  Colours accept `#RRGGBB`, `0xRRGGBB`, `AARRGGBB`. Ranges are clamped at parse time.
+  Colours accept `#RRGGBB`, `0xRRGGBB`, bare `RRGGBB` and `AARRGGBB` (`parse_color()` skips an optional `#`/`0x`,
+  reads hex, and adds `0xff000000` when 6 digits or fewer were given). Ranges are clamped at parse time.
+- **One value owns the default ink and paper.** `Config.fg`/`Config.bg` reach the grid through
+  `term_set_default_colors()` (file-scope `g_def_fg`/`g_def_bg` in `src/vt.c`, read by `term_default_fg()` /
+  `term_default_bg()`), called from `main.c` after the config readers and before the first `term_init()`. That one
+  variable is BOTH the colour every blank/erased/scrolled-in/reflowed cell is painted with AND the `cell_pristine()`
+  sentinel meaning "never written" — they must stay one value, or reflow's `row_used()` counts trailing blanks as
+  content and selection bands appear over nothing. `DEF_FG`/`DEF_BG` are only the built-in defaults `config_default()`
+  starts from; nothing in `src/vt.c` may read them again. And nothing may paint a background from a different source:
+  `glClear` uses `Config.bg`, pass 1 uses the cell's `bg`, so a third value anywhere draws a visible frame around the
+  grid (s101). `palette[0]` is deliberately NOT the configured background — `SGR 40` / `48;5;0` stay black, as every
+  other terminal does it; README says so, because it is the next thing a user will report.
 - Defaults live in `config_default()` AND `DEF_*` macros AND the two files in `config/` — change one and the
   checks fail, which is the point. Do not hand-copy the name list into a test: derive it from the source.
 

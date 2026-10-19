@@ -400,11 +400,11 @@ from the program.
 | `cols` | `80` | Initial number of columns |
 | `rows` | `24` | Initial number of rows |
 | `scrollback` | `2000` | History lines to retain. The grid allocates `rows + scrollback` lines once at startup, so a window taller than `rows` keeps fewer of them (`rows + scrollback - current_rows`) |
-| `foreground` | `#e5e5e5` | Text color |
-| `background` | `#101014` | Background color |
+| `foreground` | `#e5e5e5` | Default text color — the ink of every cell an application has not colored itself |
+| `background` | `#101014` | Default background color — the one value behind everything an application has not colored: the cells, the `padding` margin, and the pixels left over by whole cells at the bottom and right |
 | `cursor_color` | `#d8d8d8` | Cursor color |
 | `opacity` | `1.0` | Window opacity |
-| `padding` | `8` | Pixels of margin between the window edge and the first/last row and column (`0` puts the text flush against the edge). Applied on all four sides; pixels left over by whole cells still go to the bottom and right |
+| `padding` | `8` | Pixels of margin between the window edge and the first/last row and column (`0` puts the text flush against the edge). Applied on all four sides; pixels left over by whole cells still go to the bottom and right. That margin is painted with `background`, so it is invisible unless an application colors the edge cells itself |
 | `shell` | Empty | Shell to run; defaults to `$SHELL` |
 | `shell_integration` | `1` | Start a recognised shell (fish, bash, zsh) with Kai-Term's integration script, so the file manager can ask the shell to change its own directory instead of typing `cd` at your prompt, and so a bare `bash`/`fish`/`zsh` you run at the prompt is integrated as well (`0` starts every shell exactly as before) |
 | `working_dir` | Empty | Startup directory; defaults to the home directory |
@@ -428,6 +428,13 @@ from the program.
 Font size, grid dimensions, scrollback limits, opacity, the key-repeat timings and the file-manager band
 height have defined valid ranges; out-of-range values are clamped to the nearest valid one. Invalid
 configuration values should be corrected according to the application's diagnostics.
+
+`foreground` and `background` are the whole window's ink and paper: one line each covers the cells, the
+`padding` margin and the leftover pixels at the bottom and right, so changing `background` cannot leave a
+frame of a second colour around the text. Neither one overrides an application: a program that asks for a
+color of its own gets it, and the 16-color `SGR 40` / `48;5;0` background is palette entry 0 (black), not
+`background` — the same split every other terminal has, and worth knowing when a `background =` change seems
+to have missed one program's background.
 
 A `#` starts a comment when only whitespace comes before it, or when whitespace comes before **and** after
 it. That is what makes `background = #101014` a colour and `value # note` a note, while

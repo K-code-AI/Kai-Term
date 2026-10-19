@@ -4035,6 +4035,86 @@ int main(void)
         }
     }
 
+    /* ---------- the configured default ink and paper (s101) ----------
+       The user's report: "Some border seems to have appeared recently ... It's probably the padding to prevent
+       cutting glyph corner, But would it be possible for it to be the exact same color as the background ? they
+       should use the same config line to set their background color." Measured cause: glClear paints the
+       Config.padding margin and the whole-cell remainder with Config.bg, while every blank, erased, scrolled-in
+       and reflowed cell was filled with the compile-time DEF_BG. With `background = 1c1c22` in their file the two
+       numbers differ, and the difference is a frame around the grid. These checks pin the ONE runtime value that
+       now owns both jobs — the colour a cell is painted with, and the sentinel that says a cell was never
+       written. */
+    {
+        Config d;
+        config_default(&d);
+        CHECK(d.fg == DEF_FG && d.bg == DEF_BG,
+              "default colours: config_default() still starts at DEF_FG/DEF_BG — the constants stay the built-in "
+              "default the shipped template's value check compares against");
+
+        term_set_default_colors(0xff123456u, 0xff1c1c22u);
+        CHECK(term_default_fg() == 0xff123456u && term_default_bg() == 0xff1c1c22u,
+              "default colours: the setter is what the blank/erase/scroll/reflow paths read");
+
+        term_init(&T, 6, 40, 20);
+        CHECK(T.pen.fg == 0xff123456u && T.pen.bg == 0xff1c1c22u,
+              "default colours: a fresh Term's pen starts at the configured pair, so main.c no longer has to "
+              "patch the pen after opening a session");
+        CHECK(cellbg(0, 0) == 0xff1c1c22u && cellfg(0, 0) == 0xff123456u,
+              "default colours: a never-written cell carries the configured background, so the grid interior is "
+              "the same colour as the padding margin glClear paints with Config.bg");
+
+        feed("\x1b[41mX");
+        CHECK(cellbg(0, 0) != 0xff1c1c22u,
+              "default colours: SGR 41 still paints a palette background — the configured value is the DEFAULT, "
+              "not an override of what an application asks for");
+        feed("\x1b[49mY");
+        CHECK(T.pen.bg == 0xff1c1c22u && cellbg(0, 1) == 0xff1c1c22u,
+              "default colours: SGR 49 returns to the CONFIGURED background, not to DEF_BG — every shell hits "
+              "that path on its first reset, which is how the whole grid got repainted the built-in colour");
+        feed("\x1b[31mA\x1b[39mB");
+        CHECK(T.pen.fg == 0xff123456u && cellfg(0, 3) == 0xff123456u,
+              "default colours: SGR 39 returns to the configured foreground — the fg half is invisible on a blank "
+              "cell today, so it is fixed for the same reason and not by accident");
+
+        feed("\x1b[c");
+        CHECK(T.pen.fg == 0xff123456u && T.pen.bg == 0xff1c1c22u,
+              "default colours: ESC c / RIS rebuilds the pen from the configured pair — the reason this is "
+              "process-wide state and not a Term field (term_init memsets the struct)");
+
+        term_init(&T, 6, 40, 20);
+        feed("abc\x1b[2K");
+        CHECK(cellch(0, 0) == 0 && cellbg(0, 0) == 0xff1c1c22u,
+              "default colours: an erased cell is blank AND carries the configured background");
+        feed("\x1b[H\x1b[42m\x1b[J");
+        CHECK(cellbg(0, 0) != 0xff1c1c22u,
+              "default colours: an erase with a palette background in the pen keeps that colour — the configured "
+              "default must not swallow an application's own erase");
+
+        term_init(&T, 6, 40, 20);
+        term_resize(&T, 12, 60);      /* what zooming out does to the grid: more rows AND more columns */
+        CHECK(cellbg(11, 59) == 0xff1c1c22u && cellfg(11, 59) == 0xff123456u,
+              "default colours: the rows and columns a smaller font reveals are blanked with the configured pair "
+              "by vt.c itself, so main.c's zoom path no longer re-fills them");
+
+        term_init(&T, 6, 40, 20);
+        feed("abc");
+        term_resize(&T, 6, 2);        /* reflow asks cell_pristine() how long that logical line is */
+        CHECK(T.cy == 0 && T.cx == 1,
+              "default colours: a cell painted with the configured background is STILL the pristine sentinel — "
+              "reflow measures the line as 3 cells, not 40, so it produces 2 physical rows and the cursor lands "
+              "after the `c` (a 40-cell reading would give 20 rows and put the cursor at column 0)");
+        char rb[512];
+        term_resize(&T, 6, 40);
+        feed("d");
+        row_text(0, rb);
+        CHECK(rb[0] == 'a' && rb[1] == 'b' && rb[2] == 'c' && rb[3] == 'd' && rb[4] == ' ',
+              "default colours: a narrow/wide round trip leaves no literal gap inside the text");
+
+        term_set_default_colors(DEF_FG, DEF_BG);
+        CHECK(term_default_fg() == DEF_FG && term_default_bg() == DEF_BG,
+              "default colours: the setter restores, so this block cannot change what the rest of the suite sees");
+    }
+
     printf("%d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }
