@@ -6,24 +6,20 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** The user's stray-`h`-when-pasting report is now explained and fixed — the cause was the
-clipboard SOURCE, not the parser (see the s98 entry at the top of "Fixed": Firefox advertises
-`text/x-moz-url-priv` last and serves UTF-16 under it, and Kai-Term was asking for the last type advertised).
-It is reproduced and A/B'd end-to-end against the user's real Firefox clipboard, but **it still needs their eye
-in their own window**. The earlier s97 explanation of that report (an escape sequence inside the pasted text,
-hitting a startup window where bracketed paste is off) was measured and is real behaviour, but it was NOT what
-the user was hitting — the "Paste" limitations below keep it as the measured fact it is, without the claim that
-it explained their report.
+**No open bug.** Two things still need the user's eye in their own window, both from work that is green and
+A/B'd here: the s98 clipboard-source paste fix (see the entry at the top of "Fixed": Firefox advertises
+`text/x-moz-url-priv` last and serves UTF-16 under it, and Kai-Term was asking for the last type advertised),
+and the s99 config-reader fix below — **their own `background = #1c1c22` line has never applied until now**, so
+the window's background will visibly change the first time they run the new build. That is the fix working, not
+a regression.
 
-Re-measured 2026-10-21 (s98, after the clipboard-source fix, from `make clean`): `make -j8` exit 0 with
-**0 warnings**; `./bin/test_vt` **878 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
-`./bin/test_fm` **274 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
-(`CLI: 62 checks, 0 failures, 10 skipped` + those three); `make asan` exit 0 with the same counts and no
-sanitizer report; `tests/cli_test.sh` **96 checks / 0 failures / 0 skipped** — the probe launch could draw
-here, so the window-opening group ran (it is skipped on a box whose video memory is spoken for). The 96 is
-not a change to the suite: s95 added one check (`fm_key_path = none` unbinds) and the 95 written in s96
-had never been re-diffed — `git show 3ece4e7:tests/cli_test.sh` reports 95, `git show HEAD:tests/cli_test.sh`
-reports 96, both against this same binary.
+Re-measured 2026-10-22 (s99, after the config split and the config-reader fix, from `make clean`): `make -j8`
+exit 0 with **0 warnings**; `./bin/test_vt` **944 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+`./bin/test_fm` **293 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
+(`CLI: 67 checks, 0 failures, 13 skipped` + those three); `make asan` exit 0 with the same counts and no
+sanitizer report; `tests/cli_test.sh` **117 checks / 0 failures / 0 skipped** — the probe launch could draw
+here, so the window-opening group ran, which is the only way the config-search and `-b` checks run at all (it
+is skipped on a box whose video memory is spoken for, and then those checks are skipped with it).
 No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 **Fixed and confirmed by the user in their own window (2026-10-19):** a second file-manager navigation on top
@@ -36,8 +32,8 @@ The behaviour the user asked for on 2026-10-19 — clear the prompt, `cd`, put t
 
 Everything else below is current behaviour, not a bug.
 
-The integrated file manager (README "File manager") is built, wired into the window and covered by 274
-model/layout/config checks plus the 878 passing ones in the VT/config suite; its input routing was verified
+The integrated file manager (README "File manager") is built, wired into the window and covered by 293
+model/layout/config checks plus the 944 passing ones in the VT/config suite; its input routing was verified
 live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
 file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
 at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s71-s79 journal
@@ -63,6 +59,35 @@ To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` log
 not filed; it is not a bug until it reproduces.
 
 ## Fixed
+
+**A `background = #1c1c22` line set nothing at all: the config reader cut the value at the `#` (2026-10-22,
+s99).** Found while splitting the config surface, not reported by the user. The comment rule was "a `#` starts a
+comment if it is at the start of the line or preceded by whitespace" — which is exactly the shape of a colour
+value, so `background = #1c1c22` became `background =` and an empty value is a legal way to ask for the default,
+so nothing was even logged. README documents the `#RRGGBB` form and the shipped template writes it, so every
+colour line in a documented config file was silently ignored.
+
+Measured against the user's own `/home/kaida/.config/kai-term/kai-term.conf`, which contains that line
+(`.scratch/s99/hashab/cfgprobe.c`, HEAD's `src/config.c` vs the fixed one, printing the resulting ARGB):
+**old `background = ff101014` (the built-in default), new `background = ff1c1c22` (what they wrote)**; every
+other line in their file applied in both. The rule is now: a `#` starts a comment when only whitespace precedes
+it, or when whitespace precedes AND follows it. `working_dir = /home/me/my#project` still keeps its value (no
+whitespace before the `#`), `value # note` is still stripped, and `key =#value` is read. Pinned by 8 checks in
+the `config hash` group of `tests/test_vt.c`.
+
+**The config surface is now two files, and the templates are pinned to the parser (2026-10-22, s99).** Not a
+bug — a feature that was already written, uncommitted and unjournaled, when s99 resumed the tree (its
+motivation is not recorded anywhere; see s99 entry 1 of AGENT.md and the question left there for the user).
+`kai-term.conf` holds the 29 settings, `kai-term.bind` the 24 key
+bindings, each searched in `$XDG_CONFIG_HOME/kai-term` → `~/.config/kai-term` → `/etc/kai-term` (first regular
+file found wins; the two files are searched independently), with `-b/--binds` naming the binding file the way
+`-c` names the settings one. The split is by NAME, so an older `kai-term.conf` with bindings in it keeps working
+(the log line says where the line belongs now) and a setting written in `kai-term.bind` is refused by name
+rather than ignored as an unknown key. `config/kai-term.conf` and `config/kai-term.bind` ship as templates.
+What was missing was a check that they STAY complete: loading a template and comparing every field with
+`config_default()` cannot see a deleted line, so `padding = 8` was removed from the template in
+`.scratch/s99/ab` and the suite as it stood reported **0 failures**; the new name-coverage check reports 1, and
+it also fails for an unknown name in a template and for a name added to the parser without one.
 
 **Pasting from Firefox put `h` on the bash prompt and `h^@t^@t^@p^@…` on the zsh prompt: Kai-Term asked the
 clipboard for the wrong mime type, and then wrote UTF-16 bytes to the pty (2026-10-21, s98).** Reported by the
