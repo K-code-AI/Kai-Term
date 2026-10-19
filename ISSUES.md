@@ -1,8 +1,10 @@
 # Kai-Term — Known Issues
 
-Current problems and current behaviour only. The history of what was broken and fixed is NOT kept here:
-54 root-cause entries and the 4 unproven reports cleared 2026-10-17 are in `git show d5afe4a:ISSUES.md`.
-The rules those bugs produced are in AGENT.md "Architecture & Invariants" — read those, not the history.
+Current problems and current behaviour only. The history of what was broken and fixed is NOT kept here: the 54
+root-cause entries and the 4 unproven reports cleared 2026-10-17 are in `git show d5afe4a:ISSUES.md`, and the full
+investigations behind the `Fixed` entries below (the probes, the wrong theories, the measurements that settled them)
+are AGENT.md's Progress Journal era entries. The rules those bugs produced are in AGENT.md "Architecture &
+Invariants" — read those, not the history.
 
 ## Open
 
@@ -15,274 +17,154 @@ Re-measured 2026-10-22 (s100, from `make clean`): `make -j8` exit 0 with **0 war
 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **293 checks, 0 failures**;
 `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` + those three); `make asan`
 exit 0 with the same counts and no sanitizer report. The windowed group of `tests/cli_test.sh` (**117 checks /
-0 failures / 0 skipped**, last measured in s99) was skipped in s100 — VRAM was 11783/12227 MiB used and the user at
-the machine — so the config-search, `kai-term.bind` and `-b` checks have no NEW coverage; they run only when a
-window can be mapped. No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`,
+0 failures / 0 skipped**, last measured that way in s99) was skipped in s100 — VRAM was 11783/12227 MiB used and the
+user at the machine — so the config-search, `kai-term.bind` and `-b` checks have no NEW coverage; they run only when
+a window can be mapped. No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`,
 `tests/`.
 
-**Fixed and confirmed by the user in their own window (2026-10-19):** a second file-manager navigation on top
-of a prompt Kai-Term had just re-populated did not erase it — the prompt ended up `Some text cd '/'` and the
-shell ran that. The cause (the echo window closed on a steady state instead of on a change), the fix and the
-11 checks that now pin it are in the "Fixed" entry below and the s82-s86 journal entry of AGENT.md.
+Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
+what is verified and what is not is AGENT.md's "Current Status". This file carries only: what is broken, what was
+broken and is now pinned, and the limits a user or a future agent must not "fix" by accident.
 
-The behaviour the user asked for on 2026-10-19 — clear the prompt, `cd`, put the text back — **is implemented**
-(README "File manager"). Its limits are under "Known limitations" below.
-
-Everything else below is current behaviour, not a bug.
-
-The integrated file manager (README "File manager") is built, wired into the window and covered by 293
-model/layout/config checks plus the 944 passing ones in the VT/config suite; its input routing was verified
-live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
-file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
-at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s71-s79 journal
-entries in AGENT.md. The user has run the band in their own window and confirmed both its behaviour (2026-10-19)
-and how it looks (2026-10-22, "works good"). Its limits are under "Known limitations" — "File manager".
-
-**Shell integration (s90-s92) is implemented, wired, and CONFIRMED BY THE USER IN THEIR OWN WINDOW for fish, bash
-and zsh** ("I verified the shell integration, Fish Bash and Zsh are working as expected now. Perfect",
-2026-10-20). A file-manager navigation in a shell Kai-Term started asks the SHELL to change its own directory:
-no erase, no re-type, no visible `cd`, and the user's half-typed line is byte-identical before and after
-(`.scratch/s90b/intgate.c`: ack in 54-76 ms, `pwd` prints the new directory). zsh 5.9 joined that gate on
-2026-10-20 — its script had never been run anywhere before that. The two defects the user reported on
-2026-10-20 are fixed and now user-confirmed: see "Fixed" below. Every other shell — and any shell the user starts
-in a way the wrapper cannot see — keeps the typed path unchanged. Its limits are under "Known limitations" —
-"Shell integration".
-
-Image support is confirmed by eye in the user's window (`timg -p k <file.png>`, 2026-10-17) as well as by
-the model tests and the `graphics: N image(s) drawn` log line. Its limits are listed under
-"Known limitations" — "Graphics / images".
-
-To file a problem: symptom, exact reproduction, and what `./bin/kai-term -d` logs. Not reproducible ->
-not filed; it is not a bug until it reproduces.
+**To file a problem:** symptom, exact reproduction, and what `./bin/kai-term -d` logs (the log lines worth quoting
+are listed under "Debugging this project" in AGENT.md). Not reproducible -> not filed; it is not a bug until it
+reproduces.
 
 ## Fixed
 
-**A `background = #1c1c22` line set nothing at all: the config reader cut the value at the `#` (2026-10-22,
-s99).** Found while splitting the config surface, not reported by the user. The comment rule was "a `#` starts a
-comment if it is at the start of the line or preceded by whitespace" — which is exactly the shape of a colour
-value, so `background = #1c1c22` became `background =` and an empty value is a legal way to ask for the default,
-so nothing was even logged. README documents the `#RRGGBB` form and the shipped template writes it, so every
-colour line in a documented config file was silently ignored.
+One entry per bug: what the user saw, the cause in one line, what fixed it, and what now keeps it from coming back.
+The full investigation of each — the probes, the wrong theories, the measurements that settled them — is AGENT.md's
+Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`); the rule each
+one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at the time, not
+current totals.
 
-Measured against the user's own `/home/kaida/.config/kai-term/kai-term.conf`, which contains that line
-(`.scratch/s99/hashab/cfgprobe.c`, HEAD's `src/config.c` vs the fixed one, printing the resulting ARGB):
-**old `background = ff101014` (the built-in default), new `background = ff1c1c22` (what they wrote)**; every
-other line in their file applied in both. The rule is now: a `#` starts a comment when only whitespace precedes
-it, or when whitespace precedes AND follows it. `working_dir = /home/me/my#project` still keeps its value (no
-whitespace before the `#`), `value # note` is still stripped, and `key =#value` is read. Pinned by 8 checks in
-the `config hash` group of `tests/test_vt.c`.
+**A `background = #1c1c22` line set nothing at all — the config reader cut the value at the `#` (2026-10-22, s99).**
+The comment rule was "whitespace before a `#` is enough", which is exactly the shape of a colour value, so the line
+became `background =` and an empty value is legal, so nothing was even logged. README documents `#RRGGBB` and the
+shipped template writes it, so every colour line in a documented config file was silently ignored. Measured against
+the user's own file: old `ff101014` (the built-in default), new `ff1c1c22` (what they wrote). A `#` now starts a
+comment only when whitespace alone precedes it, or whitespace precedes AND follows it — `working_dir =
+/home/me/my#project` keeps its value, `value # note` is still stripped. 8 checks in the `config hash` group.
 
-**The config surface is now two files, and the templates are pinned to the parser (2026-10-22, s99).** Not a
-bug — a feature the user asked for (confirmed theirs on 2026-10-22, "1. yes"); it reached the tree already written,
-in a session that stopped before it journaled anything, which is why its motivation was missing from the record
-for a day.
-`kai-term.conf` holds the 29 settings, `kai-term.bind` the 24 key
-bindings, each searched in `$XDG_CONFIG_HOME/kai-term` → `~/.config/kai-term` → `/etc/kai-term` (first regular
-file found wins; the two files are searched independently), with `-b/--binds` naming the binding file the way
-`-c` names the settings one. The split is by NAME, so an older `kai-term.conf` with bindings in it keeps working
-(the log line says where the line belongs now) and a setting written in `kai-term.bind` is refused by name
-rather than ignored as an unknown key. `config/kai-term.conf` and `config/kai-term.bind` ship as templates.
-What was missing was a check that they STAY complete: loading a template and comparing every field with
-`config_default()` cannot see a deleted line, so `padding = 8` was removed from the template in
-`.scratch/s99/ab` and the suite as it stood reported **0 failures**; the new name-coverage check reports 1, and
-it also fails for an unknown name in a template and for a name added to the parser without one.
+**The config surface is two files, and the templates are pinned to the parser (2026-10-22, s99).** Not a bug — a
+feature the user asked for. `kai-term.conf` holds the 29 settings, `kai-term.bind` the 24 key bindings, each
+searched independently in `$XDG_CONFIG_HOME/kai-term` -> `~/.config/kai-term` -> `/etc/kai-term` (first regular file
+wins), `-b/--binds` naming the binding file the way `-c` names the settings one. The split is by NAME, so an older
+`kai-term.conf` with bindings in it keeps working and a setting written in `kai-term.bind` is refused by name rather
+than treated as unknown. What was missing was a check that the templates STAY complete: comparing a loaded template
+field-by-field with `config_default()` cannot see a deleted line, so deleting `padding = 8` reported **0 failures**
+before the name-coverage check existed and 1 after; it also fails for an unknown name in a template and for a name
+added to the parser without one.
 
-**Pasting from Firefox put `h` on the bash prompt and `h^@t^@t^@p^@…` on the zsh prompt: Kai-Term asked the
-clipboard for the wrong mime type, and then wrote UTF-16 bytes to the pty (2026-10-21, s98).** Reported by the
-user, who narrowed it down far better than I had: the source matters ("some source no matter the text copied will
-result in an h when pasted, while the same text from another source will paste properly"), the way it is pasted
-matters (Ctrl+V works, Ctrl+Shift+V does not), and the source is Firefox. All three clues were the diagnosis; I
-had the mechanism wrong twice before measuring it.
+**Pasting from Firefox put `h` on the bash prompt and `h^@t^@t^@p^@…` on the zsh prompt (2026-10-21, s98).**
+Reported by the user, who localised it better than I had: the source matters, the paste key matters (Ctrl+V works,
+Ctrl+Shift+V does not), the source is Firefox. All three clues were the diagnosis. `offer_offer()` overwrote the
+recorded mime type for every advertised `text/*` name, so the LAST one won — Firefox advertises
+`text/x-moz-url-priv` last and serves it as **UTF-16LE** — and those 42 bytes went verbatim into the bracketed
+paste. bash's bracketed reader stops at the first NUL (one `h`); zsh inserts every byte and paints each NUL as
+`^@`. Two fixes because two things were wrong: `clipboard_mime_rank()` (ask for the best type, never the last) and
+`paste_repair()` (a NUL must never reach the pty; dense one-sided NULs or a BOM mean UTF-16, anything else is
+NUL-stripped). A/B on the user's own clipboard: 42 UTF-16 bytes -> 6 clean UTF-8. On a source offering only UTF-16:
+33 in -> 17 out, logging `paste: 33 clipboard bytes contained NUL, repaired to 17`. 19 checks. **Confirmed in the
+user's window 2026-10-22.** The reason plain Ctrl+V worked: Kai-Term does not handle it, the shell's own paste path
+drops NUL bytes, and Kai-Term's did not — same clipboard, one path sanitised.
 
-What was actually wrong, measured against the user's real Firefox selection (`.scratch/s98/ab.sh`, Kai-Term run
-with `cat > capture` as its shell so the file holds exactly the bytes Kai-Term wrote to the pty): Firefox
-advertises `text/plain;charset=utf-8`, `UTF8_STRING`, `COMPOUND_TEXT`, `TEXT`, `text/plain`, `STRING`,
-`text/plain;charset=utf-8`, `text/plain`, `text/x-moz-url-priv`, `SAVE_TARGETS` — and `offer_offer()` overwrote
-the recorded type for every one of them, so **the last advertised type won**. `text/x-moz-url-priv` starts with
-`text/`, so it qualified, and Firefox serves it as **UTF-16LE**: `68 00 74 00 74 00 70 00 3a 00 …`. Kai-Term
-buffered those 42 bytes and wrote them verbatim into the bracketed paste. bash's bracketed-paste reader stops at
-the first NUL, so the line shows a single `h`; zsh inserts every byte and paints each NUL as `^@`, so the line
-shows `h^@t^@t^@p^@…` — both reproduced exactly (`.scratch/s98/nulprobe`). A/B on the same clipboard: **old
-binary writes 42 UTF-16 bytes, fixed binary writes the 6 clean UTF-8 bytes** it should.
-
-Two fixes, because two things were wrong. (1) `clipboard_mime_rank()` — ask for the BEST advertised text type
-(`text/plain;charset=utf-8` > `UTF8_STRING` > `text/plain` > other `text/plain` variants > other `text/*`), never
-the last one advertised. (2) `paste_repair()` — a NUL byte must never reach the pty: a block whose NULs are dense
-and one-sided (or BOM-prefixed) is UTF-16 and is decoded to UTF-8; anything else is NUL-stripped. Verified
-end-to-end for a source that offers only UTF-16 and cannot be dodged by picking a better type: **33 UTF-16 bytes
-in, 17 clean bytes out**, logging `paste: 33 clipboard bytes contained NUL, repaired to 17`. 19 new checks
-(859 -> 878, 0 failures), `make asan` clean. **Confirmed in the user's own window 2026-10-22** ("works good").
-
-**Why Ctrl+V worked and Ctrl+Shift+V did not** — the user's own clue, and the best diagnostic in the whole
-report: Kai-Term does not handle plain Ctrl+V at all, it sends the key to the shell, and the shell's own paste
-(`fish_clipboard_paste` -> `wl-paste`, bash/zsh command substitution) **drops NUL bytes on its way into a
-variable**. Kai-Term's path writes the clipboard to the pty verbatim, NULs included. Same clipboard, same source,
-one path sanitises and one does not.
-
-**The s97 C0-inside-CSI fix stands on its own** (it is a real parser bug, pinned by 14 checks) but it was not what
-the user was hitting. See the entry below and the s97 journal entries.
-
-**A stray `h` nobody typed, and a mode silently not applied: a C0 control byte inside a control sequence ended
-the sequence (2026-10-21, s97).** Reported by the user, who also guessed the shape of it: "the h can happen from
-opening Kai-Term and trying to paste … I just can't reproduce it at will", and, in nano, the paste produced nano's
-own `Flawed paste`. What was actually wrong, measured (`.scratch/s97/hprobe2`, real `term_parse()`): `PS_CSI`'s
-handling of a C0 byte inside a control sequence was `state = PS_GROUND; i--;` — it ENDED the sequence at the
-control byte. That does two damaging things at once: the mode the sequence was setting is never applied, and the
-REST of the sequence is printed as text. `ESC [ ? 2004 <TAB> h` left `bracketed_paste` at 0 and painted an `h`;
-`ESC [ ? 1049 <TAB> h` never entered the alternate screen and painted an `h`; `ESC [ ? 1 <TAB> h` left DECCKM off
-and painted an `h`. `h` is the final byte of every mode-ENABLING sequence (`?2004h`, `?1049h`, `?25h`, `?1h`),
-which is exactly why the leaked character is an `h`. DEC VT500 and xterm both EXECUTE the control byte and KEEP
-collecting the sequence; that is what `exec_c0()` now does, shared by the ground state and by CSI (the two states
-used to have separate, disagreeing copies of the rule, and CSI's copy was missing). ESC stays the exception: it
-cancels the sequence and starts a new escape. Verified: 14 new checks in `tests/test_vt.c` (845 -> 859, 0
-failures), A/B'd against `git show HEAD:src/vt.c` — **9 failures on the old parser, 0 on the new**
-(`.scratch/s97/test_vt_old`).
-
-**What the user's other clue was, and it is not a Kai-Term bug (documented, not fixed):** nano's `Flawed paste`
-reproduces when the PASTED TEXT contains an escape sequence — nano refuses the whole block and drops everything
-after the escape (measured, `.scratch/s97/hprobe`: pasting `AA\e[?2004hBB` into nano 9.2 shows `[ Flawed paste ]`
-and inserts only `AA`). Kai-Term's own write pattern is not the cause: nano accepts the paste even when
-`paste_flush()` sends it as three separate writes (`ESC[200~`, the text, `ESC[201~`), and even chunked at 4096
-bytes like the real code does (`.scratch/s97/flawed`, cases A/B/C/G2 clean). So the clue says the clipboard holds
-text copied out of a terminal — which matters because of the limitation noted under "Paste": such text is only
-protected by the bracketed-paste delimiters, and those are sent only when the application has asked for mode 2004.
+**A stray `h` nobody typed, and a mode silently not applied: a C0 byte inside a control sequence ENDED it
+(2026-10-21, s97).** `PS_CSI`'s handling of a C0 byte was `state = PS_GROUND; i--;`. That does two damages at once:
+the mode being set is never applied, and the rest of the sequence is painted as text — and `h` is the final byte of
+every mode-ENABLING sequence (`?2004h`, `?1049h`, `?25h`, `?1h`), which is why the leaked character was an `h`.
+Measured: `ESC [ ? 2004 <TAB> h` left `bracketed_paste` at 0 and painted an `h`; `?1049` never entered the alternate
+screen; `?1` left DECCKM off. Fix: one file-local `exec_c0()` shared by `PS_GROUND` and `PS_CSI` — the rule existed
+twice and the two copies disagreed. ESC stays the exception (it cancels the sequence). 14 checks; A/B against the
+old `src/vt.c`: **9 failures there, 0 here**. Note: this was a real bug found while chasing the user's report, but it
+was NOT what they were hitting — the s98 entry above is. nano's `Flawed paste`, their other clue, is nano refusing a
+paste whose text contains an escape sequence, not a Kai-Term fault — see "Known limitations" — "Paste".
 
 **The mouse wheel did nothing inside `nano` / `less` / `man`, and was dead in every program that DID ask for the
-mouse (2026-10-21, s96).** Symptom, reported by the user: "When opening a file with nano or similar program it
-would be nice to be able to scroll with the mouse", and, comparing terminals, "In kitty I can't click, but I can
-scroll. So I want scrolling in Kai-Term too when using nano and clicking could be a nice bonus." Two separate
-causes, both measured first (`.scratch/s96/nanoprobe`, `.scratch/s96/clickprobe` — real nano 9.2 and less in a
-real Kai-Term pty, no window): (1) such a program owns the alternate screen, whose grid is built with
-`scrollback_max = 0`, so the wheel landed in `scrollback_nav()` and was thrown away — nothing of the terminal's
-to scroll; (2) the wheel report sent to a program that HAD grabbed the mouse used button codes **4/5**, which
-ncurses reads as button 1: on `nano --mouse`, `ESC[<5;20;12M` did nothing at all while `ESC[<65;20;12M` scrolled
-the text (same in the legacy X10 form — `32+65` scrolls, `32+4` does not), so the wheel was broken in vim, htop,
-tmux and `nano --mouse`. Fix: `term_wants_key_mouse()` / `term_wheel_arrow_keys()` / `term_click_arrow_keys()` in
-`src/vt.c` (the state they read lives there, and main.c is linked into no test binary), wired in `ptr_scroll_done()`
-and `ptr_button()`, plus `mouse_wheel_button()` for the 64/65 codes. A click is turned into the arrow-key presses
-that walk the program's own cursor to the clicked cell — **keystroke synthesis, not mouse support**, because a
-program with no mouse protocol reads a report as typed text: one `ESC[<64;20;5M` put `64;20;5M` into the user's
-file and marked it Modified. `wheel_sends_keys` / `click_moves_cursor` (both default 1) switch each half off.
-Verified: 31 new checks in `tests/test_vt.c` (814 -> 845, 0 failures), and **the user confirmed it in their own
-window** — scrolling in nano works, and `nano --mouse` behaves as expected.
+mouse (2026-10-21, s96).** Asked for by the user ("When opening a file with nano or similar program it would be nice
+to be able to scroll with the mouse … In kitty I can't click, but I can scroll"). Two causes, both measured first on
+real nano 9.2 and less: such a program owns the alternate screen, whose grid has `scrollback_max = 0`, so the wheel
+landed in `scrollback_nav()` and was thrown away; and the wheel report to a program that HAD grabbed the mouse used
+button codes **4/5**, which ncurses reads as button 1 — on `nano --mouse`, `ESC[<5;…M` does nothing while
+`ESC[<65;…M` scrolls (same in X10: `32+65` scrolls, `32+4` does not), so the wheel was broken in vim, htop, tmux and
+`nano --mouse`. Fix: `term_wants_key_mouse()` / `term_wheel_arrow_keys()` / `term_click_arrow_keys()` in `src/vt.c`
+(not `main.c`, which is in no test binary), plus `mouse_wheel_button()` for the 64/65 codes. A click becomes the
+arrow-key walk to the clicked cell — **keystroke synthesis, not mouse support**, because a program with no mouse
+protocol reads a report as typed text: one `ESC[<64;20;5M` put `64;20;5M` into the user's file and set `Modified`.
+`wheel_sends_keys` / `click_moves_cursor` (default 1) switch each half off. 31 checks; user-confirmed in their window.
 
-**The arrow keys did nothing at all in `less`, `man` and `htop` (2026-10-21, s96).** DECCKM (DEC private mode 1,
-application cursor keys) was not implemented: `send_key()` always sent the CSI form (`ESC [ A`..`D`), while an
-ncurses program asks for the SS3 form (`ESC O A`..`D`) with `ESC[?1h`. Measured, and the two programs differ —
-nano answers either form, **less answers ONLY the SS3 one**, so in less the arrow keys were inert. `Term.app_cursor`
-is now set by `ESC[?1h` / cleared by `ESC[?1l`, saved and restored across the alternate screen the way xterm does,
-and every cursor key — the ones the user presses and the ones the wheel and a click are turned into — goes out
-through one `term_arrow_seq()`, so they cannot disagree about the form. Verified by the same probe (30 SS3 presses
-moved less from top line 1 to 31; the CSI form moved it not at all) and by checks on both forms.
+**The arrow keys did nothing at all in `less`, `man` and `htop` (2026-10-21, s96).** DECCKM (application cursor keys,
+`ESC[?1h`) was not implemented — `send_key()` always sent the CSI form, while an ncurses program asks for the SS3
+form. Measured, and the programs differ: nano answers either, **less answers ONLY the SS3 one**, so its arrows were
+inert. `Term.app_cursor` is now set/cleared by `?1h`/`?1l`, saved and restored across the alternate screen, and every
+cursor key — pressed or synthesized — goes through one `term_arrow_seq()`. Probe: 30 SS3 presses moved less from top
+line 1 to 31; the CSI form moved it not at all.
 
 **The wheel over the file manager's preview pane did nothing, and a resized pane could leave the preview scrolled
 into blank rows (2026-10-21, s96).** `fm_wheel()` claimed the gesture over the preview, set focus and returned
-without acting — so a long file could not be read in the pane that exists to read it. Added `FileMgr.pv_scroll`
-with `fm_preview_scroll()` / `fm_preview_scroll_max()` and made the painter obey it for a text file and for a
-directory listing; an image or metadata-only preview has no body, so the call is a harmless no-op there.
-**A second defect, found by the new checks and in the model rather than the test:** the clamp that keeps
-`pv_scroll` inside what the pane can show sat at the TOP of `fm_set_size()`, but `fm_preview_scroll_max()`
-measures `fm->prev.rows` — the pane that actually EXISTS — and the realloc had not run yet, so it reported the
-OLD height and the clamp could never change anything (a 40-line file at the bottom of a 12-row pane, `pv_scroll`
-30, grown to a 40-row pane, stayed at 30: 28 rows of nothing). Moved after the allocation. Verified: 27 new
-checks in `tests/test_fm.c` (247 -> 274, 0 failures), and the clamp check A/B'd against `fm.c` with the clamp in
-its old place — 1 failure there, 0 here (`.scratch/s96/clampab/`).
+without acting. Added `FileMgr.pv_scroll` with `fm_preview_scroll()` / `fm_preview_scroll_max()`, obeyed by the
+painter for a text file and a directory listing (an image or metadata-only preview has no body, so it cannot move).
+**A second defect, found by the new checks and in the model, not the test:** the clamp sat at the top of
+`fm_set_size()`, but `fm_preview_scroll_max()` reads `fm->prev.rows` — the pane that actually EXISTS — and the
+realloc had not run yet, so it reported the OLD height and the clamp could never change anything. Moved after the
+allocation. 27 checks; the clamp check A/B'd against the old placement: 1 failure there, 0 here.
 
 **A shell started at the prompt fell back to the typed `cd`, and the prompt kept showing the OLD directory
-(2026-10-20).** Symptom, reported by the user: "changing shell in the prompt make it go in fallback mode instead
-of using the right shell integration", and "The dir change works as expected, but we have a visual bug, If I
-navigate from /home/kaida to /home/kaida/test/ in the file manager, then the prompt still show /home/kaida … is
-there a way to refresh the prompt when navigating using the filemanager to not have that wrong visual?" Cause and
-fix: (1) `Tab.int_dead` was one-way and a shell the user started at the prompt never loaded the script at all —
-the three scripts now wrap a bare `fish`/`bash`/`zsh` (never over a name the user defined, never with any argument
-present) and re-announce after every command, and `Term.shell_int_gen` + `Tab.int_gen` make an announcement an
-EVENT that revives an integration the session had given up on; (2) fish and zsh now repaint the prompt from inside
-the handler (`commandline -f repaint`, `zle reset-prompt`), so it names the directory the shell is really in —
-**bash cannot and nothing is pretended**: readline expands the prompt once per `readline()` call, `C-l` leaves the
-old directory and printing `${PS1@P}` over the line garbles it (both measured), so bash is documented and the
-prompt catches up on the next Enter. Verified: 14 new checks in `tests/test_vt.c` (789 -> 803, 0 failures), the
-gate's `nested` / `dead` / `off` modes over real fish and bash, and **the user's own confirmation in their window
-for all three shells (2026-10-20)**.
+(2026-10-20, s92).** Reported by the user: "changing shell in the prompt make it go in fallback mode instead of
+using the right shell integration", and "the prompt still show /home/kaida but it's only visual … is there a way to
+refresh the prompt". (1) `Tab.int_dead` was one-way and a shell the user started never loaded the script at all — the
+scripts now wrap a bare `fish`/`bash`/`zsh` (never over a name the user defined, never with an argument present) and
+re-announce after every command, and `Term.shell_int_gen` + `Tab.int_gen` make an announcement an EVENT that revives
+a dead integration. (2) fish and zsh repaint from inside the handler (`commandline -f repaint`, `zle reset-prompt`);
+**bash cannot and nothing is pretended** — readline expands the prompt once per `readline()` call, `C-l` leaves it
+stale and printing `${PS1@P}` over the line garbles it, both measured. 14 checks; the user confirmed all three shells
+in their window.
 
-**A BackSpace on an empty prompt disabled the shell follow for the rest of the session (2026-10-20).**
-Symptom, reported by the user: after pressing BackSpace at an empty prompt, browsing into a directory no
-longer moved the shell — the log said `fm: dropped the follow while erasing (the wait ran out)` and nothing
-was written, until Enter was pressed. Cause: every byte Kai-Term sent opened the "an echo may still be on its
-way" window, and that window closes only on output seen to CHANGE the row back into the remembered prompt.
-Measured with `.scratch/s89/bstoprobe` (real shells in a real Kai-Term pty): bash and sh answer BackSpace at
-an empty prompt with nothing but a bell (`0x07`) and fish answers NOT AT ALL, so no burst ever proved the line
-empty and the window stayed shut. Now a payload that cannot put a character on the line — cursor movement
-(Left/Right/Home/End, Ctrl+A/B/E/F), deletion (BackSpace, Delete, Ctrl+D/K/U/W), Ctrl+L, a bare Escape — does
-not open the window **when the line is already provably the bare prompt**; everything else (text, Tab,
-Up/Down, Ctrl+R/S/T/V/Y/_, Insert, PageUp/PageDown, F-keys, any unknown or truncated sequence) opens it
-exactly as before, because any of those can insert characters the screen may never show. Fixing that exposed a
-second, older hole that had been covered by accident: the remembered prompt's CURSOR position is where the
-cursor sits when the line is EMPTY, and a movement key used to leave `input_pending` set, which is what kept
-the snapshot from being re-taken at the moved cursor. `prompt_snapshot()` now leaves the snapshot alone when
-the row is cell-for-cell the remembered prompt and only the cursor moved, so a cursor parked inside the
-prompt text still answers "do not write here". Verified: 20 new checks in `tests/test_vt.c` (726 -> 746, 0
-failures) and an A/B of the real follow machine over real fish (`.scratch/s89/follow3{,_old}`) — the old code
-drops both navigations, the new one takes the fast path twice; with text on the line both navigations still
-end with the prompt holding the directory and the text once, and the documented mid-command-cursor refusal is
-unchanged. The user confirmed the behaviour in their own window (2026-10-20).
+**A BackSpace on an empty prompt disabled the shell follow for the rest of the session (2026-10-20, s89).** The log
+said `fm: dropped the follow while erasing (the wait ran out)`. Measured: bash and sh answer BackSpace at an empty
+prompt with a bell only and fish not at all, so no burst ever re-proved the line empty and the echo window stayed
+shut until Enter. Now a payload that cannot put a character on the line (cursor movement, deletion, Ctrl+L, a bare
+Escape) does not open the window when the line is already provably the bare prompt. Fixing that exposed an older hole
+held only by accident: the remembered prompt's CURSOR position means "where the cursor sits when the line is EMPTY",
+and a movement key used to leave `input_pending` set, which is what stopped the snapshot being re-taken at the moved
+cursor. 20 checks, and an A/B of the real follow machine over real fish. User-confirmed.
 
-**The file manager's metadata was painted across its own image preview (2026-10-19).** Symptom, reported by
-the user: "the metadata sometimes get written on the image preview". Cause, in the model, not in the shader:
-the preview pane's picture box started at a hardcoded row 3 while `paint_preview_meta()` wrote every metadata
-line it had starting at row 2 — an image preview carries eight of them (path, type, size, mode, owner, group,
-modified, format) — and the renderer emits the pane's glyphs in the batch AFTER the picture, so every line
-from row 3 down landed on top of it. It only looked intermittent because a small picture is centred low
-enough to miss the text. Now one place owns the pane's rows (`preview_head_rows()` + `preview_meta_rows()`),
-used by both the painter and `fm_image_fit()`: header, then the metadata lines that fit, then the picture,
-which always keeps at least one row. Verified by 12 new checks in `tests/test_fm.c` (235 -> 247, 0 failures)
-that scan every cell inside the box `fm_image_fit()` reports for a painted glyph, and by A/B: the same new
-test file against the previous `src/fm.c` gives **8 failures**, including `fit: a picture that fills the area
-has no metadata line drawn across it`. Confirmed in the user's window 2026-10-22 ("works good").
+**The file manager's metadata was painted across its own image preview (2026-10-19, s88).** Reported by the user:
+"the metadata sometimes get written on the image preview". In the model, not the shader: the picture box started at a
+hardcoded row 3 while `paint_preview_meta()` wrote every metadata line from row 2 — an image preview carries eight —
+and glyphs are emitted in the batch AFTER the picture. It looked intermittent only because a small picture is centred
+low enough to miss the text. Now one place owns the pane's rows (`preview_head_rows()` + `preview_meta_rows()`),
+called by both the painter and `fm_image_fit()`. 12 checks that scan every cell inside the reported box for a painted
+glyph, plus A/B against the previous `src/fm.c`: **8 failures there**, which is also what proved the first version of
+the check passed by luck.
 
-**The band is now a share of the window, not a row count (2026-10-19).** Requested by the user: "Would it be
-possible for the File manager part to occupy more space? like 75% per default and make it configurable in the
-config file" — and, on the shape of it, "don't keep fm_rows we don't need it". So `fm_rows` is GONE (config
-key, `Config`/`LayoutReq` field, `FM_ROWS_MAX`, its README row and its checks) and `fm_size` (percent of the
-text area, default **75**, clamped 10–95 at parse time and again in `layout.c`) replaces it. The band now
-keeps its proportion through a resize or a zoom instead of becoming huge or tiny next to the terminal, and
-`layout_initial_size()` solves the inverse (`grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))`) so a startup
-still gets exactly the configured `cols x rows` for the terminal pane. Verified by 7 new checks in
-`tests/test_vt.c` (719 -> 726, 0 failures: the share, both clamps, the terminal's floor, the share surviving
-a resize and a zoom, three startup round trips) and by one new `tests/cli_test.sh` check comparing the real
-binary's `grid CxR per session` line with the band off and with `fm_size = 50` on. Seen and accepted by the user
-2026-10-22 ("works good").
+**The band is a share of the window, not a row count (2026-10-19, s88).** Requested: "Would it be possible for the
+File manager part to occupy more space? like 75% per default and make it configurable" — and on the shape of it,
+"don't keep fm_rows we don't need it". `fm_rows` is gone (key, fields, `FM_ROWS_MAX`, docs, checks); `fm_size`
+(percent of the text area, default 75, clamped 10-95 at parse time and again in `layout.c`) replaces it, so the band
+keeps its proportion through a resize or a zoom. `layout_initial_size()` solves the inverse so startup still gets the
+configured `cols x rows` for the terminal pane. 7 checks + one `cli_test.sh` check comparing the real binary's
+`grid CxR per session` with the band off and with `fm_size = 50`. Seen and accepted by the user 2026-10-22.
 
-**A second file-manager navigation appended `cd <dir>` to the prompt instead of erasing it first
-(2026-10-19).** Symptom, reported by the user: type `Some text`, browse once — the line is cleared, the `cd`
-runs and `Some text` comes back, as intended; browse again without touching the line and the prompt becomes
-`Some text cd '/'`, which the shell then runs (`fish: Unknown command: Some`). Cause, measured against real
-fish through the real pty (`.scratch/s86/follow2`): after Kai-Term re-typed the text, the shell's next burst
-repainted only prompt chrome (OSC 7, OSC 0, DECSET) and touched the input row not at all, so that row still
-equalled the remembered prompt. The end-of-burst rule read that **steady state** as "the application put the
-prompt back, so the line is provably empty" and closed the echo window over bytes that had not been echoed
-yet; every later burst then re-took the prompt snapshot — including the one carrying the echo of Kai-Term's
-own text — so a row holding `Some text` began answering `term_at_prompt()` as EMPTY, the re-type could never
-be confirmed, and the next navigation took the fast path. Now the window closes only when the row **changed**
-into the remembered prompt between the start and the end of one burst, and the `cd`-step additionally waits
-for the session to go quiet (150 ms) before believing the new prompt is drawn — a burst boundary is not a
-prompt, and fish answers a `cd` with the echo, a continuation row and prompt chrome before drawing it.
-Verified: 11 new checks in `tests/test_vt.c` (708 -> 719, 0 failures) and a headless replay of the machine
-over real fish — two navigations in a row both end with the completion line and the line holds `Some text `,
-not the appended command. The user then confirmed it in their own window ("I confirm it works", 2026-10-19).
+**A second file-manager navigation appended `cd <dir>` to the prompt instead of erasing it first (2026-10-19,
+s82-s86).** Reported by the user: browse once and the line is cleared, the `cd` runs and their text comes back; browse
+again and the prompt becomes `Some text cd '/'`, which the shell then runs. Cause, measured against real fish through
+the real pty: after Kai-Term re-typed the text, the shell's next burst repainted only prompt chrome and touched the
+input row not at all, so that row still equalled the remembered prompt — the end-of-burst rule read that **steady
+state** as proof the application had put the prompt back, and closed the echo window over bytes not yet echoed. Now
+the window closes only when the row CHANGED into the remembered prompt between the start and the end of one burst, and
+the `cd` step additionally waits for the session to go quiet (150 ms) — a burst boundary is not a prompt. 11 checks,
+a headless replay over real fish, and the user's confirmation in their window.
 
-**Kai-Term segfaulted inside the graphics driver when the GPU refused a texture (2026-10-19).** Symptom:
-`kai-term error: atlas glTexImage2D failed: 0x505 (512x512)` followed by SIGSEGV at address 0x4 inside
-`libnvidia-eglcore`, reached from `draw_quads()` — 85 core dumps from one run of `tests/cli_test.sh` on a
-machine whose video memory was already full. Cause: every texture-upload site (`render_draw()`'s two
-atlases, `img_tex()`, `fm_preview_tex()`) logged the failure and then drew with a texture that had no
-texels. Now: the glyph atlas is retried once after dropping every application-picture texture (the model
-still holds those pixels), and if it is still refused `render_draw()` returns -1 and the process exits 1
-with `kai-term: no video memory for the glyph atlas — exiting`; a refused color-emoji atlas falls back to
-monochrome glyphs and retries about once a second; a refused picture or preview texture skips that picture
-until an upload succeeds. Verified by forcing the failure in an A/B build (`.scratch/s81/`): the old tree
-draws with an unbacked texture and exits 0, the new one exits 1 with the message; the color-atlas branch
-was forced the same way and the terminal ran on and exited 0. The natural trigger needs a GPU with no
-memory left, so it has not been re-run for real since the fix.
+**Kai-Term segfaulted inside the graphics driver when the GPU refused a texture (2026-10-19, s81).** `atlas
+glTexImage2D failed: 0x505` followed by SIGSEGV at address 0x4 inside `libnvidia-eglcore`, reached from
+`draw_quads()` — 85 core dumps from one run of `tests/cli_test.sh` on a machine whose video memory was already full.
+Every upload site logged the failure and then drew with a texture that had no texels. Now: the glyph atlas is retried
+once after dropping every application-picture texture, and if still refused `render_draw()` returns -1 and the run
+ends with exit 1; a refused color-emoji atlas falls back to monochrome glyphs and retries about once a second; a
+refused picture or preview texture skips that picture. **A refused upload is a decision, not a log line.** Forced and
+verified by A/B (`.scratch/s81/`); the natural trigger needs a GPU with no memory left, so it has not been re-run for
+real since.
 
 ## Known limitations
 
@@ -491,11 +373,12 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   Directories and previews are read on a worker thread, so the UI never blocks — an answer about a
   directory or file the user has already moved away from is dropped (`-d` logs
   `fm: dropping stale listing/preview …`).
-- **The text preview is not a viewer.** It shows the file from the beginning and the wheel over the pane
-  scrolls it (since 2026-10-21, s96), but there is no search and no line numbers, and a line longer than the
-  pane is **cut at the right edge, not wrapped** (wrapping would push the rest of the file off the pane) — which
-  is why one file line is exactly one scrolled row. Highlighting is chosen from the file name — 13 languages — and
-  is a heuristic, not a parser.
+- **The text preview is not a viewer.** It shows the file from the beginning; the wheel over the pane scrolls it
+  (2026-10-21, s96) and, while that pane owns the keyboard, `Page_Up`/`Page_Down` scroll by one pane-full and
+  `Home`/`End` jump to the body's first and last line (2026-10-22, s99) — but there is no search and no line numbers,
+  and a line longer than the pane is **cut at the right edge, not wrapped** (wrapping would push the rest of the file
+  off the pane), which is why one file line is exactly one scrolled row. Highlighting is chosen from the file name —
+  13 languages — and is a heuristic, not a parser.
 - **Only the first image of a file is decoded — and an animated WebP is not decoded at all.** An animated
   GIF previews its first frame: the in-tree GIF decoder stops after the first image block, because later
   frames are deltas over what was already drawn. An animated WebP fails libwebp's simple decode, so the

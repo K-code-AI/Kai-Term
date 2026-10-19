@@ -66,6 +66,57 @@ where they always were: Architecture & Invariants, Key Decisions & Pitfalls, Deb
 If they want work rather than a fix, the standing candidates are Next Steps 5 (housekeeping — the file manager's
 key routing in `main.c` is in no test binary, which is the biggest coverage hole in the tree).
 
+## Current Task (s100b — CLOSED: ISSUES.md cleanup, asked for by the user: "Yes proceed with that cleanup of
+ISSUES.md". Same treatment the journal just got — the narrative history out, every current fact kept.)
+
+**Measured before touching anything:** 607 lines / 55620 bytes / 9149 words. Section sizes — Open 51, **Fixed 229**,
+Known limitations 322.
+
+**What is wrong with it:** the `Fixed` section is 229 lines of root-cause narrative, which duplicates the AGENT.md
+era entries written this session and the rules under "Architecture & Invariants" — and the file's own header says
+"The history of what was broken and fixed is NOT kept here … The rules those bugs produced are in AGENT.md
+'Architecture & Invariants' — read those, not the history." The header and the body contradicted each other.
+Instruction.md's rule is a **concise** `Fixed` section.
+
+**Planned steps:** (1) verify each Fixed entry's root cause survives in AGENT.md before deleting it — done, all 14
+mechanisms present (`exec_c0`, `clipboard_mime_rank`, `paste_repair`, DECCKM, 64/65, `pv_scroll`, `shell_int_gen`,
+`payload_cannot_insert`, `preview_head_rows`, `fm_size`, the steady-state rule, `glTexImage2D`, `config_find`, the
+template name-coverage check); (2) rewrite `Open` to what belongs there — no open bug, the re-measurement line, the
+filing rule — dropping the feature-status narrative that duplicates AGENT.md's Current Status and README; (3)
+rewrite `Fixed` as one short entry per bug: symptom (the user's words where they gave them), one-line cause, what
+fixed it by name, the verification that was actually done (check counts, A/B failure counts), and where the durable
+rule now lives; (4) leave **Known limitations byte-identical** — it is current behaviour, unique to this file, and
+re-checked against the source; (5) verify: no dangling cross-reference, no stale count, structure clean, suites
+re-run; (6) commit, `git fetch`, push, verify.
+**Expected outcome:** roughly 380-420 lines, `Fixed` ~90 lines, `Known limitations` unchanged, every verified fact
+still stated somewhere in the repo, and the header's claim finally true. **Actual: 490 lines, `Fixed` 136 — see the
+measured-after block below for why the difference is the limitations section, which was deliberately not cut.**
+
+**Measured after the change:** 607 -> **490 lines** (55368 -> 44947 bytes, 9149 -> 7409 words). `Open` 51 -> 24,
+`Fixed` 229 -> 136 (15 entries, one per bug: symptom in the user's words where they gave them, one-line cause, the
+fix by function name, the verification actually done, and where the durable rule lives), `Known limitations` 322 ->
+323. Structure: 3 sections, 0 code fences, 0 trailing-whitespace lines, 0 tabs, ends with a newline, no triple-newline
+run, no dangling cross-reference (the two remaining "the s98 entry" mentions point at this file's own `Fixed`
+section, which still has it). Suites re-run after the edit because the docs quote their counts: `make -j8` exit 0 with
+0 warnings, `KAI_TERM_TEST_NO_WINDOW=1 make test` -> `CLI: 67 checks, 0 failures, 13 skipped`, 944 / 0, MODEL OK,
+293 / 0.
+
+**Deviation from the plan, recorded rather than hidden:** step (4) said `Known limitations` would be byte-identical.
+It is not — auditing it found a real accuracy gap, so one entry was fixed: "The text preview is not a viewer" credited
+only the wheel (s96) and never mentioned the s99 `Page_Up`/`Page_Down`/`Home`/`End` scrolling, which README documents
+and the user has now confirmed. Diffed against HEAD to confirm that is the ONLY hunk in the whole section (1 hunk,
+-5/+6 lines). The header was also updated to say where the removed `Fixed` narratives went, which is what makes its
+own "the history is NOT kept here" claim true.
+
+**Judgement call, and it is the user's to overrule:** the remaining bulk is `Known limitations` (323 lines, 58
+bullets). It was not cut. It is current behaviour, it is the only place most of those facts are written down, and
+Instruction.md puts limitations in this file — the narrative history was the fat, and it is gone. If a further cut is
+wanted, the honest candidates are (a) the hard-cap number lists (graphics and file manager), which README could carry
+as a table, and (b) limitation entries that restate an AGENT.md invariant at length — but both trade user-facing
+detail for size, so they need an explicit ask.
+
+**Next action:** none pending. Commit, `git fetch`, push, verify.
+
 ## Progress Journal (root causes of fixed bugs: git history)
 
 
