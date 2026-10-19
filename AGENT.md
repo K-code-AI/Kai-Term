@@ -17,1758 +17,54 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s99 — build and every suite green, WITH the window group running:
-`tests/cli_test.sh` 117 checks / 0 failures / 0 skipped. Two things are owed the user's eye: the s98 clipboard
-paste fix, and the s99 config-reader fix, which changes the background of THEIR OWN window — their
-`background = #1c1c22` line has never applied until now)
-
-- **s99 (config split into `kai-term.conf` + `kai-term.bind`, `-b/--binds`, the config-file search order,
-  preview-pane key scrolling, and a config reader that threw away every `#RRGGBB` colour) is implemented,
-  wired, green and A/B'd — but NOT confirmed by a human eye, and its motivation is not in the record.**
-  The session that wrote it stopped before journaling anything; s99 entry 1 of this journal is the
-  reconstruction from the diff. What s99 added on top of what it found: the template name-coverage check
-  (6 checks — the old check could not see a deleted template line, proven by A/B), and the `run_env` fix in
-  `tests/cli_test.sh` (10 windowed checks were failing because `env` ate the binary's `-w`; the program was
-  fine, measured by hand first). **Open question for the user, the only one here: did they ask for the
-  two-file split?** Nothing in the journal says so. If they did not, the split is a design change they get to
-  refuse — the code is one dispatcher (`apply()` in `src/config.c`) plus `config_find`/`config_load_binds`, so
-  undoing it is contained. See s99 entries 1-5 and the close-out.
-
-- **s98 (pasting from Firefox put `h` on the bash prompt and `h^@t^@t^@p^@…` on the zsh prompt) is fixed,
-  reproduced, and A/B'd end-to-end — NOT yet confirmed in the user's own window.** The cause was the clipboard
-  SOURCE, not the parser, and the user localised it: the source matters, the paste key matters, the source is
-  Firefox. Measured against their real selection: Firefox advertises ten types ending `text/x-moz-url-priv`,
-  `offer_offer()` overwrote the recorded type for every `text/*` one so **the last advertised won**, and Firefox
-  serves that type as **UTF-16LE** (`68 00 74 00 74 00 70 00 3a 00 …`). Those 42 bytes went verbatim into the
-  bracketed paste; bash's bracketed reader stops at the first NUL (one `h`), zsh inserts them all and paints each
-  NUL as `^@`. Two fixes: `clipboard_mime_rank()` (ask for the best type, never the last) and `paste_repair()`
-  (decode UTF-16, otherwise strip NULs — a NUL must never reach the pty). A/B on the same clipboard: old writes
-  42 UTF-16 bytes, new writes the 6 clean UTF-8 bytes. Safety net proven on a source that offers ONLY UTF-16:
-  33 bytes in, 17 out. 19 new checks (859 -> 878). Both live in `src/vt.c` as pure functions; the call sites are
-  `offer_offer()` and `paste_flush()` in `src/main.c`.
-  **The s97 C0-inside-CSI fix stands on its own** (a real parser bug, 14 checks) but it was not what the user was
-  hitting, and the s97 "escape sequence in the pasted text" story is NOT their diagnosis — see ISSUES.md
-  "Known limitations" — "Paste".
-- **s96 (the mouse inside full-screen programs) is implemented, wired, green and CONFIRMED BY THE USER IN THEIR
-  OWN WINDOW** (2026-10-21: "I tested it and now I can scroll in nano", "nano --mouse works as expected", "I
-  confirm it to be good"). What it is: DECCKM (`ESC[?1h`) is honoured and saved/restored across the alternate
-  screen, so cursor keys go out in the form the program asked for — this alone fixes the arrow keys in less/man/htop,
-  which answer ONLY the SS3 form; the wheel inside a program that owns its screen and never asked for the mouse
-  becomes Up/Down presses; a click that never dragged becomes the arrow-key walk to the clicked cell (vertical
-  first, target column clamped to the clicked row's last glyph + 1); the wheel report to a program that DID grab
-  the mouse is 64/65, not 4/5 (ncurses reads 4 as button 1, so the wheel was dead in vim/htop/tmux/`nano --mouse`);
-  and the file manager's preview pane scrolls its own body. Decisions live in `src/vt.c`
-  (`term_wants_key_mouse`, `term_arrow_seq`, `term_wheel_arrow_keys`, `term_click_arrow_keys`,
-  `mouse_wheel_button`) and `src/fm.c` (`pv_scroll`, `fm_preview_scroll`, `fm_preview_scroll_max`); the wiring is
-  `app_wheel()` + `ptr_button()` + `send_key()` + `fm_wheel()` in main.c. Switches: `wheel_sends_keys`,
-  `click_moves_cursor` (default 1). Pinned by 31 new `test_vt` checks and 27 new `test_fm` checks; the preview
-  resize clamp was A/B'd (`.scratch/s96/clampab`: 1 failure on the old placement, 0 here).
-- **s90-s99 are committed on `main` and pushed** (s100 verified after the push: `git status -sb` shows no
-  ahead/behind, `git rev-list --left-right --count origin/main...main` is `0 0`, `git diff --stat main
-  origin/main` is empty, working tree clean). Read the remote state with `git status -sb` /
-  `git log --oneline origin/main -1`, never from a hash written here. s89's
-  follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks)
-  was confirmed by the user in their own window (2026-10-20).
-- **s95 changed the file manager's key layout, by request — implemented, green, measured headless and CONFIRMED
-  BY THE USER IN THEIR OWN WINDOW** ("The feature works", 2026-10-20 — their verdict on the behaviour, not on how
-  anything looks). `p` (`fm_key_path`) types the selected entry's quoted path at the cursor; the preview
-  toggle moved to `v`; `Return` on a file does nothing (it used to type the path), and so does a double-click.
-  The gate in `fm_send_path()` is now the non-strict `term_prompt_line_typed()`, which is what makes it work
-  after a half-typed command, through fish's autosuggestion ghost, and at a cursor parked mid-line — the three
-  cases the strict predicate refused (`.scratch/s95/pathgate.c` runs the old and new machine in ONE binary over
-  real fish/bash/zsh: 18/18 modes green on the new one, and `midline` + `ghost` red on the old one, which is the
-  proof the change moved what it was meant to move). The `cd` follow is provably untouched:
-  `.scratch/s90b/diffgate.sh` reports all seven copied functions byte-identical to `main.c`, and all six
-  integration modes still end `MATCH` with `typed text INTACT`.
-- `make -j8` exit 0, **0 warnings** under `WARN` (`-Wall -Wextra -Wshadow -Wwrite-strings
-  -Wformat=2 -Wdiscarded-qualifiers`). Headless suites: `./bin/test_vt` **944 checks, 0 failures**,
-  `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks, 0 failures**;
-  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` + those three);
-  `make asan` exit 0 with the same counts and 0 sanitizer reports. When the probe launch can draw,
-  `tests/cli_test.sh` reports **117 checks / 0 failures / 0 skipped** — that is the only run in which the
-  config-search, `kai-term.bind` and `-b` checks execute at all, so a no-window "0 failures" does not cover
-  them; re-diff these numbers, do not copy them from here.
-- **Shell integration (s90-s92) is implemented, wired, and CONFIRMED BY THE USER IN THEIR OWN WINDOW for all
-  three shells (2026-10-20): "I verified the shell integration, Fish Bash and Zsh are working as expected now.
-  Perfect"** — that closes the one thing s92/s93 owed, including zsh, whose script had never been run anywhere
-  before. It is also still proven headless: `.scratch/s90b/intgate.c` runs the machine copied verbatim from
-  `src/main.c` over the real pty + real `term_parse()` + the SHIPPED `src/shellint.c`, with real fish 4.6, bash
-  5.3 and (s94) zsh 5.9: the shell announces, Kai-Term writes the request file and sends `C-x C-]`, the ack comes
-  back in **54-76 ms**, the user's line is byte-identical before and after (`Some text ` still there, no `cd` ever
-  visible), and the shell's own `pwd` prints the new directory. The nested case (a plain `bash` inside the
-  integrated fish) times out at 400 ms, logs `fm: no integration ack from fish — using the typed path`, marks the
-  session's integration dead and runs the old machine — the text survives and **no stray character lands on the
-  line**; the next navigation there skips the integration entirely. With `shell_integration = 0` (bare fish) the
-  behaviour is exactly the old one. Re-running every mode after the s93 cleanup reproduced all of it (s94 entry 1).
-- **The follow is user-confirmed in their own window (2026-10-19): "I confirm it works"** — after the s86
-  fix, running `./bin/kai-term -d` with fish. It is also proven headless: `.scratch/s86/follow2.c` runs the
-  machine from `src/main.c` over the real `src/pty.c` + real `term_parse()`; two navigations on top of each
-  other both end with `the prompt now holds the browser's directory and what you had typed` and the line holds
-  `Some text ` — not the `Some text cd /etc` the user had reported. `g.log` = the fish-autosuggestion case now
-  follows; `m.log` = the mid-line-cursor case fails safe (no `cd` ever sent, the captured text logged).
-  The live key-injection harness was NOT re-run: the user is at this machine and asked not to be disturbed
-  (s86, and the pitfall in Key Decisions) — the confirmation came from them running it, which is the better
-  evidence anyway.
-- `git status -sb` -> clean tree, `main` == `origin/main` (see the first bullet). Read the remote state with
-  `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. The follow lives in
-  `src/main.c` (the state machine + the quiet-period step),
-  `src/vt.c` (the echo window needs a transition; a height-only resize keeps a dirty prompt snapshot),
-  `include/kai-term/kai-term.h` (`term_prompt_line*`), `tests/test_vt.c`.
-- The file manager IS reachable from the UI (`Ctrl+Shift+F`) and its band is drawn. Its input routing
-  (toggle, band keys, focus handover, `cd` follow, close/reopen) was verified live by injecting keys through
-  niri and reading the bytes the PTY received — three real defects found and fixed that way (s74). The user
-  has now run the band in their own window and confirmed the behaviour (2026-10-19). **No explicit verdict on
-  how it LOOKS has been given** — if they ever report something visual, start from the `fm:` log lines, not
-  from the shader.
-- **s88 changed how big that band is and what its preview may paint, and no human eye has seen it yet.**
-  `fm_rows` (a row count) is gone from the whole tree; `fm_size` (percent of the grid area, default **75**,
-  clamped 10–95 in config.c AND layout.c) decides the share, so the band keeps its proportion through a
-  resize and a zoom. And the preview pane's rows now have ONE owner (`preview_head_rows()` +
-  `preview_meta_rows()` in fm.c, used by both `paint_preview()` and `fm_image_fit()`), which is what stops
-  the metadata lines being drawn across the picture — the user's "the metadata sometimes get written on the
-  image preview". Both are pinned by checks (845 + 274, 0 failures) and the preview one by an A/B against the
-  previous `src/fm.c` (8 failures there). Nothing here has been looked at in the user's window.
-- **Image support (kitty graphics protocol) is in the tree and user-confirmed by eye** ("The image display
-  properly. The feature works as expected", 2026-10-17, session 70, `timg -p k` with a PNG): APC/DCS parser
-  states, chunk assembly, base64 + zlib + PNG (libpng simplified API) + raw f=24/32 decode, premultiplied
-  pixels held in the model, images anchored to absolute grid rows, winsize pixel geometry +
-  `CSI 14 t`/`CSI 16 t`, and a renderer that draws each picture between the background batch and the text
-  batch. Also verified headless (real timg bytes through the real parser) and by log line
-  (`graphics: 1 image(s) drawn, 1 texture(s) held`, no GL warning).
-- No probe/experiment left in tree: `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` ->
-  empty (the s85 RETYPING probe was removed in s86).
-- README's option table (`-e -w -c -b -d -v -h`, 7 options) matches `usage()` by set difference, and its two
-  config tables (29 settings rows + 24 binding rows) are exactly the 53 names `src/config.c` compares —
-  re-checked by set difference, not by eye, in s99 (`.scratch/s99/names.sh`), and now pinned durably by the
-  template name-coverage checks in `tests/test_vt.c`, which read the accepted names out of the two strcmp
-  ladders in `src/config.c` and compare them with `config/kai-term.conf` + `config/kai-term.bind`. The three
-  extra rows in README's tables are the file-manager shortcut keys (`p`, `r`, `v`), not config names.
-- **No open issues.** The 4 reports that used to be in ISSUES.md were unproven (never reproduced here) and
-  were dropped entirely on 2026-10-17 — they are not in "Fixed" either, since no fix was ever verified.
-  Recoverable with `git show d5afe4a:ISSUES.md`; recurrence -> file a new Open item with a reproduction.
-- **User-confirmed by eye in their window:** multiplexing + tab bar + side-by-side ("works as expected and
-  looks great", 2026-10-17); image display via `timg -p k` ("the image display properly. The feature works
-  as expected", 2026-10-17); zoom (no stale prompt lines), padding, fullscreen refresh, black-window/no-input
-  fix, heavy-output segfault fix, transparency, bracketed paste, `clear` drops scrollback, shell start dir,
-  color emoji, text selection, `app_id`, several instances at once, window resize, key-hold repeat, clipboard
-  interop both directions; the file manager's path key `p` and the `Return`-does-nothing change ("The feature
-  works", 2026-10-20, s95); the mouse wheel and a click inside full-screen programs — scrolling nano, and
-  `nano --mouse` reporting the wheel ("I tested it and now I can scroll in nano", "nano --mouse works as expected",
-  "I confirm it to be good", 2026-10-21, s96).
-- Verified at model+live level (not all re-checked by hand): reflow on width change, color emoji + grapheme
-  clusters, whole-glyph selection with no band over unwritten space, compositor transparency, CSI 3 J +
-  startup dir, client-side key repeat, draw/commit + event-loop pacing.
-- Git: `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. Never write a hash or an
-  ahead/behind count in this file — the commit recording it makes it wrong. Read the truth with
-  `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
-  GitHub too. Never commit `bin/` or `build/`.
-
-## Current Task (s100 — CLOSED as work: resumed a tree whose s99 code commit was unpushed and whose journal/ISSUES
-edits were uncommitted. Re-measured from clean (entry 1), made the second commit, fetched, pushed and verified
-(entry 2). No source was touched. What remains is the user's — Next Steps 0a/0b/0c and the s98 eye-check — and
-this session asked; no answer is recorded yet.)
-
-**Planned steps:** (1) `make clean && make -j8`; (2) `KAI_TERM_TEST_NO_WINDOW=1 make test` — the windowed group is
-deliberately skipped this session: `nvidia-smi` measures 11783/12227 MiB already used (the user's local LLM) and
-the user is at the machine (focused window: Firefox), so mapping a window risks the refused-texture path and
-disturbs them. The config-search / `kai-term.bind` / `-b` checks therefore get NO new coverage this session; the
-last windowed measurement (117 checks / 0 failures / 0 skipped, s99 entry 4) stays the record and is quoted as
-such, not as a fresh number. (3) commit AGENT.md + ISSUES.md as s99's docs commit; (4) `git fetch`, push, verify
-with `git status -sb` + `git rev-list --left-right --count origin/main...main`; (5) ask the user Next Steps
-0a (did they ask for the two-file split?), 0b (their background colour is about to change) and 0c (the
-preview-pane keys have never been seen by a human).
-**Expected outcome:** `main` == `origin/main`, clean tree, no claim of a windowed run that did not happen, and the
-user's answers in the record before any further config-design work.
-
-### s100 entry 1 — the tree re-measured from clean, before the docs commit
-
-Every command run in this session, with its result (not copied from s99):
-
-1. `make clean && make -j8` -> exit 0, **0** warning/error lines in the log.
-2. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 67 checks, 0 failures, 13 skipped`, `test_vt`
-   **944 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**, `test_fm` **293 checks, 0 failures**. The 13
-   SKIP lines name the window group, and three of them are the s99 ones — `config search order
-   (XDG/~/.config//etc)`, `kai-term.bind searched and applied`, `-b FILE` — plus `combined flags`. So this run
-   does NOT cover the config-search feature; that is stated rather than glossed.
-3. `make asan` -> exit 0 with the same 944 / MODEL OK / 293 and no ASan/UBSan report.
-
-No window was mapped and no live harness was run, for the reason in the planned steps above (VRAM 11783/12227 MiB
-used by the user's LLM, user at the machine). The windowed `tests/cli_test.sh` figure of 117/0/0 is s99 entry 4's
-measurement, not this session's.
-
-**Next action:** commit AGENT.md + ISSUES.md (s99's second commit), then `git fetch` + push and verify.
-
-### s100 entry 2 — the two commits and the push; s99 is now closed as work AND in history
-
-`git add AGENT.md ISSUES.md` -> one commit ("Journal: s99 — the config split reconstructed from the diff, …"), so
-the s99 work is now two commits as its close-out planned: the code/tests/templates/README, then the docs.
-`git fetch` first (the user commits on GitHub too) — nothing arrived. `git push origin main` -> exit 0,
-`62a00a6..7507385`. **Verified afterwards, not asserted:** `git status -sb` -> `## main...origin/main` with no
-ahead/behind, `git rev-list --left-right --count origin/main...main` -> `0 0`, `git diff --stat main origin/main`
--> empty, working tree clean.
-
-Nothing in the repo is unfinished. What is open is the user's, and it is now the top of Next Steps: 0a whether they
-asked for the two-file config split at all, 0b their own `background = #1c1c22` finally applying (their window's
-background will change on the first run of the new build — that is the fix), 0c the preview-pane keys never having
-been seen by a human, plus the still-unconfirmed s98 paste fix. Those four were put to the user at the end of this
-session; no answer is in the record yet, so nothing about the split may be undone or extended until one arrives.
-
-## Previous Task (s99 — CLOSED as work, OPEN as questions: resumed a tree that had work in it and no journal entry. `git status` showed 8 modified files plus an untracked `config/`, while the last journal entry (s98 close-out) said the tree was clean and pushed. The work is a **config split** — settings stay in `kai-term.conf`, every key binding moves to a new `kai-term.bind`, both searched in `$XDG_CONFIG_HOME/kai-term` → `~/.config/kai-term` → `/etc/kai-term`, new `-b/--binds` flag — plus **preview-pane key scrolling** (`Page_Up`/`Page_Down`/`Home`/`End` scroll the previewed text while that pane owns the keyboard) and a **real bug fix in the config reader** (`background = #1c1c22`, the colour form README documents, was being cut at the `#` and set nothing at all). Re-measured from a clean tree: green. What s99 still owes is recorded below. See s99 entries 1-.)
-
-### s99 entry 1 — what was actually on disk, before any change
-
-The journal and the tree disagreed, so the tree was read first and the journal second:
-
-- `git log --oneline -1` = the s98 clipboard fix; `git status --short` = ` M README.md include/kai-term/kai-term.h
-  src/config.c src/fm.c src/main.c tests/cli_test.sh tests/test_fm.c tests/test_vt.c` and `?? config/`.
-- No s99 block existed anywhere in AGENT.md, and `.scratch/s99/` was an empty directory — the previous session
-  stopped after the code and tests were written, before writing a word of the journal. So nothing here is
-  "known-good from a previous entry": every number below was re-measured in this session.
-- `make clean && make -j8` -> exit 0, no warning line. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0:
-  `CLI: 67 checks, 0 failures, 13 skipped`, `test_vt` **938 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
-  `test_fm` **293 checks, 0 failures**. (s98's close-out recorded 62/878/274 — the difference is this work's
-  60 test_vt + 19 test_fm + 5 CLI checks.)
-
-**What the change does, as read from the diff** (all of it verified by the checks named in entry 2, not by eye):
-
-1. `src/config.c`: the old single `apply()` became `apply_bind_key()` (the 24 `key_*`/`fm_key_*` names) +
-   `apply_setting()` (the 29 others) under one dispatcher `apply(c, key, val, from_bind_file)`. The split is by
-   NAME, never by "which file was open": a binding left in an older `kai-term.conf` is applied with a log line
-   naming where it belongs now, and a SETTING written in `kai-term.bind` is refused with the matching message —
-   never silently dropped.
-2. New `config_find(name, out, cap)`: first of `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term`,
-   `/etc/kai-term` holding a **regular** file called `name` (`S_ISREG`, so a directory or FIFO named
-   `kai-term.conf` is skipped); empty `out` means "use the built-in defaults". The search is per FILE NAME, so
-   a user with a `kai-term.conf` in `~/.config` and no `kai-term.bind` there still gets the system bindings.
-   `config_load()` and the new `config_load_binds()` are thin wrappers over one `config_read()`; main.c reads
-   the bind file SECOND, so for a name both files set the bind file wins.
-3. New `-b/--binds FILE` in `usage()` + the option parser; `-c` keeps its meaning and each flag skips only its
-   own file's search.
-4. `src/config.c` comment rule: a `#` starts a comment when only whitespace precedes it, OR when whitespace
-   precedes AND follows it. The old rule ("whitespace before it is enough") cut `background = #1c1c22` at the
-   `#`, so the colour form README documents and the shipped template writes set NOTHING — and an empty value is
-   legal ("foreground ="), so nothing was even logged. `working_dir = /home/me/my#project` still survives.
-5. `src/fm.c`: `fm_preview_page_rows()` / `fm_preview_page()` / `fm_preview_top()` / `fm_preview_bottom()`, all
-   routed through the existing `fm_preview_scroll()` so the clamp keeps one owner. `src/main.c` `fm_keys()`
-   sends the band's four scroll bindings there when `g_fm.focus == FM_FOCUS_PREVIEW` and to the listing
-   otherwise; `Up`/`Down` deliberately keep moving the LISTING (that is how you change which file is previewed).
-6. New `config/kai-term.conf` + `config/kai-term.bind` — the shipped templates, every name with its built-in
-   default. Untracked until s99; README already links them, so they must be committed with it.
-
-### s99 entry 2 — the claim README makes that the tests did NOT yet prove
-
-README's new Templates section says: "The test suite loads both files and compares every value with the
-compiled-in defaults, so the templates cannot drift from the program." Measured against the check that exists:
-it loads both files and compares every FIELD with a fresh `config_default()`. That catches a wrong VALUE, but a
-**deleted line also passes** — the loaded Config still equals the default, so a template that quietly stops
-mentioning `padding` would still be green while telling the user the file lists every setting. The check is
-one-directional in the other sense too: a name the parser does not know would only print a warning.
-
-Set difference run first (`.scratch/s99/names.sh`, names extracted from `apply_bind_key()`/`apply_setting()` in
-the source, from the two template files, and from README's tables): code 29 settings + 24 bindings, templates
-29 + 24, README 53 config rows — `diff` empty in every direction, and no binding is written in the `.conf`
-template or vice versa. So the templates ARE complete right now; what was missing was a check that KEEPS them
-so. Closing that gap is the next action.
-
-### s99 entry 3 — the new check, and the A/B that proves it can fail
-
-`tests/test_vt.c` gained two helpers and 6 checks:
-
-- `cfg_names_of(src_path, sig, names, cap)` reads the accepted names out of the two strcmp ladders in
-  `src/config.c` (`static void apply_setting(` / `static int apply_bind_key(`, body ends at the column-0 `}`,
-  names are the `strcmp(key, "…")` arguments). Deriving them from the source is the point: a hand-copied list
-  in the test file could never catch "a setting was added to the parser and not to the template". A signature
-  that is not found returns -1 so a rename fails loudly instead of checking nothing, and one check pins the
-  current counts (29 settings, 24 bindings) with a "re-diff, do not copy" message.
-- `tpl_check_names(path, names, n)` scans the template's own key lines (a line counts when it starts after
-  blanks with a letter and the name is followed by `=`) and reports three things: a name the parser accepts
-  that the file does not list, a name the file lists that the parser does not know, and a duplicate.
-
-A/B in `.scratch/s99/ab` (a copy of the whole tree, so the real tree was never broken):
-
-| What was broken | Result |
-|---|---|
-| `padding = 8` deleted from `config/kai-term.conf` | **1 failure**: `template: config/kai-term.conf does not list padding` |
-| the SAME deleted template line, but `tests/test_vt.c` as it was at HEAD | **0 failures, 878 checks** — the hole was real |
-| `padding_x = 8` added to the template | **1 failure**: `lists 'padding_x', which the config parser does not know` |
-| `zzz_new_setting` added to the parser's ladder, no template line | **2 failures**: the 29/24 count check + `does not list zzz_new_setting` |
-
-### s99 entry 4 — the windowed CLI suite found a harness bug, not a program bug (10 failures -> 0)
-
-Running `make test` WITH a Wayland display (the config-search and `-b` checks live inside the `have_display`
-block, so the no-window run never exercises them) gave `CLI: 117 checks, 10 failures`. The same launch typed
-by hand worked first try, so the harness was the suspect and it was:
-
-```sh
-$TMO env "$@"        # run_env HOME=… XDG_CONFIG_HOME=… -d -w "$tmp" -e true
-```
-
-`env` parses the BINARY's flags as its own options — `-w` is coreutils' `--split-string` — so the command never
-ran at all: `env: ‘-w’: No such file or directory`, and every check after it failed. `--` does not stop it here.
-Fixed by dropping `env(1)`: `run_env` now takes `$env_home` / `$env_xdg` set by the caller and uses the
-assignment-prefix form (`HOME=… XDG_CONFIG_HOME=… $TMO "$BIN" "$@"`), which keeps `rc` in the current shell —
-that is why `env(1)` was reached for in the first place. An empty `$env_xdg` sets the variable to the empty
-string, which `config_find()` reads as "not set", so the developer's own value cannot leak into a run.
-One call site also needed `env_home` put back to the scratch HOME after the deliberately-empty-HOME case.
-
-Re-measured after the fix, with the display: `CLI: 117 checks, 0 failures, 0 skipped`, `test_vt` **944 checks,
-0 failures**, `dbg` **MODEL OK (0 problems)**, `test_fm` **293 checks, 0 failures**. `make asan` -> exit 0 with
-the same three counts and no ASan/UBSan report. (The no-window run is 67 checks / 13 skipped — the 13 skips
-are exactly the window checks, and the config-search ones among them are why the windowed number matters.)
-
-### s99 entry 5 — the `#` fix is measured against the USER'S OWN config file
-
-`/home/kaida/.config/kai-term/kai-term.conf` — the user's own settings file — contains
-`background = #1c1c22` — the form README documents. `.scratch/s99/hashab/cfgprobe.c` loads that real file with
-HEAD's `src/config.c` and with the working tree's, printing the resulting ARGB:
-
-- OLD reader: `background = ff101014` — the built-in default; their line was cut at the `#` and an empty value
-  is legal, so nothing was logged.
-- NEW reader: `background = ff1c1c22` — what they wrote.
-
-Everything else in their file was already applying (`font_size=14 cols=100 rows=30 opacity=0.60` in both).
-So this is a visible change in the user's own window the moment they run the new build: their background
-colour finally takes effect. Worth telling them, because it will look like something broke.
-
-### s99 close-out — re-measured from a clean tree, and what is still owed
-
-`make clean && make -j8` -> exit 0, no warning line at all. `make test` WITH a Wayland display (the probe launch
-could draw) -> exit 0: `CLI: 117 checks, 0 failures, 0 skipped`, `test_vt` **944 checks, 0 failures**, `dbg`
-**MODEL OK (0 problems)**, `test_fm` **293 checks, 0 failures**. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> the
-same three with `CLI: 67 checks, 0 failures, 13 skipped`. `make asan` -> exit 0 with the same three counts and
-no ASan/UBSan report (the new test helpers malloc/calloc and free; LeakSanitizer saw nothing).
-
-Two commits: the code + tests + the two templates + README, then this journal and ISSUES.md. Remote state is
-read with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here.
-
-**Still owed, all of it the user's:**
-1. Whether they wanted the two-file split at all (Next Steps 0a) — the one design decision in this tree that
-   nothing in the record attributes to them.
-2. Their eye on the background change their own config file now produces (Next Steps 0b), and on the s98 paste
-   fix, which is still unconfirmed in their window.
-3. Their eye on the preview-pane keys: model-tested, never seen. The routing lives in `fm_keys()` in `src/main.c`,
-   which is in no test binary — the standing housekeeping item about extracting that routing into a testable
-   unit (Next Steps 5) now covers these four keys too.
-
-**Not done, deliberately:** no `install` target and nothing copies `config/*` to `/etc/kai-term` — the Makefile
-has never had one, and inventing one unasked is not this session's call. README tells the user to copy the
-templates themselves.
-
-## Previous Task (s98 — CLOSED: the user's stray `h` when pasting, finally traced to the clipboard SOURCE. Their three clues did the diagnosis: the source matters, the paste key matters (Ctrl+V works, Ctrl+Shift+V does not), and the source is Firefox. Measured against their real selection: Firefox advertises `text/x-moz-url-priv` LAST and serves it as UTF-16LE, and `offer_offer()` kept the last advertised type — so Kai-Term asked for UTF-16 and wrote it verbatim to the pty. bash's bracketed reader stops at the first NUL (`h`); zsh paints every NUL as `^@` (`h^@t^@t^@p^@…`). Fixed with `clipboard_mime_rank()` + `paste_repair()`, 19 checks, A/B'd end-to-end. I had the mechanism wrong TWICE before measuring the source; the s97 fix is real but was not this bug. NOT yet confirmed in the user's own window. See s98 entries 1-4 and the close-out.)
-
-### s98 entry 1 — what I got wrong, and the clue that fixed it
-
-Two wrong mechanisms were asserted before anything was measured, and both are in the record so the next reader
-does not repeat them:
-
-1. **"An escape sequence inside the pasted text, during the startup window where bracketed paste is off."** That
-   behaviour is real (measured in s97) but it is not what the user was hitting. Their clipboard held
-   `printf 'AA\e[?2004hBB' | wl-copy` — 32 bytes of **literal backslash-and-e**, no ESC byte at all. A story about
-   an escape sequence cannot apply, and kitty pasting it verbatim proved that.
-2. **"The source serves UTF-16 and the shells strip NULs, so raw UTF-16 explains it."** Half right, and the probe
-   said no: feeding raw UTF-16LE to bash *without* the bracketed delimiters produced the full correct text in both
-   shells. The delimiters were the missing variable — with them, bash stops at the first NUL.
-
-The clue that broke it open was the user's own: **"pasting with ctrl+v works perfectly … what's the difference
-between those 2?"** Kai-Term handles only Ctrl+Shift+V (`send_key()` requires `shift_held`); plain Ctrl+V goes to
-the shell, whose own paste path (`fish_clipboard_paste` -> `wl-paste`, bash/zsh command substitution) **drops NUL
-bytes** on the way into a variable. Same clipboard, two paths, one sanitises. That localised the bug to Kai-Term's
-own paste path — and "the source matters" localised it to the mime type.
-
-**Lesson, and it is the same lesson as every other entry in this file: measure the SOURCE before theorising about
-the parser.** `wl-paste -l` and `wl-paste --type <name> | od -c` answer it in ten seconds. I ran them only after
-two wrong answers.
-
-### s98 entry 2 — MEASURED: what Firefox actually offers and actually serves
-
-The user's live Firefox selection, every advertised type and the bytes served under each:
-
-```
-text/plain;charset=utf-8  ->  61 73 64 61 73 64 0a          ("asdasd", correct UTF-8)
-UTF8_STRING               ->  61 73 64 61 73 64 0a
-COMPOUND_TEXT             ->  (empty)
-TEXT                      ->  61 73 64 61 73 64 0a
-text/plain                ->  61 73 64 61 73 64 0a
-STRING                    ->  61 73 64 61 73 64 0a
-text/plain;charset=utf-8  ->  61 73 64 61 73 64 0a
-text/plain                ->  61 73 64 61 73 64 0a
-text/x-moz-url-priv       ->  68 00 74 00 74 00 70 00 3a 00 2f 00 2f 00 31 00 32 00 37 00 …   <-- UTF-16LE
-SAVE_TARGETS              ->  (empty)
-```
-
-`offer_offer()` overwrote the recorded mime for **every** type starting with `text/`, so the LAST advertisement won.
-`text/x-moz-url-priv` qualifies (it starts with `text/`) and Firefox serves it as UTF-16LE — the user's
-`http://127.0.0.1:8080`, still in their clipboard. Kai-Term asked for it, buffered 42 bytes, and wrote them
-verbatim into the bracketed paste.
-
-Reproducing the two symptoms exactly (`.scratch/s98/nulprobe.c`, real `src/pty.c` + real `term_parse()`, no
-window, UTF-16LE inside `ESC[200~ … ESC[201~`):
-
-```
-bash:  row 0 |kaida@k-gentoo /tmp $ h                      <- readline's bracketed reader stops at the first NUL
-zsh:   row 0 |k-gentoo% h^@t^@t^@p^@:^@/^@/^@1^@2^@7^@.^@0^@.^@0^@.^@1^@:^   <- zle paints each NUL as ^@
-```
-
-That zsh line is the user's report character for character.
-
-### s98 entry 3 — the two fixes
-
-**(1) Ask for the best type, never the last one.** `clipboard_mime_rank()` in `src/vt.c` (pure, unit-tested):
-`text/plain;charset=utf-8` (5) > `UTF8_STRING` (4) > `text/plain` (3) > other `text/plain` variants (2) > any other
-`text/*` (1) > not text (0). `offer_offer()` keeps the highest rank seen instead of the last name seen.
-
-**(2) A NUL byte must never reach the pty.** `paste_repair(in, len, out, cap)` in `src/vt.c`: no NUL anywhere →
-copy through byte-for-byte, unchanged (the common case, and the only case that must stay untouched). Otherwise a
-BOM decides UTF-16 outright; without one, only a **dense, one-sided** NUL pattern counts (`nuls*2 >= len`, NULs
-mostly at odd offsets = LE, mostly even = BE) and is decoded to UTF-8 with surrogate pairs and lone surrogates
-handled; anything sparser is NUL-stripped only, because guessing UTF-16 on ambiguous input turns good text into
-garbage. `paste_flush()` calls it before writing anything, sizes `cap` as `len*3/2 + 8` (UTF-16 2 bytes can become
-UTF-8 3 bytes), and logs `paste: N clipboard bytes contained NUL, repaired to M`.
-
-19 new checks (859 -> 878, 0 failures): UTF-16LE with and without a BOM, UTF-16BE with and without, a surrogate
-pair becoming one 4-byte code point, a lone surrogate becoming one replacement char with the NEXT unit surviving,
-sparse NULs stripped rather than decoded, a stray NUL stripped, clean text untouched, short cap refused rather than
-truncated, and the ranking order itself.
-
-### s98 entry 4 — verified end-to-end, against the user's real clipboard
-
-`.scratch/s98/ab.sh` runs Kai-Term with `cat > capture` as its shell, so the capture file holds exactly the bytes
-Kai-Term wrote to the pty, and injects Ctrl+Shift+V through the real compositor (uinput). Against the user's live
-Firefox selection:
-
-| binary | bytes written to the pty |
-|---|---|
-| OLD (`src/main.c` at HEAD) | `68 00 74 00 74 00 70 00 3a 00 …` — **42 bytes of UTF-16LE** |
-| NEW (fixed) | `61 73 64 61 73 64` — **6 clean UTF-8 bytes** |
-
-`.scratch/s98/net.sh` proves the safety net on a source that cannot be dodged by picking a better type
-(`wl-copy -t text/plain` forcing UTF-16 bytes under the only advertised name): OLD writes 33 UTF-16 bytes, NEW
-writes 17 clean ones, logging `paste: 33 clipboard bytes contained NUL, repaired to 17`.
-
-**Harness traps hit and fixed on the way** (all of them made a run lie): `pkill -f clipowner` matched the shell
-running it and killed the whole command; a background job spawned with `&` makes this shell tool swallow ALL of the
-call's output, so background-and-report must be split across calls or put in a script file; `cat > file` is
-fully buffered when stdout is a file, so killing it discards the capture — send Ctrl-D and let it exit; and after a
-FAILED `make` the old `bin/test_vt` still ran and cheerfully reported "859 checks, 0 failures" for code that had not
-been rebuilt.
-
-### s98 close-out — re-measured from a clean tree, committed and pushed (s99 note: this entry's "working tree is clean" was TRUE when written and is what the next session found contradicted — see s99 entry 1)
-
-`make clean && make -j8` -> exit 0, no warning line at all. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0:
-`CLI: 62 checks, 0 failures, 10 skipped`, `test_vt` **878 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
-`test_fm` **274 checks, 0 failures**. `make asan` -> exit 0 with the same three counts and no ASan/UBSan report.
-No untracked file outside the git-ignored `bin/` and `build/`.
-
-One commit holds the code, the tests and the two docs. Pushed; verified afterwards rather than asserted: `git fetch`
-first, `git status -sb` shows no ahead/behind, `git rev-list --left-right --count origin/main...main` is `0 0`,
-`git diff --stat main origin/main` is empty, and the working tree is clean.
-
-**Left open, and it belongs to the user:** the fix is A/B'd against their own clipboard, but only their eye can say
-the `h` is gone from their window.
-
-## Previous Task (s97 — CLOSED: the user's stray `h` nobody typed. Their hypothesis named a mechanism Kai-Term does not have (nothing in our parser writes to our own pty), but it pointed at a real one: `PS_CSI` ENDED a control sequence when a C0 byte arrived inside it, so the mode being set was never applied AND the rest of the sequence was printed as text — and `h` is the final byte of every mode-ENABLING sequence. Fixed with one shared `exec_c0()`, pinned by 14 checks, A/B'd (9 failures on the old parser, 0 on the new). Their second clue, nano's `Flawed paste`, is measured and is NOT a Kai-Term bug. NOT yet confirmed in the user's own window. See s97 entries 1-5 and the close-out.)
-
-**The user's report, in their words (2026-10-21):** they suspect the trailing `h` of the sequence a shell sends to
-enable bracketed paste is being leaked into the input as a keystroke. Their proposed mechanism, verbatim in
-substance: (1) the terminal is sent `\e[?2004h`; (2) the parser catches `\e[?2004` and flips
-`bracketed_paste_enabled = true`; (3) **the bug they suspect** — the parser changes state before consuming the
-final character, or fails to discard the `h`, so the `h` "gets accidentally leaked or fed back into the PTY input
-queue as a raw keyboard stroke"; (4) because bracketed paste just turned on, the emulator decides to wrap incoming
-input in paste brackets; (5) the leaked `h` comes back as `\e[200~h\e[201~`. Their two other clues: "the h can
-happen from opening Kai-Term and trying to paste … I just can't reproduce it at will", and, in nano, the paste
-produced nano's own `Flawed paste`.
-
-### s97 entry 1 — the hypothesis, read before any code: right shape, wrong direction
-
-- The SHAPE is plausible and matches a real class of parser bug: a state machine that acts on a sequence and then
-  re-processes its last byte, or that leaves one byte in the buffer, produces exactly "a character nobody typed".
-  **This part was right, and it is what the fix had to satisfy.**
-- The DIRECTION was wrong: Kai-Term does not send `\e[?2004h` to itself. That sequence arrives **from the shell**,
-  in bytes read out of the pty, and `term_parse()` consumes them. There is no path in which our parser writes to
-  our own pty input queue, so step 3's "fed back into the PTY input queue" cannot happen as described.
-- What could happen, and is what was looked for: the sequence is mishandled so its remaining bytes reach the text
-  path and land **in the grid** — a visible `h` on the prompt line. That is exactly what was found (entry 3),
-  though the trigger is not the plain sequence the user guessed but a C0 byte arriving inside it.
-- Step 4-5's bracket wrapping was checked on its own: `paste_wrap()` only adds `ESC[200~`/`ESC[201~` around a
-  **paste** the user performs, never around a stray grid character, so a leaked `h` is not bracketed. The user was
-  not reporting the literal text `\e[200~h\e[201~`, so that branch is closed.
-
-### s97 entry 2 — MEASURED first: nano's `Flawed paste` is about the CONTENT of the paste, not about how Kai-Term writes it
-
-`.scratch/s97/flawed.c` — real `nano 9.2` in a pty, real `src/pty.c` + real `term_parse()`, no window. The question
-was whether Kai-Term's write pattern is what makes nano complain, since `paste_flush()` writes `ESC[200~`, then the
-text in 4096-byte chunks, then `ESC[201~`, as separate `write()` calls. Eight cases:
-
-| case | what was sent | `Flawed paste`? | text landed? |
-|---|---|---|---|
-| A | balanced, ONE write | no | yes |
-| B | balanced, THREE writes (what `paste_flush` does), no delay | no | yes |
-| C | balanced, three writes with 20 ms gaps | no | yes |
-| D | start bracket, NO end bracket | no | **no** |
-| E | end bracket, NO start bracket | no | yes |
-| F | end bracket split mid-sequence | no | yes |
-| G1 | 9 KB chunked, NO end bracket | no | **no** |
-| G2 | 9 KB chunked exactly like `paste_flush`, WITH end bracket | no | yes |
-
-**No case produced `Flawed paste`** — the write pattern is exonerated. (D and G1 lose the text, which is nano
-waiting for a closing bracket that never arrives; that is the `PASTE_BUF_MAX`/unterminated shape, not a bug.) So the
-remaining candidate was the clipboard CONTENT, and `.scratch/s97/hprobe.c` confirmed it: pasting `AA\e[?2004hBB`
-into nano 9.2 puts `[ Flawed paste ]` on the screen and inserts only `AA` — everything after the escape is dropped.
-nano refuses a paste block that contains an escape sequence. That is nano's diagnostic, not ours.
-
-### s97 entry 3 — the bug, measured: a C0 byte INSIDE a control sequence ENDED the sequence
-
-`src/vt.c`, `PS_CSI`, the branch for a C0 byte inside a control sequence, as found:
-
-```c
-/* C0 inside CSI: execute it, leave CSI (simple, safe) */
-ps->state = PS_GROUND;
-i--;
-```
-
-The comment says "execute it"; the code does not — it leaves the sequence and re-processes the control byte in the
-ground state, abandoning everything still to come. That does two damaging things at once: **the mode the sequence
-was setting is never applied**, and **the REST of the sequence is printed as text**. Measured with
-`.scratch/s97/hprobe2` built against `git show HEAD:src/vt.c` (kept as `.scratch/s97/hprobe2_old`):
-
-```
-C0 TAB inside: \e[?2004<TAB>h    row0 |h         | bracketed=0
-DECCKM:        \e[?1<TAB>h       row0 |h         | app_cursor=0
-alt screen:    \e[?1049<TAB>h    row0 |h         | alt=0
-```
-
-`h` is the final byte of every mode-ENABLING sequence (`?2004h`, `?1049h`, `?25h`, `?1h`) — which is exactly why the
-character the user keeps finding on their line is an `h`. DEC VT500 and xterm both EXECUTE the control byte and KEEP
-collecting the sequence; ESC is the one exception, cancelling the sequence and starting a new escape.
-
-**The probe that got this wrong, and why it matters:** v3 (`.scratch/s97/csiC0.c`) hand-counted its lengths, so
-`term_parse(&T, "\e[?2004", 8)` fed the NUL terminator — the literal is 7 bytes. It therefore reported the ordinary
-pty-boundary case — a sequence split across bursts with NO control byte in it — as broken (`bracketed=0`, an `h`
-painted). v4 (`hprobe2`) uses `strlen()` throughout and shows that case is fine: `burst1=\e[?2004` + `burst2=h`
-leaves `bracketed=1` and paints nothing. The old pitfall, again: when a check fails on code you believe is correct,
-suspect the check. The durable check in `tests/test_vt.c` now pins the split case precisely so it cannot be
-"fixed" into a bug later.
-
-### s97 entry 4 — the fix: ONE `exec_c0()` shared by the ground state and by CSI, 14 checks, A/B 9 -> 0
-
-The rule was written twice and the two copies disagreed — the ground state had it, CSI's copy was missing. So the
-fix removes the duplication rather than patching one copy: a file-local `exec_c0(Term *t, uint8_t b)` in `src/vt.c`
-handles BEL/BS/HT/LF/VT/FF/CR (and ignores every other C0), and both states call it. `PS_GROUND`'s five inline `if`s
-became `if (b < 0x20) { exec_c0(t, b); continue; }`; `PS_CSI` gained `if (b == 0x1b) { ps->state = PS_ESC; continue; }`
-followed by `if (b < 0x20) { exec_c0(t, b); continue; }`. ESC is handled by the caller because it cancels rather than
-executes.
-
-14 new checks in `tests/test_vt.c` (845 -> 859): TAB / LF / CR inside `\e[?2004h` each assert the mode IS applied,
-nothing of the sequence is painted, and the control byte itself was executed (`cx == 8` for the TAB, `cy == 1` for
-the LF, `cx == 0` for the CR); DECCKM (`\e[?1<TAB>h`) and the alternate screen (`\e[?1049<TAB>h`) survive a TAB in
-the sequence; ESC inside CSI leaves the mode OFF but still paints nothing; and the split-burst case with no C0 still
-applies its mode. The new helper for that is `grid_has_glyph()` — "is there ANY glyph in the viewport" — which is
-what proves a sequence was consumed rather than printed.
-
-**A/B, as always:** the new test file against `git show HEAD:src/vt.c` -> `859 checks, 9 failures`; against the
-fixed `src/vt.c` -> `859 checks, 0 failures`. The 9 are the new checks; the old parser fails exactly them.
-
-### s97 entry 5 — the OTHER half of the symptom, measured: how long bracketed paste is OFF after a shell starts
-
-The user's own framing — "from opening Kai-Term and trying to paste", "can't reproduce it at will" — is the shape of
-a startup race, and `paste_flush()` wraps a paste only when the application already holds DEC mode 2004. Measured
-from the pty spawn (`.scratch/s97/fishtime`, and section B of `.scratch/s97/hprobe2`): **bash ~20 ms, zsh ~20 ms,
-fish ~200 ms** before `bracketed_paste` turns 1. A paste flushed before that goes out RAW, and then an escape
-sequence inside the pasted text is keystrokes to the shell: pasting `AA\e[?2004hBB` into bash with the delimiters
-leaves the inert literal `AA^[[?2004hBB`, while the same bytes without them leave `AA2004hBB` on the line and Enter
-runs `AA2004hBB` (`.scratch/s97/hprobe`). That is a second, independent way to get a stray `h`, and it is not ours
-to fix — the delimiters are the protection and asking for them is the application's decision. Documented in ISSUES.md
-"Known limitations" — "Paste".
-
-**The fish number needed a better probe, and the first one was the lesson.** `.scratch/s97/fishdiag` shows fish's
-first 83 bytes are terminal QUERIES (`CSI ? u`, `CSI > 0 q`, `OSC 11 ; ? ST`, `CSI ? 1049 h`, two `DCS + q … ST`,
-`CSI ? 1049 l`, `CSI 0 c`) and fish paints nothing until they are answered or time out. `hprobe2` section B never
-answered them, so it reported "fish: bracketed paste NEVER within 3 s" — a property of the probe, not of fish.
-`fishtime` drains the response queue the way `src/main.c` does and measures 200 ms. A probe that hosts a shell must
-answer that shell's queries or it is measuring a shell that never started.
-
-### s97 close-out — re-measured from a clean tree, committed and pushed
-
-`make clean && make -j8` -> exit 0, no warning line at all. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0:
-`CLI: 62 checks, 0 failures, 10 skipped`, `test_vt` **859 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
-`test_fm` **274 checks, 0 failures**. `make asan` -> exit 0 with the same three counts and no ASan/UBSan report.
-`tests/cli_test.sh` with a display available -> **96 checks, 0 failures, 0 skipped** (the 95 written in s96 was
-stale: s95 added the `fm_key_path = none` unbind check; `git show 3ece4e7:tests/cli_test.sh` counts 95 and
-`git show HEAD:tests/cli_test.sh` counts 96 against the same binary — both re-run here to prove the difference is
-the suite, not the machine). No untracked file outside the git-ignored `bin/` and `build/`.
-
-One commit holds the code, the tests and the two docs (the convention since s95). Pushed; verified afterwards rather
-than asserted: `git fetch` first (the user commits on GitHub too), `git status -sb` shows no ahead/behind,
-`git rev-list --left-right --count origin/main...main` is `0 0`, `git diff --stat main origin/main` is empty, and
-the working tree is clean.
-
-**Left open, and it belongs to the user:** the fix is green and A/B'd, but only their eye can say whether the `h` is
-gone from their own window. If it is not gone, the next place to look is already measured and is not a Kai-Term bug
-— the raw-paste window in entry 5 and the ISSUES.md "Paste" limitations.
-
-## Previous Task (s96 — CLOSED: the user asked for the mouse wheel to work inside full-screen programs. "When opening a file with nano or similar program it would be nice to be able to scroll with the mouse. Also scrolling in the preview pane of the file manager would be really good if possible when over a text." Then, comparing with kitty: "In kitty I can't click, but I can scroll. So I want scrolling in Kai-Term too when using nano and clicking could be a nice bonus." Shipped, and their verdict in their own window: "I confirm it to be good". See s96 entries 1-4.)
-
-**What is wanted, in three parts:**
-1. **Wheel inside a full-screen program that never asked for the mouse** (nano, less, man). Today the wheel
-   does NOTHING there: `ptr_scroll_done()` -> `scroll_apply()` -> `scrollback_nav()`, and the alt grid is built
-   with `scrollback_max = 0` (`alt_screen_enter()`, src/vt.c), so `live_off` is always 0 and `scrollback_nav()`
-   returns 0 immediately. nano has no scrollback to scroll and no mouse protocol to report to, so the gesture
-   is thrown away. The user's kitty observation says what the fix is: kitty (like VTE) turns the wheel into
-   **Up/Down arrow key presses** in that state, which is the only thing that can scroll a program that owns
-   its own screen — and it also explains "I can't click" in kitty, because nano is not told about the mouse.
-2. **Wheel over the file manager's preview pane** when the preview is text (or a directory listing): today
-   `fm_wheel()` claims the gesture over the preview, sets focus and returns 1 without doing anything.
-3. **Clicking as a bonus**: a left click in the same alt-screen-no-mouse state moves the program's own cursor
-   to the clicked cell, by arrow keys computed from the cursor position Kai-Term already tracks (`t->cx/cy`).
-   This is NOT mouse support for the program — nano still receives no coordinates — it is keystroke synthesis,
-   and it is why clicking can work at all in a program that never asked for the mouse.
-
-**Planned steps:** (1) MEASURE first, headless, no window: `.scratch/s96/nanoprobe.c` runs the real `nano 9.2`
-over the real `src/pty.c` into the real `term_parse()` and answers three questions with bytes, not opinion —
-does nano enter ?1049, does it set ?1000/?1002/?1006, and do `\x1b[B` presses really scroll its text (read the
-grid before/after)? (2) put the two decisions in **src/vt.c** (`term_wheel_arrow_keys()`,
-`term_click_arrow_keys()`), not main.c — main.c is in no test binary, so arithmetic there is untestable (Key
-Decisions); (3) wire them in `ptr_scroll_done()` / `ptr_button()`, keeping every existing rule: the bar and the
-band are checked before the terminal, an application that DID grab the mouse keeps getting SGR reports, a drag
-still selects text; (4) preview scrolling in **src/fm.c** (`fm_preview_scroll()` + a `pv_scroll` offset the
-painter obeys), reset when a new preview is installed; (5) two config switches, defaults chosen so nothing that
-works today changes; (6) durable checks in `tests/test_vt.c` and `tests/test_fm.c`; (7) README + ISSUES.md +
-AGENT.md.
-**Expected outcome:** the wheel scrolls nano/less/man and the preview pane's text; a click moves nano's cursor;
-no change at all for an application that asked for the mouse (vim/htop/tmux), for the tab bar, or for
-scrollback in the main screen. Nothing is claimed until the probe and the suites say so.
-
-### s96 entry 1 — MEASURED first: what nano/less really are, and what makes them scroll
-
-`.scratch/s96/nanoprobe.c` (real `src/pty.c` + real `term_parse()`, 24x80, no window) and
-`.scratch/s96/clickprobe.c`. nano 9.2, less (system), file of 200 `LINE-nnnn` rows; "top-line" is the
-`LINE-nnnn` number on the first grid row, i.e. the program's own scroll position, read out of Kai-Term's grid.
-
-| program | alt_screen | mouse_mode | private modes it sent | what scrolled it |
-|---|---|---|---|---|
-| `nano file` | **1** | **0x0** | `?2004h ?1049h ?7h ?1h ?1h ?25l ?12l ?25h` | 30 x `ESC[B` -> top 1->12; 30 more `ESC OB` -> 12->42; Up -> back to 1 |
-| `less file` | **1** | **0x0** | `?1049h ?1h` | 30 x `ESC[B` -> **top stayed 1**; 30 x `ESC OB` -> **1->31**; `ESC OA` -> back to 1 |
-| `nano --mouse file` | 1 | **0x5** (PRESS+SGR) | `?2004h ?1049h ?7h ?1h ?1h ?25l ?1006;1000h ?12l ?25h` | 3 x `ESC[<5;20;12M` (what `ptr_axis` sends today) -> **nothing**; 3 x `ESC[<65;20;12M` -> **top 1->5**; X10 `32+65` -> scrolled; X10 `32+4` -> not a scroll |
-
-Four facts this settles, and the two defects it exposes:
-1. **nano and less are exactly the state the plan assumed**: alternate screen, `mouse_mode == 0`. Kai-Term's
-   wheel path ends in `scrollback_nav()`, the alt grid has `scrollback_max = 0` so `live_off == 0`, and the
-   gesture is thrown away. That is the user's report, reproduced with bytes.
-2. **Arrow keys scroll them.** So the fix is the kitty/VTE trick: in that state the wheel becomes arrow-key
-   presses. (It is also the only thing that CAN work — see 3.)
-3. **A mouse report sent to a program that never asked for the mouse is TYPED INTO ITS DOCUMENT.** One
-   `ESC[<64;20;5M` to plain nano put `64;20;5M` on row 1 and made the title read `Modified`. So the click
-   bonus must be keystrokes, never a report — and Kai-Term is right today to not report in that state.
-   (v1 of the probe did exactly this by accident and every number after it measured a file the probe had
-   edited — the journal's "suspect the harness" rule, again.)
-4. **DECCKM (`ESC[?1h`, application cursor keys) is not implemented here, and that is why `less` is dead to
-   the arrow keys today.** nano accepts both forms; less accepts ONLY the SS3 form (`ESC O A`..`D`) because it
-   asked for it with `?1h`, and `send_key()` always sends the CSI form. So the synthesized arrows must follow
-   DECCKM, and honouring it also fixes the user's own arrow keys in less/man/htop — a pre-existing bug this
-   feature runs straight into.
-5. **The wheel report to a program that DID grab the mouse uses the wrong button code.** Measured on
-   `nano --mouse`: Kai-Term's 4/5 does nothing, xterm/kitty/neovim/tmux's 64/65 scrolls. Same in the legacy
-   X10 form (`32+65` scrolls, `32+4` does not). `ptr_axis()` sends 4/5 in both encodings, so the wheel is
-   broken in every mouse-grabbing app (vim/htop/tmux/nano --mouse). Fix: send 64/65; `mouse_send()` already
-   adds the +32 the X10 form needs.
-
-**Click synthesis, measured on a pristine nano** (`clickprobe.c`, cursor read back from `T.cx/T.cy`):
-start (0,1) -> click(20,5) **EXACT**; -> click(5,15) **EXACT**; -> click(0,1) **EXACT**; -> click(40,12)
-**EXACT**, and EXACT again after the view had been scrolled. Not exact, and why:
-click(60,10) and click(75,2) landed on the NEXT row, because those columns are past the end of a 58-column
-line and nano's Right at end-of-line wraps to the next line; click(30,0) (the title bar) and click(30,23)
-(the shortcut bar) clamped to the first/last text row, which is nano deciding, not the synthesis.
-So: vertical first then horizontal, and **clamp the target column to the clicked row's last non-blank cell +
-1** (the grid is right there, and vt.c is where a test can pin it) — that turns the two wrap failures into
-"lands at the end of the line", which is what a click past the text should mean.
-
-### s96 entry 2 — DECCKM and the two key-synthesis helpers (header + src/vt.c)
-
-**Done:**
-- `Term.app_cursor` (DECCKM) and `Term.alt_saved_app_cursor`, set/cleared by `ESC[?1h` / `ESC[?1l` in the
-  private-mode `h`/`l` loops, saved and restored by `alt_screen_enter()` / `alt_screen_leave()`.
-- Three new functions in vt.c, next to `mouse_sgr_button()` and the state they read:
-  `term_wants_key_mouse()` (alt screen AND no `MOUSE_PRESS`/`MOUSE_DRAG`), `term_wheel_arrow_keys()`,
-  `term_click_arrow_keys()`, plus file-local `arrow_append()` (SS3 while DECCKM is on, CSI otherwise) and
-  `row_last_col()` (the clicked row's last non-blank cell, a space counting as blank).
-  `TERM_ARROW_MAX 1024` bounds the burst.
-- `FileMgr.pv_scroll` and `fm_preview_scroll()` / `fm_preview_scroll_max()` declared;
-  `Config.wheel_sends_keys` and `Config.click_moves_cursor` declared.
-**Why there and not main.c:** the standing rule — main.c is in no test binary, so the arithmetic (which keys,
-how many, clamped to what) has to sit where `tests/test_vt.c` can pin it.
-**One mistake made and fixed:** the three declarations first went in beside `mouse_sgr_button()`, which is
-BEFORE `typedef struct Term` — `make` failed with `unknown type name 'Term'` in five translation units. They
-now sit after `term_note_input()`, where the type exists. After the move `make -j8` exits 0 with 0 warnings.
-**Not wired yet:** nothing calls the new functions, so behaviour is unchanged as of this entry.
-
-### s96 entry 3 — the wiring is in, and the preview-scroll clamp was measuring the pane the user was LEAVING
-
-The code described as "not wired" in entry 2 is now wired (this entry re-measured it rather than trusting the
-journal, which was behind the tree):
-- `src/main.c`: `app_wheel()` in `ptr_scroll_done()` (wheel -> cursor keys, its own `W.wheel_accum` carry so a
-  mid-gesture alt-screen exit cannot hand a remainder to the scrollback); the click path in `ptr_button()`
-  (a click that never moved, `click_moves_cursor`, no Shift, `term_wants_key_mouse()`); `send_key()`'s four
-  arrow keys now go through `term_arrow_seq(cur_term(), ...)`; `fm_wheel()` hands the preview hit to
-  `fm_preview_scroll()` instead of swallowing it.
-- `ptr_axis()`: the wheel report to a mouse-grabbing app is now **64/65, not 4/5** — the defect entry 1 measured
-  on `nano --mouse`. That fix is in the tree; it is NOT yet re-measured against a real app (see Next Steps).
-- `src/config.c` + header: `wheel_sends_keys` (1) and `click_moves_cursor` (1), both documented in the header
-  with the honest caveat that click synthesis is keystrokes, so a program that uses arrows for something else
-  (alsamixer) will react.
-
-**One real defect found by the new checks, in `fm_set_size()` — and it was the MODEL, not the test.**
-The clamp `fm->pv_scroll = iclamp_(fm->pv_scroll, 0, fm_preview_scroll_max(fm))` sat at the TOP of
-`fm_set_size()`, next to the requested sizes. But `fm_preview_scroll_max()` measures `fm->prev.rows` — the pane
-that actually EXISTS, the same field the painter reads — and at that point in the function the realloc has not
-run yet, so it still reports the OLD height. The clamp therefore measured the screen the user was leaving and
-could never change anything: a 40-line file scrolled to its bottom in a 12-row pane (`pv_scroll` 30) and grown
-to a 40-row pane stayed at 30, i.e. 28 rows of blank space. Moved to after the allocation (with a comment
-saying why the order matters). `tests/test_fm.c:952` now pins it.
-
-**The A/B that proves the check is worth having** (the standing rule: a check that passes on the buggy code
-pins nothing): `.scratch/s96/clampab/` holds `fm.c` with the clamp moved back to its old position, built against
-the same `tests/test_fm.c` — **1 failure there (`test_fm.c:952`), 0 here**.
-
-**A second test bug found on the way, and it is the same pitfall twice.** The check that used to be there —
-`fm_set_size(..., 6); CHECK(pv_scroll <= scroll_max)` — passed with NO clamp at all, because for a body longer
-than the pane a SHORTER pane has MORE to scroll (40 lines in a 6-row pane = 36 rows of range, not less); the
-clamp only bites when the pane GROWS. And the next line, `fm_preview_scroll(&fm, 5); CHECK(pv_scroll == 5)`, was
-red for a mundane reason: the previous check had left `pv_scroll` at its maximum (30), so the call clamped to 30.
-Both rewritten to say what they mean. Net: `test_fm` 247 -> **274 checks**.
-
-**Re-measured from this tree:** `make -j8` exit 0, 0 warnings; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 —
-`CLI: 62 checks, 0 failures, 10 skipped`, `test_vt` **843 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
-`test_fm` **274 checks, 0 failures**. DECCKM and the two synthesis helpers are pinned by 30 new checks in
-`tests/test_vt.c` (814 -> 843). Nothing here has been seen in the user's window yet.
-
-### s96 entry 4 — the wheel code moved to vt.c, and the user confirmed the whole feature in their own window
-
-`mouse_wheel_button()` (header + vt.c, 2 new checks in `tests/test_vt.c`, 843 -> **845**): the 64/65 wheel codes
-entry 1 measured were inline in `ptr_axis()`, where no test binary can reach them — the same reason the arrow-key
-helpers went in vt.c. `ptr_axis()` now calls it. Behaviour unchanged; the constant is now pinned.
-
-**The user ran it in their own window and confirmed it (2026-10-21): "I tested it and now I can scroll in nano",
-"nano --mouse works as expected", and "I confirm it to be good"** — that closes the three things this task owed a
-human eye for: the wheel inside nano, the wheel inside a program that DID grab the mouse (the 64/65 fix), and the
-feature as a whole. They also re-ran `make asan` themselves (`MODEL OK (0 problems)`, `274 checks, 0 failures`) —
-re-run here from this tree and identical: `test_vt` 845 / `dbg` MODEL OK / `test_fm` 274, exit 0, no sanitizer
-report.
-
-**s96 is closed.** What shipped: DECCKM (which also fixes the user's own arrow keys in less/man/htop), the wheel
-as cursor keys inside a full-screen program that never asked for the mouse, a click as the arrow-key walk to the
-clicked cell, the 64/65 wheel code for programs that DID ask for the mouse, and the file manager's preview pane
-scrolling its own body. Two config switches (`wheel_sends_keys`, `click_moves_cursor`, both default 1). Docs:
-README gained a usage section ("The mouse wheel and a click inside a full-screen program"), two feature bullets
-and the two settings rows; the stale "over the band it walks the listing" wheel row and the stale "text preview …
-no scrolling" limitation were corrected; ISSUES.md gained three Fixed entries. Verified by set difference, not by
-eye: the 53 keys `apply()` in `src/config.c` and the 53 rows of README's settings table are the same set (`diff`
-empty both ways), and `usage()`'s six options and README's option table are the same six, short and long.
-
-### s96 close-out — re-measured from a clean tree, committed and pushed
-
-`make clean && make -j8` -> exit 0, no warning line at all. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0:
-`CLI: 62 checks, 0 failures, 10 skipped`, `test_vt` **845 checks, 0 failures**, `dbg` **MODEL OK (0 problems)**,
-`test_fm` **274 checks, 0 failures**. `make asan` -> exit 0 with the same three counts and no ASan/UBSan report.
-No untracked file outside the git-ignored `bin/` and `build/`.
-
-One commit holds the code, the tests and the three docs (the convention since s95). Pushed; verified afterwards
-rather than asserted: `git fetch` first (the user commits on GitHub too — nothing had arrived), `git status -sb`
-shows no ahead/behind, `git rev-list --left-right --count origin/main...main` is `0 0`, `git diff --stat main
-origin/main` is empty, and the working tree is clean.
-
-**Left open, and it is the user's report, not a defect I found:** the stray-`h` hypothesis — see "Current Task
-(s97)" at the top of this file. Nothing has been measured there yet.
-
-## Previous Task (s95 — CLOSED: the user asked to CHANGE a design decision, not fix a bug. "If I pre-type some text and then use the file manager, pressing enter on a file doesn't append it's path to the prompt. can we change that? … cat ' /path/to/somefile.txt'" and, when I called it a defect: "it is not a bug, it was a design decision, But we are changing it." Shipped as the `p` key; the user's verdict on their own window: "The feature works". See s95 entries 1-8.)
-
-**Objective:** `Return` on a file in the browser must type its quoted path at the prompt **even when the line
-already holds text**, so `cat ` + Enter-on-`somefile.txt` gives `cat '/path/to/somefile.txt'`. Today
-`fm_send_path()` (src/main.c) refuses in that situation and logs `fm: not typing the path — the input line is
-not one I can describe`.
-
-**Why it refuses (the design decision being changed):** the gate is the STRICT `term_prompt_line()`
-(src/vt.c), which requires every cell RIGHT of the cursor to still equal the remembered prompt. That rule
-exists for a caller that is about to ERASE from the cursor leftwards and re-type — the `cd` follow machine —
-where text right of the cursor means the cursor is mid-line and the erase would only take the left half.
-`fm_send_path()` never erases and never sends CR: it inserts at the cursor and leaves the line unsubmitted,
-exactly what the user's own keystrokes would do. So the strict half is the wrong question for it, and fish's
-grey autosuggestion ghost (which sits right of the cursor on any typed word) alone is enough to make it answer
-"no" — the user's login shell is fish (`getent passwd kaida` -> `/bin/fish`).
-
-**MEASURED FIRST (2026-10-20, headless, no window) — the refusal is not what the report sounds like.**
-`.scratch/s95/pathgate.c` (built with the link line in `.scratch/s95/build.sh`) runs `fm_send_path()` +
-`shell_quote()` + `input_write()` copied verbatim from `src/main.c` over a real fish 4.6 / bash 5.3 / zsh 5.9 in
-the real `src/pty.c` + real `term_parse()`, with the path coming from a REAL `fm_scan_build()` of a real
-directory (`/tmp/s95/tree/somefile.txt`, holding a marker string), and reads back the row the shell shows.
-| case | shell | what the row holds | strict `term_prompt_line()` | `term_prompt_line_typed()` | result today |
-|---|---|---|---|---|---|
-| nothing typed | fish | empty prompt | 1 | 1 | path typed |
-| `cat ` typed | **bash** | `cat ` | **1** | 1 | **path typed — works** |
-| `cat ` typed | **zsh** | `cat ` | **1** | 1 | **path typed — works** |
-| `cat ` typed | **fish** | `cat ` + grey ghost `~/.ssh/id_ed25519.pub` | **0** | 1 | **REFUSED** |
-| `cat tail`, cursor moved Left x4 | fish | `cat \|tail` | **0** | 1 | **REFUSED** |
-So the plain "the line has text on it" case already worked in bash and zsh — pressing Enter after it printed
-`MARKER-CONTENT-42`, i.e. the path really landed. What fails for this user is **fish's autosuggestion ghost**
-(their login shell is fish: `getent passwd kaida` -> `/bin/fish`) and **a cursor parked mid-line**; both are the
-same one cause — the strict predicate's right-of-cursor half. Ground truth for the ghost: fish answered `cat `
-with `~/.ssh/id_ed25519.pub` painted right of the cursor, which is exactly the cell range strict checks.
-
-**Planned steps:** (1) reproduce headless — `.scratch/s95/pathgate.c`, the real `fm_send_path()` machine over a
-real fish/bash/zsh in the real `src/pty.c` + real `term_parse()` + the real `src/fm.c` model, so the file path
-comes from a real scan; (2) change the gate to the non-strict `term_prompt_line_typed()`, which asks the same
-question minus the right-of-cursor half, and keep every other refusal (alt screen, unknown prompt, cursor left
-of the prompt end, a follow in flight, path too long); (3) pin the two predicates' difference with `tests/test_vt.c`
-checks so the choice cannot drift back; (4) re-run the shell-integration gate (`.scratch/s90b/intgate.c` +
-`diffgate.sh`) to prove the `cd` follow machine is untouched; (5) README + ISSUES.md + AGENT.md.
-**Expected outcome:** the path is typed after pre-typed text in all three shells, nothing is ever run, and the
-`cd` follow behaviour is byte-for-byte what it was.
-
-**THE DESIGN THE USER CHOSE (2026-10-20, supersedes step 2's "just relax the gate" plan).** I offered three
-key layouts and the `Return` question; they answered **"I love number 2"** and **"And yes Return on a file does
-nothing, that's good — We are green to go"**. So:
-- A NEW binding `fm_key_path`, default **`p`**, types the selected entry's quoted path at the prompt.
-- The preview toggle moves **`p` -> `v`** (`fm_key_preview`), because `p` was already taken by it.
-- **`Return` on a file does NOTHING** — it stays "enter this directory", exactly what `Right` already was. No
-  key in the band writes at the prompt unless the user asked for that one thing.
-- The gate still becomes the non-strict `term_prompt_line_typed()`, so it works with text already on the line,
-  with a cursor parked mid-line, and through fish's autosuggestion ghost — the three cases the table above shows
-  refusing today.
-Files this touches: `include/kai-term/kai-term.h` (`FmKeys.path`), `src/config.c` (defaults + `fm_key_path`),
-`src/main.c` (`fm_keys`, `fm_open_sel`, `fm_send_path`, the double-click path), `tests/test_vt.c`,
-`tests/cli_test.sh`, README, ISSUES.md.
-
-### s95 entry 1 — the new `fm_key_path` binding, in the header
-
-**Done:** `FmKeys` gains `KeyBind path` (between `open` and `parent`), the count in the struct's comment goes
-fourteen -> fifteen, and `open`'s comment now says it does nothing on a file. `right`'s "unlike open" is
-dropped — after this change there is nothing to be unlike.
-**Why here:** the struct is what `config_default()` and `fm_keys()` both compile against, so the field has to
-exist before either can name it.
-**Result:** edit applied; not yet compiled (config.c and main.c do not know the field yet — building now would
-only prove that).
-
-### s95 entry 2 — `config_default()` and the `fm_key_path` setting (src/config.c)
-
-**Changed:**
-- `config_default()`: `fm_key.path` = `p`, and `fm_key.preview` moves `p` -> `v` (with a comment naming the
-  swap, so the next reader knows `p` was not always the path key).
-- `apply()`: a new `fm_key_path` branch through the same `set_fm_keybind()` every other band key uses, so
-  `fm_key_path = none` unbinds it and a bad value keeps the old binding and warns — no new parser path.
-- Two comments that the change made FALSE: `fm_key_right`'s "Unlike `fm_key_open` this never types anything"
-  and the header's "unlike open". `open` no longer types anything either, so the contrast is gone. Leaving
-  them would have described a key layout that no longer exists.
-**Result:** edit applied. Not compiled yet — `main.c` still routes the path through `open`. The settings count
-AGENT.md quotes (50 keys `apply()` compares / 50 README rows) is now 51 on the code side; README gets its row
-in the docs step and the set-difference re-check happens there, not by eye.
-
-### s95 entry 3 — the routing and the gate (src/main.c)
-
-**Changed, three places:**
-- `fm_send_path()`: the gate is now `term_prompt_line_typed()` instead of the strict `term_prompt_line()`.
-  Everything else in it is untouched — the `fm_cd_state != FMCD_IDLE` refusal, `fm_entry_path()`,
-  `shell_quote()`, `input_write()` with no CR, the log line. Its comment now states WHY the non-strict
-  predicate is the right question here and lists what is still refused, with the measurement cited.
-- `fm_open_sel()`: the `else fm_send_path();` branch is GONE. A directory is entered; a file, symlink-to-nothing,
-  fifo, socket or device does nothing. One function still serves the `open` key and the double-click, so the two
-  cannot drift.
-- `fm_keys()`: `if (bind_match(&k->path, base, mods)) { fm_send_path(); return 0; }` — returns 0 (handled,
-  must NOT auto-repeat), so holding `p` cannot type the path over and over. Placed after `open`, before `parent`.
-- Comments the change made false: `right`'s "unlike `open` it never types a path" in `fm_keys()`, and the
-  double-click comment's "a file behaves exactly as `open` does" (now: a file does nothing).
-**Build:** `make -j8` exit 0, **0 warnings** under `WARN` (the whole tree rebuilt).
-**Not yet verified behaviourally** — the next entry is the re-run of `.scratch/s95/pathgate.c` against the new
-objects, which is what decides whether the change actually did what the table predicted.
-
-### s95 entry 4 — the A/B: old machine vs new, three shells, and two harness flaws the A/B itself exposed
-
-`.scratch/s95/pathgate.c` + `build.sh` (link line kept beside it). ONE binary holds both machines:
-`fm_send_path_old()` (the pre-s95 strict gate, verbatim) and `fm_send_path_new()` (the current one), chosen by
-argv — so the only difference between a run and a run is the predicate. The path comes from a real
-`fm_scan_build()`; the shell is real; ground truth is the row the shell shows plus whether Enter really reads
-the file. `openfile` mode presses the OPEN key on a file and counts the bytes that reached the pty.
-
-| mode | what the line holds before the key | OLD | NEW |
-|---|---|---|---|
-| `empty` | nothing | PASS | PASS |
-| `typed` | `cat ` | PASS (fish `--private`, bash, zsh) | PASS |
-| `midline` | `cat ` + `tail`, cursor moved Left x4 | **FAIL — refused** (fish, bash, zsh) | **PASS** |
-| `ghost` | `cat ` + fish's autosuggestion right of the cursor | **FAIL — refused** | **PASS** |
-| `openfile` | `cat ` | PASS (0 bytes written) | PASS (0 bytes written) |
-
-So the change moved exactly the two cases it was meant to move and nothing else. The rows it produces, read off
-the screen model: `cat '/tmp/s95/tree/somefile-1501179.txt'|tail` — the path lands AT the cursor, and in the
-ghost case fish's grey suggestion stays where it was and Enter runs `cat '<path>'` and prints the marker.
-
-**Two harness flaws, both found by running the OLD machine (this is why the A/B is worth its time):**
-1. **The row check passed on the machine that typed nothing.** The shells write to the user's real history
-   file, so a later run's autosuggestion ghost was a command an EARLIER run had typed — the needle was already
-   on the line. Fixed twice over: the file name now carries the pid (no history can contain it), and the shells
-   run with their history redirected (`fish --private`, `HISTFILE=/tmp/s95/<shell>_hist`) so the gate stops
-   leaving commands in the user's `fish_history` / `bash_history` — a harness typing into their real history is
-   a change to their machine, not a unit test.
-2. **The marker check passed on the refusing machine** in `ghost` mode: fish's own suggestion completed `cat `
-   into a history entry that reads the file, so Enter printed the marker with nothing typed by the code under
-   test. That check is now limited to `typed` (the s88 lesson: a check that passes on the buggy code pins
-   nothing). `empty` is excluded too — its line is a bare path, and executing a non-executable file is not what
-   this feature claims.
-3. Smaller one: `fish --private-mode` is not an option (it is `--private` / `-P`); the shell died at once and
-   EVERY mode went red in 0.25 s. A suite that fails everywhere is a broken harness, not a broken product —
-   the runtime told me before the output did.
-
-### s95 entry 5 — durable checks in tests/ (the A/B lives in .scratch, so the semantics need pinning here)
-
-`main.c` is in no test binary (Next Steps item 5), so the *choice of predicate* can only be A/B'd in
-`.scratch/`. What `tests/` can pin is the semantics the choice depends on, so it cannot drift back:
-- `tests/test_vt.c`, a new "path gate" block next to the existing ghost checks: `term_prompt_line_typed()`
-  describes a line the strict predicate refuses (fish ghost right of the cursor) and describes a mid-line
-  cursor **up to the cursor** (`rm -rf s` with `u` on the right) — the behaviour the user asked for; and it
-  still refuses the three things that must stay refused: a prompt redrawn in another colour, a wrapped input
-  line, and the alternate screen. Each refusal check is paired with the strict one so the pair is readable.
-- Config checks: defaults `p` = path and `v` = preview; `fm_key_path = g` rebinds; `fm_key_preview = p` gives
-  the old key back; `fm_key_path = none` leaves **no** band key that can write at the prompt.
-- `tests/cli_test.sh`: `fm_key_path = none` added to the file-manager config run, expecting
-  `config: fm_key_path unbound`.
-**One of my own checks was wrong first:** I expected `rm -rf ` for the mid-line case and the suite said FAIL at
-tests/test_vt.c:2553 — the columns are `r m ␠ - r f ␠ s u`, so a cursor left of `u` describes `rm -rf s`. The
-check was right to disagree with me; the needle was wrong, not the model.
-**Suite:** `KAI_TERM_TEST_NO_WINDOW=1 make test` -> `CLI: 62 checks, 0 failures, 10 skipped`,
-`./bin/test_vt` **814 checks, 0 failures** (was 803 — 11 added), `./bin/dbg` MODEL OK, `./bin/test_fm` 247 / 0.
-The 10 skips include the file-manager CLI block, so the new `cli_test.sh` line was NOT exercised this session
-(no window was mapped — the user is at this machine); the same config surface is covered by the `test_vt.c`
-checks, which did run.
-
-### s95 entry 6 — the `cd` follow is provably untouched, and the build.sh s94 promised now exists
-
-**The s94 debt, paid:** `.scratch/s90b/build.sh` did not exist while AGENT.md's Next Steps claimed it did. Written
-(now it prints the `main.o` timestamp it linked against and reminds you to run `diffgate.sh`), and the gate was
-rebuilt and re-run from that location — s94 entry 4's steps (3)-(5) are now actually done.
-**Proof the follow machine did not change:** `./diffgate.sh ../../Kai-Term/src/main.c intgate.c` ->
-`same code:` for all seven copied functions (`fm_send_cd`, `fm_int_try`, `fm_cd_write`, `fm_cd_advance`,
-`fm_cd_abort`, `fm_int_failed`, `fm_cd_tick`). Byte-identical, so the s95 edit cannot have altered it.
-**Behaviour re-run anyway** (all six modes, target `/tmp/s90target`): fish / bash / zsh / nested / dead / off all
-end `VERDICT: cwd is /tmp/s90target -> MATCH` (nested -> `/var`, as that mode expects) with
-`typed text INTACT` on every line, acks at 52-74 ms.
-**A false alarm worth recording:** the first run said `NO MATCH` for fish, zsh and dead. Cause: I passed a target
-directory that did not exist, so the shells' `cd` failed. `mkdir -p /tmp/s90target` and every mode matched. A
-gate that fails because of ITS OWN setup is the same trap as s82's unrepresentative test — check the setup before
-editing the logic it exercises.
-**Sanitizers:** `make asan` exit 0 — `814 checks, 0 failures`, `MODEL OK`, `247 checks, 0 failures`, no ASan/UBSan
-report.
-
-### s95 entry 7 — the README's quoting claim measured, and the full matrix
-
-The new README text says a path with a space or an apostrophe arrives quoted the shell's way and needs no
-further quoting. That is a claim, so it got a mode: `odd` selects a file literally named
-`odd name'"<pid>.txt` (space, apostrophe, double quote). **Measured in all three shells:** the row holds
-`cat '/tmp/s95/tree/odd name'\''"1513813.txt'` and pressing Enter prints the file's marker — the quoting is
-correct end to end, not just in theory.
-My first needle for it was wrong a second time (I wrote the raw path into the needle and missed the `'\''` that
-appears IN THE MIDDLE of the quoted path). The fix is the lesson: build the expected text with the same
-`shell_quote()` the program uses, never by hand.
-**Full matrix, NEW machine, `./pathgate <shell> <mode> new` — 18 runs, 0 failures:**
-fish / bash / zsh × `empty` `typed` `midline` `ghost` `odd` `openfile` -> `== OK: 0 failure(s)` each.
-
-### s95 close-out — what is done, what is not
-
-**Done and verified:** the new `p` key and its `fm_key_path` setting, `v` for the preview toggle, `Return` and
-double-click doing nothing on a file, the non-strict gate, 11 new `test_vt.c` checks, the README (feature bullet,
-both key tables, the settings row, a worked table of what `p` does to a line) and ISSUES.md (the four passages
-the change made false, plus a note that the defaults changed). Build 0 warnings; `test_vt` 814 / 0, `dbg` MODEL
-OK, `test_fm` 247 / 0, `make asan` clean; README settings rows vs `apply()`'s keys re-diffed by set difference
-(51 = 51, `diff` empty); the `cd` follow proven unchanged by `diffgate.sh` + all six integration modes.
-**Now confirmed by the user in their own window** (2026-10-20): "The feature works". That is the project's
-highest evidence class and it retires "not yet seen by the user's eye" for this feature. Read narrowly and
-honestly: it is a verdict on the BEHAVIOUR (the path lands where they wanted, nothing ran), it says nothing about
-how the band LOOKS — that separate item is still open (Next Steps 1) — and they did not report on the mid-line
-cursor case, the ghost case or the one-shot/auto-repeat behaviour specifically. Those stay covered by the headless
-matrix and the unit checks, not by their eye.
-**Committed and pushed** (2026-10-20, after the user said "It's good, You can push"): `git fetch` first (they
-also commit on GitHub) -> nothing to take, `git push origin main` exit 0, then verified with `git status -sb`
-(`## main...origin/main`, no ahead/behind) and `git diff --stat main origin/main` (empty). Working tree clean.
-**Next action:** none pending in the repo. If they ever report something off, the recipe is in Next Steps 1b.
-
-### s95 entry 8 — the user's verdict in their own window
-
-**Verbatim (2026-10-20): "The feature works"** — after the push, in their own Kai-Term, with fish as the login
-shell. That is the project's highest evidence class, and it is the reason the path key moved from "measured
-headless" to "user-confirmed" in Current Status, in the user-confirmed list, in the s95 close-out and in Next
-Steps 1b.
-**What it does NOT cover, deliberately left open:** how the band looks (Next Steps 1, still the one visual item
-never judged), and the specific edge cases they never mentioned — a cursor parked mid-line, the autosuggestion
-ghost, holding `p` (the one-shot). Those remain covered by `.scratch/s95/pathgate.c` and the 11 `test_vt.c`
-checks, and are written that way in the journal so a later session does not read "the user confirmed it" as
-"the user confirmed every case".
-**Docs changed:** AGENT.md only (Current Status heading + s95 bullet + the confirmed list + the close-out +
-Next Steps 1b + the Current Task heading). README and ISSUES.md needed nothing — they describe behaviour, and
-the behaviour they describe is what was confirmed.
-**Nothing in the source changed**, so no rebuild or re-run was owed; the suites quoted above still stand —
-re-run to confirm it: `KAI_TERM_TEST_NO_WINDOW=1 make test` -> `CLI: 62 checks, 0 failures, 10 skipped`,
-`814 checks, 0 failures`, `MODEL OK (0 problems)`, `247 checks, 0 failures`.
-**Pushed and verified:** `git fetch` -> nothing to take, `git push origin main` exit 0, then `git status -sb` ->
-`## main...origin/main` (no ahead/behind) and `git diff --stat main origin/main` -> empty; working tree clean.
-**Session end state:** nothing unfinished in the repo. The only open items are the user's, all recorded in Next
-Steps — the band's appearance (item 1), the optional `fish -n`/`bash -n`/`zsh -n` script check (item 2), and the
-housekeeping list (item 5). `.scratch/s95/` holds the A/B gate and its `build.sh`; nothing was deleted from
-`.scratch/`.
-
-**Also owed by s94 entry 4 (found while reading, now PAID — see s95 entry 6):** its planned steps (3)-(5), a
-`build.sh` beside `.scratch/s90b/intgate.c` plus a rebuild and a re-run of every mode from there, had never been
-done even though AGENT.md's Next Steps already described the file as existing.
-
-## Previous Task (s94 — CLOSED: the user's verdict on the shell integration. "I verified the shell integration, Fish Bash and Zsh are working as expected now. Perfect" — plus the headless zsh run that had never been possible before, because zsh is now installed here. See s94 entries 1-2.)
-
-**What the user reported (2026-10-20):** all three shells — fish, bash and zsh — behave as expected in their own
-window. No new defect, no new symptom, nothing to reproduce. The work was therefore to make the documentation
-honest about what is now known, and to close the one gap their message implied: **zsh 5.9 is on this box now**
-(`command -v zsh` -> `/usr/bin/zsh`), so the "UNVERIFIED: no zsh here" note that ISSUES.md, README and AGENT.md
-all carried is no longer true and had to be replaced with a measurement.
-
-**Done:**
-1. Ran the integration gate against **zsh** for the first time (a copy of `.scratch/s90b/intgate.c` in `/tmp/s94/`
-   with a `zsh` mode added — `.scratch/` itself untouched, per the user's standing instruction). Result in
-   s94 entry 1: announced zsh, ack **54 ms**, typed line byte-identical, prompt repainted, `pwd` prints the target.
-2. Re-ran every other gate mode (fish, bash, nested, dead, off) to prove the s93 cleanup changed no behaviour.
-3. README, ISSUES.md and AGENT.md updated: zsh is verified, not "written but untested"; the shell integration is
-   user-confirmed by eye.
-
-**Next action:** none pending. Two optional offers to the user, both recorded in Next Steps: give the zsh-mode gate
-a durable home (`.scratch/s90b/` needs their permission; `/tmp` does not survive), and — only if they want it — a
-`tests/` check that runs `fish -n` / `bash -n` / `zsh -n` over the generated scripts, skipping when a shell is
-absent.
-
-### s94 entry 1 — zsh run for real for the first time, and every gate mode re-run after the cleanup
-
-**The user's verdict, recorded verbatim because it is the evidence:** "I verified the shell integration, Fish Bash
-and Zsh are working as expected now. Perfect" (2026-10-20). That is the project's highest evidence class — their
-eye in their own window — and it retires the sentence "no human eye has seen this yet" from the shell-integration
-status everywhere (Current Status, ISSUES.md Open, README).
-
-**What their message changed in the environment:** zsh is installed now — `command -v zsh` -> `/usr/bin/zsh`,
-`zsh --version` -> `zsh 5.9 (x86_64-pc-linux-gnu)`. Every earlier session wrote "zsh is NOT installed on this box,
-so its script has never been run"; that is no longer true, and an unverified claim in the docs is a bug.
-
-**Measured, headless, the SHIPPED scripts (no window).** `.scratch/s90b/intgate.c` was COPIED to `/tmp/s94/` and a
-`zsh` mode added there, rather than editing the one in `.scratch/` — a reading of the user's "don't touch .scratch
-for now" that turned out to be too strict (corrected in s94 entry 4: they meant do not DELETE it, writing into it
-is fine). Built against the current `build/*.o`, so it runs the machine copied from `main.c` over the real `src/pty.c`,
-real `term_parse()`, real `mux.c` and the scripts `shellint_prepare()` writes:
-- `zsh /tmp/s94test`: `announced kind = 3 (zsh)` -> `fm: shell integration (zsh) asked to cd into /tmp/s94test` ->
-  `fm: the shell's integration changed directory to /tmp/s94test — the line was not touched`, ack in **54 ms**.
-  Line before `[~/Project/Kai-Term> Some text]`, after `[/tmp/s94test> Some text]` — the typed text is
-  byte-identical and **the prompt names the target: YES (repainted)**, which is `zle reset-prompt` working. The
-  shell's own `pwd` printed `/tmp/s94test`. `fm_last_cd` matches -> FOLLOW CONFIRMED.
-- The other modes, re-run to prove the s93 cleanup (static, format attribute, comments) changed no behaviour:
-  `fish` ack 56 ms + repainted; `bash` ack 55 ms, line intact, prompt **stale by design** (documented readline
-  limit); `nested` (fish -> wrapped `bash`) `announced bash, gen 3, int_dead=0`, nested round trip 55 ms, the
-  nested line holds `half typed` with no stray character; `dead` (fish -> `env bash`) `no integration ack from
-  fish — using the typed path`, `int_dead=1`, second navigation 202 ms with no ack wait, then after `exit`
-  `fm: a shell announced again — the integration is used for this session again` and the next navigation lands in
-  **75 ms**, final `VERDICT: cwd is /tmp/s94test -> MATCH`; `off` (`shell_integration = 0`, bare fish) announces
-  nothing and runs the old machine (225 ms, text survives). Every number matches the s91/s92 record.
-
-**One harness bug of my own, caught by printing the state (the s91 lesson again):** the first zsh run reported the
-line as `SSome text` — a doubled `S`. Cause was my patch, not Kai-Term: I wrote
-`input_write(..., "PS1='%~> '\n", 13)` where the literal is 11 bytes, so the pty also got the NUL and the next
-byte of `.rodata`, which happens to be the `S` of the following literal `"Some text "`. With `strlen()` the line
-reads `Some text` and the run is clean. **A hand-counted byte length in a harness sends whatever follows the
-literal in memory** — count with `strlen`, or the probe invents characters and they get blamed on the terminal.
-
-**Also learned while patching the gate:** the gate asks the SCREEN whether the prompt names the target, and zsh's
-built-in prompt (`%m%#`) shows no path at all, so a correct repaint would have been reported as stale. The zsh mode
-sets `PS1='%~> '` first — the same trick `.scratch/s92/repaint.c` used with `fish_prompt` and `PS1='\w\$ '`.
-A harness that asserts on the screen must control what the screen is supposed to say.
-
-### s94 entry 2 — documentation made honest about zsh (README, ISSUES.md, AGENT.md)
-
-**Changed:**
-- `README.md`: the follow section said "fish and bash are verified on this box; zsh … is untested rather than
-  proven". It now says all three are verified, and the `shell_integration` settings row is unchanged (the default
-  and the behaviour did not change).
-- `ISSUES.md`: the Open section's shell-integration paragraph ("No human eye has seen either fix yet") now records
-  the user's confirmation for fish, bash and zsh; the "zsh support is written but UNVERIFIED" limitation is
-  replaced by what is actually known — verified in the user's window and headless on zsh 5.9, with the ack
-  measured at 54 ms — while keeping the part that is still true: the zsh path has no check in `make test` beyond
-  the script-on-disk pins, so a zsh regression would still be caught by the ack timeout falling back to the typed
-  path rather than by a failing check.
-- `AGENT.md`: this journal, the Current Status bullet, and Next Steps item 2 (the "user's eye" item is closed).
-
-**Next action:** the same claim also lives in source comments and check names — entry 3.
-
-**Verified after the doc edits:** `make -j8` exit 0 with 0 warnings; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
-(`CLI: 62 checks, 0 failures, 10 skipped`, `803 checks, 0 failures`, `MODEL OK (0 problems)`,
-`247 checks, 0 failures`). No source file changed, so the counts are expected to be identical — and they are.
-
-**Correction to that last sentence, because it was wrong when written:** entry 3 of this session DID touch source
-files (comments and check messages in `src/shellint.c`, `include/kai-term/kai-term.h`, `tests/test_vt.c`), so the
-suites were rebuilt and re-run, and the full set including `make asan` is recorded there. "Docs only" was true of
-entries 1-2 and stopped being true the moment the stale zsh claims in the code were found.
-
-### s94 entry 3 — the stale zsh claims were not only in the .md files
-
-`grep -rn "no zsh|UNVERIFIED|unverified" src/ include/ tests/ README.md ISSUES.md` found **seven** places, four of
-them inside the code, which is where a future agent reads them first:
-- `src/shellint.c` — the block above `SCRIPT_ZSH` ("NOT VERIFIED: zsh is not installed on the development box, so
-  this script has never been run … Do not describe zsh support as tested") and the note inside `shellint_seq()`'
-  measurement list. Both now record what s94 measured and, precisely, what is still unmeasured: **the
-  inert-when-unbound property was only ever tested in fish and bash**, so a zsh with no binding is the one case
-  nobody has observed. (It is also the case the ack timeout is designed to survive.)
-- `include/kai-term/kai-term.h` — the `shellint_seq()` contract, same correction.
-- `tests/test_vt.c` — two check MESSAGES said "NOT verified — no zsh on this box" / "UNVERIFIED — no zsh on this
-  box". The checks themselves are unchanged (they pin the bytes and the script text); only the wording now points
-  at s94. A check message that misstates the evidence is worse than no message, because the next agent trusts it.
-
-**Measured after these edits — the full set, from a clean tree:** `make clean && make -j8` exit 0, 0 warning lines;
-`./bin/test_vt` **803 checks, 0 failures** (the count is unchanged: no check was added or removed, only two
-messages reworded); `./bin/dbg` MODEL OK; `./bin/test_fm` 247 / 0; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
-(`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0 with the same counts and no sanitizer report.
-
-**Next action:** none pending in the repo.
-
-### s94 entry 4 — my reading of "don't touch .scratch" was wrong; corrected, and the zsh gate moved where it belongs
-
-**The user's correction, verbatim:** ".scratch is not off limit … I just told you to not delete it for now, when you
-asked, never said not to use it anymore" (2026-10-20). So the rule is: **deleting or pruning `.scratch/` is on hold
-until they say otherwise; writing, editing and building there is normal and expected.** I had written "off-limits",
-"do not touch", "needs their permission" into five places in AGENT.md (and had acted on it by putting this
-session's harness in `/tmp`). Nothing had actually been deleted, so no harm was done to their data — the cost was
-that a regression gate was written to a directory that does not survive a reboot.
-
-**Corrected in AGENT.md:** the s94 entry 1 sentence about `.scratch` not being touched, the s93 entry 5 "standing
-rule is to ask first" line, the s93 entry 6 bullet (which is where the wrong reading was born), Next Steps item 2
-(the gate's home) and item 8 (the scratch rule itself, now stated as delete-vs-write). Lesson worth keeping: when
-the user answers a question with a short "not for now", record what they actually restricted, not a general
-prohibition — an over-broad rule outlives the moment that produced it and quietly changes what later sessions do.
-
-**Objective now:** give the zsh-mode integration gate a durable home, since `/tmp/s94/` is gone on reboot and the
-gate is the only coverage the shell integration has beyond `make test`'s script-on-disk pins.
-
-**Planned steps:** (1) diff `/tmp/s94/intgate.c` against `.scratch/s90b/intgate.c` so the only changes are the two
-s94 additions; (2) write the improved version over `.scratch/s90b/intgate.c` (editing a harness in place is allowed
-now — and keeping one copy is the point, since two copies of a gate drift, which is the s92 pitfall); (3) add a
-`build.sh` beside it so it can be rebuilt from the repo's current `build/*.o` without remembering the link line;
-(4) rebuild and re-run every mode from the new location; (5) journal the result.
-
-## Previous Task (s93 — CLOSED: a codebase cleanliness pass, asked for by the user: "We need to check to make sure we have a clean codebase". s92 finished and committed; the audit's three findings fixed; the docs re-diffed. See s93 entries 1-6.)
-
-**Audit already run (read-only, before touching anything) — what was measured and what it said:**
-- `make clean && make -j8` exit 0, 0 warning lines; `./bin/test_vt` 803 checks / 0 failures; `./bin/dbg`
-  MODEL OK (0 problems); `./bin/test_fm` 247 / 0; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
-  (CLI 62 / 0 / 10 skipped); `make asan` exit 0, same counts, no sanitizer report. s92's code and docs are
-  complete — only the commit was missing.
-- Tree hygiene: no trailing whitespace (`grep -P "[ \t]+$"` -> 0 lines), no tabs, no CR, every text file ends
-  with a newline, `bin/` + `build/` are the only untracked directories and both are gitignored. The only
-  untracked project file is `src/shellint.c` — the s90 module was never committed.
-- No dead code: every `#define` in the tree is used (70 checked), every struct field of the 14 header structs
-  is read or written through `.`/`->` somewhere, and every header-declared function is called.
-- No `TODO`/`FIXME`/`XXX`/`HACK`/probe markers in `src/`, `include/`, `tests/` (the two `XXX` hits are
-  `mkdtemp`'s template and test data).
-- Docs vs code, by set difference: 50 config keys in `apply()` == 50 README settings rows (`diff` empty both
-  ways); `usage()`'s six options == README's six option rows.
-- A stricter second-compiler pass (clang 22, the project `WARN` set plus `-Wcast-qual -Wmissing-prototypes
-  -Wstrict-prototypes -Wold-style-definition -Wundef -Wunused-macros -Wextra-semi`) found exactly three things
-  in OUR code: `img_decode_gif` has external linkage but is used only inside `src/img.c` and is not declared
-  anywhere; `klog` has no `format(printf)` attribute; one `-Wcast-qual` at `src/vt.c:2122` which is zlib's
-  non-const `next_in` field — correct as written, worth a comment. Everything else that pass reported is in
-  the wayland-scanner-generated `xdg-shell-client-protocol.h`, which is why `-Wcast-qual` stays out of `WARN`.
-
-**Objective:** commit s92, then remove those three findings and every stale statement the s90-s92 work left in
-the documentation, without changing any behaviour.
-
-**Planned steps (each: edit -> AGENT.md -> build/test; never commit red):**
-1. Commit the s90-s92 work (it is green and documented; `src/shellint.c` must be added).
-2. `src/img.c`: `img_decode_gif` -> `static` (nothing outside the file can or does call it).
-3. `include/kai-term/kai-term.h`: give `klog` `__attribute__((format(printf, 2, 3)))` under `__GNUC__`.
-   Verified in a copy of the tree first (`/tmp/kaifmt`): gcc AND clang then report **0** new warnings, so every
-   existing call site is already format-correct and this is a free net against a future wrong `%`.
-4. `src/vt.c`: the Kai-Term APC channel comment sits above `term_shell_cd_ack_clear()` instead of above
-   `kai_apc()`, which reads as if it described the clear; move it. Add the zlib `next_in` cast comment.
-5. Documentation sweep for stale numbers/claims (AGENT.md's own file tree says `tests/test_vt.c` = 726 checks
-   and omits `src/shellint.c`; the s90/s91 journal entries carry "not yet wired" statements that s92 closed).
-6. Re-run the whole verification set, record the exact commands and counts, commit.
-
-**Expected outcome:** the same suites, the same counts, the same behaviour, with the three compiler findings
- gone, no stale number anywhere in the three docs, and the s90-s92 work in history rather than in the tree.
-
-### s93 entry 1 — the s90-s92 work is in history, and `img_decode_gif` is file-local
-
-- **Committed the whole s90-s92 shell-integration tree** (11 files, `src/shellint.c` added — it had never been
-  committed). `git status -sb` after the commit: `main` ahead of `origin/main`, working tree clean. NOT pushed
-  yet — pushing is the user's call, and `git fetch` was run first (it found nothing new).
-- **`src/img.c`: `img_decode_gif()` is now `static`.** Found by the clang pass (`-Wmissing-prototypes`): it had
-  external linkage, was declared nowhere, and was called from one place in the same file (`img_decode_mem()`).
-  The other three decoders stay external on purpose — `img_decode_png` is called by `src/vt.c` (the kitty path),
-  `img_sniff` by `src/fm.c`, `img_premultiply` by `render.c` and `vt.c` — checked, not assumed.
-  **Measured:** `make -j8` 0 warnings; `./bin/test_vt` 803 checks / 0 failures; `./bin/test_fm` 247 / 0;
-  `./bin/dbg` MODEL OK. Behaviour unchanged — the GIF decoder is reached through `img_decode_mem()` exactly as
-  before, which is what `test_fm`'s decoder checks keep pinning.
-
-**Next action:** the `klog` format attribute (step 3), then the two `src/vt.c` comment fixes (step 4).
-
-### s93 entry 2 — `klog` is now checked against its format string
-
-**Changed:** `include/kai-term/kai-term.h` — `void klog(int, const char *, ...)` carries
-`__attribute__((format(printf, 2, 3)))` under `#if defined(__GNUC__)`, with the reason and the verification in
-the comment above it.
-
-**Verified, both directions (a claim about a compiler check is only worth the negative test):**
-- Positive: `make -j8` exit 0 with **0 warning lines**; `CC=clang make -j8` exit 0 with **0 warnings in our
-  sources** (clang's only output is `-Wdiscarded-qualifiers` being a GCC-only flag, plus the generated
-  `xdg-shell-client-protocol.h` hits — both are why `WARN` is what it is). Suites unchanged: `./bin/test_vt`
-  803 / 0, `./bin/test_fm` 247 / 0, `./bin/dbg` MODEL OK.
-- Negative: a one-file probe calling `klog(L_INFO, "bad %s", some_int)` now fails to compile quietly — gcc says
-  `format ‘%s’ expects argument of type ‘char *’, but argument 3 has type ‘int’`. Before the attribute the same
-  call compiled with no diagnostic at all. That is the whole point of the change, so it was measured.
-
-**Next action:** the two `src/vt.c` comment fixes (step 4), then the documentation sweep (step 5).
-
-### s93 entry 3 — `src/vt.c`: two comments made to say what they describe (no code change)
-
-- The Kai-Term APC-channel paragraph sat directly on top of `term_shell_cd_ack_clear()` with no break before the
-  comment describing the clear, so the channel description read as if it were about clearing one slot. It now
-  ends with the sentence "the two functions below are the whole of that channel — the clear main.c calls before
-  asking, and the parser's entry point for what comes back", and a blank line separates it from the clear's own
-  comment. Nothing moved, nothing renamed: `kai_apc()` and `term_shell_cd_ack_clear()` are the same two
-  functions in the same order.
-- `zinflate()`'s `zs.next_in = (Bytef *)in;` now says why the const goes away: zlib's `next_in` is `Bytef *`
-  unless zlib was built with `ZLIB_CONST`, and `inflate()` only reads these bytes. It also records that this is
-  the ONLY place in our own tree `-Wcast-qual` flags, which is the fact the Makefile's "why -Wcast-qual is off"
-  comment was missing.
-
-**Measured:** `make -j8` exit 0, 0 warning lines; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `./bin/test_vt`
-803 checks / 0 failures, `./bin/dbg` MODEL OK, `./bin/test_fm` 247 / 0, `CLI: 62 checks, 0 failures, 10 skipped`.
-The strict clang pass of step 0 now reports **nothing** in our sources except that documented zlib cast (the
-`-Wmissing-prototypes` hit for `img_decode_gif` and the `-Wmissing-format-attribute` hit for `klog` are gone).
-
-**Next action:** the documentation sweep (step 5), then the full verification set again and the s93 commit.
-
-### s93 entry 4 — documentation sweep: every number re-diffed, the invariants finished, superseded plans dropped
-
-**Changed (docs + Makefile comment only — no source behaviour touched):**
-- `AGENT.md` "Project Files & Facts": the tree now lists `src/shellint.c` and says `tests/test_vt.c` is **803**
-  checks (it said 726 — three sessions stale). New `src/shellint.c` bullet; the `src/mux.c` bullet now names the
-  three integration fields in `Tab` and why they are in the struct rather than a side array; the `src/pty.c`
-  bullet says what `tab_spawn()` hands it when the integration is on; the `tests/test_vt.c` bullet gained the
-  shell-integration half (APC kind `K`, the generation counter, the scripts-on-disk pins).
-- `AGENT.md` "Architecture & Invariants — Shell integration": three invariants were missing although the code
-  shipped them — the counted announcement (`Term.shell_int_gen` vs `Tab.int_gen`, and why a kind is not enough),
-  the nested-shell wrappers + heartbeat with their three limits, and the per-shell repaint rule (fish yes, zsh
-  unverified, bash NO and why). `Tab`'s field list corrected to `cd_req, int_dead, int_gen`.
-- `AGENT.md` "Next Steps": new item 2 — what is still owed on the integration (the user's eye; zsh never run on
-  this box) with the exact `-d` lines to look for; the rest renumbered. Item 8 (scratch) now lists the s89/s90b/s92
-  harnesses worth keeping, states that **nothing outside the repo has been deleted**, and flags the real problem:
-  AGENT.md and ISSUES.md cite `.scratch/...` paths that a fresh clone cannot run.
-- `AGENT.md` journal hygiene: the s91 entry's heading no longer says "IN PROGRESS" (it is closed), and the
-  superseded plan text was removed rather than left as a second copy of what is now code — s91 entry 1's 5-step
-  "Planned steps" and s90 entry 1's "Not yet wired"/"Next action" paragraphs. Every measurement, mistake and
-  lesson in those entries was kept; the counts inside dated entries (777/781/786/789) are history and stay.
-- `Makefile`: the "why `-Wcast-qual` is off" comment now records the measured fact that the only hit in our own
-  sources is `zinflate()`'s zlib `next_in` cast, which has its own comment in `src/vt.c`.
-
-**Checked, not assumed:** README's 50 settings rows vs `apply()`'s 50 keys (`diff` empty both ways) and its six
-option rows vs `usage()`'s six; ISSUES.md's re-measurement line already carries 803 / 247 / 62 and the
-no-markers claim, both re-verified this session.
-
-**Next action:** the full verification set one more time, then the s93 commit.
-
-### s93 entry 5 — verification re-run from a clean tree, and both commits; two things left for the user
-
-**Every command, run in this order, with its result:**
-1. `make clean && make -j8` -> exit 0, **0** warning/error lines.
-2. `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0: `CLI: 62 checks, 0 failures, 10 skipped`, `803 checks,
-   0 failures`, `MODEL OK (0 problems)`, `247 checks, 0 failures`.
-3. `make asan` -> exit 0: the same 803 / MODEL OK / 247, no sanitizer or UBSan report.
-4. Strict clang pass over all of `src/*.c` + `tests/*.c` (`-Wcast-qual -Wmissing-prototypes
-   -Wstrict-prototypes -Wold-style-definition -Wundef -Wunused-macros -Wextra-semi` on top of `WARN`) -> the
-   single documented zlib `next_in` cast, nothing else in our sources.
-5. `CC=clang make -j8` (full build) -> no warning in any file of ours.
-6. README settings rows vs `apply()`'s keys by set difference -> 50 == 50, `diff` empty.
-7. Marker grep (`TODO|FIXME|XXX:|HACK|TEMPORARY|PROBE|EXPERIMENT`) over `src/ include/ tests/` -> empty.
-
-**Committed:** the s90-s92 shell-integration work (it had never been committed — `src/shellint.c` was untracked),
-then the s93 cleanup. `git status -sb` -> clean tree, `main` ahead of `origin/main`. **NOT pushed** — the user
-has not been asked this session.
-
-**Left for the user, both decisions rather than work:**
-- Push these two commits? (`git fetch` first — they also commit on GitHub.)
-- `/home/kaida/Project/.scratch/` holds 171 MB of probes, and AGENT.md/ISSUES.md cite paths in it (`s90b/intgate.c`,
-  `s86/follow2.c`, `s74/inj_keys.sh`, …) that a fresh clone of the repo cannot run. Either prune the binaries and
-  logs of closed sessions, or move the real regression gates into `tests/`. Nothing was pruned — and the rule for
-  what "don't touch" meant is settled in s94 entry 4: **deleting is on hold, writing is allowed.**
-
-**No unfinished work in the repo.** [As written at the time:] the only genuinely unverified code path in the tree
-was the zsh integration script (no zsh on this box) and the shell integration had still never been seen in the
-user's own window. **Superseded by s94 the same day:** zsh 5.9 is installed, its script has been run headless and
-confirmed by the user in their window, and the integration is user-confirmed for all three shells.
-
-### s93 entry 6 — the user's two answers: push (done, verified) and `.scratch/` (leave it alone)
-
-- **Pushed, on the user's explicit "Yes".** `git fetch` first (nothing new upstream — the user had not committed on
-  GitHub since the last session), then `git push origin main` -> exit 0, `b958117..506c7e1`.
-  **Verified after:** `git status -sb` -> `## main...origin/main` with no ahead/behind, and
-  `git diff --stat main origin/main` -> empty, so local and remote hold the same tree.
-- **`.scratch/` — the user said "don't touch .scratch for now" (2026-10-20), and I read that as "off-limits".
-  That reading was wrong and is corrected in s94 entry 4:** they meant do not DELETE it. Nothing was deleted, which
-  is the part that mattered; the cost of my over-reading was one session's harness written to `/tmp` instead of
-  where it belongs.
-
-**Nothing is in progress. Next action:** none pending in the repo — the open items are the user's eye on the shell
-integration in their own window and, if they want it, installing zsh to verify that script (Next Steps item 2).
-
-## Previous Task (s92 — CLOSED: two defects in the shell integration, reported by the user from their own window: (1) starting another shell at the prompt dropped the session into the typed-`cd` fallback instead of integrating the new shell; (2) the integration's `cd` worked but the visible prompt kept the OLD directory until the line was submitted. Both fixed and measured — see s92 entries 1-4.)
-
-**User report (2026-10-20):** "changing shell in the prompt make it go in fallback mode instead of using the
-right shell integration" and "The dir change works as expected, but we have a visual bug, If I navigate from
-/home/kaida to /home/kaida/test/ in the file manager, then the prompt still show /home/kaida but it's only
-visual, If I do `ls` it will show files from /home/kaida/test/ … is there a way to refresh the prompt when
-navigating using the filemanager to not have that wrong visual?"
-
-So report 2 is the s91 "cosmetic, measured" note (see s91 entry 1, last bullet) becoming a user-visible
-complaint: the shell's cwd really changes and the ack proves it, but fish/bash do not re-expand the prompt
-until the line is next redrawn. Report 1 is the nested-shell case the s91 design *accepted* (ISSUES.md
-"A nested shell falls back, and the first attempt costs 400 ms") — the user does not accept it: a shell they
-start themselves should be integrated too.
-
-**Objective:** (a) a shell the user starts at an integrated prompt (fish -> `bash`, bash -> `fish`, …) loads
-Kai-Term's script, announces itself, and gets the integration path instead of the typed fallback — and the
-session stops being marked `int_dead` for good the moment any shell announces again; (b) after an integrated
-`cd` the visible prompt shows the new directory wherever the shell can be asked to redraw it, and the
-limitation is documented where it cannot.
-
-**Planned steps (each: edit -> AGENT.md -> build/test; never commit red):**
-1. Measure first (`.scratch/s92/`): does fish's line editor re-expand the prompt for `commandline -f repaint`
-   inside a bound handler? What does bash's readline do — does `C-l` re-expand `PS1` (expected: no, readline
-   expands the prompt once per `readline()` call)? Can a wrapper function named `bash`/`fish`/`zsh` defined by
-   the integration script start a nested shell that loads the script, without recursion and without shadowing
-   something the user defined?
-2. `src/shellint.c`: the nested-shell wrappers + the repaint, per shell, with the measurements in comments.
-3. `src/vt.c` + header: an announcement must be able to REVIVE an integration that was marked dead — the model
-   needs to say "a shell announced again" (a generation counter), not just "a shell of kind X is listening".
-4. `src/main.c`: clear `Tab.int_dead` when that generation changes.
-5. Tests: `tests/test_vt.c` for the re-announce/revive rule and for the scripts on disk containing the new
-   lines; the `.scratch/s90b/intgate.c` gate extended with the nested case now expected to SUCCEED.
-6. Docs: README (the follow section), ISSUES.md (the nested-shell limitation changes shape; the stale-prompt
-   limitation gets its exception), AGENT.md invariants + journal.
-
-**Expected outcome:** fish -> `bash` at the prompt ends with `fm: shell integration (bash) asked to cd into …`
-and an ack, the user's line untouched; after a navigation the prompt row reads the new directory in fish (and
-in bash, if measurement says readline can be made to redraw without submitting the line — otherwise the log
-and the docs say so plainly).
-
-## Previous Task (s91 — CLOSED: shell integration — the file manager asks fish/bash/zsh to `cd` instead of Kai-Term typing `cd` at the prompt; the user asked for it explicitly, with the old injection kept as the fallback. Steps 1-4 done and green; s91 changed the control sequence, see s91 entry 1)
-
-**User request (2026-10-20):** "can we use shell integration to change directories without disturbing the
-user's pending input instead … Fish: use its command-line editing functions to save and restore the current
-buffer. Bash: use Readline integration to preserve the current editing buffer. Zsh: use ZLE widgets … The
-file manager would request a directory change through Kai-Term integration layer rather than injecting cd
-into the visible prompt. My recommendation: implement shell-specific integration for Fish, Bash, and Zsh,
-with a fallback for unsupported shells."
-
-**Measured first (`.scratch/s90/probe.c` + `int.fish` + `int.bash`, real shells in a real Kai-Term pty, no
-window) — every number below is an observation, not a guess:**
-- **fish 4.6 works end to end.** A function bound to a byte sequence the reader parses as one key runs
-  *inside* the line editor: the user's line held `Some text ` before and after, nothing was inserted, and the
-  shell's cwd really changed (the next prompt showed `/etc`). Announce and ack arrive as APC:
-  `ESC _ K ; kai-term ; integration ; fish ST` and `ESC _ K ; kai-term ; cd ; /etc ST`.
-- **bash 5.3 works the same way** with `bind -x '"\C-xq": fn'` (readline runs the function, `$READLINE_LINE`
-  untouched — the line still held `Some text `, the next prompt showed `/etc`). `bash --rcfile <our file>`
-  still loads the user's own `~/.bashrc` when our file sources it, so the user's prompt/aliases survive.
-- **Which sequence, measured per shell — this is the safety-critical part.** Unbound damage (what lands on
-  the user's line if the integration is NOT loaded): `ESC [ 2 6 ~` (F14) → fish inserts nothing, bash inserts
-  `~`; `ESC [ 9 0 0 1 u` → fish inserts `?`, bash inserts `001u`; `ESC [ ? 9 0 0 1 ; 9 0 0 1 Q` → fish nothing,
-  bash inserts `9001;9001Q`; `C-x q` → bash inserts nothing, fish inserts `q`. So: **fish binds `ESC [ 2 6 ~`,
-  bash binds `C-x q`** — each is inert in its own shell when unbound. No single sequence is inert in both,
-  which is why the per-shell table and the ack/timeout below are not optional.
-- **`ESC [ 9 0 0 1 ~` does NOT fire in fish** even though `bind` accepts it (fish parses input as keys, not as
-  literal bytes) — the first attempt failed exactly this way. A sequence must be one the shell's reader
-  parses as a key.
-- **zsh is NOT installed on this box** (`command -v zsh` -> absent; dash absent). The zsh variant can be
-  written (ZLE widget + `bindkey`) but CANNOT be verified here, and must be documented as unverified.
-
-**Objective:** when the shell announced its integration, a file-manager navigation changes the shell's
-directory with a control sequence + an out-of-band request file, so the user's half-typed line is never
-erased, never re-typed and never sees a `cd`. The existing capture -> Ctrl+U -> `cd` -> re-type machine
-stays as the fallback for every other shell, unchanged.
-
-**Design (decided from the measurements, before writing code):**
-1. **Channel.** The terminal has exactly one channel to the shell — the pty input stream — so "not injecting
-   into the visible prompt" is achieved by making the shell's *line editor* consume the bytes as a binding
-   (never inserted, never echoed), and by sending the path **out of band** in a per-session file
-   (`<integration dir>/s<N>/cd-request`). The path is never part of the sequence, so a stray sequence can
-   never run a path.
-2. **Handshake.** Kai-Term uses the fast path only after that session's shell sent
-   `ESC _ K ; kai-term ; integration ; <kind> ST`. APC kind `K` is new; the parser already collects APC and
-   dispatches on the kind byte (`G` = graphics), so this is one more branch in `apc_end()`.
-3. **Confirmation.** The shell answers `ESC _ K ; kai-term ; cd ; <dir> ST`. No ack within
-   `FM_INT_ACK_MS` (400) -> log it, mark the session's integration dead (so nothing is sprayed at a nested
-   shell over and over) and run the legacy machine for that navigation. This is what bounds the damage of
-   the per-shell sequence table.
-4. **Startup.** `src/shellint.c` holds the three scripts as string constants and writes them into a
-   per-instance dir (`$XDG_RUNTIME_DIR` else `/tmp`, mode 0700, removed at exit); `pty_spawn`'s cmd string
-   gets the per-session env + the shell's load flag: `fish -C "source DIR/fish.fish"`,
-   `bash --rcfile DIR/bash.bash` (which sources the user's own rcfile first), `ZDOTDIR=DIR zsh` with our
-   `.zshrc` sourcing the user's. Only for a recognised shell and only when `shell_integration = 1`.
-5. **The echo window must not be opened by the control sequence.** `term_note_input()` is for bytes whose
-   echo may appear on the line; the integration sequence has no echo — the ack is the evidence — so the
-   integration write goes through `pty_write()` alone. Getting this wrong would close the follow behind the
-   s89 whitelist for no reason.
-
-**Planned steps (each: edit -> AGENT.md -> build/test; never commit red):**
-1. `include/kai-term/kai-term.h` + `src/vt.c`: APC kind `K` -> `Term.shell_int` (kind + announced flag) and a
-   one-slot ack (`Term.shell_cd_ack`); `term_apc_kai()` helper. Tests in `tests/test_vt.c` (announce, ack,
-   unknown kind still dropped, oversized payload, a `clear`/RIS re-arm).
-2. `src/shellint.c` (new): the scripts, the dir, the per-session request write, the sequence table, cleanup.
-   `Makefile` picks it up automatically (`src/*.c`); add it to the test link lines if a test needs it.
-3. `src/config.c` + header: `shell_integration` (default 1) + `DEF_*`; README settings table row.
-4. `src/main.c`: `fm_send_cd()` tries the integration path first (write request -> `pty_write(seq)` -> wait
-   for ack), falls back to the existing machine; `-d` logs `fm: shell integration: fish (announced)` /
-   `fm: shell integration asked to cd into <dir>` / `fm: no integration ack from <kind> — using the typed
-   path`; the integration dir is created at startup and removed at exit.
-5. Harness: extend `.scratch/s90/probe.c` into `intgate.c` — announce, typed text, navigation, ack, and the
-   nested-shell case (a plain `bash` inside the integrated fish must NOT get a stray `~`: the ack times out
-   and the legacy path runs).
-6. Docs: README (the follow section + the new setting + Requirements note that integration is opt-out),
-   ISSUES.md (the limitation that says the injected command cannot be hidden — it now CAN be, for integrated
-   shells; and the new limitations: nested shells, unverified zsh), AGENT.md invariants + this journal.
-
-**Expected outcome:** with fish or bash, a navigation leaves the user's line exactly as it was (no erase, no
-re-type, no visible `cd`), the shell's prompt shows the new directory, and the ack line proves it; with any
-other shell the behaviour is exactly today's, verified by the existing 746 checks staying green.
-
-### s92 entry 4 — close-out: re-measured from a clean tree, and the commit that was missing
-
-**What was still open when s93 started:** steps 1-6 of the s92 plan are all DONE (measurements, `shellint.c`
-wrappers + repaint, the `Term.shell_int_gen` counter, `main.c`'s revive, the extended gate, README + ISSUES.md),
-but **none of the s90-s92 work had ever been committed** — `git status` showed 10 modified files and
-`src/shellint.c` untracked. That is what this entry closes.
-
-**Re-measured from scratch (`make clean` first), every command and its result:**
-- `make clean && make -j8` -> exit 0, **0 warning/error lines**.
-- `./bin/test_vt` -> **803 checks, 0 failures**; `./bin/dbg` -> **MODEL OK (0 problems)**;
-  `./bin/test_fm` -> **247 checks, 0 failures**.
-- `KAI_TERM_TEST_NO_WINDOW=1 make test` -> exit 0, `CLI: 62 checks, 0 failures, 10 skipped` (the 10 skips are
-  the window-opening group, which needs a Wayland session — same as every earlier session).
-- `make asan` -> exit 0, the same 803 / MODEL OK / 247 counts, **no sanitizer report**.
-- Docs re-diffed by set difference, not by eye: 50 keys in `apply()` == 50 README settings rows; `usage()`'s
-  six options == README's six option rows.
-
-**Not re-run here, and still owed a human eye:** the live key-injection harness (the user is at this machine and
-asked not to be disturbed — Key Decisions), and `.scratch/s90b/intgate.c` (its last run is s92 entry 3: fish ack
-73 ms + prompt repainted, bash ack 55 ms + prompt stale by design, nested bash integrated in 55 ms, `env bash`
-falls back then revives in 74 ms). Nothing in s93 changes the integration's behaviour, so those numbers still
-stand as the last measurement.
-
-**Next action:** the s93 cleanup steps 2-5 below the audit, then a second verification run and a second commit.
-
-### s92 entry 3 — the announcement becomes an event: `Term.shell_int_gen` + `Tab.int_gen`
-
-**Changed:** `include/kai-term/kai-term.h` (`Term.shell_int_gen`, `Tab.int_gen`), `src/vt.c` (`kai_apc()`
-increments on every accepted announcement; the `ESC c` handler preserves the counter next to the
-announcement), `src/mux.c` (`mux_open()` clears it), `src/main.c` (`tab_spawn()` clears it; `fm_int_try()`
-compares it with the Tab's copy and clears `int_dead` when they differ, logging
-`fm: a shell announced again — the integration is used for this session again`), `src/shellint.c` (a
-heartbeat in all three scripts: fish `--on-event fish_postexec`, bash `PROMPT_COMMAND` — prepended, both the
-string and the array form handled, guarded by a NON-exported variable so a nested bash still installs its
-own —, zsh `precmd_functions+=`).
-
-**Why a counter and not the kind:** `int_dead` was one-way, so the first shell that failed to answer kept the
-whole session on the typed path even after an integrated shell was reading the line again. The kind cannot
-detect that (fish -> nested fish -> fish announces three times, one kind).
-
-**Measured, before shipping the heartbeat:** a `fish_postexec` function does NOT leak into a command
-substitution — `.scratch/s92/hbcheck.c` (real pty + real `term_parse()`, which answers the queries fish
-waits for; a raw python pty driver stalls fish and proves nothing): `set x (echo hi)` then `od -c` of `$x`
-prints `h i`, 2 bytes, and 4 announcements were seen. `bash -n` and `fish -n` accept the generated scripts.
-
-**Gate (`.scratch/s90b/intgate.c`, the machine copied from main.c + the SHIPPED scripts, real shells):**
-- `fish /tmp/s92test`: ack 73 ms, typed text INTACT, **prompt names the target: YES (repainted)**.
-- `bash /tmp/s92test`: ack 55 ms, typed text INTACT, prompt names the target: **NO (stale)** — the documented
-  readline limit, now recorded by the gate instead of by memory.
-- `nested` (fish -> `bash`, wrapped): `shell integration: bash announced itself`, then
-  `fm: shell integration (bash) asked to cd into /var`, ack in **55 ms**, `int_dead=0`, line INTACT. This is
-  the user's report 1, fixed.
-- `dead` (fish -> `env bash`, a start the wrapper cannot see): no ack -> typed path (capture, Ctrl+U, `cd`,
-  re-type), line INTACT; second navigation goes straight to the typed path (202 ms, no 400 ms wait);
-  after `exit` the fish heartbeat re-announces -> `fm: a shell announced again …` -> integration again in
-  **74 ms**. This mode is only possible because the gate mirrors main.c — it did not at first, and the revive
-  silently did not happen there (see the pitfall below).
-- `off` (`shell_integration = 0`, bare fish): no announcement, exactly the old machine, line INTACT.
-
-**Two harness bugs found while measuring, both worth remembering:** (1) the gate's copy of `fm_int_try()`
-had not been updated with main.c's, so the revive path was never exercised there — a gate that copies the
-machine must be re-diffed against it whenever the machine changes; (2) the gate's own `printf`s were
-block-buffered while `klog` writes to stderr, so a log line appeared to happen before a step it happened
-after — `setvbuf(stdout, NULL, _IONBF, 0)` fixes the reading of every future run. Also: "is the prompt
-repainted" must be asked of the WHOLE screen (starship's prompt is two rows and the cursor sits on the
-second), and the round-trip timer must stop before the trailing drain, which was worth 900 ms of fake latency.
-
-**Measured, the suites:** `make -j8` 0 warnings; `./bin/test_vt` **803 checks, 0 failures** (789 -> 803: the
-generation counter — countable, same-kind re-announce counts, an unknown kind does not count, a reset keeps
-the count — plus the script-on-disk pins: fish repaints, fish/bash wrap a bare shell, fish/bash re-announce,
-bash does NOT pretend to repaint, zsh repaints and re-announces, every script names `$KAI_TERM_INT_DIR`, and
-every `shellint_argv()` carries `KAI_TERM_INT_DIR=`); `./bin/dbg` MODEL OK; `./bin/test_fm` 247;
-`KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped`); `make asan` exit 0,
-same counts, no sanitizer report.
-
-**Not done yet:** README + ISSUES.md (the nested-shell limitation changes shape, the stale-prompt one gains a
-fish exception, and the new visible fact is that Kai-Term defines `fish`/`bash`/`zsh` functions), then commit.
-
-### s92 entry 2 — `src/shellint.c`: the fish repaint, and the nested-shell wrappers
-
-**Changed:** the three script constants, and `shellint_argv()` now exports `KAI_TERM_INT_DIR`.
-- `SCRIPT_FISH`: `commandline -f repaint` at the end of `kai_term_cd`, then `kai_term_nested` + a
-  `fish`/`bash`/`zsh` wrapper each guarded by `functions -q <name>`, and `KAI_TERM_INT_DIR` (from the
-  environment, with a `string replace -r` fallback — `Path` is not a fish 4.6 builtin).
-- `SCRIPT_BASH`: the same wrappers (`type -t` guard, so a function or alias the user defined wins), plus a
-  comment stating why no repaint is attempted and what was measured instead.
-- `SCRIPT_ZSH`: the same shape (`$+functions[...]` guard); `zle reset-prompt` was already there. Still
-  UNVERIFIED — no zsh on this box.
-- A wrapper only adds the integration flags when it is called with NO arguments; with any argument the
-  command runs exactly as the user typed it. After the nested shell exits, the wrapper re-announces its own
-  kind, so the model names the shell that is reading the line again.
-
-**Measured:** `make -j8` 0 warnings; `./bin/test_vt` 789 checks, 0 failures (the existing script-on-disk
-checks still pass — the bind needles are unchanged). `.scratch/s90b/intgate fish /tmp/s92test` with the
-SHIPPED script: ack in 74 ms, `fm_last_cd` confirmed, and the starship prompt row now reads
-`kaida in k-gentoo:/tmp/s92test` — the user's report 2 is fixed for fish, in the real prompt, not only in a
-test one. The harness's `line before/after` line now says LINE CHANGED because the whole row is compared and
-starship's clock ticks; the typed text (`Some text`) is intact. The harness must assert on the typed part and
-on the prompt naming the target — that is the next thing to fix, before the nested case is judged.
-
-**Not yet done:** the re-announce cannot REVIVE a dead integration yet (`Tab.int_dead` is one-way), so a
-session whose first nested shell did not answer stays on the typed path. That is the vt.c generation counter
-(step 3) and main.c (step 4).
-
-### s92 entry 1 — MEASURED: what can and cannot be fixed, before writing any code
-
-**Harness:** `.scratch/s92/repaint.c` (prompt row + a full non-blank-row dump before/after, plus optional
-extra bytes and a second typed string) and `.scratch/s92/nested.c` (type a command that starts another
-shell, then run one navigation). Both use the real `src/pty.c`, the real `term_parse()` and the SHIPPED
-`src/shellint.c` scripts (`.scratch/s92/mkint.c` runs `shellint_prepare()` and copies them out, so the
-baseline is the shipped text, not a hand-written copy). No window. Prompts in the probes are deterministic
-(`fish_prompt` -> `$PWD> `, `PS1='\w\$ '`) so "did the prompt change" is not a guess.
-
-**Report 2 — the stale prompt. Measured per shell:**
-- **fish: `commandline -f repaint` inside the bound handler fixes it.** Before: `/home/kaida/Project/.scratch/s92> Some text`;
-after: `/tmp/s92test> Some text` — the prompt re-expands, the user's line is byte-identical, the ack is
-unchanged. This is the whole fix for the user's own shell (`$SHELL=/bin/fish`, and their real prompt is
-starship, which is a function, so it re-renders the same way).
-- **bash: readline does NOT re-expand `PS1` for `C-l`.** Sending `0x0c` after the ack leaves
-  `~/Project/.scratch/s92$ Some text` exactly as it was — readline expands the prompt once per `readline()`
-  call, so no readline command can refresh it mid-line.
-- **bash: overwriting the prompt line from the handler garbles it.** `printf '\r\033[K%s' "${PS1@P}"` gives
-  `/tmp/s92test$ ~/Project/.scratch/s92$ Some text` — readline does not know the line was cleared, so its
-  cached cursor position is now wrong and the old prompt text survives. REJECTED.
-- **bash: the only thing that refreshes it is submitting a line.** With an EMPTY line, a `CR` gives
-  `~/Project/.scratch/s92$` on one row and `/tmp/s92test$` on the next. NOT implemented: it means Kai-Term
-  presses Enter, it leaves a blank prompt line, and with text on the line it would run that text. Documented
-  instead — the prompt corrects itself the next time the user submits anything.
-- zsh already calls `zle reset-prompt` in its handler (still UNVERIFIED: no zsh on this box).
-
-**Report 1 — the nested shell. Measured:**
-- Baseline (the shipped script): fish announces, the user types `bash`, the model still says `fish`, the ack
-  never arrives -> `int_dead` -> the typed path. That is the user's report, reproduced.
-- **A wrapper function defined by the integration script fixes it.** The fish script defines `bash` (and
-  `fish`, `zsh`) as a function that runs `command bash --rcfile "$KAI_TERM_INT_DIR/bash.bash"` when called
-  with NO arguments and `command bash $argv` otherwise. Result: `announced bash`, `ACK OK`, the line intact,
-  and the nested shell's own `pwd` prints `/tmp/s92test`. The guard is `functions -q <name>` — a function the
-  user defined (in fish an alias IS a function) is never replaced.
-- **`Path` is not a builtin in fish 4.6** (`fish -c 'Path /a/b.fish'` -> "Unknown command", exit 127). The
-  script must not depend on it: main.c puts `KAI_TERM_INT_DIR` in the environment, and the script's fallback
-  is `string replace -r '/[^/]*$' '' (status current-filename)` (measured: gives `/a`).
-- A wrapper whose `--rcfile` points at a file that does not exist is silent: bash just starts without the
-  integration (that is how the first candidate run failed — no error, no announcement). So the request-file
-  and script paths must be checked by a test, not trusted.
-
-**Decisions this produces:** (1) repaint in the fish handler; zsh keeps `zle reset-prompt`; bash is
-documented, not hacked. (2) nested-shell wrappers in all three scripts, with `KAI_TERM_INT_DIR` exported by
-`shellint_argv()` so no script has to find its own path. (3) an announcement must REVIVE a dead integration:
-`Term` needs a generation counter, `Tab` remembers the last one it saw, and `fm_int_try()` clears `int_dead`
-when they differ — otherwise the first nested shell that does not answer marks the session dead for the rest
-of the run, even after an integrated one announces.
-
-### s91 entry 1 — the sequence table collapses to ONE measured-safe sequence (steps 1-4 as they were done; s92 later fixed the two defects this left, see the s92 entries)
-
-**Objective:** finish the wiring so a file-manager navigation in an integrated fish/bash changes the shell's
-directory without touching the user's line, with the existing typed-`cd` machine as the fallback. Immediate
-steps: (a) re-measure the control sequence, (b) `shell_integration` config key, (c) `main.c`: integration dir
-lifecycle + per-session shell command line + `fm_send_cd()` choosing the integration path with an ack timeout.
-**Expected outcome:** fish/bash navigation leaves the line byte-identical and the shell's cwd changes; every
-other shell behaves exactly as today; all suites green.
-
-**Measured first (`.scratch/s90b/inert.c` + `fire.c` + `try.sh`, real fish 4.6 / bash 5.3 in a real Kai-Term
-pty, no window). This SUPERSEDES s90's "no single sequence is inert in both" conclusion:**
-- `C-x C-]` (`0x18 0x1d`) is **inert when unbound in fish AND in bash** (with `--norc` and with the user's own
-  `~/.bashrc`), **fires when bound in both** (ack `/etc` came back, the line still held `Some text `), and is
-  **unbound by default in both** (`bind -p` has no `\C-x\C-]`; `fish -c 'bind'` reports no binding), so it
-  steals nothing. It is therefore the ONE sequence for all three shells — the per-shell table's nested-shell
-  damage (a stray `~` in a bash-inside-fish, a stray `q` in a fish-inside-bash) disappears.
-- Why the s90 candidates are worse: `ESC [ 2 6 ~` (F14) inserts `~` in bash, `C-x q` inserts `q` in fish.
-- **A byte that looks ideal must be rejected on the line discipline, not on the shell:** `C-\` (`0x1c`) is
-  inert in fish and bash and unbound in both, but `stty -a` on a pty says `quit = ^\` — VQUIT — so sending it
-  while any program with ISIG on owns the tty (cat, ssh, a build) SIGQUITs it. Same class for `^C ^Z ^Q ^S ^V
-  ^O ^U ^W ^R ^D ^?`. `0x18`/`0x1d` are not special (`swtch = <undef>`). Check `stty -a` before adding a byte
-  to the table.
-- `C-]` alone (`0x1d`) also fires+inert in both, but bash binds it to `character-search` — rejected for
-  stealing a default binding. `C-^` (`0x1e`) fires+inert and is unbound in bash; kept as the fallback choice
-  if `C-x C-]` ever proves problematic.
-- **Cosmetic, measured:** after the integration `cd` the visible prompt is NOT repainted (fish and bash both
-  still show the OLD directory in the prompt text while the line holds text; the shell's cwd really changed —
-  the ack proves it). The typed path repaints the prompt because it ends with CR. Not fixed here; document it.
-
-**Step 1 done — `src/shellint.c` + `include/kai-term/kai-term.h` + `tests/test_vt.c`.** One sequence
-(`\x18\x1d`) for every kind; the three scripts now bind `bind (printf '\030\035')` (fish),
-`bind -x '"\C-x\C-]"'` (bash), `bindkey '^X^]'` (zsh). The header's `shellint_seq()` contract now states the
-four measured requirements (parses as one key / inert in EVERY shell when unbound / unbound by default / no tty
-special character) and the header's `shellint_kind_for()` comment was corrected — a login shell's leading dash
-IS accepted (the check for `-zsh` already pinned that; the comment said the opposite).
-**Measured:** `make -j8` 0 warnings; `./bin/test_vt` **781 checks, 0 failures** (777 -> 781: fish/bash/zsh now
-share the bytes, no tty special character, and the fish + bash scripts on disk are read back and must bind
-exactly what `shellint_seq()` returns — that pair is what stops the table and the scripts drifting, and it also
-pins that bash's script still sources the user's `~/.bashrc` first); `./bin/dbg` MODEL OK; `./bin/test_fm` 247;
-`KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0.
-**A check of my own writing was wrong first and the failure said so:** the bash needle ended in `'` where the
-script has `"` (`bind -x '"…"'`), so it failed with 1 failure — the byte dump (`/tmp/dump2.c`) showed the file
-and the needle differing at that one byte. Do not "fix" a failing string check by loosening the needle; print
-both byte by byte.
-
-**Step 2 done — the `shell_integration` config key** (`include/kai-term/kai-term.h` Config field, `src/config.c`
-default 1 + `apply()` branch, README settings row). README's settings table and `apply()`'s key list were
-re-diffed by set difference, not by eye: 50 keys, 50 rows, `diff` empty both ways (the table is lines 262-323
-of README; comparing the whole file's `| \`` rows pulls in the flag/key/make tables and is meaningless).
-**Measured:** `./bin/test_vt` 786 checks, 0 failures (+5 for the key: default on, `= 0`, `= off`, `= yes`).
-
-**Step 3 done — the wiring.** `src/main.c`: `g_intdir` (created at startup, `shellint_cleanup()` on the way
-out), `g_int_seq` (session ids for the request files — a counter, NOT the tab index, because `mux_close()` 
-shifts the array and a freed index is reused: two live sessions sharing one request file is how one shell ends
-up in another session's directory), `tab_spawn()` builds the shell's command line through `shellint_argv()` for
-a recognised shell and never for `-e COMMAND`, `fm_int_try()` (write request -> clear the ack -> `pty_write`
-the sequence with NO `term_note_input` -> `FMCD_INTEGRATION` + `FM_INT_ACK_MS` 400 ms), the ack case in
-`fm_cd_advance()` (the ONLY evidence is `shell_cd_ack` naming this navigation's directory), and
-`fm_int_failed()` (no ack -> remember `int_dead` for the session -> run the typed machine for that navigation).
-`Tab` gained `cd_req` + `int_dead` (they must travel with the struct through a shift); `mux_open()` clears them;
-`vt.c` gained `term_shell_cd_ack_clear()` (one ack answers one request).
-`src/shellint.c`: `shellint_cleanup()` now SCANS the directory for `cd-request*` instead of enumerating
-`0..TAB_MAX-1`, because the ids are a counter and grow past `TAB_MAX` in a long session.
-**Measured:** `make -j8` 0 warnings (one `-Wshadow` from a loop-local `p` — renamed, not silenced);
-`./bin/test_vt` **789 checks, 0 failures** (+3: the ack clear, a request file with an id past `TAB_MAX`, and
-cleanup finding it); `./bin/dbg` MODEL OK; `./bin/test_fm` 247; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0.
-**A new check broke three old ones and the reason was mine:** clearing the ack mid-group left the later checks
-without their precondition (they assert the ack still reads `/etc`). The fix was to re-feed the ack with a
-comment saying why, not to relax those checks.
-
-**Step 4 done — the end-to-end gate `.scratch/s90b/intgate.c`** (kept as a regression harness): the machine
-copied verbatim from `src/main.c` driving a REAL fish / bash through the real `src/pty.c`, real `term_parse()`,
-real `mux.c` and the SHIPPED `shellint_prepare()/shellint_argv()/shellint_seq()`. No window. Four modes:
-- `fish /etc`: announced -> `fm: shell integration (fish) asked to cd into /etc` -> ack in **55 ms** ->
-  `fm: the shell's integration changed directory to /etc — the line was not touched`; the row text is
-  byte-identical before/after (`Some text` still there) and the shell's own `pwd` prints `/etc`.
-- `bash /var`: same, ack in **52 ms**, line untouched, `pwd` prints `/var`.
-- `nested` (a plain `bash` started inside the integrated fish): no ack -> `fm: no integration ack from fish —
-  using the typed path` -> `int_dead=1` -> the legacy machine captures `half typed `, erases, `cd '/var'`,
-  re-types it, and the nested prompt reads `/var $ half typed` — **no stray character from the sequence**;
-  a SECOND navigation there goes straight to the typed path (no `asked to cd` line, no 400 ms wait).
-- `off` (`shell_integration = 0`, bare fish): no announcement at all, and the behaviour is exactly the old one
-  (capture -> Ctrl+U -> `cd` -> re-type), text survives, `pwd` prints the target.
-**Two harness bugs that made a case pass without testing it** (both fixed, both worth remembering): typing
-`bash` while the line still held `Some text ` made fish try to run `Some text bash`, so the "nested" case never
-nested and the integration path "passed"; and reading only the CURSOR row for the `pwd` answer reported a false
-NO MATCH because the answer sits on the row above the new prompt. A harness must assert on the state it thinks
-it created — print it.
-
-### s90 entry 1 — steps 1-2 done: the APC channel, `src/shellint.c`, and 31 checks (746 -> 777)
-
-**Files changed:** `include/kai-term/kai-term.h` (`FM_PATH_MAX` moved above `Term`, `SHELLINT_*` enum,
-`Term.shell_int` + `Term.shell_cd_ack`, the shellint API), `src/vt.c` (`kai_apc()` + the `apc_end()` branch +
-the `ESC c` reset preserving the announcement), `src/shellint.c` (NEW), `Makefile` (SRCS + all four test link
-lines + both asan rules), `tests/test_vt.c` (new group + `<sys/stat.h>`).
-
-**What the model now knows.** A shell integration script announces itself with
-`ESC _ K ; kai-term ; integration ; <kind> ST` and confirms a directory change with
-`ESC _ K ; kai-term ; cd ; <dir> ST`. `apc_end()` already dispatched on the APC kind byte (`G` = graphics),
-so `K` is one more branch — no new parser state. `Term.shell_int` says which shell is listening;
-`Term.shell_cd_ack` is the last directory the shell said it entered, which is the only evidence main.c gets
-that the request landed.
-
-**A reset (`ESC c`) memsets `Term`, and the announcement must survive it** — the script announces ONCE, at
-shell startup, so losing it would silently drop the feature for the rest of the session after any program sent
-`ESC c`. The `case 'c'` handler now saves/restores `shell_int` + `shell_cd_ack` around `term_init()`. The
-prompt snapshot is deliberately NOT preserved (a reset really does invalidate it).
-
-**`src/shellint.c`** — three scripts as string constants (fish `-C`, bash `--rcfile` which sources the user's
-own `~/.bashrc` first, zsh `ZDOTDIR` + a `.zshrc` that sources the user's real one), a private per-instance
-directory (`mkdtemp` under `$XDG_RUNTIME_DIR` else `/tmp`, `chmod 0700`, refused if the name contains a `'`
-because the command line quotes with `'`), one request file per session (`cd-request.<N>`, written temp +
-`rename()` so the shell can never read a half path), the per-shell sequence table, and the command line for
-`pty_spawn` (`/bin/sh -c`, so the per-session env rides in the string: `KAI_TERM_CD_REQUEST='...' fish -C
-'source …/fish.fish'`).
-
-**Four mistakes caught by building/measuring rather than assuming:**
-1. **The APC kind byte is not part of the payload.** The parser consumes `K`, so the payload arrives as
-   `;kai-term;integration;fish` and my `strncmp(p, "kai-term;", 9)` matched nothing — every announcement was
-   silently ignored (10 failing checks). `kai_apc()` now skips a leading `;`.
-2. **`` followed by a hex digit is one escape in C**: `"c"` is `0x1bc` ("hex escape out of range") and
-   `"_K"` is `0x1bK`. Both had to be split (`"" "c"`). This is the same class as the s89 probe lesson.
-3. **`shellint_cleanup()` did not remove the request files**, so `rmdir` failed and a stale
-   `cd-request.<N>` would have outlived its session — a later shell would `cd` somewhere the user never
-   chose. It now unlinks every `cd-request.<0..TAB_MAX-1>` and its `.tmp`.
-4. **A check of the form "X is 0 after a reset" was vacuous twice over**: nothing had been snapshotted before
-   the reset, and after a reset the parser legitimately re-snapshots the BLANK row (`prompt_valid` is 1, the
-   anchor moves to column 0). The check now pins the anchor moving, which is the actual evidence.
-
-**Measured:** `make -j8` exit 0, 0 warning/error lines; `./bin/test_vt` **777 checks, 0 failures** (was 746,
-+31: 13 for the APC channel, 18 for the pure shellint functions — kind table, sequence bytes, directory
-mode 0700, scripts on disk, request round trip, the three command lines, cleanup); `./bin/dbg` MODEL OK;
-`./bin/test_fm` 247, 0 failures; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures,
-10 skipped`).
-
-**Wired by the next session, not this one** — s91's steps 1-4 above added the `shell_integration` key and the
-`main.c` machine, and s92 fixed the two defects that left (nested shells, the stale prompt). The design that was
-written down here as a plan is now in code and in "Architecture & Invariants — Shell integration"; the plan
-itself was dropped from this entry rather than kept as a second copy of it.
-
-### s89 entry 1 — the red check is green: the prompt snapshot's CURSOR ANCHOR is now honest (739 -> 746 checks)
-
-**What was red:** `tests/test_vt.c:2245 prompt: a cursor moved off the prompt position does not count as
-empty`. Cause, measured with `.scratch/s89/leftprobe{,_old}` (prints `at/pending/cx/cy/prompt_cx/prompt_cy`
-per step): the new input whitelist keeps `input_pending` at 0 for a movement key, so the end-of-burst
-`prompt_snapshot()` ran and re-took the snapshot **including `prompt_cx`** (8 -> 7). `prompt_row_matches()`
-then compared the cursor with its own fresh anchor and answered "safe to write" with the cursor sitting
-INSIDE the remembered prompt text, and `term_prompt_line()` would have described the line from the wrong
-column. The old code held that invariant only by accident — `input_pending` was what kept the snapshot still.
-
-**Chosen fix (not the whitelist narrowing):** `src/vt.c` — split `prompt_row_matches()` into
-`prompt_row_same_cells()` (the row is cell-for-cell the remembered prompt, cursor says nothing) plus the
-cursor test, and have `prompt_snapshot()` RETURN WITHOUT TOUCHING ANYTHING when `prompt_row_same_cells()` is
-true. Meaning stated in code: `prompt_cx`/`prompt_cy` are where the cursor sits **when the line is EMPTY** —
-the anchor `term_prompt_line()` measures typed text from and the column `term_at_prompt()` insists on. A
-burst that rewrote the prompt (different text, other colours, a moved prompt row) still re-takes the whole
-snapshot, anchor included.
-
-**New checks (739 -> 746, all in the `term_at_prompt()` group):** moving the cursor within the prompt row
-leaves the anchor alone and `term_at_prompt()` says no; putting it back says yes; a genuinely new prompt
-re-takes the anchor at its own column; a redrawn shorter prompt re-takes it too. **A probe caught two wrong
-assumptions in my first version of these checks** (`.scratch/s89_ss3.c`): `CSI H` moves the cursor to
-another ROW (it is not a Home key), and `ESC O H` / `ESC [ 1 ~` are not cursor keys in this parser at all —
-`ESC O H` prints a literal `H`. The checks now use `CSI G`, which moves within the row. Do not write a
-prompt check that leans on SS3 or on `CSI H`.
-
-**Measured, this session, after the change:**
-- `make -j8` exit 0, 0 warning/error lines; `./bin/test_vt` **746 checks, 0 failures**; `./bin/dbg` **MODEL OK
-  (0 problems)**; `./bin/test_fm` **247 checks, 0 failures**;
-  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 62 checks, 0 failures, 10 skipped` + those three);
-  `make asan` exit 0, same three counts, 0 sanitizer reports.
-- **A/B of the user's report, re-run against the final code** (`.scratch/s89/follow3{,_old}`, real fish over
-  the real pty, no window): BackSpace on an empty prompt then two navigations — OLD: `captured the line: []`
-  + `DROPPED the follow while erasing (the wait ran out)` twice. NEW: `FAST PATH (term_at_prompt says the line
-  is EMPTY)` + `told the shell to follow: cd …` twice, and the line holds `[]`.
-- **No regression in the s86 behaviour:** with `Some text ` on the line, both navigations end
-  `DONE — the prompt holds the dir and what you had typed` and the line holds `Some text `.
-- **The documented mid-command-cursor limitation is unchanged** (Left×2 with `Some text `): `captured the
-  line: [Some tex] -> DROPPED the follow while erasing … — LOST the text`, identical in OLD and NEW.
-
-**Next action:** docs (ISSUES.md `Fixed` entry + its follow limitation, which still says Enter/Ctrl+C is the
-only re-arm; README's follow paragraph if needed; this journal's invariants + pitfalls), then commit this as
-one verified change and push.
+## Current Status (re-measured 2026-10-22, s100)
+
+- **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
+  -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`).
+- **Suites:** `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 67 checks, 0 failures, 13 skipped`,
+  `./bin/test_vt` **944 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
+  0 failures**. `make asan` exit 0, same three counts, 0 sanitizer reports. With a display and spare VRAM,
+  `tests/cli_test.sh` reports **117 checks / 0 failures / 0 skipped** — the only run in which the config-search,
+  `kai-term.bind` and `-b` checks execute at all, so a no-window "0 failures" does not cover them (last measured
+  that way in s99; s100 skipped it — VRAM 11783/12227 MiB already used by the user's LLM and the user at
+  the machine). **Re-diff these numbers, do not copy them.**
+- **No open bug and no open question.** The four items this journal and ISSUES.md were holding for the user's eye
+  were answered 2026-10-22 ("1. yes / 2. good / 3. works good" — the s100 era entry): the two-file config split is
+  theirs, the background change their own config file now produces is accepted, and the s98 Firefox paste fix, the
+  preview-pane key scrolling and the 75 % band's look all work.
+- **Implemented since s88, each green, A/B'd where a bug was claimed, and user-confirmed in their own window:**
+  s95 the `p` path key / `v` preview toggle / `Return` doing nothing on a file; s96 DECCKM + the wheel and a click
+  inside full-screen programs + the 64/65 wheel codes + preview-pane scrolling; s97 one shared `exec_c0()` (a C0
+  byte inside a CSI is executed and the sequence keeps collecting); s98 `clipboard_mime_rank()` + `paste_repair()`
+  (a NUL byte never reaches the pty); s99 the config split (`kai-term.conf` / `kai-term.bind`, `-b/--binds`, the
+  three-directory search) + the `#`-comment fix that had been eating every `#RRGGBB` colour + the template
+  name-coverage check.
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the 29 setting names and the 24
+  binding names out of the two strcmp ladders in `src/config.c` and compares them with `config/kai-term.conf` +
+  `config/kai-term.bind`; README's option table matches `usage()` by set difference (7 options). A name added to
+  the parser without a template line, a template line the parser does not know, and a deleted template line each
+  fail a check. Do not hand-copy a name list into a test — derive it from the source.
+- **No probe or experiment left in the tree:** `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/
+  tests/` -> empty; no `TODO`/`FIXME`/`XXX`.
+- **No `install` target**, and nothing copies `config/*` to `/etc/kai-term` — the Makefile has never had one and
+  README tells the user to copy the templates themselves. Deliberate; adding one is the user's call.
+- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`, s90-s100 pushed. Read the remote state
+  with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. `git fetch` before
+  push — the user commits on GitHub too. Never commit `bin/` or `build/`.
+- **The 4 reports that once lived in ISSUES.md "Open"** were unproven and were dropped 2026-10-17 (no fix was ever
+  verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
+  a new Open item with a reproduction.
+
+## Current Task — none in progress
+
+s100 is closed: s99 is committed and pushed (verified `main` == `origin/main`), the user answered every open item
+("1. yes / 2. good / 3. works good", recorded in the s100 era entry), and at their request this file was cut from
+2843 to ~1300 lines — the s89-s100 per-step narrative collapsed into era entries, with the durable rules left
+where they always were: Architecture & Invariants, Key Decisions & Pitfalls, Debugging this project, Next Steps.
+
+**Next action:** nothing pending. If the user reports something, the recipe is in Next Steps 0-4 for that feature.
+If they want work rather than a fix, the standing candidates are Next Steps 5 (housekeeping — the file manager's
+key routing in `main.c` is in no test binary, which is the biggest coverage hole in the tree).
 
 ## Progress Journal (root causes of fixed bugs: git history)
 
@@ -1939,39 +235,156 @@ one verified change and push.
   `src/fm.c` from git against the new test file: 8 failures) is what found that. Tests 719 -> 726 and
   235 -> 247, all green, asan clean, committed and pushed.
 
+- **2026-10-20, s89 — a BackSpace at an empty prompt had disabled the shell follow, and fixing it exposed an
+  invariant that was only held by accident.** Measured (`.scratch/s89/bstoprobe`, real shells): bash and sh answer
+  BackSpace at an empty prompt with a bell only, fish not at all — so no burst ever re-proved the line empty and
+  `term_at_prompt()` stayed "not empty" until Enter. Fix: `payload_cannot_insert()` in `src/vt.c` — a payload that
+  cannot put a character on the line (cursor movement, deletion, Ctrl+L, a bare Escape) does not open the echo
+  window **when the line is already provably the bare prompt**; anything that can insert still opens it. That
+  turned a long-green check red, and the property had been held by accident: every key Kai-Term sent set
+  `input_pending`, which is what stopped `prompt_snapshot()` re-taking the anchor at the moved cursor. Now
+  `prompt_snapshot()` returns untouched when `prompt_row_same_cells()` says the row is cell-for-cell the remembered
+  prompt, so `prompt_cx`/`prompt_cy` mean "where the cursor sits when the line is EMPTY" — stated in code and
+  pinned by `CSI G` checks (726 -> 746). Do not write a prompt check leaning on `CSI H` (it moves the cursor to
+  another ROW) or on SS3 (`ESC O H` prints a literal `H` in this parser).
+
+- **2026-10-20, s90-s92 — shell integration: the file manager asks the SHELL to `cd` instead of Kai-Term typing
+  it.** Requested by the user ("can we use shell integration to change directories without disturbing the user's
+  pending input … Fish: use its command-line editing functions to save and restore the current buffer. Bash: use
+  Readline integration … Zsh: use ZLE widgets … with a fallback for unsupported shells"). There is exactly one
+  channel to the shell, so the control carries no data: the directory travels in a per-session file and the
+  sequence is ONE byte pair for every shell, `C-x C-]` (0x18 0x1d), chosen from a measured table of what each
+  candidate inserts when unbound (`ESC [ 2 6 ~` -> `~` in bash; `C-x q` -> `q` in fish; `ESC [ 9 0 0 1 u` -> `?` /
+  `001u`) and of the tty's own specials — `C-\` is inert and unbound in both shells but `stty -a` reports
+  `quit = ^\`, so it would SIGQUIT whatever owns the terminal. Announce `ESC _ K ; kai-term ; integration ; <kind>
+  ST`, confirm `ESC _ K ; kai-term ; cd ; <dir> ST`, 400 ms then fall back to the typed machine. APC kind `K` is
+  one more branch in `apc_end()` — no new parser state. s92 fixed the two defects the user then reported from
+  their own window: a shell they started at the prompt was not integrated at all (the scripts now wrap a bare
+  `fish`/`bash`/`zsh`, never over a name the user defined, never when any argument is present, and re-announce
+  after every command — `Term.shell_int_gen` + `Tab.int_gen` make an announcement an EVENT that revives a dead
+  integration, because the kind alone cannot: fish -> nested fish -> fish announces three times with one kind),
+  and the prompt kept naming the OLD directory (fish `commandline -f repaint`, zsh `zle reset-prompt`; **bash
+  cannot** — readline expands the prompt once per `readline()` call, `C-l` leaves it stale and printing `${PS1@P}`
+  over the line garbles it, both measured, so bash is documented and nothing is pretended). Measured acks 52-76 ms
+  over real fish/bash/zsh; the user confirmed all three in their window.
+
+- **2026-10-20, s93 — the cleanliness pass the user asked for** ("We need to check to make sure we have a clean
+  codebase"). A stricter second-compiler pass (clang 22, `WARN` plus `-Wcast-qual -Wmissing-prototypes
+  -Wstrict-prototypes -Wold-style-definition -Wundef -Wunused-macros -Wextra-semi`) found exactly three things in
+  OUR code: `img_decode_gif` needed `static`, `klog` needed `__attribute__((format(printf, 2, 3)))` — verified in
+  both directions, a wrong `%` now fails to compile and compiled silently before — and one `-Wcast-qual` at zlib's
+  non-const `next_in`, which is correct as written and is the ONLY such hit in our tree, which is why
+  `-Wcast-qual` stays out of `WARN`. Everything else that pass reports is in the wayland-scanner-generated header.
+  Also found: the whole s90-s92 work had never been committed (`src/shellint.c` was untracked).
+
+- **2026-10-20, s94 — zsh became verifiable because the user installed it.** Their verdict ("I verified the shell
+  integration, Fish Bash and Zsh are working as expected now. Perfect") plus the first headless zsh run: announce,
+  ack 54 ms, line byte-identical, prompt repainted by `zle reset-prompt`. What is STILL unmeasured in zsh: what
+  `C-x C-]` does in a zsh that has no binding — the inertness that protects an unwrapped nested shell was measured
+  in fish and bash only — and no zsh check lives in `make test` beyond the script-on-disk pins. Grep found seven
+  stale "no zsh on this box" claims, four of them inside source comments and check MESSAGES: a check message that
+  misstates the evidence is worse than no message, because the next agent trusts it.
+
+- **2026-10-20, s95 — the user changed a design decision, not a bug** ("it is not a bug, it was a design decision,
+  But we are changing it"). Now `p` types the selected entry's quoted path at the prompt, `v` toggles the preview,
+  and `Return`/double-click on a file do nothing. Measured BEFORE changing anything: the strict gate refused fish's
+  autosuggestion ghost and a mid-line cursor, but `cat ` already typed already worked in bash and zsh — the user's
+  login shell is fish, which is why it looked universal. The gate is now the non-strict
+  `term_prompt_line_typed()`; the `cd` follow machine is provably untouched (`.scratch/s90b/diffgate.sh`: seven
+  copied functions byte-identical to `main.c`, all six integration modes still `MATCH` with the typed text intact).
+  18-run matrix over real fish/bash/zsh including a file literally named `odd name'"<pid>.txt`, whose quoting is
+  correct end to end. Build the expected text with the program's own `shell_quote()`, never by hand.
+
+- **2026-10-21, s96 — the mouse inside full-screen programs.** Asked for by the user ("When opening a file with
+  nano or similar program it would be nice to be able to scroll with the mouse. Also scrolling in the preview pane
+  of the file manager …"), then framed by their comparison with kitty ("In kitty I can't click, but I can scroll").
+  Measured first (`.scratch/s96/nanoprobe`, `.scratch/s96/clickprobe`): nano and less are alt-screen with
+  `mouse_mode == 0`, so Kai-Term's wheel landed in `scrollback_nav()` on a grid built with `scrollback_max = 0` and
+  was thrown away; **less answers ONLY the SS3 arrow form** because it asked for DECCKM with `ESC[?1h`, so its
+  arrow keys were inert; on `nano --mouse` the wheel report Kai-Term sent (4/5) does nothing while 65 scrolls (same
+  in X10: `32+65` scrolls, `32+4` does not), so the wheel was dead in every ncurses program; and a mouse report
+  sent to a program that never asked for the mouse is **typed into its document** — one `ESC[<64;20;5M` put
+  `64;20;5M` on the user's row 1 and set `Modified`. Shipped: DECCKM (`Term.app_cursor`, saved/restored across the
+  alternate screen, every cursor key through one `term_arrow_seq()`), the wheel as cursor keys, a click as the
+  arrow-key walk to the clicked cell with the target column clamped to that row's last glyph + 1, 64/65 for
+  programs that DID grab the mouse, and preview-pane scrolling. All of it in `src/vt.c`/`src/fm.c`, never in
+  `main.c`, because main.c is in no test binary. 31 + 27 new checks; the resize clamp A/B'd.
+
+- **2026-10-21, s97 — the stray `h`, first half: a C0 byte inside a CSI sequence ENDED it.** Measured
+  (`.scratch/s97/hprobe2` against `git show HEAD:src/vt.c`): `ESC [ ? 2004 <TAB> h` left `bracketed_paste` at 0 and
+  painted an `h`; `ESC [ ? 1049 <TAB> h` never entered the alternate screen; `ESC [ ? 1 <TAB> h` left DECCKM off.
+  `h` is the final byte of every mode-ENABLING sequence, which is why the leaked character was an `h`. Fix: ONE
+  file-local `exec_c0()` shared by `PS_GROUND` and `PS_CSI` — the rule existed twice and the two copies disagreed.
+  ESC is the exception: it cancels the sequence, so the caller handles it. 14 checks, A/B 9 failures -> 0. Also
+  measured and NOT a bug: bracketed paste is off for ~20 ms (bash, zsh) to ~200 ms (fish) after a shell starts, so
+  a paste flushed in that window goes out raw — ISSUES.md "Paste".
+
+- **2026-10-21/22, s98 — the stray `h`, real cause: the clipboard SOURCE.** Two confident wrong theories came
+  before the one command pair that settled it (`wl-paste -l`, then `wl-paste --type <name> | od -c`). Measured
+  against the user's live Firefox selection: ten advertised types ending `text/x-moz-url-priv`, which Firefox
+  serves as **UTF-16LE** (`68 00 74 00 74 00 70 00 …`), and `offer_offer()` overwrote the recorded type for every
+  `text/*` name, so the LAST advertisement won. bash's bracketed reader stops at the first NUL (one `h`); zsh
+  inserts every byte and paints each NUL as `^@`. Fixed in two places because two things were wrong:
+  `clipboard_mime_rank()` (ask for the best type, never the last) and `paste_repair()` (a NUL must never reach the
+  pty; dense one-sided NULs or a BOM mean UTF-16, anything else is NUL-stripped). A/B on the user's own clipboard:
+  42 UTF-16 bytes -> 6 clean UTF-8; on a source that offers ONLY UTF-16, 33 in -> 17 out. 19 checks. Their own
+  clues — "the source matters", "ctrl+v works but ctrl+shift+v does not" — were the diagnosis; the second one works
+  because the shell's own paste path drops NULs and Kai-Term's did not.
+
+- **2026-10-22, s99 — the config split (their own request, confirmed 2026-10-22) and a config reader that had been
+  throwing away every colour.** `apply()` became `apply_bind_key()` (the 24 `key_*`/`fm_key_*` names) +
+  `apply_setting()` (the 29 others) under one dispatcher, split by NAME and never by which file was open, so an
+  older `kai-term.conf` with bindings in it keeps working and a setting written in `kai-term.bind` is refused by
+  name rather than treated as unknown. `config_find(name)` = the first REGULAR file with that name in
+  `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term`, `/etc/kai-term`, searched per FILE NAME (so a user with only a
+  `kai-term.conf` still gets the system bindings); `-b/--binds` added; the bind file is read second, so it wins.
+  The `#` rule was "whitespace before it is enough" — exactly the shape of a colour value — so
+  `background = #1c1c22` became `background =`, and an empty value is legal, so nothing was even logged. Measured
+  against the user's own file (`.scratch/s99/hashab/cfgprobe.c`): old `ff101014` (the built-in default), new
+  `ff1c1c22` (what they wrote). New durable check: the template name-coverage check, which reads the accepted names
+  out of the two strcmp ladders in `src/config.c` — A/B proved the hole was real (deleting `padding = 8` from the
+  template: 0 failures on the old suite, 1 on the new). One harness bug cost 10 windowed checks: `run_env` used
+  `env "$@"`, so `env` parsed the binary's `-w` as its own `--split-string` and the command never ran.
+
+- **2026-10-22, s100 — close-out, the user's answers, and this cleanup.** The tree arrived with s99's code commit
+  unpushed and its journal/ISSUES edits uncommitted; re-measured from clean, committed, `git fetch`, pushed,
+  verified. The user then answered the four items that were open ("1. yes / 2. good / 3. works good"): the two-file
+  split is theirs, the background change their own config file now produces is accepted, and the s98 paste fix, the
+  preview-pane keys and the 75 % band's look work. Then, on request, this file was cut from 2843 lines /
+  247969 bytes / 38871 words to a little under half that: the s89-s100 "Previous Task / entry N" narrative
+  (1557 lines) collapsed into the era entries above — the same rule s87 applied to s68-s86 and ISSUES.md has
+  followed since s66. Every mechanism name, measured number and pitfall was checked to survive outside the deleted
+  text before it was deleted (the check: build the post-deletion text and grep it for each name — DECCKM,
+  `exec_c0`, `clipboard_mime_rank`, `paste_repair`, `config_find`, `apply_bind_key`, `term_wants_key_mouse`,
+  `term_click_arrow_keys`, `ink_in_box`, `pv_scroll`, `shell_int_gen`, `prompt_cx`, `C-x C-]`, 64/65 — all present),
+  and the two stale counts the sweep found (`tests/test_vt.c` described as 878 checks and `tests/test_fm.c` as 274,
+  both in Project Files) were corrected to 944 / 293. The full step-by-step detail of those sessions, including
+  every failed probe and wrong theory, is in git history and in `.scratch/s100/AGENT.md.pre-cleanup`.
+
 ## Next Steps
 
-0. **s99 — two things owed, and one question to ask before anything else.**
-   a. **Ask the user whether they wanted the two-file config split.** Nothing in this journal records them
-      asking for it, and it changes what a user edits (`kai-term.conf` for settings, `kai-term.bind` for
-      bindings, new `-b/--binds`, a new search order that now includes `/etc/kai-term`). If the answer is no, the
-      undo is contained: the `apply()` dispatcher and `config_find`/`config_load_binds` in `src/config.c`, the
-      `-b` branch in `main()`, the two files in `config/`, and README's Configuration section. Do not undo it
-      unasked — it is green, documented and pinned by checks.
-   b. **Tell the user their background colour is about to change.** Their own
-      `/home/kaida/.config/kai-term/kai-term.conf` has `background = #1c1c22`, which the old reader threw away;
-      the first run of the new build applies it. If they report "the colours changed", that is the fix, not a
-      regression. Recipe for any config report: `./bin/kai-term -d` logs `config loaded from <path>` and
-      `bindings loaded from <path>`; a line in the wrong file logs `is a key binding — those live in
-      kai-term.bind now` or `is not a key binding — kai-term.bind holds bindings only`; nothing found logs
-      `no kai-term.conf in $XDG_CONFIG_HOME/kai-term, ~/.config/kai-term or /etc/kai-term`. A colour that does
-      not apply is now impossible to confuse with a comment: `background = #1c1c22` is a value, `background = #
-      note` is a comment.
-   c. **The preview-pane keys (Page_Up/Page_Down/Home/End over the previewed text) are model-tested but never
-      seen by a human.** 19 `test_fm` checks pin what one page is and that Home/End are the body's first and last
-      line; the ROUTING is in `fm_keys()` in `src/main.c`, which is in no test binary (see item 5). Their eye:
-      `./bin/kai-term -d`, `Ctrl+Shift+F`, click the preview pane (or wheel over it), open a long text file, hold
-      `Page_Down` — the body must walk with no line shown twice, `Up`/`Down` must still change which entry is
-      previewed, and a picture or metadata-only preview must not move at all.
-1. **File manager: the open item is the user's eye on the new 75% band and on the fixed preview.** Built,
-   wired, documented, green (293 model/layout/config checks + the s74 live key-injection run that proves the
-   routing and the `cd` follow), and the user has run the band in their own window and confirmed its
-   behaviour (2026-10-19) — but the band's new SHARE (`fm_size = 75`, s88) and its new preview row budget
-   have never been seen by them, and they have never said whether they like how the band looks. If they
-   report something visual, start from the `-d` lines `fm: opened on …`, `fm: listing <dir> (request N)`,
-   `fm: dropping stale …`, `fm: keyboard -> …` and `graphics: … + the file-manager preview`, not from the
-   shader. One decision they may want to revisit, flagged and one line to change: `fm_follow` sends `cd <path>`
-   unprompted. (`Return` typing a path is no longer one of them — s95 moved that to `p` at their request.)
+0. **s99/s98 — all four open items were put to the user and answered on 2026-10-22 ("1. yes / 2. good / 3. works
+   good", the s100 era entry). Nothing here is owed any more; what follows is the diagnosis recipe, not a to-do.**
+   a. **The two-file config split is theirs — they asked for it.** Do not undo it and do not re-ask. Recipe for a
+      config report: `./bin/kai-term -d` logs `config loaded from <path>` and `bindings loaded from <path>`; a line
+      in the wrong file logs `is a key binding — those live in kai-term.bind now` or `is not a key binding —
+      kai-term.bind holds bindings only`; nothing found logs `no kai-term.conf in $XDG_CONFIG_HOME/kai-term,
+      ~/.config/kai-term or /etc/kai-term`. A colour is no longer confusable with a comment: `background = #1c1c22`
+      is a value, `background = # note` is a comment. Note for a future session: the user's own
+      `~/.config/kai-term/` holds only `kai-term.conf` (5 lines) and there is no `/etc/kai-term`, so their bindings
+      are the built-ins — a `kai-term.bind` they never wrote is a valid state, not a bug.
+   b. **Their background change is accepted** ("good"). `background = #1c1c22` in their file now applies; if they
+      ever report the colours being wrong, that line is the first thing to read, not the shader.
+   c. **The preview-pane keys are confirmed working by the user** ("works good"). The housekeeping item under them
+      is unchanged and still real: the ROUTING lives in `fm_keys()` in `src/main.c`, which is in no test binary
+      (item 5), so a regression there shows up as a report, not as a failing check.
+1. **File manager: done and confirmed — the 75 % band, its preview row budget and the preview scrolling have the
+   user's eye on them ("works good", 2026-10-22).** Built, wired, documented, green (293 model/layout/config checks
+   + the s74 live key-injection run that proves the routing and the `cd` follow). If they report something visual,
+   start from the `-d` lines `fm: opened on …`, `fm: listing <dir> (request N)`, `fm: dropping stale …`,
+   `fm: keyboard -> …` and `graphics: … + the file-manager preview`, not from the shader. One decision they may
+   still want to revisit, flagged and one line to change: `fm_follow` sends `cd <path>` unprompted. (`Return`
+   typing a path is no longer one of them — s95 moved that to `p` at their request.)
 1b. **The path key (s95) is done: built, green, measured headless AND confirmed by the user in their own window**
    ("The feature works", 2026-10-20). Nothing is owed here but a diagnosis if a report ever arrives. The recipe:
    `./bin/kai-term -d`, `Ctrl+Shift+F`, type `cat `, press `p` on a file — the prompt must read
@@ -2013,7 +426,7 @@ one verified change and push.
    call, not a defect: a `tests/` check running `fish -n` / `bash -n` / `zsh -n` over the generated scripts would
    catch a script that no shell can parse, but it makes the suite depend on external shells unless it skips when
    one is missing. (The zsh-mode gate itself now lives in `.scratch/s90b/intgate.c` with a `build.sh` beside it —
-   s94 entry 4.)
+   added in s94.)
 3. **Image support is done and confirmed by eye** (2026-10-17), and the user has settled its scope:
    "The goal was image support, Not auto-detection by timg so it work fine using `-p k`". So `-p k` IS the
    supported way to show a picture and nothing more is wanted here. Do NOT "improve" this by re-adding the
@@ -2143,7 +556,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 878 checks: parser (including a C0 byte inside a control sequence — executed, sequence
+- `tests/test_vt.c` — 944 checks: parser (including a C0 byte inside a control sequence — executed, sequence
   still collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
   (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
   ordering), grid, selection, alt screen,
@@ -2169,7 +582,7 @@ Kai-Term/
   land on disk (each binds exactly what `shellint_seq()` returns, fish repaints, bash does NOT pretend to,
   every script names `$KAI_TERM_INT_DIR`, every `shellint_argv()` carries it, the nested-shell wrappers are
   there, and cleanup finds a request file whose id is past `TAB_MAX`).
-- `tests/test_fm.c` — 274 checks against a real temporary directory tree (dirs, a dotfile, a dangling
+- `tests/test_fm.c` — 293 checks against a real temporary directory tree (dirs, a dotfile, a dangling
   symlink, a FIFO, an unreadable dir, four image formats, a binary file): scan + sort + caps + truncation,
   the hidden filter and `fm_set_hidden`, selection and scrolling (`fm_row_pos`, `ensure_visible`),
   navigation, the request-id rule (a stale answer is dropped), every preview kind and its error path, the

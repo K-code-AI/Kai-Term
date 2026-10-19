@@ -6,21 +6,19 @@ The rules those bugs produced are in AGENT.md "Architecture & Invariants" — re
 
 ## Open
 
-**No open bug.** Two things still need the user's eye in their own window, both from work that is green and
-A/B'd here: the s98 clipboard-source paste fix (see the entry at the top of "Fixed": Firefox advertises
-`text/x-moz-url-priv` last and serves UTF-16 under it, and Kai-Term was asking for the last type advertised),
-and the s99 config-reader fix below — **their own `background = #1c1c22` line has never applied until now**, so
-the window's background will visibly change the first time they run the new build. That is the fix working, not
-a regression.
+**No open bug and no open question.** The four items this file was holding for the user's eye were answered
+2026-10-22 ("1. yes / 2. good / 3. works good"): the two-file config split is theirs (they asked for it), the
+background change their own `background = #1c1c22` line now produces is accepted, and the s98 clipboard-source paste
+fix, the file manager's preview-pane key scrolling and the 75 % band's look all work in their window.
 
-Re-measured 2026-10-22 (s99, after the config split and the config-reader fix, from `make clean`): `make -j8`
-exit 0 with **0 warnings**; `./bin/test_vt` **944 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
-`./bin/test_fm` **293 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0
-(`CLI: 67 checks, 0 failures, 13 skipped` + those three); `make asan` exit 0 with the same counts and no
-sanitizer report; `tests/cli_test.sh` **117 checks / 0 failures / 0 skipped** — the probe launch could draw
-here, so the window-opening group ran, which is the only way the config-search and `-b` checks run at all (it
-is skipped on a box whose video memory is spoken for, and then those checks are skipped with it).
-No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
+Re-measured 2026-10-22 (s100, from `make clean`): `make -j8` exit 0 with **0 warnings**; `./bin/test_vt` **944
+checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **293 checks, 0 failures**;
+`KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` + those three); `make asan`
+exit 0 with the same counts and no sanitizer report. The windowed group of `tests/cli_test.sh` (**117 checks /
+0 failures / 0 skipped**, last measured in s99) was skipped in s100 — VRAM was 11783/12227 MiB used and the user at
+the machine — so the config-search, `kai-term.bind` and `-b` checks have no NEW coverage; they run only when a
+window can be mapped. No `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`,
+`tests/`.
 
 **Fixed and confirmed by the user in their own window (2026-10-19):** a second file-manager navigation on top
 of a prompt Kai-Term had just re-populated did not erase it — the prompt ended up `Some text cd '/'` and the
@@ -37,9 +35,8 @@ model/layout/config checks plus the 944 passing ones in the VT/config suite; its
 live by injecting keys through the compositor and reading the bytes the PTY received. The four reported
 file-manager problems (keys reaching the terminal while the band is focused, Left/Right navigation, writing
 at a prompt that is already in use, click-to-open and the `..` row) are fixed — see the s71-s79 journal
-entries in AGENT.md. The user has run the band in their own window and confirmed its behaviour
-(2026-10-19); **no verdict has been given on how it LOOKS** — that is the one open item, and it belongs to
-the user. Its limits are under "Known limitations" — "File manager".
+entries in AGENT.md. The user has run the band in their own window and confirmed both its behaviour (2026-10-19)
+and how it looks (2026-10-22, "works good"). Its limits are under "Known limitations" — "File manager".
 
 **Shell integration (s90-s92) is implemented, wired, and CONFIRMED BY THE USER IN THEIR OWN WINDOW for fish, bash
 and zsh** ("I verified the shell integration, Fish Bash and Zsh are working as expected now. Perfect",
@@ -76,8 +73,9 @@ whitespace before the `#`), `value # note` is still stripped, and `key =#value` 
 the `config hash` group of `tests/test_vt.c`.
 
 **The config surface is now two files, and the templates are pinned to the parser (2026-10-22, s99).** Not a
-bug — a feature that was already written, uncommitted and unjournaled, when s99 resumed the tree (its
-motivation is not recorded anywhere; see s99 entry 1 of AGENT.md and the question left there for the user).
+bug — a feature the user asked for (confirmed theirs on 2026-10-22, "1. yes"); it reached the tree already written,
+in a session that stopped before it journaled anything, which is why its motivation was missing from the record
+for a day.
 `kai-term.conf` holds the 29 settings, `kai-term.bind` the 24 key
 bindings, each searched in `$XDG_CONFIG_HOME/kai-term` → `~/.config/kai-term` → `/etc/kai-term` (first regular
 file found wins; the two files are searched independently), with `-b/--binds` naming the binding file the way
@@ -113,7 +111,7 @@ the last one advertised. (2) `paste_repair()` — a NUL byte must never reach th
 and one-sided (or BOM-prefixed) is UTF-16 and is decoded to UTF-8; anything else is NUL-stripped. Verified
 end-to-end for a source that offers only UTF-16 and cannot be dodged by picking a better type: **33 UTF-16 bytes
 in, 17 clean bytes out**, logging `paste: 33 clipboard bytes contained NUL, repaired to 17`. 19 new checks
-(859 -> 878, 0 failures), `make asan` clean.
+(859 -> 878, 0 failures), `make asan` clean. **Confirmed in the user's own window 2026-10-22** ("works good").
 
 **Why Ctrl+V worked and Ctrl+Shift+V did not** — the user's own clue, and the best diagnostic in the whole
 report: Kai-Term does not handle plain Ctrl+V at all, it sends the key to the shell, and the shell's own paste
@@ -239,7 +237,7 @@ used by both the painter and `fm_image_fit()`: header, then the metadata lines t
 which always keeps at least one row. Verified by 12 new checks in `tests/test_fm.c` (235 -> 247, 0 failures)
 that scan every cell inside the box `fm_image_fit()` reports for a painted glyph, and by A/B: the same new
 test file against the previous `src/fm.c` gives **8 failures**, including `fit: a picture that fills the area
-has no metadata line drawn across it`. Not yet re-run in the user's window.
+has no metadata line drawn across it`. Confirmed in the user's window 2026-10-22 ("works good").
 
 **The band is now a share of the window, not a row count (2026-10-19).** Requested by the user: "Would it be
 possible for the File manager part to occupy more space? like 75% per default and make it configurable in the
@@ -251,7 +249,8 @@ keeps its proportion through a resize or a zoom instead of becoming huge or tiny
 still gets exactly the configured `cols x rows` for the terminal pane. Verified by 7 new checks in
 `tests/test_vt.c` (719 -> 726, 0 failures: the share, both clamps, the terminal's floor, the share surviving
 a resize and a zoom, three startup round trips) and by one new `tests/cli_test.sh` check comparing the real
-binary's `grid CxR per session` line with the band off and with `fm_size = 50` on. Not yet seen by the user.
+binary's `grid CxR per session` line with the band off and with `fm_size = 50` on. Seen and accepted by the user
+2026-10-22 ("works good").
 
 **A second file-manager navigation appended `cd <dir>` to the prompt instead of erasing it first
 (2026-10-19).** Symptom, reported by the user: type `Some text`, browse once — the line is cleared, the `cd`
