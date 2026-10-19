@@ -63,8 +63,10 @@ paste fix, and the s99 config-reader fix, which changes the background of THEIR 
   `app_wheel()` + `ptr_button()` + `send_key()` + `fm_wheel()` in main.c. Switches: `wheel_sends_keys`,
   `click_moves_cursor` (default 1). Pinned by 31 new `test_vt` checks and 27 new `test_fm` checks; the preview
   resize clamp was A/B'd (`.scratch/s96/clampab`: 1 failure on the old placement, 0 here).
-- **s90-s98 are committed on `main` and pushed. The s99 work is NOT yet committed as of this entry** — read the
-  real state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. s89's
+- **s90-s99 are committed on `main` and pushed** (s100 verified after the push: `git status -sb` shows no
+  ahead/behind, `git rev-list --left-right --count origin/main...main` is `0 0`, `git diff --stat main
+  origin/main` is empty, working tree clean). Read the remote state with `git status -sb` /
+  `git log --oneline origin/main -1`, never from a hash written here. s89's
   follow fix (`payload_cannot_insert()` + the anchor rule in `prompt_snapshot()`, both in `src/vt.c`, 20 checks)
   was confirmed by the user in their own window (2026-10-20).
 - **s95 changed the file manager's key layout, by request — implemented, green, measured headless and CONFIRMED
@@ -161,11 +163,10 @@ paste fix, and the s99 config-reader fix, which changes the background of THEIR 
   `git status -sb` and `git log --oneline origin/main -1`. `git fetch` before push — the user commits on
   GitHub too. Never commit `bin/` or `build/`.
 
-## Current Task (s100 — resuming the s99 close-out. Read at session start: `git status -sb` = `main...origin/main
-[ahead 1]` with ` M AGENT.md` + ` M ISSUES.md`, i.e. s99's code commit exists and is NOT pushed, and s99's second
-commit (this journal + ISSUES.md) was never made. Objective: re-measure from a clean tree, make that second
-commit, `git fetch` + push and verify it, then put s99's three open questions to the user. No source change is
-planned or wanted here.)
+## Current Task (s100 — CLOSED as work: resumed a tree whose s99 code commit was unpushed and whose journal/ISSUES
+edits were uncommitted. Re-measured from clean (entry 1), made the second commit, fetched, pushed and verified
+(entry 2). No source was touched. What remains is the user's — Next Steps 0a/0b/0c and the s98 eye-check — and
+this session asked; no answer is recorded yet.)
 
 **Planned steps:** (1) `make clean && make -j8`; (2) `KAI_TERM_TEST_NO_WINDOW=1 make test` — the windowed group is
 deliberately skipped this session: `nvidia-smi` measures 11783/12227 MiB already used (the user's local LLM) and
@@ -196,6 +197,21 @@ used by the user's LLM, user at the machine). The windowed `tests/cli_test.sh` f
 measurement, not this session's.
 
 **Next action:** commit AGENT.md + ISSUES.md (s99's second commit), then `git fetch` + push and verify.
+
+### s100 entry 2 — the two commits and the push; s99 is now closed as work AND in history
+
+`git add AGENT.md ISSUES.md` -> one commit ("Journal: s99 — the config split reconstructed from the diff, …"), so
+the s99 work is now two commits as its close-out planned: the code/tests/templates/README, then the docs.
+`git fetch` first (the user commits on GitHub too) — nothing arrived. `git push origin main` -> exit 0,
+`62a00a6..7507385`. **Verified afterwards, not asserted:** `git status -sb` -> `## main...origin/main` with no
+ahead/behind, `git rev-list --left-right --count origin/main...main` -> `0 0`, `git diff --stat main origin/main`
+-> empty, working tree clean.
+
+Nothing in the repo is unfinished. What is open is the user's, and it is now the top of Next Steps: 0a whether they
+asked for the two-file config split at all, 0b their own `background = #1c1c22` finally applying (their window's
+background will change on the first run of the new build — that is the fix), 0c the preview-pane keys never having
+been seen by a human, plus the still-unconfirmed s98 paste fix. Those four were put to the user at the end of this
+session; no answer is in the record yet, so nothing about the split may be undone or extended until one arrives.
 
 ## Previous Task (s99 — CLOSED as work, OPEN as questions: resumed a tree that had work in it and no journal entry. `git status` showed 8 modified files plus an untracked `config/`, while the last journal entry (s98 close-out) said the tree was clean and pushed. The work is a **config split** — settings stay in `kai-term.conf`, every key binding moves to a new `kai-term.bind`, both searched in `$XDG_CONFIG_HOME/kai-term` → `~/.config/kai-term` → `/etc/kai-term`, new `-b/--binds` flag — plus **preview-pane key scrolling** (`Page_Up`/`Page_Down`/`Home`/`End` scroll the previewed text while that pane owns the keyboard) and a **real bug fix in the config reader** (`background = #1c1c22`, the colour form README documents, was being cut at the `#` and set nothing at all). Re-measured from a clean tree: green. What s99 still owes is recorded below. See s99 entries 1-.)
 
