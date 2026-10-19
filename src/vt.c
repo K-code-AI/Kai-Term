@@ -167,6 +167,65 @@ int cluster_is_wide(const uint32_t *seq, int n)
    remainder with — and the difference draws a visible frame around the grid (the s100/s101 user report). */
 static uint32_t g_def_fg = DEF_FG, g_def_bg = DEF_BG;
 
+/* The 256-colour palette, process-wide for the same reason as g_def_fg/g_def_bg and the bell of this
+   comment: term_init() memsets the whole Term, so palette state kept in a Term is destroyed by every new
+   tab and by every `ESC c`. A theme in a file would then apply to the first session only. It is also what
+   lets one line change every session: entries 0-15 are the themeable ANSI colours, 16-231 the 6x6x6 cube
+   and 232-255 the grey ramp, and those 240 entries are computed here rather than read from anywhere —
+   they are identical in every terminal and no theme in the wild touches them.
+   Filled on first use, not by a required init call: a caller that forgets gets the built-in palette, not
+   zeros, which is the failure that cannot silently change a colour. */
+static uint32_t g_palette[256];
+static int g_palette_ready;
+
+static void palette_fill_builtin(void)
+{
+    /* xterm 16 base colors, then 6x6x232 cube, then grayscale ramp */
+    static const uint32_t base16[16] = {
+        0xff000000, 0xffcc5555, 0xff55cc55, 0xffcccc55,
+        0xff5555cc, 0xffcc55cc, 0xff55cccc, 0xffcccccc,
+        0xff777777, 0xffff5555, 0xff55ff55, 0xffffff55,
+        0xff5555ff, 0xffff55ff, 0xff55ffff, 0xffffffff,
+    };
+    memcpy(g_palette, base16, sizeof(base16));
+    for (int i = 0; i < 216; i++) {
+        int r = i / 36, g = (i / 6) % 6, b = i % 6;
+        int rv = r ? 55 + 41 * r : 0;
+        int gv = g ? 55 + 41 * g : 0;
+        int bv = b ? 55 + 41 * b : 0;
+        g_palette[16 + i] = 0xff000000u | (uint32_t)(rv << 16 | gv << 8 | bv);
+    }
+    for (int i = 0; i < 24; i++) {
+        int v = 8 + i * 10;
+        g_palette[232 + i] = 0xff000000u | (uint32_t)(v << 16 | v << 8 | v);
+    }
+    g_palette_ready = 1;
+}
+
+const uint32_t *term_palette(void)
+{
+    if (!g_palette_ready)
+        palette_fill_builtin();
+    return g_palette;
+}
+
+/* One entry. Out-of-range indices are ignored rather than clamped: a caller that asks for entry 999 has a
+   bug, and painting entry 255 with it would hide that bug as a wrong colour. */
+void term_set_palette_entry(int idx, uint32_t argb)
+{
+    if (idx < 0 || idx > 255)
+        return;
+    term_palette();   /* fill the built-ins first, so setting one entry cannot zero the other 255 */
+    g_palette[idx] = argb;
+}
+
+/* Back to the built-in palette: what OSC 104 asks for. NOT called by term_init() or by `ESC c` — a new tab
+   or a `reset` at the prompt must not wipe a theme the user put in a file (see the comment above). */
+void term_palette_reset(void)
+{
+    palette_fill_builtin();
+}
+
 void term_set_default_colors(uint32_t fg, uint32_t bg)
 {
     g_def_fg = fg;
@@ -825,26 +884,8 @@ void term_init(Term *t, int rows, int cols, int scrollback)
     t->bot = rows - 1;
     t->show_cursor = 1;
     pen_default(t);
-
-    /* xterm 16 base colors, then 6x6x232 cube, then grayscale ramp */
-    static const uint32_t base16[16] = {
-        0xff000000, 0xffcc5555, 0xff55cc55, 0xffcccc55,
-        0xff5555cc, 0xffcc55cc, 0xff55cccc, 0xffcccccc,
-        0xff777777, 0xffff5555, 0xff55ff55, 0xffffff55,
-        0xff5555ff, 0xffff55ff, 0xff55ffff, 0xffffffff,
-    };
-    memcpy(t->palette, base16, sizeof(base16));
-    for (int i = 0; i < 216; i++) {
-        int r = i / 36, g = (i / 6) % 6, b = i % 6;
-        int rv = r ? 55 + 41 * r : 0;
-        int gv = g ? 55 + 41 * g : 0;
-        int bv = b ? 55 + 41 * b : 0;
-        t->palette[16 + i] = 0xff000000u | (uint32_t)(rv << 16 | gv << 8 | bv);
-    }
-    for (int i = 0; i < 24; i++) {
-        int v = 8 + i * 10;
-        t->palette[232 + i] = 0xff000000u | (uint32_t)(v << 16 | v << 8 | v);
-    }
+    /* The palette is NOT touched here: it is process-wide state (see g_palette), because term_init() runs
+       for every new tab and would otherwise throw away a theme the user configured. */
 }
 
 void term_grid_geometry(int win_w, int win_h, int cell_w, int cell_h, int pad,
@@ -2244,13 +2285,13 @@ static void csi_dispatch(Term *t, int fin)
                     /* 38;5;idx */
                     int idx = t->ps.par[i + 2];
                     if (idx >= 0 && idx < 256)
-                        t->pen.fg = t->palette[idx];
+                        t->pen.fg = term_palette()[idx];
                     i += 2;
                 } else if (i + 1 <= t->ps.npar) {
                     /* 38;idx (shorthand) */
                     int idx = t->ps.par[i + 1];
                     if (idx >= 0 && idx < 256)
-                        t->pen.fg = t->palette[idx];
+                        t->pen.fg = term_palette()[idx];
                     i += 1;
                 }
                 break;
@@ -2269,13 +2310,13 @@ static void csi_dispatch(Term *t, int fin)
                     /* 48;5;idx */
                     int idx = t->ps.par[i + 2];
                     if (idx >= 0 && idx < 256)
-                        t->pen.bg = t->palette[idx];
+                        t->pen.bg = term_palette()[idx];
                     i += 2;
                 } else if (i + 1 <= t->ps.npar) {
                     /* 48;idx (shorthand) */
                     int idx = t->ps.par[i + 1];
                     if (idx >= 0 && idx < 256)
-                        t->pen.bg = t->palette[idx];
+                        t->pen.bg = term_palette()[idx];
                     i += 1;
                 }
                 break;
@@ -2284,17 +2325,17 @@ static void csi_dispatch(Term *t, int fin)
             case 49: t->pen.bg = g_def_bg; break;
             case 90: case 91: case 92: case 93:
             case 94: case 95: case 96: case 97:
-                t->pen.fg = t->palette[p - 90 + 8];
+                t->pen.fg = term_palette()[p - 90 + 8];
                 break;
             case 100: case 101: case 102: case 103:
             case 104: case 105: case 106: case 107:
-                t->pen.bg = t->palette[p - 100 + 8];
+                t->pen.bg = term_palette()[p - 100 + 8];
                 break;
             default:
                 if (p >= 30 && p <= 37)
-                    t->pen.fg = t->palette[p - 30];
+                    t->pen.fg = term_palette()[p - 30];
                 else if (p >= 40 && p <= 47)
-                    t->pen.bg = t->palette[p - 40];
+                    t->pen.bg = term_palette()[p - 40];
                 break;
             }
         }

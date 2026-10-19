@@ -440,11 +440,11 @@ int main(void)
 
     /* --- SGR colors --- */
     feed("\x1b[2J\x1b[H\x1b[31mR\x1b[0m");
-    CHECK(cellfg(0, 0) == T.palette[1], "SGR 31 -> palette red");
+    CHECK(cellfg(0, 0) == term_palette()[1], "SGR 31 -> palette red");
     feed("\x1b[38;2;10;20;30mT\x1b[0m");
     CHECK(cellfg(0, 1) == 0xff0a141eu, "truecolor fg");
     feed("\x1b[48;5;196mU\x1b[0m");
-    CHECK(cellbg(0, 2) == T.palette[196], "256-color bg");
+    CHECK(cellbg(0, 2) == term_palette()[196], "256-color bg");
     feed("\x1b[1mB\x1b[0m");
     CHECK(cellattr(0, 3) & ATTR_BOLD, "bold attr");
     CHECK(!(cellattr(0, 4) & ATTR_BOLD), "reset clears bold");
@@ -4113,6 +4113,71 @@ int main(void)
         term_set_default_colors(DEF_FG, DEF_BG);
         CHECK(term_default_fg() == DEF_FG && term_default_bg() == DEF_BG,
               "default colours: the setter restores, so this block cannot change what the rest of the suite sees");
+    }
+
+    /* ---------- the palette is process-wide RUNTIME state (the shape themes need) ----------
+       Entries 0-15 are the ANSI colours a theme file may set. The point of the whole block is the second
+       check: term_init() memsets the Term, so a palette stored in the Term is refilled from the built-in
+       base16 by every new tab and by every `ESC c` — a theme would then apply to the first session only. */
+    {
+        const uint32_t *pal = term_palette();
+        CHECK(pal[0] == 0xff000000u && pal[1] == 0xffcc5555u && pal[15] == 0xffffffffu,
+              "palette: the built-in ANSI 0-15 are the xterm base colours");
+        CHECK(pal[16] == 0xff000000u && pal[232] == 0xff080808u && pal[255] == 0xffeeeeeeu,
+              "palette: the computed parts are the cube's first entry and the grey ramp's ends");
+
+        /* A theme sets an entry; the parser must then use it. */
+        term_set_palette_entry(1, 0xffe07f70u);          /* the user's "13th Floor" red */
+        term_init(&T, 6, 40, 20);
+        feed("\x1b[31mR\x1b[0m");
+        CHECK(cellfg(0, 0) == 0xffe07f70u,
+              "palette: a changed entry is what SGR 31 paints — the palette is read at paint time, not baked in");
+
+        /* THE check for this refactor: a new tab (term_init) must not put the built-in red back. */
+        term_init(&T, 6, 40, 20);
+        feed("\x1b[31mR\x1b[0m");
+        CHECK(cellfg(0, 0) == 0xffe07f70u,
+              "palette: term_init() does NOT refill the palette — a second tab keeps the theme (on the old "
+              "per-Term palette this is the built-in 0xffcc5555)");
+
+        /* Nor does a full reset: `reset` at the prompt sends ESC c. */
+        feed("\x1bc");
+        feed("\x1b[31mR\x1b[0m");
+        CHECK(cellfg(0, 0) == 0xffe07f70u,
+              "palette: ESC c / RIS rebuilds the pen but does NOT wipe the palette");
+
+        /* A cell keeps the colour it was painted with: a Cell stores a resolved ARGB, so changing an entry
+           later cannot repaint what is already on screen. Pinned because it is a documented consequence. */
+        term_init(&T, 6, 40, 20);
+        feed("\x1b[31mR\x1b[0m");
+        uint32_t painted = cellfg(0, 0);
+        term_set_palette_entry(1, 0xff00ff00u);
+        CHECK(painted == 0xffe07f70u && cellfg(0, 0) == 0xffe07f70u,
+              "palette: an already-painted cell keeps its colour when an entry changes afterwards");
+
+        /* The setter is general (0-255); restricting a theme to 0-15 is the theme layer's job, not this one's. */
+        term_set_palette_entry(200, 0xff010203u);
+        term_init(&T, 6, 40, 20);
+        feed("\x1b[38;5;200mX\x1b[0m");
+        CHECK(cellfg(0, 0) == 0xff010203u, "palette: an entry above 15 can be set too (the theme layer restricts, not this)");
+
+        /* Out-of-range indices are ignored, and must not touch a real entry. */
+        uint32_t before255 = term_palette()[255];
+        term_set_palette_entry(-1, 0xff111111u);
+        term_set_palette_entry(256, 0xff111111u);
+        term_set_palette_entry(99999, 0xff111111u);
+        CHECK(term_palette()[255] == before255,
+              "palette: an out-of-range index changes nothing (no clamp, no write past the end)");
+
+        /* OSC 104's meaning: back to the built-ins. */
+        term_palette_reset();
+        CHECK(term_palette()[1] == 0xffcc5555u && term_palette()[200] != 0xff010203u
+              && term_palette()[255] == 0xffeeeeeeu,
+              "palette: term_palette_reset() restores every entry, the cube included");
+        term_init(&T, 6, 40, 20);
+        feed("\x1b[31mR\x1b[0m");
+        CHECK(cellfg(0, 0) == 0xffcc5555u,
+              "palette: after a reset SGR 31 is the built-in red again — the block leaves no state behind");
     }
 
     printf("%d checks, %d failures\n", checks, fails);

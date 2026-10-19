@@ -24,7 +24,7 @@ eight questions in "Current Task")
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`).
 - **Suites:** `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 67 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **958 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
+  `./bin/test_vt` **968 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **293 checks,
   0 failures**, `./bin/test_render` **15 checks, 0 failures** (new in s102: the renderer's pure colour
   decisions, no display and no GL context). `make asan` exit 0, same four counts, 0 sanitizer reports. With a
   display and spare VRAM,
@@ -112,22 +112,23 @@ CJK).
 
 ### 1. Themes: the palette becomes runtime state, then a theme file, then `--import-theme FILE`
 
-**Measured starting point.** `palette[256]` is a **`Term` field** (`include/kai-term/kai-term.h:271`) filled inside
-`term_init()` from a `static const base16[16]` (`src/vt.c:830-847`, then the 6×6×6 cube and the 24-step grey ramp,
-computed). `term_init()` memsets the whole `Term` — that is the exact shape of the s101 bug, so the palette must
-become file-scope `g_palette[256]` + `term_set_palette()` / `term_palette()`, the same pattern as
-`g_def_fg`/`g_def_bg` (`src/vt.c:168-177`). Only entries **0-15** are themeable; the cube (16-231) and the ramp
-(232-255) stay computed — they are identical in every terminal and no theme in the wild touches them.
-`SEL_BG` (`kai-term.h:32`) and `CURSOR_COL` (`kai-term.h:31`) are compile-time macros read at `src/render.c:1082,
-1091, 1093, 1094, 1135, 1288`; a theme has to replace those too. `osc_end()` (`src/vt.c:3125-3163`) handles only
-OSC 0/1/2, so today **no program can change any colour at all**.
+**Done (step 1a, 2026-10-22): the palette is runtime state.** It was a `Term` field refilled by `term_init()`; it is
+now file-scope `g_palette[256]` in `src/vt.c` with `term_palette()` / `term_set_palette_entry()` /
+`term_palette_reset()`, the same pattern as `g_def_fg`/`g_def_bg`. Only entries **0-15** are themeable; the cube
+(16-231) and the ramp (232-255) stay computed. `CURSOR_COL` is no longer read by the renderer (step 0); `SEL_BG`
+(`kai-term.h:32`) still is, and a theme has to replace that too — `tests/test_render.c` pins it deliberately, so
+changing it is a decision, not an accident. `osc_end()` (`src/vt.c`) still handles only OSC 0/1/2, so no program can
+change any colour yet; that is step 1d.
 
-**Bug to fix in the same pass (filed in ISSUES.md "Open"): `cursor_color =` is dead config.** It is defaulted
-(`src/config.c:44`), parsed (`src/config.c:463-464`), stored (`kai-term.h:652`) and **never read**: `src/render.c`
-uses the `CURSOR_COL` macro and `render_init()` takes only `bg`/`fg` (`src/render.c:256`, `src/main.c:2818`). Every
-test that mentions it tests *parsing* (`tests/test_vt.c:2149/2154/2196`), and the template parity check compares
-parse results, so it stays green while the key does nothing. Fix = pass it to `Render` and use it at those six
-sites.
+**Measured starting point (before 1a, kept so the reasoning is not re-derived).** `palette[256]` was a `Term` field
+filled inside `term_init()` from a `static const base16[16]`, then the computed cube and grey ramp. `term_init()`
+memsets the whole `Term` — the exact shape of the s101 bug, which is why the palette had to become process-wide
+state: a theme in a file would otherwise have applied to the first session only.
+
+**The `cursor_color =` bug that was filed here is FIXED (step 0, 2026-10-22)** — `Render.cursor_color`, passed from
+`main.c`, checked at the consumer in `tests/test_render.c`. It is kept here as the reason the theme work must check
+colours where they are USED: the key was defaulted, parsed, stored and parse-tested, and read by nothing, so the whole
+suite stayed green while the feature was absent.
 
 **Native format = Kai-Term's own `key = value`, in a third file.** `config_find()` already searches per **file name**
 across `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term`, `/etc/kai-term` (`src/config.c:585` comment), so a theme is
@@ -765,6 +766,31 @@ the visual verdicts (theme colours, cursor look, bell flash) to the user.
   `tests/cli_test.sh` (117 checks with a display) has not run since s99, and it maps real windows — run it only when
   the user is away and `nvidia-smi` shows VRAM free, because their local LLM holds most of it.
 
+- **2026-10-22, s102 step 1a — the palette becomes process-wide runtime state (the shape themes need).** All eight
+  questions were answered (see "The eight questions"), so steps 1-7 are unblocked; the answers change four details of
+  the plan — no `cursor_style` key at all (always a bar, DECSCUSR still honoured), no `wl_primary` work (middle-click
+  pastes the CLIPBOARD and is off by default), plain-click URLs, and an interactive theme-overwrite prompt.
+  `Term.palette[256]` is gone from the struct; the palette is now `g_palette[256]` in `src/vt.c` with
+  `term_palette()` / `term_set_palette_entry()` / `term_palette_reset()`, filled on first call so a caller that never
+  initialises anything gets the built-ins rather than zeros. `term_init()` no longer touches it — that is the whole
+  point: it memsets the Term, so a per-Term palette is refilled from the built-in base16 by every new tab and by every
+  `ESC c`, and a theme in a file would have applied to the first session only. Deliberate: `ESC c` / RIS do NOT wipe
+  the palette (a `reset` at the prompt must not destroy the user's theme); `term_palette_reset()` is reserved for
+  OSC 104's meaning. A `Cell` stores a RESOLVED colour, so changing an entry never repaints what is already on screen
+  — pinned by a check because it is a consequence a user will notice.
+  10 new checks in `tests/test_vt.c` (958 -> **968, 0 failures**). **A/B:** the same test file against the old `src/vt.c`
+  + old header with the three accessors shimmed onto the OLD semantics (a per-Term palette mirrored into the array by
+  every `term_init`) — **5 of the 10 fail** there (changed entry reaches SGR, `term_init` keeps the theme, `ESC c` keeps
+  it, painted cell unchanged, entry >15 settable), 0 on this tree.
+  Verified: `make -j8` exit 0 / 0 warnings; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI 67/0/13`, `test_vt`
+  968/0, `dbg` MODEL OK, `test_fm` 293/0, `test_render` 15/0; `make asan` exit 0, same four counts, no report.
+  **Found by measurement while writing those checks — the 6x6x6 cube is wrong, and it is a real bug.** The probe
+  `.scratch/s102/cube.c` prints what `src/vt.c` computes: the level formula `55 + 41 * level` gives 260 at level 5, so
+  every entry with a level-5 channel wraps — 91 of the 216. Measured: entry 196 (every other terminal: bright red
+  `#ee0000`) is `ff040000`, entry 226 (bright yellow) is `ff050400`, entry 231 (the cube's white) is `ff050504`. So
+  `SGR 38;5;196` paints near-black. That is why the new checks do NOT pin cube values yet — a check written around an
+  assumed `0xffd70000` would have been red on arrival. Filed and fixed in the next entry.
+
 ## Next Steps
 
 0. **s102 — step 0 (the dead `cursor_color =`) is DONE: code, checks, A/B, ISSUES.md, README, template.** Two things
@@ -913,7 +939,7 @@ Kai-Term/
 ├── config/kai-term.bind         # the shipped KEY-BINDING template: all 24 names at their built-in default
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 958 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
+├── tests/test_vt.c              # 968 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
 ├── tests/test_fm.c              # 293 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/test_render.c          # 15 checks: the renderer's pure colour decisions (no display, no GL call)
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
@@ -975,7 +1001,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 958 checks: parser (including a C0 byte inside a control sequence — executed, sequence
+- `tests/test_vt.c` — 968 checks: parser (including a C0 byte inside a control sequence — executed, sequence
   still collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
   (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
   ordering), grid, selection, alt screen,
@@ -1434,6 +1460,12 @@ after `ptr_*` hit-tested bar then panes.
   `glClear` uses `Config.bg`, pass 1 uses the cell's `bg`, so a third value anywhere draws a visible frame around the
   grid (s101). `palette[0]` is deliberately NOT the configured background — `SGR 40` / `48;5;0` stay black, as every
   other terminal does it; README says so, because it is the next thing a user will report.
+- **The palette is process-wide, never `Term` state.** `g_palette[256]` in `src/vt.c`, read through
+  `term_palette()`; `term_init()` and `ESC c` must NOT refill it, because they run for every new tab and would throw
+  the user's theme away (`term_palette_reset()` exists for OSC 104 only). Two consequences to remember: a `Cell` stores
+  a RESOLVED colour, so changing an entry repaints nothing already on screen (a theme file is therefore applied before
+  the first session is created), and entries 16-255 are computed, so a theme that writes them is fighting the cube —
+  the theme layer accepts 0-15 only.
 - Defaults live in `config_default()` AND `DEF_*` macros AND the two files in `config/` — change one and the
   checks fail, which is the point. Do not hand-copy the name list into a test: derive it from the source.
 

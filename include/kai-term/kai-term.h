@@ -43,6 +43,21 @@ void     term_set_default_colors(uint32_t fg, uint32_t bg);
 uint32_t term_default_fg(void);
 uint32_t term_default_bg(void);
 
+/* The 256-entry palette, process-wide runtime state for the same reason as the three functions above
+   (term_init() memsets the whole Term, so palette state in a Term dies with every new tab). Entries 0-15
+   are the ANSI colours a theme may set; 16-231 (the 6x6x6 cube) and 232-255 (the grey ramp) are computed
+   and are not themeable — every terminal computes them the same way and no theme in the wild touches them.
+   Filled on first call, so a caller that never initialises anything gets the built-in palette, not zeros.
+   term_set_palette_entry() ignores an out-of-range index. term_palette_reset() restores the built-ins and
+   is what OSC 104 asks for — deliberately NOT called by term_init() or `ESC c`, so a `reset` at the prompt
+   cannot wipe the user's theme.
+   One consequence worth knowing: a Cell stores a RESOLVED colour, so changing an entry repaints nothing
+   that is already on screen — it changes what future SGR lookups produce. That is how every terminal
+   behaves, and it is why a theme file is applied before the first session is created. */
+const uint32_t *term_palette(void);
+void term_set_palette_entry(int idx, uint32_t argb);
+void term_palette_reset(void);
+
 /* Default xdg-shell app_id. Single-sourced here because config_default(), the
    `app_id =` empty-value fallback in config.c and the last-resort fallback in main.c must all agree;
    three string literals that can drift apart is how a default silently changes. */
@@ -268,7 +283,8 @@ typedef struct Term {
     int save_cx, save_cy;
     int top, bot;          /* scroll region, inclusive, 0-based */
     Pen pen;
-    uint32_t palette[256];
+    /* No palette here: the 256-colour palette is process-wide runtime state (see term_palette()), because
+       term_init() memsets this struct for every new tab and would throw a configured theme away. */
     int wrap_next;         /* deferred wrap pending at right margin */
     int show_cursor;
     int newline_mode;      /* LNM: LF also does CR */
