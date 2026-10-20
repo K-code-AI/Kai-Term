@@ -33,7 +33,7 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
 - **Suites** (`KAI_TERM_TEST_NO_WINDOW=1 make test`, exit 0): `CLI: 91 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **1163 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305
+  `./bin/test_vt` **1217 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305
   checks, 0 failures**, `./bin/test_render` **495 checks, 0 failures** (the renderer's pure decisions — its
   colour choices AND the cursor's shape — no display, no GL context). With a display `tests/cli_test.sh` reports
   **141 checks, 0 failures, 0 skipped** (last measured s109; the 50 window checks are the difference from the
@@ -53,7 +53,7 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   function that cuts at `sizeof v->name - 1` and LOGS the cut, because the cut decides the file name an
   imported theme lands under; the leak went by freeing the two name lists. Both fixes are pinned: the C check
   asserts the exact 127-byte stem, the CLI group greps the log line.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **35** setting names and the
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **36** setting names and the
   **24** binding names out of the two strcmp ladders in `src/config.c`, the **23** theme names out of
   `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in `src/main.c`, and compares
   each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's tables —
@@ -70,21 +70,26 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   rather than leave a claim that no longer matches the grep.
 - **No `install` target**, and nothing copies `config/*` to `/etc/kai-term` — deliberate; README tells the user
   to copy the templates. Adding one is the user's call.
-- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. s90-s104, 1e (s107), s109 and s110
-  are pushed (verified 2026-10-19: `git status -sb` shows no ahead/behind).
+- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. Step 2 (s112) is pushed — verified
+  2026-10-20: `git status -sb` shows `## main...origin/main` with nothing ahead or behind, and
+  `git log --oneline origin/main -1` is the s112 journal commit.
   Read the remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written
-  here. `git fetch` before push — the user commits on GitHub too. Never commit `bin/` or `build/`.
+  here. `git fetch` before push — the user commits on GitHub too. Never commit `bin/` or `build/` — and note
+  `.scratch/` is NOT in `.gitignore`, so it shows as untracked and must never be `git add`-ed wholesale.
 - **Owed to the user's eye, not to a harness:** the look of a themed window, a live OSC colour repaint, the
   configured `cursor_color`, and the whole step-2 cursor — a bar that reads as a bar, the 1 s blink rhythm, the
   blink stopping when the window loses focus, and vim/fish getting the shape they ask for. None of those four
   have ever been confirmed in the user's window; every one of them has a check on the DECISION and none has a
   check on the PIXEL. (`--import-theme` and the theme file itself HAVE been: the user confirmed the import
-  works, 2026-10-19.) Recipe for the theme: put
+  works, 2026-10-19.) **Step 3 HAS been** — the user tried the double/triple click in their own window and said
+  it worked (2026-10-20, s114), which also settles the one part of it that lives in `main.c` and so has no
+  headless check: a word/line gesture selecting inside a program that owns its screen instead of walking that
+  program's cursor. Recipe for the theme: put
   their kitty theme at `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to
   `~/.config/kai-term/kai-term.conf`, then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that
   an application set it, not the file. Hand these to them; do not map a window to judge a look yourself.
 
-## Current Task — step 2, the cursor bar: **DONE and green (s112)**. Plan step 3 is next
+## Current Task — step 3b, text selection in the preview pane (user-requested, s114). Plan step 4 waits
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -140,6 +145,9 @@ re-ask them, and do not re-propose what was dropped.
   the focus border from it, and `fm_paint()` takes a `sel` argument so the file manager's selected row matches.
 - **Step 2 — the bar cursor, its blink, and DECSCUSR (DONE, s112).** See its own section below for what is in
   the tree and the rules that must not break. Settings names went 33 -> 35 with it.
+- **Step 3 — double-click a word, triple-click a line (DONE, s114).** `term_word_span()` / `term_line_span()` /
+  `term_click_count()` in vt.c, the gesture state in `W`, one shared `CLICK_DCLICK_MS`, and the key
+  `click_selects_word = 1` (settings names 35 -> 36). Its own section below holds the rules.
 
 ### 1e. `--import-theme FILE` — DONE (built s105, taken green and committed s107)
 
@@ -210,30 +218,85 @@ The rules a later change must not break, all of them checked:
 - **No `cursor_style` key** — always a bar unless an application asks (the user's answer: "blink 1 sec, 0.5
   sounds too fast" is why the default half-period is 1000 ms).
 
-### 3. Double-click selects a word, triple-click a line (on by default)
+### 3. Double-click selects a word, triple-click a line — DONE (built s113, taken green and committed s114)
 
 The user's rule, verbatim: "a word is everything no separated by a space, but we don't take the trailing ',' or
-'.'". So: maximal run of non-space cells around the clicked cell, then strip trailing punctuation — **any**
-punctuation that can stick to the end of a word, not just `,` and `.` (their answer to question 4). Leading
-punctuation stays part of the word.
+'.'", and asked which trailing marks that covers, "any of it". What is in the tree: `term_word_span()`,
+`term_line_span()` and `term_click_count()` in `src/vt.c` (plus `CLICK_DCLICK_MS` in the header, replacing
+main.c's private `FM_DCLICK_MS`), the click state `W.click_count/click_ms/click_col/click_row/click_word` in
+`src/main.c`, and the key `click_selects_word = 1` (settings names 35 -> 36).
 
-- The double-click detector already exists for the file manager and should be copied, not reinvented:
-  `#define FM_DCLICK_MS 500` and the same-row/same-entry test in `src/main.c`, using the `time` argument
-  `ptr_button()` already receives.
-- Selection endpoints go through `sel_set_endpoints()` with fractional 0..1000 offsets; a word/line selection
-  uses whole cells (0 and 1000). `SelSpan` and `sel_band_pixels()` need no change, and
-  `term_selection_text()` already trims trailing spaces, so a line selection reaching the right edge copies
-  cleanly.
-- **The interaction that must be handled:** on release of a click that never moved, `main.c` synthesises
-  cursor-key presses for a program that owns its screen (`click_moves_cursor` + `term_wants_key_mouse`). A double
-  click inside nano would walk its cursor twice — the second press of a double/triple click must mark the
-  gesture as a word/line selection and suppress that synthesis on release. `Shift` already means "selection, not
-  click".
-- New key: `click_selects_word = 1` (they asked for on-by-default). Triple-click = the whole logical row; decide
-  whether it includes trailing blanks (they copy as nothing anyway) and whether it extends to the next
-  **physical** row when the line soft-wrapped (`Grid.wrap` knows).
-- Needs a headless check: a word spanning a wide glyph (CJK/emoji occupies 2 cells, `ATTR_WIDE` continuation)
-  must not be cut in half — the same wide-pair rule reflow uses.
+The rules a later change must not break, all of them checked:
+- **The separators are exactly two**: a never-written cell (`ch == 0`) and a real space. Any `ATTR_WIDE` cell —
+  anchor or continuation — is part of the word, which is what makes cutting a CJK/emoji glyph impossible by
+  construction rather than by an extra branch.
+- **Trailing punctuation is cut a GLYPH at a time**, never a cell: a full-width mark (`。` U+3002) is a wide
+  pair, and dropping its anchor while leaving its continuation puts half a glyph outside the selection. The cut
+  never strips the word below one glyph, and the guard for that is what stops the span going INVERTED
+  (`c1 < c0`) when the whole word is one wide mark.
+- **`trailing_punct()` is ASCII `ispunct()` plus an explicit list** of the marks a terminal really draws
+  (curly quotes, en/em dash, ellipsis, CJK/full-width punctuation). Everything else stays part of the word:
+  there is no Unicode punctuation table in this project, and guessing at the rest of Unicode cuts words that
+  should stay whole. A word that keeps a mark is a smaller mistake than a word cut in half.
+- **Leading punctuation stays** (the user's wording is "we don't take the TRAILING"), so `/etc/passwd` and
+  `(paren` come over whole. A comma in the MIDDLE of a run is not trailing: `a,b` stays `a,b`.
+- **A click on a blank selects the clicked cell**, and an out-of-range cell answers 0. "The double click did
+  nothing" reads as a broken terminal; a one-cell highlight does not.
+- **`term_line_span()` reads `Grid.wrap` by SLOT index (`scroll_off + row`) and in one direction**: the mark
+  sits on the row that WAS broken and continues on the NEXT one. Both are pinned by mutation
+  (`.scratch/s114/mutate.sh`), because both are easy to write backwards and a backwards walk extends every
+  triple click one row the wrong way. `wrap[i]` is NOT set until the character that crosses the margin is
+  written, so a line ending exactly at the margin correctly stops above the blank row below.
+- **The gesture suppresses the synthesised cursor keys.** `W.click_word` is what stops `click_moves_cursor`
+  from walking nano's or less's cursor twice on release — the interaction the plan called out, and the one
+  part of step 3 that lives in main.c and so has no headless check. **Confirmed by the user in their own
+  window, 2026-10-20 (s114): "I checked and it worked."**
+- **One number for both gestures**: `CLICK_DCLICK_MS` (500 ms) is shared with the file manager's
+  double-click-to-open, so the terminal and the band do not feel like two different gestures. The comparison
+  is unsigned, so Wayland's 32-bit ms clock wrapping mid-gesture still reads as one gesture.
+- **A word the WINDOW broke is selected per row** (measured: `0..19` then `0..7` at 20 cols). Documented in
+  README and in ISSUES.md "Known limitations" — the triple click is the gesture that takes a wrapped line.
+
+### 3b. Text selection in the file manager's preview pane — the user asked for it (2026-10-20, s114)
+
+Their words: "could we also do the same for the preview pane ? that and text selection. That would be useful."
+Two things, not one: (a) the preview pane has **no text selection at all** today — a click there selects an
+entry or hands over the keyboard and never highlights a range of previewed text — and (b) once there is a
+selection, the double/triple-click word/line gesture of step 3 should work in it too.
+
+**Measured starting point (s114, before writing any code):** `layout_hit_fm()` answers `FM_HIT_PREVIEW` for a
+point over that pane, and `src/main.c`'s `ptr_button()` handles a press there through `fm_pointer_select()`
+BEFORE the mouse-reporting branch and before any text-selection code — so a click in the preview pane can
+never currently start a selection. `FileMgr.pv_scroll` is the pane body's scroll, `fm_preview_scroll_max()`
+its clamp, and the preview's text lives in the `FmPreview` built by `fm_preview_build()` (kinds
+`FMP_DIR/FMP_TEXT/FMP_IMAGE/FMP_META/FMP_EMPTY`). Nothing else has been measured yet.
+
+**Plan — measure first, then write checks around what the probe printed:**
+1. Probe the preview model headlessly (`.scratch/s115/`): how the text rows are stored (one string per row?
+   fixed column grid? tabs expanded? wide glyphs?), how `fm_paint()` maps a row to a screen row, and what
+   `pv_scroll` does to that mapping. A selection needs a coordinate system, and guessing it is how the s96
+   "guard reads a field that has not been applied yet" bug happened.
+2. Decide the copy path: the preview text is NOT a `Term` grid, so `term_selection_text()` cannot serve it.
+   Either the selection is expressed in the preview's own row/col space with its own text builder, or the
+   copied bytes come straight from the `FmPreview`'s stored text. Whichever it is, `selection_copy()` must end
+   up offering exactly one thing to the clipboard, and the log line must report what the OWNER of the state
+   reports (Key Decisions: a log line that prints its own argument can lie).
+3. Word/line gesture in the pane: `term_word_span()`/`term_line_span()` read a `Grid`, so the preview needs
+   either its own span functions sharing `word_cell()`/`trailing_punct()` (the RULE is the thing step 3
+   pinned — do not fork it into a second copy that can drift) or a way to present preview rows as cells.
+   Preview text does not soft-wrap the way a terminal does (measure whether it wraps at all), so the LINE
+   half is probably "the one logical row the file holds", which for a long line may be wider than the pane —
+   that is a decision to make from the probe, not now.
+4. Interaction gates that must keep winning: the bar, the LIST pane's click-to-select and double-click-to-open,
+   the keyboard-focus handover (`FM_FOCUS_*`), and a program that grabbed the mouse. A drag in the preview
+   pane must select text, not scroll the pane; the wheel already owns `pv_scroll`.
+5. New key only if the behaviour needs a switch — decide after the probe; if one is added it needs the
+   template line, the README row and the template-parity check, and the settings count moves again.
+
+**Expected outcome:** a drag in the preview pane highlights a range and `Ctrl+Shift+C` copies it; a double
+click selects the word and a triple click the line, using the same punctuation rule as the terminal; every
+existing band gesture keeps working. Headless checks in `tests/test_fm.c` (the model half), A/B against the
+code that lacks it, and the look handed to the user.
 
 ### 4. Ask before quitting when something is still running
 
@@ -916,6 +979,94 @@ look, bell flash) to the user.
   were all updated with the new counts in the same session. **Owed next:** the user's eye on the cursor (the
   recipe is in Next Steps 1), then plan step 3.
 
+- **2026-10-20, s113 — step 3, double-click a word / triple-click a line. Objective, measured starting point,
+  plan.** The user's rule, verbatim: "a word is everything no separated by a space, but we don't take the
+  trailing ',' or '.'", and their answer to which punctuation to strip was "any of it". On by default, with a
+  `click_selects_word` switch.
+  **Probe first, as the plan requires.** `.scratch/s113/wrapprobe.c` printed the grid before any step-3 code
+  existed, for the two shapes the rules must not break: (a) a soft-wrapped line — `wrap[i] = 1` marks the row
+  that WAS broken and therefore continues on the NEXT row, and it is indexed by the row SLOT (`scroll_off + r`),
+  the same index `row[]` and `grid_vprow()` use, not by viewport row; getting that direction or that index
+  backwards would extend every triple click one row the wrong way, and a scrolled-back view would read the wrong
+  slots. (b) a wide glyph — the anchor cell holds the codepoint with `ATTR_WIDE`, the continuation cell has
+  `ch == 0` AND `ATTR_WIDE` (measured: `[0:U+4F60] [1:WIDE-CONT] [2:U+597D] [3:WIDE-CONT]`). The probe's emoji
+  case was mangled by a C hex escape (`"\x9F"` swallows the next digit) — the CJK case proves the same layout,
+  so it was left rather than fixed.
+  **Model half (src/vt.c, headless-testable):** `term_word_span()` (maximal run of word cells around the click,
+  then trailing punctuation cut a GLYPH at a time so a full-width mark is never split from its continuation,
+  never stripped below one glyph), `term_line_span()` (the logical line, walking the wrap marks up and down),
+  and `term_click_count()` (the timing rule, kept in vt.c beside `mouse_sgr_button`/`term_wants_key_mouse`
+  precisely so a test can pin it — main.c is in no test binary). `word_cell()` treats only a never-written cell
+  and U+0020 as separators, and any `ATTR_WIDE` cell as part of the word, which is what makes cutting a wide
+  glyph impossible by construction. `trailing_punct()` = ASCII `ispunct()` plus an explicit list of the marks a
+  terminal really draws (curly quotes, en/em dash, ellipsis, full-width CJK punctuation); everything else stays
+  part of the word, because guessing at the rest of Unicode with no table in this project would cut words that
+  should stay whole.
+  **Window half (src/main.c):** `W.click_count/click_ms/click_col/click_row/click_word`; the 2nd click selects
+  the word, the 3rd the logical line (a 4th stays a line, it does not grow), and `click_word` suppresses the
+  synthesised cursor-key presses on release — the interaction the plan called out, because a double click inside
+  nano would otherwise walk its cursor twice. `FM_DCLICK_MS` (main.c's file-manager constant) became
+  `CLICK_DCLICK_MS` in the header: one number for both gestures, so they feel like the same gesture.
+  **Key:** `click_selects_word = 1` (settings names 35 -> 36). **Not yet done:** the template line, the README
+  row, the checks (word/line/click-count in `tests/test_vt.c`, the config key, the count 35 -> 36), the A/B, and
+  a full re-measure. The tree is expected to FAIL the settings-count check until the documents and the count
+  follow the parser.
+
+- **2026-10-20, s114 — step 3 resumed: objective, measured starting point, plan.** Started by measuring, not by
+  reading the s113 entry: `make -j8` exit 0 with **0 warning lines**, the four test binaries build with **0
+  warning lines**, and `./bin/test_vt` reports **1163 checks, 2 failures** — both in the template group
+  (`the parser accepts 35 settings` and `README's settings table does not document click_selects_word`), which is
+  exactly the state s113 predicted. So the code half is in the tree and the documentation/check half is not.
+  **Objective:** take step 3 green and commit it. **Plan:** (1) README's settings row + a sentence in the
+  selection prose; (2) `tests/test_vt.c` — the count 35 -> 36, the template value check, and a new headless group
+  for `term_word_span` / `term_line_span` / `term_click_count` written around what `.scratch/s113/wrapprobe`
+  printed (wide-glyph layout, `wrap[]` direction and index); (3) re-measure both builds and every suite plus
+  `make asan`; (4) A/B the new checks against HEAD's `src/vt.c` + `src/main.c` and report the failure count;
+  (5) AGENT.md / README / ISSUES.md, commit, push. **Expected outcome:** settings names 36, every suite green,
+  and a new group that FAILS against HEAD (a check that has never failed pins nothing).
+  **Done so far:** README got the `click_selects_word` row in its settings table and a paragraph in the
+  selection prose (both are what the name-coverage check demands — it failed on the missing row before the
+  edit). `tests/test_vt.c`: the settings count 35 -> 36, the template value check for the new key, and a new
+  group of **52 checks** after the selection block — word span (plain, trailing punctuation cut, leading kept,
+  lone mark never cut to nothing, wide glyph never split, blanks and out-of-range, NULL out-params), line span
+  (soft wrap, the pending-wrap trap, hard break, scrolled-back slot index, out-of-range), `term_click_count`
+  (the 500 ms window inclusive at the boundary, different cell, the 32-bit clock wrap), and the config key
+  itself (default 1, `= 0` parsed). A file-scope helper `span_copy()` puts a returned span through the same
+  whole-cell endpoints `sel_set_endpoints()` produces, so the checks pin what would land in the clipboard and
+  not just two integers. Measured: `make bin/test_vt` 0 warning lines, **1215 checks, 0 failures** (was 1163).
+  Three of the new checks were red when first written and all three were the CHECK's fault, not the model's —
+  `don’t` is 7 bytes not 6, a 26-char line does not reach the margin so `wrap[1]` never gets set (the probe's
+  40-char line does), and `int r0, r1` at main()'s scope shadowed the emoji block's `r1` (-Wshadow, which is
+  why the warning count is measured, not assumed).
+  **Probe findings worth keeping:** `Grid.wrap[i]` is NOT set until the character that crosses the margin is
+  written, so a line ending exactly at the margin leaves the row below blank and `term_line_span` correctly
+  stops — no off-by-one to fix (`.scratch/s114/wprobe3`). A word that the window broke mid-word is selected
+  only up to the break on each row (`wprobe2`: `word at (5,0) = 0..19`, `(5,1) = 0..7`) — that is the current
+  behaviour and a limitation now stated in README and in ISSUES.md "Known limitations", not something step 3
+  claims to solve.
+  **Non-vacuity, both kinds, RUN not reasoned about.** (a) Feature A/B — `.scratch/s114/ab/`: HEAD's `src/vt.c`
+  with the three functions stubbed to the pre-step-3 answer (one cell, one row, always click 1), plus HEAD's
+  header with only the declarations and the `Config` field added, run against the NEW `tests/test_vt.c`:
+  **1217 checks, 27 failures**, and all 27 are the positive checks. The ones that stay green are the negative
+  ones — a stub that answers "one cell" satisfies "a click on a blank selects one cell" — which is the limit of a
+  feature A/B, not a defect in those checks (Key Decisions). (b) **Mutation** — `.scratch/s114/mutate.sh`, seven
+  wrong turns in the model half, each counted: wrap read by viewport row instead of slot -> 3 failures; wrap
+  walked in the wrong direction -> 5; the wide-pair step in the punctuation cut removed -> 2; `word_cell()`
+  ignoring `ATTR_WIDE` -> 6; ASCII-only punctuation -> 3; the never-strip-below-one-glyph guard removed -> 1;
+  the click window made exclusive (`>=`) -> 1; the same-cell test dropped -> 1. The last two each pinned exactly
+  one check — and the guard mutant pinned NOTHING until a check was added for it: a lone full-width `。` is a wide
+  pair, so removing that guard sends the span INVERTED (`c1 < c0`) and no existing check noticed. That check is
+  now in the group, which is **54 checks**.
+  **Final measurement, from `make clean`:** `make -j8` exit 0 / 0 warning lines; the four test binaries exit 0 /
+  0 warning lines; `./bin/test_vt` **1217 checks, 0 failures**; `./bin/dbg` MODEL OK (0 problems);
+  `./bin/test_fm` 305/0; `./bin/test_render` 495/0; `KAI_TERM_TEST_NO_WINDOW=1` CLI 91/0/13 skipped; `make asan`
+  exit 0, 0 warning lines, no LeakSanitizer report, same counts. The windowed CLI group was NOT run (no windows
+  while the user is at the machine) and step 3 added no command-line flag, so nothing in it is new.
+  **Then the user confirmed it in their own window** — "I checked and it worked" — which closes the only owed
+  verdict of step 3, including the `main.c` half no headless check reaches. **The same message opened step 3b:**
+  the preview pane should get text selection and the same word/line gesture. That is the current task (its plan
+  above); step 4, confirm-quit, waits behind it.
+
 ## Next Steps
 
 1. **Step 2, the cursor bar — BUILT, GREEN AND COMMITTED (s112); what is owed is the user's eye, not code.**
@@ -928,14 +1079,17 @@ look, bell flash) to the user.
    `cursor_blink = 0`; then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'` for a
    steady one, and `vim`/`fish` should set their own shape as they always tried to. If the bar is too thin or too
    thick at their font size, `cursor_width` is the knob; if the rhythm is wrong, `cursor_blink`.
-2. **Then steps 3-7 of the plan** (word/line click selection, confirm-quit, middle-click paste, visual bell,
-   plain-click URLs). Each is measured and gated in "Current Task"; the decisions that would have blocked them
-   are already made. Do not re-derive the measured facts.
+2. **Now: step 3b, text selection in the preview pane** — the user asked for it on 2026-10-20 ("could we also do
+   the same for the preview pane ? that and text selection"). Its plan is in "Current Task"; the first action is
+   the headless probe of the preview's text model, not code. **Then steps 4-7 of the s102 plan** (confirm-quit,
+   middle-click paste, visual bell, plain-click URLs). Each is measured and gated in "Current Task"; the
+   decisions that would have blocked them are already made. Do not re-derive the measured facts.
 3. **Owed to the user's eye:** the look of a themed window, a live OSC repaint, the configured `cursor_color`,
-   and now the whole cursor of step 2 — that the bar reads as a bar, that the 1 s blink is the rhythm they
-   wanted, that it stops blinking when the window loses focus, and that vim/fish get the shape they ask for.
-   `--import-theme` is no longer on that list — the user confirmed it works (s108). Nothing about these is a
-   harness question; every one of them has a check on the decision and none has a check on the pixel.
+   and the whole cursor of step 2 — that the bar reads as a bar, that the 1 s blink is the rhythm they wanted,
+   that it stops blinking when the window loses focus, and that vim/fish get the shape they ask for. No longer on
+   that list: `--import-theme` (confirmed s108) and **step 3, the double/triple click — confirmed by the user in
+   their own window on 2026-10-20**. Nothing about the rest is a harness question; every one of them has a check
+   on the decision and none has a check on the pixel.
 4. **The windowed group of `tests/cli_test.sh` ran in s108 (141/0/0) at the user's request and passed.** It
    maps ~15 real windows, so it is still a run to ask about, not one to do unprompted while the user is at the
    machine. Check `nvidia-smi` first: a refused atlas upload fails EVERY window check for one unrelated reason
@@ -1032,9 +1186,9 @@ Kai-Term/
 ├── config/kai-term.theme        # the shipped THEME example: all 23 theme names at the built-in colours
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 1133 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt machinery
+├── tests/test_vt.c              # 1217 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt machinery, click selection
 ├── tests/test_fm.c              # 305 checks: the file-manager model, previews, decoders, band geometry, pointer rules
-├── tests/test_render.c          # 25 checks: the renderer's pure colour decisions (no display, no GL call)
+├── tests/test_render.c          # 495 checks: the renderer's pure decisions — colour choices and cursor shape
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # drives the REAL bin/kai-term: 141 checks / 0 skipped with a display,
 │                                # 91 checks / 13 skipped with none (the 13 are the window groups).
@@ -1106,7 +1260,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 1133 checks: parser (a C0 byte inside a control sequence — executed, sequence still
+- `tests/test_vt.c` — 1217 checks: parser (a C0 byte inside a control sequence — executed, sequence still
   collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
   (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
   ordering), grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J, bracketed paste, `term_init`
@@ -1122,9 +1276,12 @@ Kai-Term/
   `layout_grid_size` / `layout_initial_size` (the tab bar, the panes and the band's SHARE: `fm_size` percent,
   both clamps, the terminal's floor, the share surviving a resize and a zoom, three startup round trips), the
   palette/cube/OSC-colour groups, the theme file and precedence, the theme importer (sniff, per-format mapping,
-  dropped keys, the native round trip), the shell-integration scripts as they land on disk (each binds exactly what
-  `shellint_seq()` returns, fish repaints, bash does NOT pretend to), and the prompt machinery the follow is built
-  from
+  dropped keys, the native round trip), the click-selection group (`term_word_span` — trailing punctuation cut a
+  glyph at a time, leading kept, a wide pair never split or inverted; `term_line_span` — the logical line through
+  the `wrap` marks, by slot index, including scrolled back; `term_click_count` — the 500 ms window and the 32-bit
+  clock wrap; and the `click_selects_word` key itself), the shell-integration scripts as they land on disk (each
+  binds exactly what `shellint_seq()` returns, fish repaints, bash does NOT pretend to), and the prompt machinery
+  the follow is built from
   (`term_at_prompt()` / `term_prompt_line()` / `term_prompt_line_typed()` / `term_prompt_line_is()`, the echo
   window and its transition rule, the clear -> `cd` -> re-populate sequence as the model sees it). `main.c`
   itself is in no test binary — that machine is covered by `.scratch/s86/follow2.c` and the live harness. Two
@@ -1142,7 +1299,8 @@ Kai-Term/
   `layout_compute()`, and the wheel-over-the-band keyboard rule (`fm_wheel_focus`: a gesture that scrolled
   nothing never moves the keyboard, the default needs a CLICK to focus a pane, and `fm_focus_on_hover = 1`
   restores the older pointer-decides behaviour).
-- `tests/test_render.c` — 25 checks, the only coverage of the renderer's colour decisions that needs no display:
+- `tests/test_render.c` — 495 checks, the only coverage of the renderer's decisions that needs no display (its
+  colour choices AND the cursor's shape, `render_cursor()`'s truth table):
   it links `render.o` (plus `fm.o font.o img.o vt.o shellint.o layout.o mux.o config.o`, which is what
   `render.o` needs to LINK) and calls only `render_chrome()`, which reads a `Render` struct and nothing else —
   never `render_init()`, never a GL call. Covers: the configured `cursor_color` is what an active pane's cursor
