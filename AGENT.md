@@ -21,7 +21,8 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s126 — **GREEN; step 5 (middle-click paste) is in the tree, headless-verified; read the commit state from git, not from here**)
+## Current Status (re-measured 2026-10-20, s126 — **GREEN; step 5 is committed AND pushed (`f3c812a`); step 6 (the
+visual bell) is in the tree but UNWIRED and UNCOMMITTED — it cannot draw yet. Read the commit state from git**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -30,17 +31,18 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites — green, step 5 included.** Both builds clean (exit 0, 0 warning lines) and `./bin/test_vt` reports
-  **1446 checks, 0 failures** (the confirm-quit wording, the process name, the box geometry, the four wrap cuts,
-  the `middle_click_paste` config group and the 16-case pointer-precedence table are all in there). Everything
-  else is green: `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **384 checks, 0 failures**,
-  `./bin/test_render` **529 checks, 0 failures** (the renderer's pure decisions — its colour choices, the
-  cursor's shape, the question row's two colours, the box's six — plus the source scans that cover `main.c`,
-  which is in no test binary, now including the five that pin the pointer-decision wiring), and `CLI: 99 checks,
-  0 failures, 13 skipped` with `KAI_TERM_TEST_NO_WINDOW=1` — those 13 are the windowed group, last run for real
-  in s124 (**149 checks, 0 failures, 0 skipped**, twice, ~15 real windows each time; ask before running it again
-  while the user is at the machine). `make asan` is green on THIS tree: all four asan binaries exit 0, 0 warning
-  lines, no LeakSanitizer or UBSan report. Command worth copying:
+- **Suites — green, step 6's headless half included.** Both builds clean (exit 0, 0 warning lines) and
+  `./bin/test_vt` reports **1483 checks, 0 failures** (the confirm-quit wording, the process name, the box
+  geometry, the four wrap cuts, the `middle_click_paste` and `bell` config groups, the 16-case
+  pointer-precedence table, the BEL-rings / BEL-terminates-a-string split and the `bell_strength` ladder).
+  Everything else is green: `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **384 checks, 0 failures**,
+  `./bin/test_render` **544 checks, 0 failures** (the renderer's pure decisions — its colour choices, the
+  cursor's shape, the question row's two colours, the box's six, the bell's colour — plus the source scans that
+  cover `main.c` and `render_draw()`, which are in no test binary), and `CLI: 99 checks, 0 failures, 13 skipped`
+  with `KAI_TERM_TEST_NO_WINDOW=1` — those 13 are the windowed group, last run for real in s124 (**149 checks,
+  0 failures, 0 skipped**, twice, ~15 real windows each time; ask before running it again while the user is at
+  the machine). `make asan` is green on THIS tree (re-run in s126 after the bell landed): all four asan binaries
+  exit 0, 0 warning lines, no LeakSanitizer or UBSan report, same four counts. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'` — and **check the
   build actually succeeded before quoting a number**: a failed link leaves the previous binary in `bin/` and
@@ -55,11 +57,11 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   cut, because the cut decides the file name an imported theme lands under; the leak went by freeing the two
   name lists. Both fixes are pinned: the C check asserts the exact 127-byte stem, the CLI group greps the log
   line.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **38** setting names (the
-  hard-coded `ns == 38` beside the derived one — 36 -> 37 in s120 for `confirm_quit`, 37 -> 38 in s125 for
-  `middle_click_paste`), the **24** binding names out of the two strcmp ladders in `src/config.c`, the **23**
-  theme names out of `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in
-  `src/main.c`, and
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **39** setting names (the
+  hard-coded `ns == 39` beside the derived one — 36 -> 37 in s120 for `confirm_quit`, 37 -> 38 in s125 for
+  `middle_click_paste`, 38 -> 39 in s126 for `bell`), the **24** binding names out of the two strcmp ladders
+  in `src/config.c`, the **23** theme names out of `src/theme.c`'s `THEME_KEYS` table, and the **9** long options
+  out of `usage()` in `src/main.c`, and
   compares each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's
   tables — the option table by `readme_opts_of()`, README's **settings** and **binding** tables by
   `readme_table_names_of()` + `names_diff()` (added s110: before it, deleting a settings row from README left
@@ -100,7 +102,8 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   that a middle click on a tab item still CLOSES that session, that one in the band still picks a file, and
   that vim/tmux/`nano --mouse` keep their middle button. Steps 6-7 add to the list as they land.
 
-## Current Task — step 4 confirm-quit: CLOSED (both forms confirmed by the user). Now steps 5-7: middle-click paste, the visual bell, plain-click URLs
+## Current Task — step 5 DONE and pushed (`f3c812a`); step 6, the visual bell, IN PROGRESS (headless half in, the
+main.c wiring is not). Then step 7, plain-click URLs
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -434,10 +437,10 @@ that; the `main_tab_wording` mutant kills on it). They stay because the function
 safety contract (`cap == 0`, a NULL buffer, a small cap) is checked through them, and the header and the test group
 carry a NOTE saying so. Deleting them is a legitimate cleanup for a later session; it is not a bug.
 
-**Exact next action:** steps 5-7 of the s102 plan, in order — (5) middle-click paste, (6) the visual bell,
-(7) plain-click URLs. Step 4 is finished; do not re-open it.
+**Exact next action:** step 6 (the visual bell), then step 7 (plain-click URLs). Steps 4 and 5 are finished; do not
+re-open them.
 
-### 5. Middle-click paste (opt-in, off by default)
+### 5. Middle-click paste (opt-in, off by default) — DONE (s125/s126, `f3c812a`, pushed); owed to the user's eye
 
 **Task block, s125 — objective, measured starting point, planned steps, expected outcome.**
 MEASURED starting point (read from the tree at `dc36c46`, not assumed):
@@ -612,23 +615,69 @@ session that is NOT drawn flashes nothing (the bar's `*` stays the mark for that
 pane whose session rang flashes. What will still be owed to the user's eye: that it reads as a bell and not as a
 glitch — no headless check can see a pixel.
 
+**Progress, s126 — (A), (B) and (C) are in and green. (D) is NOT: the feature cannot draw yet.**
+* (A) `Term.bell_rang` — set by `exec_c0()`'s `case 0x07`, the same one-way hand-off shape as `colors_dirty`.
+  The pure `bell_strength(now, rang, dur)` in `src/vt.c` plus `BELL_FLASH_MS` (250) and `BELL_MIX_MAX` (25) in
+  the header. `Tab.bell_ms` added (the ring's CLOCK_MONOTONIC ms, 0 = never) — it lives with `attention` because
+  it has to travel when `mux_close()` shifts the array.
+* (B) `bell = visual|off`, default **visual** (the user's answer to question 6), enum parse with warn-and-KEEP
+  in both directions, template line, README settings row, `ns` 38 -> **39**.
+* (C) `render_bell(bg, fg, strength)` in `src/render.c` (pure, next to `mix_c`), and **pass 1b** in
+  `render_draw()`: at most ONE quad per drawn pane, appended to batch A after every pane's cell backgrounds and
+  before the band/bar/notice, so it is over the paper and under the bands, glyphs, cursor and pictures. The rect
+  is the PANE's own (`lay->pane[p].x/y/w/h`), not the grid's, so the leftover pixels at a pane's right/bottom
+  flash with the cells — s101's margin rule. `maxq` grows by `+ lay->npane`.
+* Checks: `tests/test_vt.c` — the BEL group (ordinary output rings nothing; a BEL rings; a 0x07 that TERMINATES
+  an OSC / APC / DCS does NOT, with a second check proving that OSC really was parsed as a title so the first
+  cannot pass by the sequence being abandoned; a BEL inside a CSI still rings, the s97 rule; three BELs are one
+  event) + the `bell_strength` ladder (full at the ring, 500 at half, >0 at the last ms, 0 at the deadline, 0 on
+  a clock that went backwards, 0 for never-rang / negative / dur 0 / dur < 0, and a sweep proving 0..1000 and
+  monotone). `tests/test_render.c` — a `group_bell_color()` (11 checks: 0 and negative are the paper, 1000 is
+  exactly `BELL_MIX_MAX`, never the ink, clamped above 1000, half strength is half the mix, monotone over the
+  whole range, a LIGHT paper flashes downward too, alpha stays opaque, ink == paper flashes to that colour) and
+  four source scans (the draw loop asks `bell_strength` once, calls `render_bell` and writes no literal, names
+  `BELL_FLASH_MS` once, and the budget pays `+ lay->npane`).
+* MEASURED: `make -j8` exit 0, **0** warning lines; the test build exit 0, **0** warning lines; `./bin/test_vt`
+  **1483 checks, 0 failures** (1446 -> 1483); `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **384
+  checks, 0 failures**; `./bin/test_render` **544 checks, 0 failures** (529 -> 544). One warning appeared and
+  was fixed on the spot: a loop local named `s` in the new sweep shadowed an outer `s` (`-Wshadow`) — the test
+  build was re-measured after the rename, not assumed clean.
+* **FOUND, and the reason this entry exists:** the journal was six file changes behind HEAD (README, conf, the
+  header, config.c, render.c, vt.c, both test files all modified with no entry after each). That is the project's
+  first critical rule; the entry was written before stage (D) was started, and the tree was re-measured to get
+  the numbers above rather than carrying the s125 ones forward.
+* **The honest state of the feature: it cannot draw yet.** `Tab.bell_ms` is never written and `Render.now_ms` /
+  `Render.bell_ms[]` are never filled, so every `bell_strength()` call the renderer makes gets 0. Do not describe
+  step 6 as working, and do not hand it to the user to look at, until (D) is in.
+* **NEXT (D), in `src/main.c`:** (1) the pty-read hand-off — `if (tb->term.bell_rang) { tb->term.bell_rang = 0;
+  tb->bell_ms = mono_ms(); }` next to the `colors_dirty` block, marking the window dirty only when that session
+  is actually drawn; (2) `redraw()` fills `rend.now_ms` and `rend.bell_ms[i]` from the Tabs, indexed by TAB index
+  like `terms`; (3) `Render.bell_on` from `conf.bell`, and the renderer asks `bell_strength(now, ms, r->bell_on ?
+  BELL_FLASH_MS : 0)` — the duration-0 rule is already checked, so "off draws nothing" needs no new branch and no
+  new number; (4) `bell_tick()` on the 8 ms frame timer: dirty while any DRAWN session is flashing, plus exactly
+  one more frame when the last flash ends (without that final frame the screen keeps the last flash forever —
+  strength 0 alone never asks for a redraw). Then (E): the wiring scans, a mutant harness, ISSUES, both builds,
+  every suite, asan.
+
 The user: "I actually hate middle click paste, but we could add it as an option (off by default)". Their answer
 to question 5 settles the design: **it pastes the CLIPBOARD**, so no `wl_primary` work is needed at all and that
 whole sub-task is dropped. Middle press pastes from the clipboard offer; ordering in `ptr_button()` matters —
 the bar's middle-click-closes-a-tab, the file-manager band, and an application that grabbed the mouse all come
 first and must keep winning. New key: `middle_click_paste = 0`.
 
-### 6. Visual bell
+### 6. Visual bell — IN PROGRESS (s126): (A) the BEL event, (B) the key and (C) the colour + the quad are in and
+green; **(D), the `src/main.c` wiring, is NOT — the feature cannot draw yet**
 
-`BEL` is swallowed today: `case 0x07: break;   /* BEL: nothing to do here */` in `exec_c0()` (`src/vt.c`).
-Programs ring it on real failures — readline's ambiguous completion and empty Enter, `sudo` on a wrong password,
-`less`/`man` on a failed search, vim on an error.
+Before step 6, `BEL` was swallowed: `case 0x07: break;   /* BEL: nothing to do here */` in `exec_c0()`
+(`src/vt.c`). Programs ring it on real failures — readline's ambiguous completion and empty Enter, `sudo` on a
+wrong password, `less`/`man` on a failed search, vim on an error.
 
-Cheapest honest implementation, no new dependency and no GL blending: `exec_c0` sets a per-Term "bell rang"
-flag; `main.c` turns it into a deadline; `render_draw()` emits **one extra quad in batch A, after every cell
-background** — over the backgrounds, under batch B (bands, glyphs, labels, border), so the text stays readable
-while the field flashes. Colour = `mix_c(bg, fg, small)`. A margin flash is not an option: s101 made the margin
-the same colour as the cells. New key: `bell = visual|off`, **default on** (their answer to question 6).
+Cheapest honest implementation, no new dependency and no GL blending: `exec_c0` sets a per-Term "bell rang" flag
+(in since s126); `main.c` turns it into a deadline; `render_draw()` emits **one extra quad in batch A, after every
+cell background** — over the backgrounds, under batch B (bands, glyphs, labels, border), so the text stays readable
+while the field flashes. Colour = `mix_c(bg, fg, small)`, decided by `render_bell()`. A margin flash is not an
+option: s101 made the margin the same colour as the cells. Key: `bell = visual|off`, **default `visual`** (their
+answer to question 6).
 
 ### 7. URLs: plain click opens
 
