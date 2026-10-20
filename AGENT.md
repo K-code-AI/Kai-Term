@@ -21,7 +21,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s121 — **GREEN; step 4 (confirm-quit) is in the tree through stage D, uncommitted**)
+## Current Status (re-measured 2026-10-20, s121 — **GREEN; step 4 (confirm-quit) is committed and pushed — read the state from git, not from here**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -102,7 +102,7 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   no question at all, `confirm_quit = always` should ask even then, `confirm_quit = never` should never ask, and
   `-d` should log the question and the answer either way.
 
-## Current Task — step 4, confirm-quit: stages A-D all in the tree (green, uncommitted); commit + push + the user's eye to go
+## Current Task — step 4, confirm-quit: DONE and pushed; the user's verdict on the row is what is left, then steps 5-7
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -175,8 +175,8 @@ Done work is listed here only to say it is done and where its rules live; the me
 - **Step 3b — the same selection in the file manager's preview pane (DONE, s117).** `cell_row_word_span()` in
   vt.c (the shared row rule), the selection state and the six `fm_preview_*` selection functions in fm.c, the
   gesture in `src/main.c`. No new config key. Rules below.
-- **Step 4 — ask before quitting when something is still running (DONE in the tree, s120+s121; uncommitted).**
-  Its own section below holds the measured predicate, the rules each stage added and what is still owed.
+- **Step 4 — ask before quitting when something is still running (DONE, s120+s121, committed).** Its own
+  section below holds the measured predicate, the rules each stage added and what is still owed.
 
 ### 2. Cursor: a thin bar, classic blink — DONE (s112)
 
@@ -336,7 +336,7 @@ non-vacuity harness is `.scratch/s116/mutate.py`, 13 kinds, every one caught):
   in no cell to select. README and ISSUES say that, and the `pvsel` group pins the span and the exact byte count
   so the sentence cannot drift back.
 
-### 4. Ask before quitting when something is still running — stages A-D DONE (s120/s121, green, uncommitted)
+### 4. Ask before quitting when something is still running — DONE (s120/s121, committed)
 
 Today `toplevel_close()` sets `W.running = 0` immediately, closing the last tab does the same, and both close
 the pty master and `kill(child, SIGHUP)` — whatever was running dies with no warning.
@@ -369,7 +369,7 @@ out by layout.c and drawn by render.c with the tab bar's font and colours. Stage
 pure decisions + checks + docs, (B) the notice row's geometry, (C) the render pass, (D) main.c's gate and modal
 keys.
 
-**In the tree** (uncommitted; stages A, B, C and D all green as of s121): `CONFIRM_NEVER/RUNNING/ALWAYS`,
+**In the tree** (committed in s121; stages A, B, C and D all green): `CONFIRM_NEVER/RUNNING/ALWAYS`,
 `Config.confirm_quit`, `fg_busy()`, `pty_fg_busy()`, `mux_running()` (returns 0-based tab indices; the message
 adds 1), `confirm_message()` with `CONFIRM_QUIT`/`CONFIRM_CLOSE_TAB`, the config default and parser branch, the
 `confirm_quit = running` template block, the README settings row, `ns == 37`, and `build/pty.o` added to
@@ -427,12 +427,12 @@ returning what it WROTE and staying terminated, `cap == 0` and a NULL buffer tou
 - **YES for a window closes every session named in the sentence**, not just the visible one — that is what the
   count promises.
 
-**Not in the tree:** nothing that step 4 needs. What is left is the commit, the push, and the row's LOOK, which
-is the user's to confirm (recipe in "Current Status").
+**Not in the tree:** nothing that step 4 needs. What is left is the row's LOOK, which is the user's to confirm
+(recipe in "Current Status") — every decision in it has a check, nothing about how it reads does.
 
-**Exact next action, in order:** (1) commit step 4 as one commit (the feature, its checks, its docs — the README
-row and the template block are only true together with the gate) and push after `git fetch`; (2) hand the
-user the step-4 recipe and record their verdict; (3) then steps 5-7 of the s102 plan.
+**Exact next action, in order:** (1) hand the user the step-4 recipe in "Current Status" and record their
+verdict — that is the only thing step 4 still owes; (2) then steps 5-7 of the s102 plan (middle-click paste,
+visual bell, plain-click URLs).
 
 ### 5. Middle-click paste (opt-in, off by default)
 
@@ -1001,20 +1001,25 @@ numbers and the intermediate check counts are in git.
   point at `confirm_quit = always` as the setting for that case.
   DONE (5): the stale status text corrected — "Current Status" (the s121 numbers, asan green on this tree,
   step 4's row added to the owed-to-the-eye list with its recipe), "Current Task / 4" (stages A-D done, the
-  rules B/C/D added, the next action now commit+push+verdict), "Where each step stands", and Next Steps 1.
-  NOT DONE: the commit and the push, and the row's look, which only the user can confirm.
+  rules B/C/D added, the next action now the user's verdict), "Where each step stands", and Next Steps 1.
+  DONE (6, close-out): step 4 committed as ONE commit, `4bcd56b` "Confirm-quit: a window asks before a close
+  throws work away" — 15 files, the feature plus its checks plus its docs, because the README row and the
+  template block are only true together with the gate. `bin/`, `build/` and `.scratch/` stayed out (`.scratch/`
+  is not in `.gitignore`, so it shows untracked and was never `git add`-ed). `git fetch` first (clean, nothing
+  new upstream), then `git push origin main`: `8ccc73d..4bcd56b`, and `git status -sb` now reads `main` even
+  with `origin/main` — verified from git, not asserted. STILL OWED: the row's look in the user's window (the
+  recipe is in "Current Status"), and the rest of the owed-to-the-eye list.
 
 ## Next Steps
 
-1. **Now: step 4, confirm-quit — stages A-D are in the tree and green (s121); it is NOT committed yet.** Read
-   the state from git (`git status -sb`), not from this page. What is left in order: commit the whole of step 4
-   as one commit (feature + checks + docs — the README row and the template block are only true together with
-   the gate), `git fetch` then push, then hand the user the step-4 recipe in "Current Status" and record their
-   verdict. Do NOT re-derive the foreground-group facts, re-write stage A's checks or re-do stages B/C/D — the
-   s120 and s121 entries record the A/B and the mutants each was measured against (`test_vt` 1320/0,
-   `test_render` 506/0, headless CLI 99/0/13, asan clean). **Then steps 5-7 of the s102 plan**
-   (middle-click paste, visual bell, plain-click URLs). Each is measured and gated in "Current Task"; the
-   decisions that would have blocked them are already made.
+1. **Now: step 4, confirm-quit — DONE, committed and pushed (s121, `4bcd56b`).** Read the state from git
+   (`git status -sb`, `git log --oneline origin/main -1`), never from this page. What it still owes is the
+   user's verdict on the question row — the recipe is in "Current Status"; nothing about how it reads has been
+   seen, though every decision in it has a check. Do NOT re-derive the foreground-group facts, re-write stage A's
+   checks or re-do stages B/C/D: the s120 and s121 entries record the A/B and the mutants each was measured
+   against (`test_vt` 1320/0, `test_render` 506/0, headless CLI 99/0/13, asan clean).
+   **Then steps 5-7 of the s102 plan** (middle-click paste, visual bell, plain-click URLs). Each is measured and
+   gated in "Current Task"; the decisions that would have blocked them are already made.
 2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look
    (a 2 px bar at the left edge of the cell, one second on / one second off while the window has focus, steady
    with `cursor_blink = 0`), then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'`
