@@ -36,14 +36,14 @@ committed)
 - **Suites** (`KAI_TERM_TEST_NO_WINDOW=1 make test`, exit 0): `CLI: 91 checks, 0 failures, 13 skipped`,
   `./bin/test_vt` **1127 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **296
   checks, 0 failures**, `./bin/test_render` **25 checks, 0 failures** (the renderer's pure colour decisions —
-  no display, no GL context). With a display and spare VRAM `tests/cli_test.sh` reported **117/0/0** as of
-  s104; the 24 checks s107 added to the always-run part of that script make that number stale — re-diff it
-  before quoting it. What only its windowed group covers is `main()`'s own argv handling (`-c/--config`,
-  `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the
-  multiplexing / display / file-manager keys and the band's share. The config SEARCH order and the
-  split-by-name rules are NOT exclusive to it — `tests/test_vt.c`'s `cfgsearch` group and `config split` group
-  cover those headless — and neither is `--import-theme`: the import path needs no display, so s107 pinned it
-  in the part of the script that always runs. **Re-diff these numbers, do not copy them.**
+  no display, no GL context). With a display `tests/cli_test.sh` reports **141 checks, 0 failures, 0 skipped**
+  (measured s108; the 50 window checks are the difference from the headless 91). What only its windowed group
+  covers is `main()`'s own argv handling (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`,
+  `-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys and the band's
+  share. The config SEARCH order and the split-by-name rules are NOT exclusive to it — `tests/test_vt.c`'s
+  `cfgsearch` group and `config split` group cover those headless — and neither is `--import-theme`: the import
+  path needs no display, so s107 pinned it in the part of the script that always runs. **Re-diff these numbers,
+  do not copy them.**
 - **`make asan` is GREEN — exit 0, 0 warning lines, no LeakSanitizer report** (s107). It was red when s106
   closed, and both halves of the red came in with the uncommitted 1e work: two `-Wformat-truncation` warnings
   in `src/theme.c` (`snprintf(v->name, sizeof v->name, "%s", val)` — a `val` of up to 1023 bytes into a
@@ -71,10 +71,11 @@ committed)
   Read the remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written
   here. `git fetch` before push — the user commits on GitHub too. Never commit `bin/` or `build/`.
 - **Owed to the user's eye, not to a harness:** the look of a themed window, a live OSC colour repaint, and the
-  configured `cursor_color`. Recipe for the theme: put their kitty theme at
-  `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to `~/.config/kai-term/kai-term.conf`,
-  then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that an application set it, not the
-  file. Hand these to them; do not map a window to judge a look yourself.
+  configured `cursor_color` — those three have never been confirmed in the user's window. (`--import-theme` and
+  the theme file itself HAVE been: the user confirmed the import works, 2026-10-19.) Recipe for the theme: put
+  their kitty theme at `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to
+  `~/.config/kai-term/kai-term.conf`, then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that
+  an application set it, not the file. Hand these to them; do not map a window to judge a look yourself.
 
 ## Current Task — themes 1a-1e: **all committed and pushed (s107)**. The plan's step 2, the cursor bar, is next
 
@@ -169,7 +170,7 @@ and 67 new checks in `tests/test_vt.c` (1060 -> 1127) plus 24 in `tests/cli_test
   **17 failures out of the 24 new checks**. The checks that pass in both trees are the negative ones (a tree
   that refuses everything satisfies "a missing file exits 1"), which is a limit of a feature A/B, not a defect
   in those checks — see Key Decisions.
-- **Still owed:** the user's eye on an imported theme. Nothing else.
+- **Still owed:** nothing. The user confirmed `--import-theme` works in their own use (2026-10-19, s108).
 
 ### 2. Cursor: a thin bar, classic blink
 
@@ -591,8 +592,9 @@ look, bell flash) to the user.
   left it would have committed a red `make asan`.
   **Pushed** (`01f97a2..ebd62d9`, two commits; `main` level with `origin/main`). Session state at close: no
   uncommitted work, no red target, nothing half-edited, and the A/B harnesses left in `.scratch/s107/`
-  (`ab_noimport/`, `head_tree/`) for re-running. Still owed from 1e: the user's eye on an imported theme, and
-  the windowed group of `tests/cli_test.sh` (not run — the user was at the machine). The next session opens on
+  (`ab_noimport/`, `head_tree/`) for re-running. Still owed from 1e: the windowed group of
+  `tests/cli_test.sh` (not run then — the user was at the machine; it ran in s108) and the user's eye on an
+  imported theme (confirmed working in s108, so 1e is fully closed). The next session opens on
   plan step 2, the cursor bar: Current Task / 2 already holds the measured facts (a separate quad in batch B
   under the glyphs, a fourth timerfd, blink phase in `W` and never in `Term`, `cursor_blink = 1000`,
   `cursor_width = 2`, DECSCUSR honoured, no `cursor_style` key) — probe first, A/B every new check, hand the
@@ -607,6 +609,28 @@ look, bell flash) to the user.
   present). Re-measured the tree while doing it, which is how the red `make asan` was found. Pre-cleanup text:
   `.scratch/s106/AGENT.md.pre-cleanup`.
 
+- **2026-10-19, s108 — the windowed group of `tests/cli_test.sh`, on the user's explicit go-ahead.** It has
+  not run since s104 (117/0/0) and the 24 checks s107 added make that total stale. Checked the machine first
+  rather than assuming: `WAYLAND_DISPLAY=wayland-1`, no `kai-term` of mine running, no new core dump, and
+  `nvidia-smi` showing **11680/12227 MiB used** — the local LLM holds 9632 MiB, which is the condition
+  AGENT.md's Next Steps item 4 warns about, because a refused atlas upload fails EVERY window check for one
+  unrelated reason after putting a dozen windows in front of the user. So ONE probe launch first, my own
+  (`./bin/kai-term -d -e true`): exit 0, no atlas/video-memory line in the log, and it reached `kai-term
+  exiting` — the atlases fit in the ~547 MiB free, so the windowed group can really run. Then the full suite
+  WITHOUT `KAI_TERM_TEST_NO_WINDOW=1`: ~15 real windows, argv in `main()` and the keys a real launch applies,
+  which is the only coverage those have anywhere. Expect the total to move from 117 to roughly 141 (117 + the
+  24 s107 added); re-diff, do not assume. Afterwards: put the measured number in AGENT.md and ISSUES.md in
+  place of the stale 117, and hand the user the result.
+  **Result: `CLI: 141 checks, 0 failures, 0 skipped`, exit 0** — exactly the predicted 117 + 24, and 0 skipped
+  is what shows the window checks ran rather than being gated off (the headless run reports the same script as
+  91 checks / 13 skipped, so the windowed group is 50 checks and has not moved since s104). Nothing was found:
+  `-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`, and a real launch applying the
+  multiplexing / display / file-manager keys and the band's share all still hold. The stale 117 is replaced by
+  141 in Current Status, in the Project Files tree, and in ISSUES.md. One correction to the rule this run
+  tested: Next Steps item 4 said to wait for `nvidia-smi` to show VRAM free, and that is too strict — the LLM
+  held 9632 of 12227 MiB and the atlases still fit. The probe launch, not the free-megabytes number, is the
+  gate.
+
 ## Next Steps
 
 1. **Step 2 of the plan: the cursor bar** (see Current Task / 2). Everything that would have had to be decided
@@ -616,12 +640,15 @@ look, bell flash) to the user.
 2. **Then steps 3-7 of the plan** (word/line click selection, confirm-quit, middle-click paste, visual bell,
    plain-click URLs). Each is measured and gated in "Current Task"; the decisions that would have blocked them
    are already made. Do not re-derive the measured facts.
-3. **Owed to the user's eye:** the look of a themed window, a live OSC repaint, the configured `cursor_color`,
-   and now an imported theme (`--import-theme` on their own kitty file). Nothing about those is a harness
-   question.
-4. **The windowed group of `tests/cli_test.sh`** (117 checks with a display) has not run since s104. Run it only
-   when the user is away and `nvidia-smi` shows VRAM free — it maps real windows and their local LLM holds most
-   of the VRAM.
+3. **Owed to the user's eye:** the look of a themed window, a live OSC repaint, and the configured
+   `cursor_color`. `--import-theme` is no longer on that list — the user confirmed it works (s108). Nothing
+   about the remaining three is a harness question.
+4. **The windowed group of `tests/cli_test.sh` ran in s108 (141/0/0) at the user's request and passed.** It
+   maps ~15 real windows, so it is still a run to ask about, not one to do unprompted while the user is at the
+   machine. Check `nvidia-smi` first: a refused atlas upload fails EVERY window check for one unrelated reason
+   after putting a dozen windows in front of the user. Measured s108: the LLM held 9632 MiB of 12227 and the
+   atlases still fit in ~547 MiB free, so "the LLM is running" is NOT by itself a reason to skip — one probe
+   launch (`-d -e true`, one window) decides, and that is what the script's own gate does.
 5. **Closed — diagnosis recipe only, nothing owed.** Each of these is built, green and confirmed by the user in
    their own window; if a report ever arrives, start from the `-d` line named, not from the shader.
    - Config split: `-d` logs `config loaded from <path>` / `bindings loaded from <path>`; a line in the wrong
@@ -716,8 +743,8 @@ Kai-Term/
 ├── tests/test_fm.c              # 296 checks: the file-manager model, previews, decoders, band geometry
 ├── tests/test_render.c          # 25 checks: the renderer's pure colour decisions (no display, no GL call)
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
-├── tests/cli_test.sh            # drives the REAL bin/kai-term: 91 checks with no display (13 window groups
-│                                # skipped), 117 measured with a display in s104 and 24 added since — re-diff.
+├── tests/cli_test.sh            # drives the REAL bin/kai-term: 141 checks / 0 skipped with a display,
+│                                # 91 checks / 13 skipped with none (the 13 are the window groups).
 │                                # ONE probe launch gates the window checks; KAI_TERM_TEST_NO_WINDOW=1 skips them
 ├── bin/                         # kai-term, test_vt, dbg, test_fm, test_render (+ *_asan)  [generated, git-ignored]
 └── build/                       # *.o + generated/xdg-shell-*                [generated, git-ignored]

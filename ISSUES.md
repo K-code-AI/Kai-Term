@@ -20,7 +20,8 @@ The four items this file was once holding for the user's eye were answered 2026-
 3. works good"): the two-file config split is theirs (they asked for it), the background change their own
 `background =` line now produces is accepted (they have since edited that file while testing — it now reads
 `background = 1c1c22`, bare hex, and `opacity = 1`), and the s98 clipboard-source paste fix, the file manager's
-preview-pane key scrolling and the 75 % band's look all work in their window.
+preview-pane key scrolling and the 75 % band's look all work in their window. `--import-theme` was confirmed
+working by the user 2026-10-19 (s107's feature), so the theme import carries no open question either.
 
 Re-measured 2026-10-19 (s107, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
 (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **1127
@@ -28,14 +29,14 @@ checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **2
 `./bin/test_render` **25 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks, 0
 failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no sanitizer report — it was
 RED (2 warnings + a 134-byte harness leak) for the two sessions before, which is what the s107 close-out fixed.
-The windowed group of `tests/cli_test.sh` (**117 checks / 0 failures / 0 skipped**, last measured that way in
-s99 — the 24 checks s107 added to the always-run part make that total stale) was skipped again — the user at the
-machine. What that leaves uncovered is its own half only: `main()`'s argv handling for the flags that OPEN a
-window (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch
-applies the multiplexing / display / file-manager keys. `--import-theme` is no longer in that list — it needs no
-display, so s107 pinned it headless. The config search order and the settings-vs-binding file rules are covered
-headless in `tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. No
-`TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
+The windowed group of `tests/cli_test.sh` ran 2026-10-19 (s108) at the user's request: **141 checks / 0 failures
+/ 0 skipped** — the 50 window checks plus the 91 that always run. What only that group covers is `main()`'s argv
+handling for the flags that OPEN a window (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`,
+`-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys and the band's share;
+all of it still holds. `--import-theme` is not in that list — it needs no display, so s107 pinned it headless.
+The config search order and the settings-vs-binding file rules are covered headless in `tests/test_vt.c`
+(13 `cfgsearch` checks + the `config split` group), so they are not a gap. No `TODO`/`FIXME`/`XXX` and no
+`TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
 what is verified and what is not is AGENT.md's "Current Status". This file carries only: what is broken, what was
