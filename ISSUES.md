@@ -21,23 +21,25 @@ The four items this file was once holding for the user's eye were answered 2026-
 `background =` line now produces is accepted (they have since edited that file while testing — it now reads
 `background = 1c1c22`, bare hex, and `opacity = 1`), and the s98 clipboard-source paste fix, the file manager's
 preview-pane key scrolling and the 75 % band's look all work in their window. `--import-theme` was confirmed
-working by the user 2026-10-19 (s107's feature), so the theme import carries no open question either.
+working by the user 2026-10-19 (s107's feature), so the theme import carries no open question either. **Step 4,
+confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
+with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-20 (s117, from `make clean`, on the tree that added the preview pane's text selection):
+Re-measured 2026-10-20 (s124, from `make clean`, on the tree that gave a WINDOW close its confirmation box):
 `make -j8` exit 0 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm
-bin/test_render`) exit 0 with **0 warning lines**; `./bin/test_vt` **1217 checks, 0 failures**; `./bin/dbg`
-**MODEL OK (0 problems)**; `./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **495 checks, 0
-failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks, 0 failures, 13 skipped` + those
-four); `make asan` exit 0 with the same counts, 0 warning lines and no sanitizer report. The windowed group of
-`tests/cli_test.sh` was NOT re-run this session (no window is mapped while the user is at the machine); the
-last time it ran was s109: **141 checks / 0 failures / 0 skipped** — the 50 window checks plus the 91 that
-always run. What only that group covers is `main()`'s argv handling for the flags that OPEN a window
-(`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies
-the multiplexing / display / file-manager keys and the band's share. The config search order and the
-settings-vs-binding file rules are covered headless in `tests/test_vt.c` (13 `cfgsearch` checks + the `config
-split` group), so they are not a gap. Neither step 3 (the double/triple click) nor step 3b (the preview pane's
-selection) added a command-line flag, so nothing in that windowed group is new; `--import-theme` is not in that
-list either — it needs no display, so s107 pinned it headless. No
+bin/test_render`) exit 0 with **0 warning lines**; `./bin/test_vt` **1413 checks, 0 failures**; `./bin/dbg`
+**MODEL OK (0 problems)**; `./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **524 checks, 0
+failures**; `make asan` exit 0 with the same counts, 0 warning lines and no sanitizer report. The windowed group
+of `tests/cli_test.sh` **ran for real** that day — this machine has a live `WAYLAND_DISPLAY=wayland-1`, its probe
+window passed, and the run reported **CLI: 149 checks, 0 failures, 0 skipped** (twice). It maps ~15 real windows
+on the user's desktop, so it is a run to ask about before repeating, not a routine command. What only that group
+covers is `main()`'s argv handling for the flags that OPEN a window (`-c/--config`, `-b/--binds`, combined flags,
+`-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys
+and the band's share. The config search order and the settings-vs-binding file rules are covered headless in
+`tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. Neither step 3 (the
+double/triple click), step 3b (the preview pane's selection) nor step 4 (confirm-quit) added a command-line flag,
+so nothing in that windowed group is new; `--import-theme` is not in that list either — it needs no display, so
+s107 pinned it headless. No
 `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;

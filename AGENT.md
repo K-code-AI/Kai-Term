@@ -89,20 +89,14 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   kitty theme at `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to
   `~/.config/kai-term/kai-term.conf`, then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that
   an application set it, not the file. Hand these to them; do not map a window to judge a look yourself.
-  **Step 4's question row is CONFIRMED — the user had eyes on it and says it works (2026-10-20, s124).** What
-  they saw was the row form (that is what was committed then). **The WINDOW-close BOX is the new item on this
-  list** (s124, unpushed at the time of writing): every decision in it is checked and 22 mutants prove the
-  checks bite, but no human has seen the box. The recipe to hand over: run `sleep 30` at the prompt, then close
-  the window (`Mod+Q`, or the compositor's close button) — a box should appear in the middle of the window,
-  over the terminal, saying `Warning ! "sleep" is still running. Are you sure you want to close it ?`, with the
-  terminal behind it unshrunk and still readable; `Yes`/`No` should answer to a click, `Enter`/`Esc` to the same
-  two answers, a click inside the box but off both buttons should answer nothing, and a click on the terminal
-  behind it should neither answer nor select. Then: `nano` should be named as `nano`; a second tab running
-  `sleep` should make the sentence plural and name both; an idle window should still close with no box at all;
-  `Ctrl+Shift+W` on a busy tab should still ask with the one-row notice, not the box; and a very narrow window
-  should close without asking rather than draw a box its buttons do not fit in (`-d` logs which happened).
+  **Step 4 is CONFIRMED IN BOTH FORMS — the user had eyes on the question row (2026-10-20, s124) and on the
+  WINDOW-close box (2026-10-20, s125: "I confirm the feature to be working. I had my eyes on it.").** Nothing in
+  step 4 is owed to their eye any more, and step 4 is closed. Do not re-ask about it or re-propose it.
+  **What is on this list now:** the look of a themed window, a live OSC colour repaint, the configured
+  `cursor_color`, the whole step-2 cursor, and step 3b's preview selection — the list above. Steps 5-7 add to it
+  as they land.
 
-## Current Task — step 4 confirm-quit: the row is DONE, confirmed by the user; the WINDOW box is built and green, and their eyes on it are what is left. Then steps 5-7
+## Current Task — step 4 confirm-quit: CLOSED (both forms confirmed by the user). Now steps 5-7: middle-click paste, the visual bell, plain-click URLs
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -427,9 +421,8 @@ returning what it WROTE and staying terminated, `cap == 0` and a NULL buffer tou
 - **YES for a window closes every session named in the sentence**, not just the visible one — that is what the
   count promises.
 
-**Not in the tree:** nothing step 4 needs. What is left is the BOX's LOOK, which is the user's to confirm (recipe
-in "Current Status") — every decision in it has a check and 22 mutants show those checks bite, nothing about how it
-reads has been seen. The row's look IS confirmed (2026-10-20).
+**Not in the tree:** nothing step 4 needs, and nothing it owes. Both forms of the question are confirmed by the
+user in their own window — the row (s124) and the box (s125).
 
 **Superseded, and deliberately kept:** `confirm_message()`'s `CONFIRM_QUIT` branches are no longer what a window
 shows — `confirm_warning()` took that over — and `main.c` never calls it with `CONFIRM_QUIT` (a source scan pins
@@ -437,8 +430,8 @@ that; the `main_tab_wording` mutant kills on it). They stay because the function
 safety contract (`cap == 0`, a NULL buffer, a small cap) is checked through them, and the header and the test group
 carry a NOTE saying so. Deleting them is a legitimate cleanup for a later session; it is not a bug.
 
-**Exact next action, in order:** (1) hand the user the box recipe in "Current Status" and record their verdict;
-(2) then steps 5-7 of the s102 plan (middle-click paste, visual bell, plain-click URLs).
+**Exact next action:** steps 5-7 of the s102 plan, in order — (5) middle-click paste, (6) the visual bell,
+(7) plain-click URLs. Step 4 is finished; do not re-open it.
 
 ### 5. Middle-click paste (opt-in, off by default)
 
@@ -1258,18 +1251,30 @@ numbers and the intermediate check counts are in git.
   Next session: steps 5-7 of the s102 plan — middle-click paste (opt-in, off by default, pastes the CLIPBOARD),
   the visual bell, plain-click URLs. All three are measured and gated in "Current Task"; their blocking
   decisions are already made.
+- **2026-10-20, s125 — the user's verdict on the box: it works. Step 4 is CLOSED.**
+  Their words: "I confirm the feature to be working. I had my eyes on it." That is the second confirmation of
+  step 4 (the row was confirmed in s124), so both forms of the question — the tab's one-row notice and the
+  window's centred box with its two clickable buttons — are now seen working in the user's own window, which is
+  the half no harness can reach. Step 4 leaves the "owed to the user's eye" list entirely; the entries still on
+  it (a themed window, a live OSC repaint, `cursor_color`, the step-2 cursor, step 3b's preview selection) are
+  unchanged. Nothing was rebuilt or re-measured for this entry: it records a verdict, not a code change, and the
+  tree it applies to is `aab3e15`/`dc36c46` (1413/0, MODEL OK, 384/0, 524/0, CLI 149/0/0, asan clean).
+  Also corrected here, because the rules forbid leaving stale measurements in documentation: ISSUES.md's
+  "Re-measured" paragraph still carried the s117 numbers (1217 checks, test_render 495, `CLI: 91/0/13`, and a
+  sentence saying the windowed group had not run since s109). It now carries s124's, including the fact that the
+  windowed group DID run — twice — on a machine with a live `WAYLAND_DISPLAY`.
+  **Next: step 5, middle-click paste.** Its design is already settled by the user's answer to question 5 (it
+  pastes the CLIPBOARD, so no `wl_primary` work at all; opt-in, `middle_click_paste = 0` by default). Task block
+  with the measured starting point goes in below before any file is touched.
 
 ## Next Steps
 
-1. **Now: the WINDOW-close box — built, green, committed (s124).** Read the state from git (`git status -sb`,
-   `git log --oneline origin/main -1`), never from this page. What it still owes is the user's eyes on the box —
-   the recipe is in "Current Status"; every decision in it has a check and 22 mutants prove the checks bite, but
-   nobody has seen it. The step-4 ROW is confirmed by the user (2026-10-20) — do not re-ask about it. Do NOT
-   re-derive the foreground-group facts, re-write stage A's checks or re-do stages B/C/D: the s120, s121, s122,
-   s123 and s124 entries record the A/B and the mutants each was measured against (`test_vt` 1413/0,
-   `test_render` 524/0, CLI 149/0/0 with a display, asan clean).
-   **Then steps 5-7 of the s102 plan** (middle-click paste, visual bell, plain-click URLs). Each is measured and
-   gated in "Current Task"; the decisions that would have blocked them are already made.
+1. **Now: steps 5-7 of the s102 plan, in order — middle-click paste, the visual bell, plain-click URLs.** Step 4
+   is CLOSED: both forms of its question are confirmed by the user in their own window (s124 the row, s125 the
+   box). Do not re-ask about it, re-propose it, or re-derive the foreground-group facts — the s120-s124 entries
+   record the A/B and the mutants each stage was measured against (`test_vt` 1413/0, `test_render` 524/0,
+   CLI 149/0/0 with a display, asan clean). Each of steps 5-7 is measured and gated in its own "Current Task"
+   section; the decisions that would have blocked them are already made under "Decisions already made".
 2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look
    (a 2 px bar at the left edge of the cell, one second on / one second off while the window has focus, steady
    with `cursor_blink = 0`), then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'`
