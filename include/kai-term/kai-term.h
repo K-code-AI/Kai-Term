@@ -137,6 +137,35 @@ enum {
 };
 int mouse_sgr_button(uint32_t evdev_code);   /* 0 left, 1 middle, 2 right, 3 any other button */
 
+/* ---- what a pointer press MEANS (implemented in src/vt.c) ----
+   ptr_button() in src/main.c is a chain of early returns, and that ORDER is the thing a user feels: a middle
+   click on the tab bar closes a session, a middle click in the file-manager band selects a file, a middle click
+   while an application holds the mouse is a report to that application — and only a middle click in a plain
+   terminal pane is allowed to mean "paste". main.c is linked into no test binary, so a precedence written there
+   is a claim; written here it is a check. main.c computes the flags (it owns the geometry and the model) and
+   asks this ONE question; every branch of its chain is then gated on the answer, so flipping a rule here is
+   visible to a test instead of buried in an event handler. */
+typedef struct {
+    int btn;            /* the SGR button from mouse_sgr_button(): 0 left, 1 middle, 2 right, 3 other */
+    int pressed;        /* 0 on release — a release is a different gesture and is answered separately */
+    int dialog_on;      /* the confirm-quit box is up: it owns the pointer, press AND release */
+    int hit_bar;        /* the point is on a tab-bar item */
+    int hit_fm;         /* the point is inside the file-manager band */
+    int app_mouse;      /* the application asked for mouse reports (MOUSE_PRESS | MOUSE_DRAG) */
+    int middle_paste;   /* conf.middle_click_paste — the opt-in this feature is gated on */
+} PtrPress;
+
+enum {
+    PTR_NONE = 0,    /* nothing owns this press: fall through (a right click, or a release we do not track) */
+    PTR_DIALOG,      /* the confirm-quit box swallows it — answering is layout_hit_dialog()'s decision */
+    PTR_BAR,         /* the tab bar: a left click shows the session, a middle click closes it */
+    PTR_FM,          /* the file-manager band: an entry selection, never a report, never a text selection */
+    PTR_REPORT,      /* report the button to the application that asked for the mouse */
+    PTR_SELECT,      /* the left button in a pane: selection, the double/triple gesture, click-to-place */
+    PTR_PASTE        /* the middle button in a pane, opt-in: paste the clipboard */
+};
+int ptr_press_action(const PtrPress *p);
+
 /* The wheel is not a button in the kernel's numbering — it is an axis — so the code reported to an
    application that DID ask for the mouse has to be chosen, and the number is not free. 64 = wheel up,
    65 = wheel down is what xterm, kitty, neovim, tmux and ncurses all read as a scroll. Measured
@@ -791,6 +820,14 @@ typedef struct Config {
        synthesised cursor-key presses of click_moves_cursor, so a double click inside nano selects instead
        of walking the program's cursor twice. */
     int  click_selects_word;
+    /* middle_click_paste: 0 (the default) = a middle click does what it has always done — closes a session on the
+       tab bar, selects in the file-manager band, is reported to a program that asked for the mouse, and does
+       NOTHING in a plain terminal pane. 1 = that last case pastes the CLIPBOARD (not the X11 primary: the user
+       asked for this as an option because they dislike middle-click paste, and pasting the clipboard is the half
+       that needs no new protocol). The opt-in is the whole point, and the precedence is not a coin flip — see
+       ptr_press_action() (src/vt.c), which is where the order bar > band > application > pane lives as one
+       checkable decision. A program that asked for the mouse keeps its middle button either way. */
+    int  middle_click_paste;
     /* The cursor's shape is always the thin bar unless an application asks for another one with DECSCUSR
        (there is deliberately no `cursor_style` key — the user asked for one look). These two say how that
        cursor behaves:

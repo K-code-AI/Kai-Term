@@ -343,7 +343,7 @@ static uint32_t rep_serial;     /* serial of that key's press (clipboard actions
 static const struct wl_callback_listener frame_listener;
 static void kb_keymap(void *d, struct wl_keyboard *k, uint32_t format, int fd, uint32_t size);
 static void selection_copy(uint32_t serial);
-static void clipboard_paste(void);
+static int clipboard_paste(const char *why);
 static void update_title(void);
 /* The preview pane's cell under the pointer, defined with the other pointer mappers further down but needed
    by the band's click handler above them. */
@@ -2169,7 +2169,7 @@ static int send_key(uint32_t key, uint32_t serial)
         /* One-shot: repeating either would re-offer the selection or paste the clipboard over and
            over, so these never arm the repeat. */
         if (base == XKB_KEY_C) { selection_copy(serial); return 0; }
-        if (base == XKB_KEY_V) { clipboard_paste(); return 0; }
+        if (base == XKB_KEY_V) { clipboard_paste("Ctrl+Shift+V"); return 0; }
     }
     /* The band's own keys, matched only while it owns the keyboard (see fm_keys). Before the PTY paths,
        so a key the file manager uses never reaches the shell and never snaps the terminal's view. A
@@ -2541,6 +2541,24 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         return;
     }
 
+    /* One decision says which surface owns this press. main.c computes the FLAGS — it owns the geometry, the
+       model and the config — and ptr_press_action() in src/vt.c owns the ORDER, which is the part a user feels
+       and the part a test can flip. Every branch below is then gated on that answer instead of re-deriving its
+       own condition, so the chain and the check cannot drift apart: a middle click that decided to paste over
+       the tab bar would be a bug in a function no test binary links, and it is instead a case in a table.
+       `cur_term()` is guarded here because this runs before the branch that closes the last session returns. */
+    int bi = layout_hit_bar(&g_layout, W.ptr_x, W.ptr_y);
+    int fm_hit = g_fm.on ? layout_hit_fm(&g_layout, W.ptr_x, W.ptr_y) : FM_HIT_NONE;
+    Term *pt = cur_term();
+    PtrPress pp = { .btn = btn,
+                    .pressed = pressed,
+                    .dialog_on = g_layout.dialog.on,
+                    .hit_bar = bi >= 0,
+                    .hit_fm = fm_hit != FM_HIT_NONE,
+                    .app_mouse = pt && (pt->mouse_mode & (MOUSE_PRESS | MOUSE_DRAG)) ? 1 : 0,
+                    .middle_paste = conf.middle_click_paste };
+    int act = ptr_press_action(&pp);
+
     /* The confirm-quit BOX owns the pointer while it is up. It is checked before the bar, the file-manager
        band and the panes for the same reason the band is checked before the application: a click on the Yes
        button must answer the question and nothing else, and must not also close the tab underneath it, select
@@ -2550,7 +2568,7 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
        does a press outside the box entirely: a click that lands near a button must never answer it by
        accident, and a click on the terminal must never be read as the NO the user did not give. The keyboard
        still works (Enter/Esc, in send_key), and it stays the only way to answer a box the pointer missed. */
-    if (g_layout.dialog.on) {
+    if (act == PTR_DIALOG) {
         if (pressed) {
             int hi = layout_hit_dialog(&g_layout, W.ptr_x, W.ptr_y);
             if (hi >= 0) {
@@ -2572,8 +2590,7 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
        closes it, and neither reaches the application nor starts a text selection. This is checked BEFORE the
        mouse-reporting branch on purpose: an application that grabbed the mouse (?1000/?1002) still must not
        be able to eat the bar that names its tab. */
-    int bi = layout_hit_bar(&g_layout, W.ptr_x, W.ptr_y);
-    if (bi >= 0 && pressed) {
+    if (act == PTR_BAR) {
         int tab = g_layout.item[bi].tab;
         W.selecting = 0;
         if (btn == 1) {                     /* BTN_MIDDLE closes the session it was clicked on */
@@ -2600,11 +2617,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
        and never starts a text selection. Checked before the mouse-reporting branch for exactly the bar's
        reason — an application must not be able to eat the browser the user is looking at. */
     if (g_fm.on) {
-        int hit = layout_hit_fm(&g_layout, W.ptr_x, W.ptr_y);
-        if (hit != FM_HIT_NONE) {
+        if (act == PTR_FM) {
             W.selecting = 0;
             if (pressed)
-                fm_pointer_select(hit, btn, time);
+                fm_pointer_select(fm_hit, btn, time);
             W.dirty = 1;
             return;
         }
@@ -2622,7 +2638,18 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
             tab_switch(g_layout.pane[pi].tab);
     }
 
-    if (cur_term()->mouse_mode & (MOUSE_PRESS | MOUSE_DRAG)) {
+    /* The switch above can change WHICH session the pointer is over, and the session it lands on may be the one
+       that asked for the mouse — a split window with `nano --mouse` in one pane and a shell in the other is
+       exactly that. So the answer is asked again from the session that is active NOW: the flag was computed from
+       the session that was active when the event arrived, and reporting a selection to a program that asked for
+       the button is the bug s96 measured (one mouse report typed "64;20;5M" into the user's file). The surfaces
+       above the panes (the box, the bar, the band) already had their answer and returned; only the
+       application/pane half of the table can move here. */
+    pt = cur_term();
+    pp.app_mouse = pt && (pt->mouse_mode & (MOUSE_PRESS | MOUSE_DRAG)) ? 1 : 0;
+    act = ptr_press_action(&pp);
+
+    if (act == PTR_REPORT) {
         /* an application grabbed the mouse: report the button to the PTY */
         W.ptr_btn = pressed ? btn : -1;
         int col, row;
@@ -2631,8 +2658,22 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         return;
     }
 
+    /* The middle button in a plain terminal pane, and ONLY there: the decision above already gave a middle
+       click on the tab bar to the bar (it closes a session), one in the band to the band (it picks a file), one
+       while the confirm-quit box is up to the box, and one while an application holds the mouse to that
+       application — it asked for the button. What is left is the case that used to do nothing at all, and the
+       user turned this on for it (`middle_click_paste = 1`; with the default 0 this branch is unreachable).
+       It pastes the CLIPBOARD, not the X11 primary — there is no primary selection in Kai-Term and the user
+       asked for the clipboard half. Only the PRESS pastes: a release would paste the same text twice. */
+    if (act == PTR_PASTE) {
+        W.selecting = 0;                 /* a paste is not the start of a selection */
+        clipboard_paste("middle click");
+        W.dirty = 1;
+        return;
+    }
+
     /* No application grabbed the mouse: the left button drives text selection. */
-    if (btn == 0) {   /* BTN_LEFT */
+    if (act == PTR_SELECT) {   /* BTN_LEFT */
         int col, row;
         sel_cell(&col, &row);
         if (pressed) {
@@ -3077,13 +3118,27 @@ static void selection_copy(uint32_t serial)
          from_preview ? "the file manager's preview pane" : "the terminal");
 }
 
-/* Paste the current clipboard selection (received via the selection event) into the PTY. */
-static void clipboard_paste(void)
+/* Ask the clipboard for its text. `why` names the gesture that asked — the middle click or Ctrl+Shift+V —
+   because the two paths are otherwise identical and a user debugging a paste that produced nothing needs to
+   know which one they pulled. Every early return says why in the log: silently doing nothing is how
+   "the middle click is broken" becomes an unanswerable bug report. */
+static int clipboard_paste(const char *why)
 {
-    if (!W.data_dev || paste_fd[0] >= 0)
-        return;
-    if (sel_offer && sel_offer_text)
-        start_paste(sel_offer, sel_offer_mime[0] ? sel_offer_mime : "text/plain");
+    if (!W.data_dev) {
+        klog(L_DEBUG, "paste: %s — this seat has no clipboard device", why);
+        return 0;
+    }
+    if (paste_fd[0] >= 0) {
+        klog(L_DEBUG, "paste: %s — a paste is already in flight", why);
+        return 0;
+    }
+    if (!sel_offer || !sel_offer_text) {
+        klog(L_DEBUG, "paste: %s — the clipboard offers no text", why);
+        return 0;
+    }
+    klog(L_INFO, "paste: %s asks the clipboard for its text", why);
+    start_paste(sel_offer, sel_offer_mime[0] ? sel_offer_mime : "text/plain");
+    return 1;
 }
 
 /* Send the buffered clipboard text to the PTY, wrapped in the bracketed-paste delimiters when the

@@ -74,6 +74,8 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   never asks.
 - **System clipboard** — Copy and paste use the standard Wayland clipboard, so text copied in Kai-Term
   pastes into other applications and text copied anywhere else pastes into Kai-Term.
+  `middle_click_paste = 1` (off by default) also pastes it with a **middle click** in the terminal area, and
+  changes what a middle click means nowhere else.
 - **Configuration** — Two plain-text files: `kai-term.conf` for the settings and `kai-term.bind` for the
   key bindings, read from `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term` or `/etc/kai-term`, with a
   commented template of every default in [`config/`](config) in the source tree. A third kind of file,
@@ -398,6 +400,32 @@ understand (64/65). The main screen keeps scrolling its scrollback. The cursor k
 program's own request (DECCKM), which is a fix on its own: `less`, `man` and `htop` answer only the form they
 ask for with `ESC[?1h`, so the arrow keys did nothing in them before.
 
+### Middle-click paste
+
+`middle_click_paste = 1` makes a **middle click paste the clipboard** — the same text `Ctrl`+`Shift`+`V` pastes,
+which is whatever the compositor's clipboard holds, including another application's. It is **off by default**: a
+middle click does nothing in the terminal area until you turn it on. Where the middle button already belongs to
+something, it keeps belonging to it. The window asks in one order, and the first surface that claims the click
+serves it:
+
+| A middle click lands on | What happens |
+|---|---|
+| the confirm-quit box, while it is up | the box owns the pointer: a press on a button answers the question (as it does for any button), anywhere else it answers nothing |
+| a session's item in the tab bar | that session **closes** — asking first, if something is still running in it |
+| the file-manager band | the entry under the pointer is picked |
+| a program that asked for the mouse (`vim`, `tmux`, `less`, `nano --mouse`) | the button is reported to that program — it asked for it |
+| anywhere else in the window (the panes and the space around them, where a left click already selects text) | the clipboard is pasted |
+
+Two things worth knowing:
+
+- **It is the clipboard, not the X11 primary.** Kai-Term has no primary selection, so this gesture and
+  `Ctrl`+`Shift`+`V` hand over the same bytes, and highlighting text with the mouse does not by itself make it
+  middle-click pasteable — `Ctrl`+`Shift`+`C` is what puts a selection on the clipboard.
+- **The press pastes; the release does nothing**, so one click cannot paste the same text twice. A paste leaves
+  any selection that is on screen exactly where it is. `./bin/kai-term -d` logs which gesture asked the clipboard
+  for its text, and why it got nothing back when it does (no clipboard device on the seat, a paste already in
+  flight, or a clipboard holding no text).
+
 ## Configuration
 
 Kai-Term reads two plain-text files, both in the same `key = value` format:
@@ -465,6 +493,7 @@ the program.
 | `wheel_sends_keys` | `1` | Inside a full-screen program that never asked for the mouse (`nano`, `less`, `man`), the wheel sends cursor-key presses, which is what scrolls them (`0` leaves the wheel doing nothing there) |
 | `click_moves_cursor` | `1` | In that same state, a left click that does not drag walks the program's own cursor to the clicked cell (`0` means a click only ever selects text). A drag always selects, and `Shift` + click always selects |
 | `click_selects_word` | `1` | A second left click in the same cell selects the **word** under the pointer, a third the whole **line** (`0` leaves every click selecting one cell, extended by dragging). A word is everything up to the next space with punctuation at the END cut off, so double-clicking `file.txt,` selects `file.txt`; punctuation at the START stays, so `/etc/passwd` comes over whole. The line a triple click takes is the line the program wrote, so one that wrapped at the window edge is selected in every row it occupies. A word or line gesture never sends the program cursor keys, so it selects inside `nano` and `less` instead of walking their cursor twice |
+| `middle_click_paste` | `0` | `1` makes a **middle click in the terminal area** paste the clipboard (`Ctrl`+`Shift`+`V` does that either way). Off by default, and off it changes nothing: a middle click in the terminal area does nothing at all. It never changes what a middle click means anywhere else — on a tab in the bar it still **closes** that session (asking first if something is running), in the file-manager band it still picks a file, and a program that asked for the mouse (`nano --mouse`, vim, `less`, tmux) keeps its middle button because it asked for it |
 | `cursor_blink` | `1000` | Cursor blink half-period in ms: the bar is drawn for this long, then hidden for this long (`0` = steady). Your setting is the ceiling — a program can ask for a steady cursor with DECSCUSR but cannot switch the blink back on. Blinking also stops while the window has no focus (clamped to 0–10000) |
 | `cursor_width` | `2` | Pixels wide the bar cursor is — and how tall an underline is, when a program asks for one. Never wider than a third of a cell, so a large value cannot turn the bar back into a block (clamped to 1–64) |
 | `repeat_delay` | `300` | Milliseconds a key must be held before it starts repeating (`0` disables repeating) |

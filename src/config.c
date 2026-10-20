@@ -65,6 +65,9 @@ void config_default(Config *c)
     /* Double click selects a word, triple click the whole logical line. On by default: the user asked for
        it that way, and a single click still behaves exactly as before. */
     c->click_selects_word = 1;
+    /* Middle-click paste is OFF by default — the user asked for it as an option precisely because they dislike
+       it. Nothing about a middle click changes until this is turned on. */
+    c->middle_click_paste = 0;
     /* The cursor: a thin bar (there is no `cursor_style` key — the user asked for one look) that is on for
        1000 ms and off for 1000 ms, the classic rhythm. 0 turns the blink off and an application cannot turn
        it back on (see the CURBLINK enum comment). 2 px is the width that reads as a hairline at 14px but is
@@ -525,6 +528,12 @@ static void apply_setting(Config *c, const char *key, char *val)
         /* 1 (default) = the second and third click of a gesture select a word / a whole line.
            0 = every click selects one cell, as before this existed. */
         c->click_selects_word = cfg_bool(val) ? 1 : 0;
+    } else if (!strcmp(key, "middle_click_paste")) {
+        /* 0 (default) = a middle click does nothing in a terminal pane, as it always has. 1 = it pastes the
+           CLIPBOARD there. Only the pane: a middle click on the tab bar still closes a session, one in the
+           file-manager band still picks a file, and one while a program holds the mouse is still reported to
+           that program — the order is ptr_press_action()'s, in src/vt.c, and a check pins it. */
+        c->middle_click_paste = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "cursor_blink")) {
         /* Half-period in ms: the cursor is drawn for this long, then hidden for this long. 0 = steady.
            The upper clamp is only there to stop a typo (`cursor_blink = 100000`) leaving a cursor that

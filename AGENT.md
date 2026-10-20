@@ -21,7 +21,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s124 — **GREEN; the WINDOW-close box is committed AND pushed (`aab3e15`) — read the state from git, not from here**)
+## Current Status (re-measured 2026-10-20, s126 — **GREEN; step 5 (middle-click paste) is in the tree, headless-verified; read the commit state from git, not from here**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -30,15 +30,16 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites — green, the box included.** Both builds clean (exit 0, 0 warning lines) and `./bin/test_vt` reports
-  **1413 checks, 0 failures** (the confirm-quit wording, the process name, the box geometry and the four
-  wrap cuts are all in there). Everything else is green: `./bin/dbg` **MODEL OK (0 problems)**,
-  `./bin/test_fm` **384 checks, 0 failures**, `./bin/test_render` **524 checks, 0 failures** (the renderer's
-  pure decisions — its colour choices, the cursor's shape, the question row's two colours, the box's six —
-  plus the source scans that cover `main.c`, which is in no test binary), `CLI: 149 checks, 0 failures,
-  0 skipped` — **measured, not arithmetic**: this machine has a live `WAYLAND_DISPLAY=wayland-1`, so the
-  windowed group ran for real (twice in s124, ~15 real windows each time; ask before running it again while
-  the user is at the machine). `make asan` is green on THIS tree: all four asan binaries exit 0, 0 warning
+- **Suites — green, step 5 included.** Both builds clean (exit 0, 0 warning lines) and `./bin/test_vt` reports
+  **1446 checks, 0 failures** (the confirm-quit wording, the process name, the box geometry, the four wrap cuts,
+  the `middle_click_paste` config group and the 16-case pointer-precedence table are all in there). Everything
+  else is green: `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **384 checks, 0 failures**,
+  `./bin/test_render` **529 checks, 0 failures** (the renderer's pure decisions — its colour choices, the
+  cursor's shape, the question row's two colours, the box's six — plus the source scans that cover `main.c`,
+  which is in no test binary, now including the five that pin the pointer-decision wiring), and `CLI: 99 checks,
+  0 failures, 13 skipped` with `KAI_TERM_TEST_NO_WINDOW=1` — those 13 are the windowed group, last run for real
+  in s124 (**149 checks, 0 failures, 0 skipped**, twice, ~15 real windows each time; ask before running it again
+  while the user is at the machine). `make asan` is green on THIS tree: all four asan binaries exit 0, 0 warning
   lines, no LeakSanitizer or UBSan report. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'` — and **check the
@@ -54,10 +55,11 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   cut, because the cut decides the file name an imported theme lands under; the leak went by freeing the two
   name lists. Both fixes are pinned: the C check asserts the exact 127-byte stem, the CLI group greps the log
   line.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **37** setting names (the
-  hard-coded `ns == 37` beside the derived one — bumped in s120 when `confirm_quit` got its template + README
-  rows), the **24** binding names out of the two strcmp ladders in `src/config.c`, the **23** theme names
-  out of `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in `src/main.c`, and
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **38** setting names (the
+  hard-coded `ns == 38` beside the derived one — 36 -> 37 in s120 for `confirm_quit`, 37 -> 38 in s125 for
+  `middle_click_paste`), the **24** binding names out of the two strcmp ladders in `src/config.c`, the **23**
+  theme names out of `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in
+  `src/main.c`, and
   compares each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's
   tables — the option table by `readme_opts_of()`, README's **settings** and **binding** tables by
   `readme_table_names_of()` + `names_diff()` (added s110: before it, deleting a settings row from README left
@@ -93,8 +95,10 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   WINDOW-close box (2026-10-20, s125: "I confirm the feature to be working. I had my eyes on it.").** Nothing in
   step 4 is owed to their eye any more, and step 4 is closed. Do not re-ask about it or re-propose it.
   **What is on this list now:** the look of a themed window, a live OSC colour repaint, the configured
-  `cursor_color`, the whole step-2 cursor, and step 3b's preview selection — the list above. Steps 5-7 add to it
-  as they land.
+  `cursor_color`, the whole step-2 cursor, step 3b's preview selection, and **step 5's middle click** — that
+  with `middle_click_paste = 1` a middle press in the terminal area pastes what `Ctrl`+`Shift`+`V` pastes,
+  that a middle click on a tab item still CLOSES that session, that one in the band still picks a file, and
+  that vim/tmux/`nano --mouse` keep their middle button. Steps 6-7 add to the list as they land.
 
 ## Current Task — step 4 confirm-quit: CLOSED (both forms confirmed by the user). Now steps 5-7: middle-click paste, the visual bell, plain-click URLs
 
@@ -434,6 +438,136 @@ carry a NOTE saying so. Deleting them is a legitimate cleanup for a later sessio
 (7) plain-click URLs. Step 4 is finished; do not re-open it.
 
 ### 5. Middle-click paste (opt-in, off by default)
+
+**Task block, s125 — objective, measured starting point, planned steps, expected outcome.**
+MEASURED starting point (read from the tree at `dc36c46`, not assumed):
+* `ptr_button()` in `src/main.c` is a chain of early returns, in this order: (1) a preview-pane drag ending on
+  release; (2) the confirm-quit box owning the pointer; (3) a tab-bar item (`btn == 1` there CLOSES the
+  session, gated by `confirm_gate_tab`); (4) the file-manager band (`fm_pointer_select`); (5) a click in a
+  non-visible pane switching to that session; (6) the application-grabbed-the-mouse branch
+  (`cur_term()->mouse_mode & (MOUSE_PRESS|MOUSE_DRAG)` → `mouse_send`, return); (7) `btn == 0` only — the left
+  button drives selection, the double/triple gesture and the click-moves-cursor synthesis.
+* **A middle click in a plain terminal pane does nothing today**: stage 7 tests `btn == 0`, so `btn == 1` falls
+  out of the function. That is the whole gap step 5 fills.
+* `clipboard_paste()` (`src/main.c:3081`) is the paste entry `Ctrl+Shift+V` already uses: it needs `W.data_dev`, no
+  paste already in flight, and `sel_offer && sel_offer_text`, where `sel_offer` is the offer the compositor last
+  sent to `dd_selection` — i.e. **whatever the clipboard holds, including another application's text**. So the
+  paste half of this feature exists and is already the s98-tested path; step 5 adds only the gesture that calls it.
+* `ptr_shift_held()` is used in exactly ONE place today (the click-moves-cursor gate at `src/main.c:2690`); the
+  mouse-report branch does NOT consult Shift. Recorded so a later "Shift should bypass mouse reporting" change is
+  not smuggled in as part of this one.
+* Config: **37** settings names, pinned by `CHECK(ns == 37 && nb == 24, ...)` at `tests/test_vt.c:3088` and by
+  37 `key =` lines in `config/kai-term.conf`; README's settings table is diffed against the parser by
+  `readme_table_names_of()` + `names_diff()`. Bool keys go through `cfg_bool` (see `copy_on_release` at
+  `src/config.c:511`, `click_selects_word` at 524).
+Objective: a middle click pastes the clipboard, **opt-in and off by default**, without changing what any other
+button or any other surface already does.
+Planned steps, each left green: (A) the precedence as ONE pure decision — `PtrPress` + `ptr_press_action()` in
+`src/vt.c`, next to `mouse_sgr_button()` and `term_wants_key_mouse()`, because "what does this gesture mean" is a
+rule a test can pin and main.c is in no test binary; (B) the key `middle_click_paste` (default 0) — Config field,
+default, parser branch, template line, README row, `ns` 37 -> 38; (C) main.c computes the flags once and dispatches
+on the action, so the chain's order is the same order a check can flip; (D) checks — the precedence table headless,
+source scans for the main.c wiring, an A/B and mutants, README/ISSUES, both builds, every suite, asan.
+Expected outcome: with `middle_click_paste = 1`, a middle press in a terminal pane pastes the clipboard and `-d`
+logs it; with the default `0` nothing at all changes; a middle click on a tab item still closes that session (and
+still asks when it is busy), one in the file-manager band still selects an entry, one while the box is up still
+answers nothing, and one while an application holds the mouse is still reported to it.
+
+**Progress, s125 — stages (A), (B) and (C) are in the tree; (D) is what is left.**
+* (A) `PtrPress` + `ptr_press_action()` — declared in `include/kai-term/kai-term.h` next to `mouse_sgr_button()`,
+  implemented in `src/vt.c`. Actions: `PTR_NONE / PTR_DIALOG / PTR_BAR / PTR_FM / PTR_REPORT / PTR_SELECT /
+  PTR_PASTE`. The order it encodes is the chain main.c already has: box > bar(press only) > band > application
+  that asked for the mouse > pane. `PTR_NONE` is 0 and that is safe here (unlike `CONFIRM_NONE` in s122) because
+  nothing uses this value as a truthiness test — main.c compares it against named actions.
+* (B) the key `middle_click_paste`: `Config` field + comment, `config_default` = **0**, an `apply_setting` branch
+  through `cfg_bool`, a commented template line in `config/kai-term.conf`, a README settings row, and the pinned
+  count `ns == 37` -> **38**.
+* Checks added to `tests/test_vt.c`: the config group (default OFF first — the default *is* the feature; every
+  spelling of both values fed AFTER the opposite one) and a 16-case precedence table for `ptr_press_action`.
+  Two of my own first-draft checks were wrong and were replaced, both caught by running them rather than by
+  reading them: (i) I wrote a warn-and-KEEP case for a bool, but `cfg_bool()` reads only 0/off/no/false as off
+  and ANY other word as on — warn-and-KEEP is `confirm_quit`'s rule for an enum, so the honest check now pins
+  `= maybe` -> ON, started from OFF so it cannot pass vacuously; (ii) I asserted a bar RELEASE is nobody's,
+  but main.c's bar branch is `bi >= 0 && pressed`, so a LEFT release falls through and ends the selection today —
+  the table now says press=BAR, left-release=SELECT (unchanged behaviour), middle-release=NONE.
+  MEASURED: `make -j8` 0 warning lines; test build 0 warning lines; `./bin/test_vt` **1446 checks, 0 failures**
+  (1413 -> 1446: the config group, the precedence table, the template row).
+* (C) `ptr_button()` now asks the decision and gates every branch on it (s125, in the tree, unverified at the
+  time it was written — see the s126 entry). `bi`/`fm_hit`/`cur_term()` are computed once above the chain; the
+  box, bar, band, report, paste and select branches each read `act`. The answer is asked a SECOND time after the
+  "click in another pane switches session" branch, because that switch can land the pointer on the session that
+  asked for the mouse (a split with `nano --mouse` beside a shell) and the first answer was computed from the
+  session that was active when the event arrived. `clipboard_paste()` took a `why` argument and returns 0/1, and
+  every early return now says why in the log — "the middle click is broken" has to be answerable.
+* NEXT (D): run `.scratch/s125/mutate.py` (written, never run), README's mouse section, ISSUES, both builds,
+  every suite, asan.
+
+### s126 — step 5 stage (D): the harness, the documents, the suites
+
+Objective: finish step 5 the way steps 3, 3b and 4 were finished — the new checks proven non-vacuous by mutation,
+the documents matching the code, every suite and the asan build re-measured on the SAME tree. Planned steps: (1)
+re-measure both builds and all four suites on the tree as found, so the s125 numbers are not carried forward on
+trust; (2) run `.scratch/s125/mutate.py` and record which mutants die and which survive; (3) README's mouse /
+middle-click prose and ISSUES; (4) `make asan`; (5) commit. Expected outcome: a step-5 box that can be committed
+with measured numbers, and a list of what still belongs to the user's eye (a real middle click pasting in a real
+window is not headless-checkable).
+
+FOUND: the tree is one stage ahead of the page — (C) was written after the s125 journal entry was made and the
+entry said it was next. Corrected above. `git status` shows 9 modified files, nothing committed since `ca9f58d`.
+MEASURED on the tree as found: `make clean && make -j8` exit 0 with **0** warning lines; `make bin/test_vt
+bin/dbg bin/test_fm bin/test_render` exit 0 with **0** warning lines; `./bin/test_vt` **1446 checks, 0 failures**;
+`./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **529
+checks, 0 failures** (524 -> 529: the five main.c wiring scans). The s125 entry's 1446 is confirmed, and the
+529 is new since it.
+
+MEASURED — `.scratch/s125/mutate.py` (written in s125, never run; run now, one mutant added): **14 mutants, 14
+killed, 0 survived**, and the `control_noop` staging tree stays green (1446 / 529 checks, 0 failures) — the
+harness prints "SURVIVED" for the control by construction, which is what a control must do, not a finding.
+Failures are `test_vt / test_render`:
+`paste_ignores_optin` 1/0 (the opt-in IS the feature) · `paste_before_bar` 4/0 · `paste_on_release` 2/0 ·
+`dialog_after_bar` 1/0 · `select_only_press` 2/0 (a left RELEASE stops being the selection's) ·
+`no_null_guard` — `test_vt` **crashes**, exit -11, 0 FAIL lines: that one is pinned by a segfault, and a crash
+counts as killed only if the harness says so (it does) · `cfg_default_on` 2/0 (the default check AND the template
+check) · `cfg_no_branch` 9/0 · `tpl_ships_on` 1/0 · `main_no_paste_branch` 0/2 · `main_no_optin_feed` 0/1 ·
+`main_ungated_report` 0/1 · `main_second_paste` 0/1 · `main_no_reask` 0/1 (added this session — it kills the
+"main.c asks the decision twice" scan).
+The split is the point: a `src/vt.c` mutant dies only in `test_vt` and a `src/main.c` mutant only in
+`test_render`. The table and the wiring are two separate claims and each has exactly one suite watching it.
+
+MEASURED after the documents: `make asan` exit 0, **0** warning lines, **0** sanitizer/UBSan reports, the same
+four counts (1446 / MODEL OK / 384 / 529). `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh ./bin/kai-term` →
+**CLI: 99 checks, 0 failures, 13 skipped** (the windowed group not re-run this session — it maps ~15 real windows;
+ask the user). README gained a "Middle-click paste" subsection (the precedence as a table, clipboard-not-primary,
+press-not-release) and a Features line; ISSUES gained a "Selection / clipboard" limitation and its re-measured
+counts paragraph now reads s126.
+
+**The rules step 5 added, and where each is checked:**
+- **The order is ONE decision in `src/vt.c`, and `main.c` asks it.** `main.c` computes the flags (it owns the
+  geometry, the model and the config) and every branch of `ptr_button()` is gated on the answer. A branch that
+  re-derives its own condition can drift from the table silently — `main_ungated_report` is that mutant and the
+  `act == PTR_` count is what catches it.
+- **The answer is asked a SECOND time after the pane-focus switch**, because clicking another pane can land the
+  pointer on the session that asked for the mouse (a split with `nano --mouse` beside a shell). The first answer
+  was computed from the session that was active when the event arrived; using it after the switch reports to the
+  wrong program. `main_no_reask` kills the `ptr_press_action` count of 2.
+- **The opt-in is checked in the decision, not in `main.c`.** `main.c` feeds `conf.middle_click_paste` as a flag,
+  so "off changes nothing" is one row of the table (`paste_ignores_optin`) and not an `if` buried in an event
+  handler.
+- **`PTR_NONE == 0` is safe here only because nothing tests it for truthiness** — `main.c` compares against named
+  actions. Contrast `CONFIRM_NONE` in s122, where 0-as-true was a real bug. Adding a truthiness test on an action
+  is the change that would break that.
+- **Only the PRESS pastes** (a release would paste the same text twice), and **one paste path exists**:
+  `clipboard_paste(why)` is shared with `Ctrl`+`Shift`+`V` and every early return says why in the log. A middle
+  click that drove `start_paste()` itself is `main_second_paste`.
+- **The paste is deliberately NOT gated on a pane hit.** `PTR_PASTE` means "no surface above claimed this click",
+  which includes the `padding` margin and the gaps between panes — the same area where a left click already
+  selects text. Gating it on `layout_hit_pane()` would make a middle click in the margin do nothing while a left
+  click there still selects, which is the kind of inconsistency this project keeps hitting.
+- **Not pinned, and on the user's-eye list:** a real middle click reaching the shell with the option on (no
+  headless check can inject a button), and the `W.selecting = 0` inside the paste branch — a middle press while a
+  left drag is held ends the drag, and the left release still finalizes the selection. No check covers that line.
+
+NEXT: commit step 5 (`git fetch` first — the user commits on GitHub too), then step 6, the visual bell.
 
 The user: "I actually hate middle click paste, but we could add it as an option (off by default)". Their answer
 to question 5 settles the design: **it pastes the CLIPBOARD**, so no `wl_primary` work is needed at all and that

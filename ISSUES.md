@@ -25,21 +25,21 @@ working by the user 2026-10-19 (s107's feature), so the theme import carries no 
 confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
 with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-20 (s124, from `make clean`, on the tree that gave a WINDOW close its confirmation box):
-`make -j8` exit 0 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm
-bin/test_render`) exit 0 with **0 warning lines**; `./bin/test_vt` **1413 checks, 0 failures**; `./bin/dbg`
-**MODEL OK (0 problems)**; `./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **524 checks, 0
-failures**; `make asan` exit 0 with the same counts, 0 warning lines and no sanitizer report. The windowed group
-of `tests/cli_test.sh` **ran for real** that day — this machine has a live `WAYLAND_DISPLAY=wayland-1`, its probe
-window passed, and the run reported **CLI: 149 checks, 0 failures, 0 skipped** (twice). It maps ~15 real windows
-on the user's desktop, so it is a run to ask about before repeating, not a routine command. What only that group
-covers is `main()`'s argv handling for the flags that OPEN a window (`-c/--config`, `-b/--binds`, combined flags,
-`-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys
-and the band's share. The config search order and the settings-vs-binding file rules are covered headless in
-`tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. Neither step 3 (the
-double/triple click), step 3b (the preview pane's selection) nor step 4 (confirm-quit) added a command-line flag,
-so nothing in that windowed group is new; `--import-theme` is not in that list either — it needs no display, so
-s107 pinned it headless. No
+Re-measured 2026-10-20 (s126, from `make clean`, on the tree that added `middle_click_paste`): `make -j8` exit 0
+with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
+**0 warning lines**; `./bin/test_vt` **1446 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **529 checks, 0 failures**; `make asan` exit 0 with
+the same counts, 0 warning lines and no sanitizer report. `sh tests/cli_test.sh` with
+`KAI_TERM_TEST_NO_WINDOW=1` reports **CLI: 99 checks, 0 failures, 13 skipped** — the 13 are the windowed group,
+which was last run for real in s124 (**CLI: 149 checks, 0 failures, 0 skipped**, twice). That group maps ~15 real
+windows on the user's desktop, so it is a run to ask about before repeating, not a routine command. What only that
+group covers is `main()`'s argv handling for the flags that OPEN a window (`-c/--config`, `-b/--binds`, combined
+flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display /
+file-manager keys and the band's share. The config search order and the settings-vs-binding file rules are covered
+headless in `tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. None of
+step 3 (the double/triple click), step 3b (the preview pane's selection), step 4 (confirm-quit) or step 5 (the
+middle-click option) added a command-line flag, so nothing in that windowed group is new; `--import-theme` is not
+in that list either — it needs no display, so s107 pinned it headless. No
 `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
@@ -364,6 +364,14 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   warning, because the whole block must be buffered before delimiters can surround it.
 - **Bracketed paste is per application:** the delimiters are sent only when the app has DEC mode 2004 on.
   A shell/readline with bracketed paste off correctly keeps getting raw line-by-line pastes.
+- **Middle-click paste is opt-in (`middle_click_paste = 0`) and pastes the CLIPBOARD, not a primary
+  selection.** Kai-Term implements no `wl_primary`, so there is no "highlight it and it is pasteable" state: the
+  gesture and `Ctrl`+`Shift`+`V` hand over the same offer, by the same code path. The order is one decision,
+  `ptr_press_action()` in `src/vt.c` (pinned by a 16-case table): the confirm-quit box, then a tab-bar item (it
+  still **closes** that session, asking first if it is busy), then the file-manager band, then a program that
+  asked for the mouse — and only then the pane. A program with mouse reporting on keeps its middle button whether
+  the option is on or off: it asked for the button. Deliberate, not an oversight — do not "make the middle click
+  always paste" without re-reading that table.
 
 **Paste**
 

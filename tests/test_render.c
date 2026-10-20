@@ -490,6 +490,26 @@ static void group_source_wiring(void)
        would still hold. Measured: the budget and the pass, two reads. */
     CHECK(src_sub_count("src/render.c", "dialog.on") == 2,
           "src/render.c gates BOTH the staging budget and the draw pass on Layout.dialog.on");
+
+    /* ---- middle-click paste: main.c asks ONE decision, and gates every branch on it (s125) ----
+       The precedence (box > bar > band > application-that-asked > pane) is ptr_press_action()'s and is checked
+       as a table in tests/test_vt.c. What these scans pin is that main.c actually consults it, and that each
+       branch of its chain is gated on the answer rather than on a re-derived condition — otherwise the table
+      and the event handler can drift apart and every headless check stays green while the click does something
+       else. Counts measured on the wired tree; re-measure, do not copy. */
+    CHECK(src_word_count("src/main.c", "ptr_press_action") == 2,
+          "src/main.c asks the decision twice: once for the whole window, once after a click that switched "
+          "session (the session it lands on may be the one that asked for the mouse)");
+    CHECK(src_sub_count("src/main.c", "act == PTR_") == 6,
+          "every branch of ptr_button()'s chain is gated on the action — box, bar, band, report, paste, select");
+    CHECK(src_word_count("src/main.c", "PTR_PASTE") == 1 && src_sub_count("src/main.c", "act == PTR_PASTE") == 1,
+          "src/main.c has exactly one paste branch, and it is the action that opens it");
+    CHECK(src_word_count("src/main.c", "middle_click_paste") == 1,
+          "src/main.c feeds conf.middle_click_paste to the decision — a key nothing reads is the dead "
+          "cursor_color shape again");
+    CHECK(src_word_count("src/main.c", "clipboard_paste") == 4,
+          "the paste entry point is shared: declared, defined, and reached from BOTH Ctrl+Shift+V and the "
+          "middle click — one paste path, not two that can drift");
     CHECK(src_word_count("src/main.c", "mux_running") == 2 && src_word_count("src/main.c", "pty_fg_busy") == 2,
           "src/main.c asks the measured predicate rather than inventing its own busy test");
     /* The one link a headless test cannot execute: main() handing the configured value to the renderer and

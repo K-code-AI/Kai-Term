@@ -2195,6 +2195,112 @@ int main(void)
         }
     }
 
+    /* --- the switch: middle_click_paste, and the default IS the feature -------------------------
+       The user asked for middle-click paste as an option they could leave off ("I actually hate middle click
+       paste, but we could add it as an option (off by default)"), so a group that only proved `= 1` works would
+       pass a build that shipped it ON. The default is checked first, then every spelling of both values fed
+       AFTER the opposite one — the lesson s120's `cfg_no_auto` mutant taught: fed into a config that already
+       holds the expected answer, a word the parser does not know still passes. */
+    {
+        Config c;
+        const char *path = "/tmp/kterm_test_config_mcp.conf";
+        config_default(&c);
+        CHECK(c.middle_click_paste == 0,
+              "config: middle_click_paste defaults to OFF — the user asked for an option, not for a new default");
+        FILE *f = fopen(path, "w");
+        CHECK(f != NULL, "config: temp config file writable (middle_click_paste)");
+        if (f) {
+            static const char *on[]  = { "1", "on", "yes", "true", "ON", "True" };
+            static const char *off[] = { "0", "off", "no", "false", "OFF" };
+            for (size_t i = 0; i < sizeof on / sizeof on[0]; i++) {
+                f = fopen(path, "w");
+                fprintf(f, "middle_click_paste = 0\nmiddle_click_paste = %s\n", on[i]);
+                fclose(f);
+                config_default(&c);
+                config_load(&c, path);
+                CHECK(c.middle_click_paste == 1,
+                      "config: middle_click_paste = 1 (and its on/yes/true spellings) turns it on");
+            }
+            for (size_t i = 0; i < sizeof off / sizeof off[0]; i++) {
+                f = fopen(path, "w");
+                fprintf(f, "middle_click_paste = 1\nmiddle_click_paste = %s\n", off[i]);
+                fclose(f);
+                config_default(&c);
+                config_load(&c, path);
+                CHECK(c.middle_click_paste == 0,
+                      "config: middle_click_paste = 0 (and its off/no/false spellings) turns it back off");
+            }
+            /* The bool contract, pinned as it actually is: cfg_bool() reads ONLY 0/off/no/false as off and
+               treats ANY other word as on. That is not warn-and-KEEP — warn-and-KEEP is confirm_quit's rule for
+               an enum, and writing "keeps the previous value" here would claim something the code does not do.
+               Started from OFF so the check is not vacuous: a word the parser does not know must still produce
+               ON, which is what every other bool key in this file does. */
+            f = fopen(path, "w");
+            fputs("middle_click_paste = 0\nmiddle_click_paste = maybe\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.middle_click_paste == 1,
+                  "config: a word that is not 0/off/no/false means ON — cfg_bool's rule, shared by every bool key");
+            remove(path);
+        }
+    }
+
+    /* --- what a pointer press MEANS: the precedence a user can feel ---------------------------
+       ptr_button() in main.c is a chain of early returns and main.c is in no test binary, so the ORDER lives
+       here as one decision. Each case below is a claim about a middle click: it closes a session on the bar,
+       it picks a file in the band, it belongs to a program that asked for the mouse, and ONLY in a plain pane
+       is it a paste — and only when the user turned that on. */
+    {
+        PtrPress p;
+#define PP(btn_, pr_, dlg_, bar_, fm_, app_, mp_) (memset(&p, 0, sizeof p), p.btn = (btn_), \
+        p.pressed = (pr_), p.dialog_on = (dlg_), p.hit_bar = (bar_), p.hit_fm = (fm_), \
+        p.app_mouse = (app_), p.middle_paste = (mp_), &p)
+        /* The opt-in, both ways, in the one place it is allowed to matter. */
+        CHECK(ptr_press_action(PP(1, 1, 0, 0, 0, 0, 1)) == PTR_PASTE,
+              "ptr: a middle PRESS in a plain pane pastes when middle_click_paste is on");
+        CHECK(ptr_press_action(PP(1, 1, 0, 0, 0, 0, 0)) == PTR_NONE,
+              "ptr: the same click does NOTHING with the option off — the default changes no gesture");
+        CHECK(ptr_press_action(PP(1, 0, 0, 0, 0, 0, 1)) == PTR_NONE,
+              "ptr: a middle RELEASE never pastes — one press, one paste, not two");
+        /* The precedence, one flip per line. Every one of these is a bug a user would report by name. */
+        CHECK(ptr_press_action(PP(1, 1, 0, 1, 0, 0, 1)) == PTR_BAR,
+              "ptr: a middle click on the tab bar still CLOSES the session — paste does not eat the bar");
+        CHECK(ptr_press_action(PP(1, 1, 0, 0, 1, 0, 1)) == PTR_FM,
+              "ptr: a middle click in the file-manager band still picks a file");
+        CHECK(ptr_press_action(PP(1, 1, 0, 0, 0, 1, 1)) == PTR_REPORT,
+              "ptr: a program that asked for the mouse keeps its middle button — it asked for it");
+        CHECK(ptr_press_action(PP(1, 1, 1, 1, 1, 1, 1)) == PTR_DIALOG,
+              "ptr: while the confirm-quit box is up it owns the pointer, over every other surface");
+        CHECK(ptr_press_action(PP(1, 0, 1, 0, 0, 0, 1)) == PTR_DIALOG,
+              "ptr: the box swallows the release too, so it cannot reach code assuming the press was its own");
+        CHECK(ptr_press_action(PP(0, 1, 0, 1, 0, 1, 1)) == PTR_BAR,
+              "ptr: the bar wins over an application that grabbed the mouse — a program cannot eat its own tab");
+        CHECK(ptr_press_action(PP(0, 1, 0, 0, 1, 1, 1)) == PTR_FM,
+              "ptr: the band wins over an application that grabbed the mouse, for the same reason");
+        CHECK(ptr_press_action(PP(1, 1, 0, 1, 1, 1, 1)) == PTR_BAR,
+              "ptr: bar before band, as the chain has always had them");
+        /* The left button and the buttons nobody owns are unchanged by this feature. */
+        CHECK(ptr_press_action(PP(0, 1, 0, 0, 0, 0, 0)) == PTR_SELECT &&
+              ptr_press_action(PP(0, 0, 0, 0, 0, 0, 0)) == PTR_SELECT,
+              "ptr: the left button still drives press AND release of a selection, option on or off");
+        CHECK(ptr_press_action(PP(2, 1, 0, 0, 0, 0, 1)) == PTR_NONE,
+              "ptr: a right click is still nobody's — the option does not invent a gesture");
+        CHECK(ptr_press_action(PP(3, 1, 0, 0, 0, 0, 1)) == PTR_NONE,
+              "ptr: an unknown button (BTN_SIDE, BTN_EXTRA) is nobody's either");
+        /* A bar PRESS is the bar's; a bar RELEASE is not, and what it becomes depends on the button — which is
+           exactly what main.c does today (its bar branch is `bi >= 0 && pressed`, so a release falls through to
+           the button's own handling). A LEFT release still ends the selection drag; a MIDDLE release is nobody's. */
+        CHECK(ptr_press_action(PP(0, 1, 0, 1, 0, 0, 0)) == PTR_BAR,
+              "ptr: a bar PRESS is the bar's");
+        CHECK(ptr_press_action(PP(0, 0, 0, 1, 0, 0, 0)) == PTR_SELECT,
+              "ptr: a LEFT release over the bar still falls through to end the selection, as it does today");
+        CHECK(ptr_press_action(PP(1, 0, 0, 1, 0, 0, 1)) == PTR_NONE,
+              "ptr: a MIDDLE release over the bar is nobody's — it does not close a second time and does not paste");
+        CHECK(ptr_press_action(NULL) == PTR_NONE, "ptr: a NULL press is answered, not crashed");
+#undef PP
+    }
+
     /* --- emoji grapheme clusters + wide emoji (color emoji support) --- */
     term_destroy(&T);
     term_init(&T, 10, 20, 100);
@@ -3011,6 +3117,9 @@ int main(void)
                   "template: click_moves_cursor matches");
             CHECK(t.click_selects_word == d.click_selects_word,
                   "template: click_selects_word matches (and the shipped line really is the built-in 1)");
+            CHECK(t.middle_click_paste == d.middle_click_paste && d.middle_click_paste == 0,
+                  "template: middle_click_paste matches, and the shipped line really is the built-in 0 — "
+                  "a template that ships the option ON contradicts the default the user asked for");
             CHECK(t.cursor_blink == d.cursor_blink && t.cursor_width == d.cursor_width,
                   "template: cursor_blink/cursor_width match (and the shipped lines really are 1000/2)");
             CHECK(t.repeat_delay == d.repeat_delay && t.repeat_rate == d.repeat_rate,
@@ -3085,8 +3194,8 @@ int main(void)
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 37 && nb == 24,
-                  "template: the parser accepts 37 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 38 && nb == 24,
+                  "template: the parser accepts 38 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);

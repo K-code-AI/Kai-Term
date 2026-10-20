@@ -830,6 +830,42 @@ int mouse_sgr_button(uint32_t evdev_code)
     }
 }
 
+/* Which surface owns a pointer press, in the order the user expects. Every rule here is a decision someone can
+   disagree with, so each one is stated and each has a check in tests/test_vt.c:
+   * The confirm-quit BOX first, press and release alike: a question the user is answering owns the whole window,
+     and a release that fell through would reach code assuming the press was its own.
+   * Then the TAB BAR, before the application: a program that grabbed the mouse (?1000/?1002) must not be able to
+     eat the bar that names its tab. Only a PRESS is the bar's — a release on the bar means nothing today and
+     falls through, exactly as it did before this function existed.
+   * Then the FILE-MANAGER BAND, for the same reason: a click there picks a file, and must never walk nano's
+     cursor or start a terminal selection.
+   * Then the APPLICATION that asked for the mouse: it asked, so it gets the button. This is why a middle-click
+     paste is opt-in AND why it sits here — in vim, less or tmux with the mouse on, the middle button belongs to
+     the program, and a terminal that pasted instead would be taking a button the program asked for.
+   * Then, and only then, the pane: a middle press pastes when the user turned the option on, a left press or
+     release drives the selection, and anything else (a right click, a middle RELEASE, an unknown button) is
+     nobody's and falls through.
+   A NULL is answered PTR_NONE rather than crashing: this is a public entry point, and the s116 lesson is that a
+   caller's mistake must not become a segfault in an event handler. */
+int ptr_press_action(const PtrPress *p)
+{
+    if (!p)
+        return PTR_NONE;
+    if (p->dialog_on)
+        return PTR_DIALOG;
+    if (p->hit_bar && p->pressed)
+        return PTR_BAR;
+    if (p->hit_fm)
+        return PTR_FM;
+    if (p->app_mouse)
+        return PTR_REPORT;
+    if (p->btn == 1 && p->pressed && p->middle_paste)
+        return PTR_PASTE;
+    if (p->btn == 0)
+        return PTR_SELECT;
+    return PTR_NONE;
+}
+
 /* The wheel code an application that asked for the mouse expects. See the header: 4/5 (which Kai-Term sent
    until s96) is read by ncurses as button 1, so the wheel did nothing in vim, htop, tmux and `nano --mouse`;
    64/65 is what every other terminal sends and what measurably scrolls those programs. */
