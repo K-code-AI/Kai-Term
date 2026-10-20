@@ -67,9 +67,11 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
 - **Font zoom** — Increase or decrease the font size without resizing the window.
 - **Ask before quitting** — Closing a window or a session hangs up its shell, so anything still running in it
   dies with it. By default Kai-Term asks first, but only when a session really has a command in the
-  foreground of it: an idle window still closes the moment you ask it to. The question is one row at the bottom
-  of the window, it names the sessions that are at risk, and `Enter`/`y` confirms while `Esc`/`n` cancels.
-  `confirm_quit = always` asks at every close, `confirm_quit = never` never asks.
+  foreground of it: an idle window still closes the moment you ask it to. Closing a **window** asks with a box
+  in the middle of the screen that names the process — `Warning ! "nano" is still running. Are you sure you
+  want to close it ?` — and you answer it by clicking `Yes`/`No` or from the keyboard. Closing a **tab** asks
+  in one row at the bottom of the window. `confirm_quit = always` asks at every close, `confirm_quit = never`
+  never asks.
 - **System clipboard** — Copy and paste use the standard Wayland clipboard, so text copied in Kai-Term
   pastes into other applications and text copied anywhere else pastes into Kai-Term.
 - **Configuration** — Two plain-text files: `kai-term.conf` for the settings and `kai-term.bind` for the
@@ -470,7 +472,7 @@ the program.
 | `max_tabs` | `8` | Sessions one window may hold (clamped to 1–64) |
 | `tab_bar` | `auto` | `off` never draws the tab bar, `auto` draws it from the second session on, `always` also with one session |
 | `split_max` | `4` | Sessions drawn side by side at most; more sessions stay open and stay listed in the bar |
-| `confirm_quit` | `running` | What closing asks you before it throws work away. Closing a window or a tab hangs up that shell, so anything still running in it dies with it. `running` asks only when a session has a command in its **foreground** (a pipeline counts; a job you started with `&` does not, because the shell keeps the foreground group then), so an idle window still closes instantly; `always` asks at every close of the window and of a tab; `never` closes straight away. When more than one session is at risk the question says how many and which tabs, and answering yes closes all of them |
+| `confirm_quit` | `running` | What closing asks you before it throws work away. Closing a window or a tab hangs up that shell, so anything still running in it dies with it. `running` asks only when a session has a command in its **foreground** (a pipeline counts; a job you started with `&` does not, because the shell keeps the foreground group then), so an idle window still closes instantly; `always` asks at every close of the window and of a tab; `never` closes straight away. A window close names the running **process** and asks in a box you can click; a tab close asks in one row. When more than one session is at risk the sentence says how many and which, and answering yes closes all of them |
 | `file_manager` | `0` | Show the file-manager band from startup instead of only when the shortcut is pressed |
 | `fm_size` | `75` | Percent of the window's text area the band asks for (clamped to 10–95, and shrunk further so the terminal keeps at least 3 rows; if even that does not fit, the band is dropped for that frame) |
 | `fm_preview` | `1` | Show the preview pane next to the browser (`v` toggles it at runtime; off means the browser is full width) |
@@ -765,11 +767,32 @@ a running server dies with it. `confirm_quit` says when Kai-Term checks with you
 | `always` | asks at every close of the window and of a session, idle or not |
 | `never` | closes straight away, as earlier builds did |
 
-The question is one row of chrome at the bottom of the window, in the same highlight colour as a text
-selection, and it costs the terminal one row while it is up. It says what is about to happen, how many
-sessions are at risk and which of them — `3 sessions are still running (1, 2 and 4). Quit?` — and the whole
-keyboard belongs to it until you answer: `Enter` or `y` confirms, `Esc` or `n` cancels, every other key is
-ignored. Confirming a window close closes **every** session named, not just the visible one.
+The two kinds of close ask differently, on purpose.
+
+**Closing a window** asks with a box in the middle of the window, drawn over the terminal, so the work you are
+being asked about stays exactly where it was — the box costs the terminal no rows. It names the process by its
+own name, read from the foreground process group's entry in `/proc`:
+
+    Warning ! "nano" is still running. Are you sure you want to close it ?
+
+`Yes` and `No` are buttons you can click; `Enter`/`y` and `Esc`/`n` answer the same two ways from the
+keyboard. While the box is up the keyboard and the pointer belong to it: no key reaches the shell, a click on a
+button answers, and a click anywhere else answers nothing — a click near a button is not an answer, and a click
+on the terminal is not a `No` you did not give. Several sessions are listed by name, at most three of them and
+then `and 2 more`:
+
+    Warning ! "nano", "sleep" and "htop" are still running. Are you sure you want to close them ?
+    Warning ! "a", "b", "c" and 2 more are still running. Are you sure you want to close them ?
+
+A process whose name cannot be read is called `session 3` rather than guessed at. Confirming a window close
+closes **every** session named, not just the visible one.
+
+**Closing a tab** asks in one row of chrome at the bottom of the window, in the same highlight colour as a text
+selection, and that row costs the terminal one row while it is up:
+
+    A command is running here. Close it?  [Enter] yes  [Esc] no
+
+A tab is cheap to open again, so its question stays short and stays out of the way.
 
 What counts as "running" is measured, not guessed: Kai-Term reads the terminal's foreground process group.
 
@@ -783,7 +806,8 @@ What counts as "running" is measured, not guessed: Kai-Term reads the terminal's
   nothing.
 - The state converges within a second or two of a command starting, so a window can be asked about when the
   command had barely begun; the log (`kai-term -d`) prints the question and the answer either way.
-- A window too short to give up a row closes without asking: the terminal wins over the question, exactly as
+- A question you cannot see never blocks a close. A window too small to hold the box and its two buttons, or a
+  tab row too short to give up its row, closes without asking: the terminal wins over the question, exactly as
   it wins over the tab bar and the file-manager band.
 
 ## Documentation

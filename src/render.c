@@ -688,6 +688,21 @@ void render_chrome(const Render *r, Chrome *out)
        became the single key for. */
     out->notice_bg   = r->selection_color;
     out->notice_fg   = r->fg;
+    /* The confirm-quit DIALOG — the WINDOW close's question, a box drawn over the terminal. The field is a
+       LIFTED paper: with no GL blending, "in front of" has to be earned by a colour that differs from
+       everything behind it, and a field the exact colour of the cells it covers is a box you cannot see.
+       The border and the Yes label take the one colour that already owns every "this is the thing in this
+       window" signal (the selection band, the active tab item, the focus border). The No label takes the
+       palette's RED — entry 1 of the process-wide palette, not a literal — so a theme that restyles red
+       restyles the button and an application that repaints the palette with OSC 4 repaints it too, exactly
+       as every other colour here does. The button fields go back to the terminal's own paper so the two
+       labels read the same as the text around them. */
+    out->dialog_bg     = mix_c(r->bg, r->fg, 15);
+    out->dialog_border = r->selection_color;
+    out->dialog_fg     = r->fg;
+    out->dialog_yes    = r->selection_color;
+    out->dialog_no     = term_palette()[1];
+    out->dialog_btn_bg = r->bg;
 }
 
 /* One place decides what a cursor cell LOOKS like. See the comment on CursorDraw in kai-term.h: the shape
@@ -1171,7 +1186,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
        (BAR_LABEL_MAX + 2) per bar item (label glyphs + background + separator), NOTICE_MAX + 1 for the
        confirm-quit row (one background plus at most one glyph per byte of its text — the row's text is cut
        to NOTICE_MAX-1 bytes by layout_compute(), so the buffer it travels in bounds what can be emitted),
-       and 4 for the border. */
+       the same argument for the confirm-quit DIALOG (its lines are bounded by DIALOG_LINE_MAX bytes each and
+       its two labels by DIALOG_BTN_MAX, plus one field, four border quads and two button fields), and 4 for
+       the border. */
     int cells = 0;
     for (int p = 0; p < lay->npane; p++)
         cells += lay->pane[p].cols * lay->pane[p].rows;
@@ -1184,7 +1201,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     /* +8: the focus border is 4 quads, and with the file manager on a pane border and a band border can
        both be in the same frame. */
     int maxq = 3 * cells + 3 * fmcells + lay->nitem * (BAR_LABEL_MAX + 2)
-             + (lay->notice_on ? NOTICE_MAX + 1 : 0) + 8;
+             + (lay->notice_on ? NOTICE_MAX + 1 : 0)
+             + (lay->dialog.on ? DIALOG_LINES * DIALOG_LINE_MAX + 2 * DIALOG_BTN_MAX + 7 : 0)
+             + 8;
     float *vdata = ensure_vdata(r, maxq);
     float *vp = vdata;
     int nquads = 0;
@@ -1568,6 +1587,88 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
             emit_border(&vp, (float)pg->x, (float)pg->y, (float)pg->w, (float)pg->h, 2.0f, bg,
                         du, dv, (float)r->vh);
             nquads += 4;
+        }
+    }
+
+    /* The confirm-quit DIALOG — a WINDOW close's question — drawn LAST, over the cells, the pictures and the
+       focus border, because it is the one thing in the frame the user has to answer. It costs no grid row
+       (layout_compute centres it in a grid area it did NOT shrink), so the work being asked about stays
+       visible behind it — which is the whole reason a window close asks with a box while a tab close asks
+       with a row that takes one. Order inside the box is field, border, button fields, then the sentence and
+       the labels: with no GL blending the later quad simply wins, so the text has to come after the field it
+       sits on. Every rectangle and every colour here was decided elsewhere — layout_compute() owns the
+       geometry (including where a label starts inside its field) and render_chrome() owns the colours — so
+       this pass cannot disagree with either. */
+    if (lay->dialog.on) {
+        float dlg_gl = (float)r->vh - (float)lay->dialog.y - (float)lay->dialog.h;
+        col2f(chrome.dialog_bg, bg);
+        bg[3] *= r->opacity;
+        emit_quad(&vp, (float)lay->dialog.x, dlg_gl, (float)lay->dialog.w, (float)lay->dialog.h,
+                  du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f, white, bg, 0.0f, 0.0f, 0.0f);
+        nquads++;
+        col2f(chrome.dialog_border, bg);
+        bg[3] *= r->opacity;
+        emit_border(&vp, (float)lay->dialog.x, dlg_gl, (float)lay->dialog.w, (float)lay->dialog.h,
+                    2.0f, bg, du, dv, (float)r->vh);
+        nquads += 4;
+        for (int i = 0; i < lay->dialog.nbtn; i++) {
+            const DialogBtn *b = &lay->dialog.btn[i];
+            col2f(chrome.dialog_btn_bg, bg);
+            bg[3] *= r->opacity;
+            emit_quad(&vp, (float)b->x, (float)r->vh - (float)b->y - (float)b->h,
+                      (float)b->w, (float)b->h, du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f,
+                      white, bg, 0.0f, 0.0f, 0.0f);
+            nquads++;
+        }
+        /* The sentence, then the two labels: the same text font, the same one-cell-per-codepoint advance and
+           the same per-column bound a bar label uses, so nothing here can draw past the box the geometry
+           decided. Each line was already wrapped to the box's columns by layout_compute(). */
+        for (int i = 0; i < lay->dialog.nline; i++) {
+            col2f(chrome.dialog_fg, fg);
+            col2f(chrome.dialog_bg, bg);
+            bg[3] *= r->opacity;
+            float lx = (float)lay->dialog.text_x;
+            float lgl = (float)r->vh - (float)(lay->dialog.text_y + i * ch) - (float)ch;
+            int col = 0;
+            for (const char *s = lay->dialog.line[i]; *s; col++) {
+                uint32_t cp = next_cp(&s);
+                if (lx + (float)(col + 1) * cw > (float)(lay->dialog.x + lay->dialog.w))
+                    break;
+                Glyph *gl_ = font_glyph(f, cp);
+                if (!gl_ || gl_->w <= 0 || gl_->h <= 0)
+                    continue;
+                float gw = (float)gl_->w * f->scale;
+                float gh = (float)gl_->h * f->scale;
+                float gx = lx + (float)col * cw + (float)gl_->bearing_x * f->scale;
+                float gy = lgl + ch - ascent + (float)gl_->bearing_y * f->scale - gh;
+                emit_quad(&vp, gx, gy, gw, gh, gl_->u0, gl_->v0, gl_->u1, gl_->v1,
+                          fg, bg, 1.0f, 0.0f, 0.0f);
+                nquads++;
+            }
+        }
+        for (int i = 0; i < lay->dialog.nbtn; i++) {
+            const DialogBtn *b = &lay->dialog.btn[i];
+            col2f(b->yes ? chrome.dialog_yes : chrome.dialog_no, fg);
+            col2f(chrome.dialog_btn_bg, bg);
+            bg[3] *= r->opacity;
+            float lx = (float)b->label_x;
+            float lgl = (float)r->vh - (float)b->y - (float)b->h;
+            int col = 0;
+            for (const char *s = b->label; *s; col++) {
+                uint32_t cp = next_cp(&s);
+                if (lx + (float)(col + 1) * cw > (float)(b->x + b->w))
+                    break;
+                Glyph *gl_ = font_glyph(f, cp);
+                if (!gl_ || gl_->w <= 0 || gl_->h <= 0)
+                    continue;
+                float gw = (float)gl_->w * f->scale;
+                float gh = (float)gl_->h * f->scale;
+                float gx = lx + (float)col * cw + (float)gl_->bearing_x * f->scale;
+                float gy = lgl + ch - ascent + (float)gl_->bearing_y * f->scale - gh;
+                emit_quad(&vp, gx, gy, gw, gh, gl_->u0, gl_->v0, gl_->u1, gl_->v1,
+                          fg, bg, 1.0f, 0.0f, 0.0f);
+                nquads++;
+            }
         }
     }
 

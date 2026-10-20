@@ -196,6 +196,28 @@ static int utf8_len(const char *s)
     return n;
 }
 
+/* Is this string a run of COMPLETE UTF-8 codepoints? Decodes from the start: a codepoint may never START on a
+   continuation byte, every lead byte must be followed by its whole run of continuation bytes before the NUL,
+   and no run may be truncated. That is the property a byte-bounded cut can break from BOTH ends — the line it
+   cut and the line that starts after the cut — and it is NOT the same as "the last byte is not a continuation
+   byte", which no real UTF-8 string can satisfy: a complete U+00E9 is c3 a9, and it ENDS on a continuation
+   byte. A check written that way fails on correct output (measured s124, .scratch/s124/wrapprobe). */
+static int utf8_whole(const char *s)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        if (*p >= 0x80 && *p < 0xc0)
+            return 0;        /* a line that begins mid-codepoint — the other half of a bad cut */
+        int want = (*p >= 0xf0) ? 4 : (*p >= 0xe0) ? 3 : (*p >= 0xc0) ? 2 : 1;
+        for (int i = 1; i < want; i++) {
+            if (!p[i] || p[i] < 0x80 || p[i] >= 0xc0)
+                return 0;    /* truncated, or a continuation byte where a lead byte belongs */
+        }
+        p += want;
+    }
+    return 1;
+}
+
 /* ---------- graphics helpers (the kitty image protocol, src/vt.c) ---------- */
 
 /* base64 for the payloads these tests transmit. The decoder under test is static in src/vt.c, so the
@@ -3418,11 +3440,17 @@ int main(void)
     CHECK(CONFIRM_QUIT != CONFIRM_CLOSE_TAB,
           "confirm kinds: a window close and a tab close are distinguishable");
 
-    /* --- confirm-quit: the exact row the window shows (confirm_message) -----------------------
+    /* --- confirm-quit: the row a TAB close shows (confirm_message) ---------------------------
        The wording lives in mux.c so it is a checkable decision rather than a string inside main.c. The
        strings below are copied from what the code writes (.scratch/s120/msgprobe), not from what the
        sentence was meant to be: the one-based tab numbers, the "and" before the last number, and the
-       cap of four numbers are all things a reader cannot tell from the source at a glance. */
+       cap of four numbers are all things a reader cannot tell from the source at a glance.
+       NOTE (s124): the CONFIRM_QUIT branches below are SUPERSEDED, not shipped. A WINDOW close asks with
+       confirm_warning() and a box now; main.c never builds a window sentence with confirm_message() (a
+       source scan in tests/test_render.c pins that, and the main_tab_wording mutant kills on it). The
+       branches stay because the function is a public entry point in the header and its safety contract —
+       cap 0, a NULL buffer, a small cap — is pinned through them; do not read these strings as what the
+       user sees. The window's real sentences are pinned in the confirm_warning group below. */
     {
         char msg[256];
         int one[1] = { 2 };
@@ -3484,6 +3512,175 @@ int main(void)
               "confirm msg: cap 0 does not touch the caller's buffer at all");
         r = confirm_message(CONFIRM_QUIT, 2, two, NULL, 64);
         CHECK(r == 0, "confirm msg: no buffer at all is refused, not crashed");
+    }
+
+    /* --- confirm-quit: what the running process is called (proc_comm_name) ---------------------
+       The WINDOW box names the process — `Warning ! "nano" is still running.` — because a user who typed
+       `nano` reads their own word, while "a command" makes them guess which session is meant. The name comes
+       from /proc/<fg>/comm, where fg is the SAME tcgetpgrp() value fg_busy() already tested, so the box names
+       exactly the process the predicate protected. The pure half is checked here; the syscall half is measured
+       against a real pty in .scratch/s123/msgprobe (it prints `sleep` for `pty_spawn("sleep 30")`).
+       Every string below is copied from what the code writes, not from what it was meant to write. */
+    {
+        char nm[PROC_NAME_MAX];
+        int r;
+
+        r = proc_comm_name("nano\n", nm, sizeof nm);
+        CHECK(r == 1 && !strcmp(nm, "nano"),
+              "comm: the newline comm always carries is trimmed — the sentence must not inherit it");
+        r = proc_comm_name("sleep", nm, sizeof nm);
+        CHECK(r == 1 && !strcmp(nm, "sleep"), "comm: a missing newline is not an error");
+        r = proc_comm_name("htop\r\n", nm, sizeof nm);
+        CHECK(r == 1 && !strcmp(nm, "htop"), "comm: CRLF is trimmed too");
+
+        r = proc_comm_name("\n", nm, sizeof nm);
+        CHECK(r == 0 && nm[0] == 0, "comm: a name that is only a newline is no name");
+        r = proc_comm_name("", nm, sizeof nm);
+        CHECK(r == 0, "comm: an empty comm is refused rather than quoted as an empty name");
+        r = proc_comm_name(NULL, nm, sizeof nm);
+        CHECK(r == 0, "comm: NULL is refused, not crashed");
+
+        /* A control byte in the name would draw a control code, or move the cursor of the window that is
+           asking, because the sentence is rendered one cell per codepoint. Refusing is cheaper than escaping
+           and nothing real puts one in a comm. Note the DEL case is written "\x7f" "b": `"a\x7fb"` is ONE hex
+           escape to gcc (0x7fb, and a warning), which is how the first probe came to test nothing at all. */
+        r = proc_comm_name("na\ano", nm, sizeof nm);
+        CHECK(r == 0, "comm: an embedded newline is refused (it would break the row)");
+        r = proc_comm_name("a\t" "b", nm, sizeof nm);
+        CHECK(r == 0, "comm: a tab is refused");
+        r = proc_comm_name("a\x7f" "b", nm, sizeof nm);
+        CHECK(r == 0, "comm: DEL is refused");
+
+        /* UTF-8 is allowed — a name is whatever the executable is called — but a byte cap must never leave a
+           dangling lead byte, which would reach the renderer as a codepoint of its own. The contract, measured
+           cap by cap at .scratch/s124/nameprobe (NOT read off the page): keep the whole codepoints that fit,
+           and refuse only when not even ONE whole codepoint fits. Two checks in the first draft of this block
+           were written from the page and were wrong about which cap does what — cap 3 on a 2+2-byte name cuts
+           at a codepoint EDGE (nothing to refuse), and it is cap 2 that cannot hold a codepoint at all. A cap
+           that lands INSIDE a sequence is the interesting case: the partial tail is trimmed away and the name
+           that survives is the whole codepoints before it. */
+        r = proc_comm_name("\xc3\xa9\xc3\xa0\n", nm, sizeof nm);
+        CHECK(r == 1 && !strcmp(nm, "\xc3\xa9\xc3\xa0"), "comm: a UTF-8 name is kept whole");
+        r = proc_comm_name("abcdefghij", nm, 5);
+        CHECK(r == 1 && !strcmp(nm, "abcd"), "comm: a byte cap cuts an ASCII name at the cap");
+        r = proc_comm_name("\xc3\xa9\xc3\xa0", nm, 5);
+        CHECK(r == 1 && !strcmp(nm, "\xc3\xa9\xc3\xa0"),
+              "comm: a cap that holds every codepoint keeps the name whole (cap 5 = 4 bytes + NUL)");
+        r = proc_comm_name("\xc3\xa9\xc3\xa0", nm, 4);
+        CHECK(r == 1 && !strcmp(nm, "\xc3\xa9"),
+              "comm: a cap that lands INSIDE a codepoint trims the partial one away — no dangling lead byte");
+        r = proc_comm_name("\xc3\xa9\xc3\xa0", nm, 3);
+        CHECK(r == 1 && !strcmp(nm, "\xc3\xa9"),
+              "comm: a cap that lands ON a codepoint edge keeps that codepoint — this is not a split");
+        r = proc_comm_name("\xc3\xa9\xc3\xa0", nm, 2);
+        CHECK(r == 0 && nm[0] == 0,
+              "comm: a cap that cannot hold ONE codepoint refuses the name rather than emit half of one");
+        r = proc_comm_name("\xf0\x9f\x98\x80", nm, 4);
+        CHECK(r == 0, "comm: a 4-byte name cut to 3 bytes is refused, not half-drawn");
+        r = proc_comm_name("\xf0\x9f\x98\x80", nm, 5);
+        CHECK(r == 1 && !strcmp(nm, "\xf0\x9f\x98\x80"),
+              "comm: and the same name passes as soon as the cap holds it whole");
+        r = proc_comm_name("abc", nm, 1);
+        CHECK(r == 0, "comm: a cap of 1 holds no name at all");
+
+        /* cap == 0 must touch NOTHING — the s116 lesson from fm_preview_selection_text's out[-1], applied
+           before it could happen here. A canary, not a strlen(): strlen of a buffer the function never
+           terminated reports a write that never happened (the first probe made exactly that mistake). */
+        char canary[4] = { 1, 2, 3, 4 };
+        r = proc_comm_name("nano\n", canary, 0);
+        CHECK(r == 0, "comm: cap 0 is refused");
+        CHECK(canary[0] == 1 && canary[1] == 2 && canary[2] == 3 && canary[3] == 4,
+              "comm: cap 0 does not touch the caller's buffer at all");
+        CHECK(proc_comm_name("nano\n", NULL, 64) == 0, "comm: no buffer at all is refused, not crashed");
+
+        /* pty_fg_name() with nothing to ask about: refused, and for mfd < 0 without a syscall at all. A test
+           hands a Tab an mfd of -1, exactly as the mux_running checks above do. */
+        Pty nop;
+        memset(&nop, 0, sizeof nop);
+        nop.mfd = -1;
+        CHECK(pty_fg_name(&nop, nm, sizeof nm) == 0,
+              "comm: a session with no master fd has no name to read");
+        CHECK(pty_fg_name(NULL, nm, sizeof nm) == 0, "comm: no session at all has no name");
+        nop.mfd = 0;
+        CHECK(pty_fg_name(&nop, nm, sizeof nm) == 0 || nm[0] != 0,
+              "comm: an fd that is not a pty answers either refused or with a name, never a crash");
+    }
+
+    /* --- confirm-quit: the exact sentence the WINDOW box shows (confirm_warning) ---------------
+       The user's own words for this were `Warning ! "name of the process" is still running. Are you sure you
+       want to close it ?`, so the one-named row below is that sentence with a real name in it — pinned
+       character for character, spaces before ! and ? included, because that is how they wrote it. The wording
+       differs from the tab row on purpose: a window is the close that cannot be undone. Strings copied from
+       .scratch/s123/msgprobe. */
+    {
+        char msg[DIALOG_MAX];
+        int one[1] = { 0 }, two[2] = { 0, 1 }, three[3] = { 0, 1, 2 }, five[5] = { 0, 1, 2, 3, 4 };
+        const char *n1[1] = { "nano" };
+        const char *n2[2] = { "nano", "sleep" };
+        const char *n3[3] = { "nano", "sleep", "htop" };
+        const char *n5[5] = { "a", "b", "c", "d", "e" };
+        const char *noname[1] = { NULL };
+        const char *emptyname[1] = { "" };
+        int r;
+
+        r = confirm_warning(1, one, n1, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Warning ! \"nano\" is still running. Are you sure you want to close it ?"),
+              "confirm warn: one named process, in the user's own sentence");
+        CHECK(r == (int)strlen(msg), "confirm warn: the return is the bytes written");
+
+        r = confirm_warning(1, one, noname, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Warning ! session 1 is still running. Are you sure you want to close it ?"),
+              "confirm warn: a name that could not be read falls back to the session number, never a guess");
+        r = confirm_warning(1, one, emptyname, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Warning ! session 1 is still running. Are you sure you want to close it ?"),
+              "confirm warn: an empty name is the same fallback as no name");
+
+        r = confirm_warning(2, two, n2, msg, sizeof msg);
+        CHECK(!strcmp(msg,
+                      "Warning ! \"nano\" and \"sleep\" are still running. "
+                      "Are you sure you want to close them ?"),
+              "confirm warn: two names pluralise BOTH the verb and the pronoun");
+
+        r = confirm_warning(3, three, n3, msg, sizeof msg);
+        CHECK(!strcmp(msg,
+                      "Warning ! \"nano\", \"sleep\" and \"htop\" are still running. "
+                      "Are you sure you want to close them ?"),
+              "confirm warn: three names read as English, not as a comma list");
+
+        r = confirm_warning(5, five, n5, msg, sizeof msg);
+        CHECK(!strcmp(msg,
+                      "Warning ! \"a\", \"b\", \"c\" and 2 more are still running. "
+                      "Are you sure you want to close them ?"),
+              "confirm warn: at most three names, and the cut is said — the box is a sentence, not a ps(1) "
+              "listing, and the second \"and\" would come before the last name if the rule were wrong");
+
+        r = confirm_warning(1, one, NULL, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Warning ! session 1 is still running. Are you sure you want to close it ?"),
+              "confirm warn: a NULL name list falls back for every entry");
+        r = confirm_warning(1, NULL, n1, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Warning ! \"nano\" is still running. Are you sure you want to close it ?"),
+              "confirm warn: a NULL index list is tolerated when the name is known");
+
+        /* n <= 0 is reachable only through `confirm_quit = always`, which asks whatever is running. With
+           nothing to name the sentence says only what is about to happen — it must not invent a reason. */
+        r = confirm_warning(0, NULL, NULL, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Warning ! Are you sure you want to close Kai-Term ?"),
+              "confirm warn: with nothing running the box invents no reason");
+        r = confirm_warning(-1, NULL, NULL, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Warning ! Are you sure you want to close Kai-Term ?"),
+              "confirm warn: a negative count is the same, not a crash");
+
+        char tiny[10];
+        memset(tiny, 'Z', sizeof tiny);
+        r = confirm_warning(1, one, n1, tiny, sizeof tiny);
+        CHECK(r == 9 && tiny[9] == 0 && !memcmp(tiny, "Warning !", 9),
+              "confirm warn: a small cap keeps the head, terminates, and reports what it wrote");
+        char canary2[4] = { 1, 2, 3, 4 };
+        r = confirm_warning(1, one, n1, canary2, 0);
+        CHECK(r == 0 && canary2[0] == 1 && canary2[3] == 4,
+              "confirm warn: cap 0 does not touch the caller's buffer");
+        CHECK(confirm_warning(1, one, n1, NULL, 64) == 0,
+              "confirm warn: no buffer at all is refused, not crashed");
     }
 
     /* --- config: the key-binding specs ("Ctrl+Shift+T") ----------------------------------------
@@ -4272,6 +4469,318 @@ int main(void)
         layout_compute(&rq, &L);
         CHECK(L.bar_on == 1 && utf8_len(L.item[0].label) == 20 && strlen(L.item[0].label) == 38,
               "layout: a UTF-8 tab title is cut at a codepoint edge after the 40-byte buffer too");
+    }
+
+    /* ---------- layout: the confirm-quit DIALOG (Layout.dialog) ----------
+       A WINDOW close asks with a centred box and two clickable buttons; a tab close keeps the row above.
+       The box is drawn OVER the terminal, so the claim this group exists to pin is the one the whole design
+       rests on: it costs the terminal NO row. Base geometry as in the group above (936x1002, 8x17 cells,
+       padding 8, gap 8, grid area 920 x 986 = 115 x 58 cells). Every number below is what the code produces
+       (.scratch/s123/dlgprobe3), not what it was meant to produce. */
+    {
+        LayoutReq rq;
+        Layout L;
+        const char *S = "Warning ! \"nano\" is still running. Are you sure you want to close it ?";
+
+        /* Off by default — lreq() memsets the request exactly as main.c's layout_apply() does, so a window
+           that is not asking gets the geometry it had before this input existed. */
+        lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        layout_compute(&rq, &L);
+        CHECK(!L.dialog.on && L.dialog.nbtn == 0 && L.dialog.nline == 0,
+              "dialog layout: with dialog_on off nothing is drawn and no geometry is kept");
+        int rows_off = L.pane[0].rows, h_off = L.pane[0].h, y_off = L.pane[0].y;
+        int cols_off = L.pane[0].cols;
+        CHECK(rows_off == 58 && h_off == 986, "dialog layout: the base grid is 58 rows (measured)");
+
+        rq.dialog_on = 1; rq.dialog_text = S;
+        layout_compute(&rq, &L);
+        CHECK(L.dialog.on == 1 && L.dialog.nbtn == 2,
+              "dialog layout: the box appears when it is asked for, with both answers");
+        /* THE point of the box rather than a row: the terminal is untouched. */
+        CHECK(L.pane[0].rows == rows_off && L.pane[0].h == h_off && L.pane[0].y == y_off &&
+              L.pane[0].cols == cols_off,
+              "dialog layout: the box costs the terminal NO row — the pane is exactly what it was");
+        CHECK(!L.notice_on,
+              "dialog layout: the box does not switch on the tab question's row too — the two are separate inputs");
+
+        /* The box hugs its text: 70 columns of sentence plus one cell of padding each side. */
+        CHECK(L.dialog.w == 72 * 8 && L.dialog.nline == 1,
+              "dialog layout: the box is as wide as its widest line plus one cell each side, not the window");
+        CHECK(L.dialog.h == 1 * 17 + 2 * 8 + 17,
+              "dialog layout: one line of text, half a cell of padding above and below, one row of buttons");
+        /* Centred in the GRID area (8,8 920x986), not in the window: the bar and the margin are not the
+           user's work area. */
+        CHECK(L.dialog.x == 8 + (920 - 576) / 2 && L.dialog.y == 8 + (986 - 50) / 2,
+              "dialog layout: the box is centred in the grid area, so the bar and the margin are excluded");
+        CHECK(L.dialog.x >= 8 && L.dialog.y >= 8 &&
+              L.dialog.x + L.dialog.w <= 8 + 920 && L.dialog.y + L.dialog.h <= 8 + 986,
+              "dialog layout: the box never leaves the grid area");
+        CHECK(L.dialog.text_x == L.dialog.x + 8 && L.dialog.text_y == L.dialog.y + 8,
+              "dialog layout: the text origin is carried, so the renderer never recomputes the padding");
+        CHECK(!strcmp(L.dialog.line[0], S),
+              "dialog layout: a sentence that fits is kept whole, in one line");
+
+        /* The two buttons: a right-aligned pair, Yes then No, each its label plus one cell of padding. */
+        const DialogBtn *yes = &L.dialog.btn[0], *no = &L.dialog.btn[1];
+        CHECK(yes->yes == 1 && no->yes == 0,
+              "dialog layout: btn[0] carries YES and btn[1] NO — the ANSWER is stored, not a name");
+        CHECK(!strcmp(yes->label, "Yes") && !strcmp(no->label, "No"),
+              "dialog layout: the labels are the two answers, not a description of them");
+        CHECK(yes->w == 5 * 8 && no->w == 4 * 8 && yes->h == 17 && no->h == 17,
+              "dialog layout: a button is its label plus one cell of padding, one row tall");
+        CHECK(no->x + no->w == L.dialog.x + L.dialog.w - 8,
+              "dialog layout: the pair is right-aligned against the box's inner padding");
+        CHECK(yes->x + yes->w + 2 * 8 == no->x,
+              "dialog layout: the two buttons are two cells apart, so one press cannot land between them by accident");
+        CHECK(yes->x >= L.dialog.x + 8 && no->x + no->w <= L.dialog.x + L.dialog.w &&
+              yes->y >= L.dialog.y && yes->y + yes->h <= L.dialog.y + L.dialog.h,
+              "dialog layout: both buttons are inside the box");
+        CHECK(yes->label_x == yes->x + 8 && no->label_x == no->x + 8,
+              "dialog layout: each label starts one cell in from its field — geometry's decision, not the renderer's");
+
+        /* The hit test. A button answers at its centre, on every edge pixel, and not one pixel outside;
+           the middle of the box and a point outside the box answer nothing. That last pair is a decision:
+           a click near a button must not answer it by accident, and a click on the terminal must never be
+           read as the NO the user did not give. */
+        CHECK(layout_hit_dialog(&L, 680, 517) == 0 && layout_hit_dialog(&L, 732, 517) == 1,
+              "dialog hit: each button owns its centre");
+        CHECK(layout_hit_dialog(&L, yes->x, yes->y) == 0 &&
+              layout_hit_dialog(&L, yes->x + yes->w - 1, yes->y + yes->h - 1) == 0,
+              "dialog hit: the button's first and last pixel belong to it");
+        CHECK(layout_hit_dialog(&L, yes->x - 1, yes->y) == -1 &&
+              layout_hit_dialog(&L, yes->x, yes->y + yes->h) == -1,
+              "dialog hit: one pixel past the button is not the button");
+        CHECK(layout_hit_dialog(&L, L.dialog.x + L.dialog.w / 2, L.dialog.y + L.dialog.h / 2) == -1,
+              "dialog hit: the middle of the box is not a button — an off-target click answers nothing");
+        CHECK(layout_hit_dialog(&L, 2, 2) == -1,
+              "dialog hit: a point outside the box answers nothing (it is not a NO the user did not give)");
+        CHECK(layout_hit_dialog(&L, 0, 0) == -1,
+              "dialog hit: with no box at all the hit test is refused, not a crash");
+
+        /* A narrow window wraps instead of shrinking the text: 35 columns of grid, so the sentence takes
+           three lines and the box grows to hold them. */
+        lreq(&rq, LAYOUT_TABS, 300, 400, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = S;
+        layout_compute(&rq, &L);
+        CHECK(L.dialog.on == 1 && L.dialog.nline == 3,
+              "dialog layout: a narrow window WRAPS the sentence rather than cutting it");
+        CHECK(!strcmp(L.dialog.line[0], "Warning ! \"nano\" is still") &&
+              !strcmp(L.dialog.line[1], "running. Are you sure you want to") &&
+              !strcmp(L.dialog.line[2], "close it ?"),
+              "dialog layout: the wrap breaks at SPACES, and no line starts where the last one ended mid-word");
+        CHECK(L.dialog.h == 3 * 17 + 2 * 8 + 17,
+              "dialog layout: the box grows by the lines the wrap needed");
+        CHECK(L.pane[0].rows == 22 && L.pane[0].cols == 35,
+              "dialog layout: and the terminal still costs nothing, wrapped or not");
+
+        /* A word wider than the line is hard-broken at the column limit and never inside a codepoint — a
+           name the user typed has to stay readable, and a box that grew past the window to hold one would
+           not be a box. */
+        char big[300];
+        memset(big, 'a', sizeof big - 1);
+        big[sizeof big - 1] = 0;
+        lreq(&rq, LAYOUT_TABS, 300, 400, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = big;
+        layout_compute(&rq, &L);
+        CHECK(L.dialog.on == 1 && L.dialog.nline >= 2,
+              "dialog layout: a single word wider than the box is broken over lines, not dropped");
+        int widest = 0;
+        for (int i = 0; i < L.dialog.nline; i++)
+            if ((int)strlen(L.dialog.line[i]) > widest)
+                widest = (int)strlen(L.dialog.line[i]);
+        CHECK(widest <= L.dialog.w / 8,
+              "dialog layout: no line is wider than the box it is drawn in");
+
+        /* A sentence longer than the box can hold is shortened VISIBLY (the last line ends in " ...") and
+           the buttons stay, so the question can still be answered. */
+        char huge[DIALOG_MAX];
+        int ho = 0;
+        ho += snprintf(huge + ho, sizeof huge - ho, "Warning ! ");
+        for (int i = 0; i < 40 && ho < (int)sizeof huge - 12; i++)
+            ho += snprintf(huge + ho, sizeof huge - ho, "word%02d ", i);
+        snprintf(huge + ho, sizeof huge - ho, "still running ?");
+        lreq(&rq, LAYOUT_TABS, 300, 800, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = huge;
+        layout_compute(&rq, &L);
+        CHECK(L.dialog.on == 1 && L.dialog.nline == DIALOG_LINES && L.dialog.nbtn == 2,
+              "dialog layout: an over-long sentence fills the box and keeps both buttons");
+        CHECK(strstr(L.dialog.line[DIALOG_LINES - 1], "...") != NULL,
+              "dialog layout: the shortening is visible — the last line says it was cut");
+        for (int i = 0; i < L.dialog.nline; i++)
+            CHECK(strlen(L.dialog.line[i]) < DIALOG_LINE_MAX,
+                  "dialog layout: no wrapped line ever reaches the end of its buffer");
+
+        /* A UTF-8 sentence cut by the byte bound must not leave a dangling lead byte for the font. The first
+           draft of this check rejected any line ending on a byte in 0x80..0xBF, which can NEVER pass: a
+           complete 2-byte codepoint ends on exactly such a byte. Measured at .scratch/s124/wrapprobe — 150 x
+           U+00E9 at 33 columns gives three lines of 66 bytes = 33 WHOLE codepoints each, last one ending in
+           " ...". What has to hold is that every line is whole codepoints from end to end.
+           The pattern VARIES on purpose (U+00C0, U+00C1, ... rather than one codepoint repeated): a sentence
+           of 150 identical characters hides a gap, because every byte position looks like every other one —
+           the first version of this check passed a mutant that had dropped a whole codepoint between two
+           lines (measured s124, .scratch/s124/mutate.py). */
+        char acc[400]; int ao = 0;
+        for (int i = 0; i < 128; i++) { acc[ao++] = (char)0xc3; acc[ao++] = (char)(0x80 + (i % 64)); }
+        acc[ao] = 0;
+        lreq(&rq, LAYOUT_TABS, 300, 800, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = acc;
+        layout_compute(&rq, &L);
+        int drew_multi = 0, clean = 1;
+        for (int i = 0; i < L.dialog.nline; i++) {
+            if (memchr(L.dialog.line[i], 0xc3, strlen(L.dialog.line[i])))
+                drew_multi = 1;
+            if (!utf8_whole(L.dialog.line[i]))
+                clean = 0;
+        }
+        CHECK(drew_multi,
+              "dialog layout: the multi-byte sentence really did reach the lines — the check below is not "
+              "being passed by an empty box");
+        CHECK(clean,
+              "dialog layout: every wrapped line is whole codepoints — a byte cut never splits one");
+        /* The same rule for a name that has to be HARD-BROKEN because one word is wider than the line: that
+           path cuts at a column limit, so it is where a split is most likely, and it is a different branch of
+           wrap_sentence() from the byte-bound path above. */
+        char wide[400]; int wo = 0;
+        for (int i = 0; i < 60; i++) { wide[wo++] = (char)0xe2; wide[wo++] = (char)0xa0; wide[wo++] = (char)(0x80 + i); }
+        wide[wo] = 0;
+        lreq(&rq, LAYOUT_TABS, 300, 800, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = wide;
+        layout_compute(&rq, &L);
+        int hard_broke = 0;
+        for (int i = 0; i < L.dialog.nline; i++) {
+            if (!utf8_whole(L.dialog.line[i]))
+                clean = 0;
+            if (strlen(L.dialog.line[i]) >= 30)
+                hard_broke = 1;
+        }
+        CHECK(hard_broke && clean,
+              "dialog layout: a word wider than the line is broken at a COLUMN limit and still holds nothing "
+              "but whole 3-byte codepoints");
+
+        /* The case the first draft never reached, and the one the mutant run found (.scratch/s124/mutate.py,
+           wrap_no_trim SURVIVED): a box WIDE enough that a line's BYTE bound (DIALOG_LINE_MAX-1 = 127 bytes)
+           binds long before its COLUMN bound does. Only that path can cut inside a codepoint, and the first
+           version of wrap_sentence() cut one, trimmed it out of the line, and then advanced the source
+           pointer OVER the bytes it had just dropped — so a character vanished from the sentence and the next
+           line began on its leftover continuation byte. Measured at .scratch/s124/wrap2: 150 x U+00E9 in a
+           1200px window gave line[1] = a9 c3 a9 ..., 127 bytes, and 147 of the 150 codepoints on screen. */
+        lreq(&rq, LAYOUT_TABS, 1200, 800, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = acc;
+        layout_compute(&rq, &L);
+        int byte_bound_bound = 0;
+        for (int i = 0; i < L.dialog.nline; i++) {
+            if (!utf8_whole(L.dialog.line[i]))
+                clean = 0;
+            if (strlen(L.dialog.line[i]) >= DIALOG_LINE_MAX - 2)
+                byte_bound_bound = 1;
+        }
+        CHECK(byte_bound_bound,
+              "dialog layout: this window is wide enough that the BYTE bound binds before the column one — "
+              "the two checks below are walking that path, not the easy one");
+        CHECK(clean,
+              "dialog layout: a byte-bound cut leaves no split codepoint at either end — not the line it "
+              "cut, not the line that starts after it");
+        /* And nothing may be LOST between the lines: joined back together (minus the visible " ..."), they
+           have to be the sentence's own prefix. This is the check that fails on the dropped character, which
+           no per-line property can see. */
+        char joined[DIALOG_LINES * DIALOG_LINE_MAX + 1];
+        size_t jo = 0;
+        for (int i = 0; i < L.dialog.nline; i++) {
+            size_t l = strlen(L.dialog.line[i]);
+            if (i + 1 == L.dialog.nline && l >= 4 && !strcmp(L.dialog.line[i] + l - 4, " ..."))
+                l -= 4;                       /* the shortening is not part of the sentence */
+            memcpy(joined + jo, L.dialog.line[i], l);
+            jo += l;
+        }
+        joined[jo] = 0;
+        CHECK(jo > 0 && jo <= sizeof acc - 1 && !memcmp(joined, acc, jo),
+              "dialog layout: the lines hold the sentence in order with NOTHING dropped between them — a cut "
+              "that trims a codepoint must not step the source pointer over it");
+
+        /* Malformed input is not this function's fault and must not become this function's crash. A sentence
+           that ENDS inside a codepoint (a name read from a file that was cut, a hand-fed test string) has to
+           come out as whole codepoints: the renderer walks these lines with next_cp(), and a dangling lead
+           byte there is a codepoint of its own on the screen. */
+        const char *trunc = "Warning ! \xc3";   /* one hex escape: a lone lead byte at the end */
+        lreq(&rq, LAYOUT_TABS, 1200, 800, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = trunc;
+        layout_compute(&rq, &L);
+        int trunc_clean = 1;
+        for (int i = 0; i < L.dialog.nline; i++)
+            if (!utf8_whole(L.dialog.line[i]))
+                trunc_clean = 0;
+        CHECK(L.dialog.on == 1 && L.dialog.nline == 1 && trunc_clean,
+              "dialog layout: a sentence that ends mid-codepoint is trimmed to whole ones, not handed on "
+              "broken to the font");
+
+        /* The FOURTH cut in the function, and the one the first three cases still miss: a sentence too long
+           for the box, so the last line is shortened and ends in " ...". That path clamps the line to
+           DIALOG_LINE_MAX-5 BYTES to make room for the four columns of " ...", and in a wide box with 2-byte
+           characters the clamp lands mid-codepoint (measured .scratch/s124/wrap3: 300 varying 2-byte names in
+           a 1200px window -> four lines, the last 126 bytes, the clamp cutting at byte 123 and the trim
+           pulling it back to 122). The " ..." hides the bad byte from any check that only looks at the END of
+           a line, so this case is checked with the validator, not with an eye on the tail. */
+        static char bigsent[700];
+        int bo = 0;
+        for (int i = 0; i < 300; i++) { bigsent[bo++] = (char)0xc3; bigsent[bo++] = (char)(0x80 + (i % 64)); }
+        bigsent[bo] = 0;
+        lreq(&rq, LAYOUT_TABS, 1200, 800, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = bigsent;
+        layout_compute(&rq, &L);
+        int shortened = 0, big_clean = 1;
+        for (int i = 0; i < L.dialog.nline; i++) {
+            if (!utf8_whole(L.dialog.line[i]))
+                big_clean = 0;
+            if (i + 1 == L.dialog.nline) {
+                size_t lsz = strlen(L.dialog.line[i]);
+                if (lsz >= 4 && !strcmp(L.dialog.line[i] + lsz - 4, " ..."))
+                    shortened = 1;
+            }
+        }
+        CHECK(L.dialog.on == 1 && L.dialog.nline == DIALOG_LINES && shortened && big_clean,
+              "dialog layout: a sentence the box cannot hold is cut at a codepoint edge AND says so — the "
+              "\" ...\" must not hide a split character");
+
+        /* The buttons set a width FLOOR, and a window that cannot hold them gets NO box: a box narrower than
+           the two answers it holds cannot be clicked, and main.c's rule (a close is never blocked by a
+           question the user cannot see) then closes the window instead of swallowing the request. */
+        lreq(&rq, LAYOUT_TABS, 100, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = S;
+        layout_compute(&rq, &L);
+        CHECK(L.dialog.on == 0 && L.dialog.nbtn == 0,
+              "dialog layout: a window too narrow for the two buttons drops the BOX, it does not draw a broken one");
+        CHECK(L.pane[0].cols == 10 && L.pane[0].rows == 58,
+              "dialog layout: and the terminal keeps everything it had");
+        lreq(&rq, LAYOUT_TABS, 936, 63, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = S;
+        layout_compute(&rq, &L);
+        CHECK(L.dialog.on == 0,
+              "dialog layout: a window too short for the sentence AND the buttons drops the BOX");
+        CHECK(L.pane[0].rows == 2, "dialog layout: the terminal keeps the rows it was fighting for");
+
+        /* An empty sentence is still a question with two answers — the box must not collapse to nothing and
+           must not be drawn at width 0. This is the `cap == 0` shape again: a degenerate input through a
+           public entry point has to land somewhere sensible. */
+        lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = "";
+        layout_compute(&rq, &L);
+        CHECK(L.dialog.on == 1 && L.dialog.nline == 1 && L.dialog.line[0][0] == 0,
+              "dialog layout: an empty sentence gives one empty line, not a crash");
+        CHECK(L.dialog.w == (5 + 4) * 8 + 2 * 8 + 2 * 8,
+              "dialog layout: with no text the box is exactly as wide as its two buttons — the floor, measured");
+        rq.dialog_text = NULL;
+        layout_compute(&rq, &L);
+        CHECK(L.dialog.on == 1 && L.dialog.nline == 1,
+              "dialog layout: a NULL sentence is tolerated, not a crash — it is a public entry point");
+
+        /* The two forms are independent inputs, and the row's checks above stay valid with the box present:
+           a window question asks with the box only, so the row is not drawn and the terminal pays nothing. */
+        lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.dialog_on = 1; rq.dialog_text = S;
+        rq.notice_on = 1; rq.notice_text = S;
+        layout_compute(&rq, &L);
+        CHECK(L.notice_on == 1 && L.dialog.on == 1 && L.pane[0].rows == 57,
+              "dialog layout: asked for together, the row costs its one row and the box costs none");
     }
 
     /* ---------- the shell's input line: term_at_prompt() (src/vt.c) ----------

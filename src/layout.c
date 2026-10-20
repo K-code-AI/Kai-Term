@@ -54,38 +54,10 @@ static void clip_utf8(char *s, int max)
     }
 }
 
-/* Drop a trailing incomplete UTF-8 sequence. clip_utf8() only ever cuts at a codepoint edge, but a
-   BYTE-bounded copy (snprintf into a fixed buffer) can split one, and a dangling lead byte then reaches
-   the renderer as a codepoint of its own. This is what makes the "cut at a codepoint edge, never
-   mid-sequence" guarantee of a bar label or the notice row true after the byte bound as well as after the
-   column bound. Walks back at most 4 bytes — the longest sequence — because that is all a trailing
-   sequence can be. */
-static void trim_partial_utf8(char *s)
-{
-    size_t n = strlen(s);
-    if (!n)
-        return;
-    size_t i = n, lead_at = n;
-    int lead = -1;
-    while (i > 0 && n - i < 4) {
-        i--;
-        unsigned char c = (unsigned char)s[i];
-        if (c < 0x80)
-            return;                 /* ends with ASCII: nothing to trim */
-        if (c >= 0xc0) {            /* a lead byte: is its sequence complete in this buffer? */
-            lead = c;
-            lead_at = i;
-            break;
-        }
-    }
-    if (lead < 0) {                 /* malformed input: trailing continuation bytes with no lead */
-        s[i] = 0;
-        return;
-    }
-    int want = lead >= 0xf0 ? 4 : (lead >= 0xe0 ? 3 : 2);
-    if ((int)(n - lead_at) < want)
-        s[lead_at] = 0;
-}
+/* Drop a trailing incomplete UTF-8 sequence left by a BYTE-bounded copy. clip_utf8() only ever cuts at a
+   codepoint edge, but snprintf into a fixed buffer can split one; the rule itself lives in src/vt.c
+   (utf8_trim_partial) because the bar label, the notice row, the dialog's sentence and a process name all
+   need it — one rule, not four that can drift. */
 
 /* "<n> <title>", with a '*' before the title when the session is hidden and has output the user has not
    seen yet. An unnamed session reads "shell" — every shell sets its own title (OSC 0/2) as soon as it
@@ -95,7 +67,141 @@ static void bar_label(char *out, int tab, int attention, const char *title, int 
     snprintf(out, BAR_LABEL_MAX, "%d %s%s", tab + 1, attention ? "*" : "",
              (title && title[0]) ? title : "shell");
     clip_utf8(out, maxcols > 1 ? maxcols : 1);
-    trim_partial_utf8(out);        /* the 40-byte buffer can cut a title mid-sequence (see above) */
+    utf8_trim_partial(out);        /* the 40-byte buffer can cut a title mid-sequence (see above) */
+}
+
+/* Columns a run of UTF-8 occupies. A lead byte starts a codepoint and a continuation byte belongs to the
+   one before it — the same rule clip_utf8() uses, and the reason the box is as wide as the text that will
+   actually be drawn in it rather than as wide as its byte count. */
+static int utf8_cols(const char *s, int nbytes)
+{
+    int n = 0;
+    for (int i = 0; i < nbytes; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (!(c >= 0x80 && c < 0xc0))
+            n++;
+    }
+    return n;
+}
+
+/* Bytes of the next word — everything up to the next space or the end of the string. */
+static int word_bytes(const char *s)
+{
+    int n = 0;
+    while (s[n] && s[n] != ' ')
+        n++;
+    return n;
+}
+
+/* Bytes of `s` whose codepoints fit in `maxcols` columns, never splitting a codepoint. */
+static int cols_bytes(const char *s, int nbytes, int maxcols)
+{
+    int nb = 0, cols = 0;
+    while (nb < nbytes) {
+        unsigned char c = (unsigned char)s[nb];
+        int clen = (c >= 0xf0) ? 4 : (c >= 0xe0) ? 3 : (c >= 0xc0) ? 2 : 1;
+        if (nb + clen > nbytes)
+            clen = nbytes - nb;      /* a malformed tail: take what is there */
+        if (cols + 1 > maxcols)
+            break;
+        nb += clen;
+        cols++;
+    }
+    return nb;
+}
+
+/* Wrap a sentence into at most DIALOG_LINES lines of at most `maxcols` columns, breaking at spaces. A word
+   wider than the line is hard-broken at the column limit, never inside a codepoint: a name the user typed
+   has to stay readable, and a box that grew past the window to hold one would not be a box at all. If the
+   sentence needs more lines than the box holds, the LAST line keeps as much of it as fits and ends in
+   " ..." — the shortening is visible rather than silent, and the buttons are still there so the question can
+   still be answered. DIALOG_LINE_MAX is a second, independent limit: a multi-byte name can exhaust a line's
+   BYTES long before its columns, and the wrap treats that exactly like a full line rather than writing past
+   the end of the array. */
+static void wrap_sentence(const char *text, int maxcols, Dialog *d)
+{
+    d->nline = 0;
+    if (maxcols < 1)
+        maxcols = 1;
+    if (!text || !text[0]) {
+        d->line[0][0] = 0;
+        d->nline = 1;
+        return;
+    }
+
+    const char *p = text;
+    while (*p == ' ')
+        p++;
+    while (*p && d->nline < DIALOG_LINES) {
+        char *dst = d->line[d->nline];
+        size_t o = 0;
+        int cols = 0;
+        int cut = 0;          /* bytes of dst that end on a COMPLETED word */
+
+        while (*p) {
+            int wb = word_bytes(p);
+            int wc = utf8_cols(p, wb);
+            int sep = cols ? 1 : 0;
+            if (cols + sep + wc > maxcols || (int)o + sep + wb >= DIALOG_LINE_MAX) {
+                if (cols) {                 /* the line is full: end it at the last word boundary */
+                    o = (size_t)cut;
+                    break;
+                }
+                /* One word wider than the line: take what fits, broken at a codepoint edge. */
+                int take = cols_bytes(p, wb, maxcols);
+                if (take > DIALOG_LINE_MAX - 1)
+                    take = DIALOG_LINE_MAX - 1;
+                memcpy(dst, p, (size_t)take);
+                dst[take] = 0;
+                utf8_trim_partial(dst);        /* the BYTE bound can land inside a codepoint */
+                take = (int)strlen(dst);
+                o = (size_t)take;
+                /* The pointer steps over exactly the bytes this line KEPT, not the bytes it was handed.
+                   Stepping over the trimmed ones is a bug with two halves, both measured at
+                   .scratch/s124/wrap2 with 150 x U+00E9 in a 1200px box (the byte bound binds at 127
+                   bytes long before the column bound does): the character that was trimmed away vanishes
+                   from the sentence, and the next line STARTS on its leftover continuation byte, which
+                   the font then draws as a codepoint of its own. A cut has to agree with the advance. */
+                p += take;
+                break;
+            }
+            if (sep)
+                dst[o++] = ' ';
+            memcpy(dst + o, p, (size_t)wb);
+            o += (size_t)wb;
+            cols += sep + wc;
+            p += wb;
+            while (*p == ' ')
+                p++;
+            cut = (int)o;
+        }
+        dst[o] = 0;
+        utf8_trim_partial(dst);
+        d->nline++;
+    }
+
+    if (*p && d->nline >= DIALOG_LINES) {
+        /* The sentence did not fit. Shorten the last line and say so, rather than hide the rest. */
+        char *last = d->line[DIALOG_LINES - 1];
+        int nb = (int)strlen(last);
+        while (nb > 0 && last[nb - 1] == ' ')
+            nb--;
+        int budget = imax_(maxcols - 4, 1);        /* " ..." costs four columns */
+        if (utf8_cols(last, nb) > budget)
+            nb = cols_bytes(last, nb, budget);
+        while (nb > 0 && last[nb - 1] == ' ')
+            nb--;
+        if (nb > DIALOG_LINE_MAX - 5)             /* room for " ..." and the NUL */
+            nb = DIALOG_LINE_MAX - 5;
+        last[nb] = 0;
+        utf8_trim_partial(last);
+        snprintf(last + strlen(last), DIALOG_LINE_MAX - strlen(last), " ...");
+    }
+
+    if (!d->nline) {
+        d->line[0][0] = 0;
+        d->nline = 1;
+    }
 }
 
 void layout_compute(const LayoutReq *rq, Layout *out)
@@ -186,11 +292,11 @@ void layout_compute(const LayoutReq *rq, Layout *out)
         /* The text is cut HERE, to the columns this row really has, so the renderer draws exactly what the
            geometry decided and a clipped question is a checked decision rather than something a draw loop
            does with no check on it. NOTICE_MAX bounds the bytes, clip_utf8 bounds the codepoints and
-           trim_partial_utf8 undoes a byte bound that landed inside one. */
+           utf8_trim_partial undoes a byte bound that landed inside one. */
         snprintf(out->notice, sizeof out->notice, "%s",
                  (rq->notice_text && rq->notice_text[0]) ? rq->notice_text : "");
         clip_utf8(out->notice, imax_(grid_w / cw, 1));
-        trim_partial_utf8(out->notice);
+        utf8_trim_partial(out->notice);
     }
 
     /* ---- the file-manager band, above the terminal pane(s) ----
@@ -264,6 +370,99 @@ void layout_compute(const LayoutReq *rq, Layout *out)
         int xoff, yoff;
         term_grid_geometry(pg->w, pg->h, cw, ch, 0, &pg->cols, &pg->rows, &xoff, &yoff);
     }
+
+    /* ---- the confirm-quit DIALOG: a centred box over the terminal, with two buttons to click ----
+       A window close is the one that cannot be undone, so it asks with a box the user can answer with a
+       click. It is drawn OVER the terminal and costs NO grid row: the work being asked about stays exactly
+       as it was, which is the opposite of the tab question — a tab is cheap and reversible, so that one
+       stays out of the way by taking a row at the bottom. Which of the two a question uses is main.c's
+       choice; layout draws what it is asked for and decides nothing about which.
+
+       The box hugs its text. The sentence is wrapped at the widest it could possibly be (the grid area less
+       one cell of padding each side), and the box then shrinks to the widest line the wrap actually
+       produced: a box the width of the window holding four words reads as a mistake. The two buttons set a
+       FLOOR on the width, because a box narrower than the two answers it holds cannot be clicked.
+
+       Like every other piece of chrome here the box can be DROPPED, and for the same reason: if it does not
+       fit the grid area, `on` stays 0 and nothing is drawn. That is a decision with a field on it, not a
+       fallback — main.c's rule is that a close is never blocked by a question the user cannot see, so a
+       dropped box means the window closes at once, exactly as it did before this feature existed. */
+    if (rq->dialog_on) {
+        int pad_h = cw;                    /* one cell of padding, each side */
+        int pad_v = imax_(ch / 2, 1);      /* half a cell above and below the text */
+        int max_text_cols = imax_((grid_w - 2 * pad_h) / cw, 1);
+        Dialog *dg = &out->dialog;
+        wrap_sentence(rq->dialog_text, max_text_cols, dg);
+
+        int widest = 0;                    /* the widest line the wrap PRODUCED, in columns */
+        for (int i = 0; i < dg->nline; i++) {
+            int c = utf8_cols(dg->line[i], (int)strlen(dg->line[i]));
+            if (c > widest)
+                widest = c;
+        }
+
+        /* A button is its label plus one cell of padding each side, and the pair is two cells apart. The
+           labels are short on purpose: they are the two answers, not a description of them, and the sentence
+           above already says what is being answered for. */
+        static const char *LBL_YES = "Yes";
+        static const char *LBL_NO  = "No";
+        int yes_cols = (int)strlen(LBL_YES) + 2;
+        int no_cols  = (int)strlen(LBL_NO) + 2;
+        int btn_gap  = 2 * cw;
+        int need_w   = (yes_cols + no_cols) * cw + btn_gap + 2 * pad_h;
+
+        int box_w = imin_(imax_((widest + 2) * cw, need_w), grid_w);
+        int box_h = dg->nline * ch + 2 * pad_v + ch;
+        if (box_w >= need_w && box_h <= grid_h) {
+            dg->on = 1;
+            dg->w  = box_w;
+            dg->h  = box_h;
+            dg->x  = grid_x + (grid_w - box_w) / 2;    /* centred in the grid area, not in the window: the */
+            dg->y  = grid_y + (grid_h - box_h) / 2;    /* bar and the margin are not the user's work area. */
+            dg->text_x = dg->x + pad_h;                /* each line is one cell row down from here, so the */
+            dg->text_y = dg->y + pad_v;                /* renderer needs no padding of its own to know. */
+
+            int by = dg->y + pad_v + dg->nline * ch + pad_v;
+            int no_x  = dg->x + dg->w - pad_h - no_cols * cw;
+            int yes_x = no_x - btn_gap - yes_cols * cw;
+            dg->nbtn = 2;
+            DialogBtn *by_yes = &dg->btn[0];
+            by_yes->yes = 1;                    /* the ANSWER, not a name: a hit test cannot break the day */
+            by_yes->x = yes_x;                  /* the labels change, and the box is still answered right. */
+            by_yes->y = by;
+            by_yes->w = yes_cols * cw;
+            by_yes->h = ch;
+            by_yes->label_x = yes_x + (yes_cols - (int)strlen(LBL_YES)) * cw / 2;
+            snprintf(by_yes->label, sizeof by_yes->label, "%s", LBL_YES);
+            DialogBtn *by_no = &dg->btn[1];
+            by_no->yes = 0;
+            by_no->x = no_x;
+            by_no->y = by;
+            by_no->w = no_cols * cw;
+            by_no->h = ch;
+            by_no->label_x = no_x + (no_cols - (int)strlen(LBL_NO)) * cw / 2;
+            snprintf(by_no->label, sizeof by_no->label, "%s", LBL_NO);
+        } else {
+            /* Left as memset gave it: on == 0, nbtn == 0, no geometry. A half-drawn box is worse than none. */
+            dg->nline = 0;
+        }
+    }
+}
+
+/* Which button of the dialog, if any, owns this pointer position. Returns the index into Layout.dialog.btn[],
+   or -1 for anywhere else — including inside the box but off both buttons, which main.c treats as "the
+   question stays up": a click that lands near a button must never answer it by accident, and a click outside
+   the box must never be read as a NO the user did not give. */
+int layout_hit_dialog(const Layout *l, int px, int py)
+{
+    if (!l->dialog.on)
+        return -1;
+    for (int i = 0; i < l->dialog.nbtn; i++) {
+        const DialogBtn *b = &l->dialog.btn[i];
+        if (px >= b->x && px < b->x + b->w && py >= b->y && py < b->y + b->h)
+            return i;
+    }
+    return -1;
 }
 
 int layout_hit_bar(const Layout *l, int px, int py)

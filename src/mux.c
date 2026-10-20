@@ -252,3 +252,76 @@ int confirm_message(int what, int n, const int *idx, char *out, size_t cap)
         r = (int)cap - 1;
     return r;
 }
+
+/* One entry of the WINDOW box's list: the process's own name in quotes when it could be read, the session
+   number when it could not. "a command" is exactly what the user's box replaces — a user who typed `nano`
+   reads their own word and knows which session is meant. A number says plainly that it is a fallback, which
+   is better than inventing a name for a process this process cannot see. */
+static void name_phrase(const char *name, int tabidx, char *out, size_t cap)
+{
+    if (name && name[0])
+        snprintf(out, cap, "\"%s\"", name);
+    else
+        snprintf(out, cap, "session %d", tabidx + 1);
+}
+
+/* `"nano"`, `"nano" and "sleep"`, `"a", "b" and "c"`, `"a", "b", "c" and 2 more`. At most THREE names: the
+   box is one sentence in the middle of a window, not a process listing, and the verb already carries the
+   size of the problem. The "and" goes before the last NAME only when the list ends with a name — `"a", "b"
+   and "c" and 2 more` reads as a mistake, `"a", "b", "c" and 2 more` does not. A NULL entry falls back to
+   the session number (see name_phrase); a NULL list falls back for every entry. */
+static void name_list(const int *idx, const char *const *names, int n, char *out, size_t cap)
+{
+    if (!cap)
+        return;
+    out[0] = 0;
+    if (n <= 0)
+        return;
+    int shown = n > 3 ? 3 : n;
+    size_t o = 0;
+    for (int i = 0; i < shown; i++) {
+        char ph[PROC_NAME_MAX + 16];
+        name_phrase(names ? names[i] : NULL, idx ? idx[i] : i, ph, sizeof ph);
+        const char *sep = (i == 0) ? "" : ((i + 1 == shown && n == shown) ? " and " : ", ");
+        int r = snprintf(out + o, o < cap ? cap - o : 0, "%s%s", sep, ph);
+        if (r < 0 || o + (size_t)r >= cap)
+            break;
+        o += (size_t)r;
+    }
+    if (n > shown) {
+        int r = snprintf(out + o, o < cap ? cap - o : 0, " and %d more", n - shown);
+        if (r > 0 && o + (size_t)r < cap)
+            o += (size_t)r;
+    }
+}
+
+/* The sentence for the WINDOW box, in the user's own words: `Warning ! "nano" is still running. Are you sure
+   you want to close it ?`. It lives here rather than in main.c for the same reason confirm_message() does —
+   main.c is in no test binary, so a string inside it is a claim while a string built here is a check. The
+   wording differs from the tab row on purpose: a tab close is cheap and reversible by opening the tab again,
+   a window close is the one that cannot be undone, so it names the work by name and asks in full sentences.
+   `n <= 0` is reachable only through `confirm_quit = always`, which asks whatever is running; with nothing
+   to name the sentence says only what it is about to do. Like confirm_message(), the return value is what
+   was WRITTEN, not what snprintf would have written. */
+int confirm_warning(int n, const int *idx, const char *const *names, char *out, size_t cap)
+{
+    if (!out || cap == 0)
+        return 0;
+
+    int r;
+    if (n <= 0)
+        r = snprintf(out, cap, "Warning ! Are you sure you want to close Kai-Term ?");
+    else {
+        char list[DIALOG_MAX / 2];
+        name_list(idx, names, n, list, sizeof list);
+        r = snprintf(out, cap, "Warning ! %s %s still running. Are you sure you want to close %s ?",
+                     list, n > 1 ? "are" : "is", n > 1 ? "them" : "it");
+    }
+    if (r < 0) {
+        out[0] = 0;
+        return 0;
+    }
+    if ((size_t)r >= cap)
+        r = (int)cap - 1;
+    return r;
+}

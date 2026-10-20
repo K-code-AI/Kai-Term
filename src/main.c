@@ -163,13 +163,18 @@ static int layout_mode = LAYOUT_TABS;   /* LAYOUT_TABS (one session fills the wi
    CONFIRM_QUIT = 0 a WINDOW close set the state to "nothing is being asked", so nothing was drawn, the
    keyboard was never modal, and the close had already been swallowed. That is the bug the user reported as
    "it just doesn't quit, it doesn't ask anything" while tabs worked.
-   The WORDING is built by confirm_message() in src/mux.c, where it is a checked decision; what lives here is
-   the state the gate sets, the answer it collects, and the fact that showing the row costs a grid row (it is
-   chrome, laid out by src/layout.c and drawn by src/render.c, so layout_apply() has to run to put it up and
-   to take it away). */
+   The WORDING is built by confirm_message() in src/mux.c for a TAB and by confirm_warning() in the same file
+   for a WINDOW, where both are checked decisions; what lives here is the state the gate sets, the answer it
+   collects, and the fact that the row costs a grid row while the box costs none (both are chrome, laid out by
+   src/layout.c and drawn by src/render.c, so layout_apply() has to run to put either up and to take it away).
+   Which of the two a question uses is decided HERE and nowhere else: a tab close takes the row, a window close
+   takes the box, because a window is the close that cannot be undone and the one a stray Mod+Q hits. */
 static int  confirm_kind = CONFIRM_NONE;
 static int  confirm_tab = -1;
-static char confirm_text[NOTICE_MAX];
+/* One buffer for both questions. DIALOG_MAX is the larger of the two limits, so neither the row's text nor
+   the box's sentence can ever be cut by the buffer it travels in — only by the width of the window, which is
+   layout_compute()'s decision and has a field on it. */
+static char confirm_text[DIALOG_MAX];
 /* px between panes, and between the tab bar and the grid. Deliberately not a config key: Config.padding
    already sets the margin around everything, and a gap of 0 would let the focus border of one pane draw
    over its neighbour. */
@@ -417,11 +422,15 @@ static void layout_apply(void)
     rq.fm_on = g_fm.on;
     rq.fm_preview_on = g_fm.preview_on;
     rq.fm_size = conf.fm_size;
-    /* The question row, when one is up. It costs the panes one row (src/layout.c), which is the price of
-       drawing chrome in the grid area rather than over it: the terminal the user is being asked about stays
-       readable above the question. */
-    rq.notice_on = (confirm_kind != CONFIRM_NONE) ? 1 : 0;
+    /* The question, whichever form it takes. The ROW (a tab close) costs the panes one row — the price of
+       drawing chrome in the grid area rather than over it, so the terminal the user is being asked about stays
+       readable above it. The BOX (a window close) costs nothing: it is centred over the grid and the pane
+       rect is byte for byte what it was a frame earlier, which is the whole point of asking about a window
+       without shrinking the window. */
+    rq.notice_on = (confirm_kind == CONFIRM_CLOSE_TAB) ? 1 : 0;
     rq.notice_text = confirm_text;
+    rq.dialog_on = (confirm_kind == CONFIRM_QUIT) ? 1 : 0;
+    rq.dialog_text = confirm_text;
     for (int i = 0; i < rq.ntab; i++) {
         rq.tab[i].tab = i;
         rq.tab[i].attention = mux.tab[i].attention;
@@ -817,14 +826,21 @@ static void confirm_clear(void)
    close, and 0 when it does not fit and the caller must close rather than swallow the request.
    That second half is the rule this feature must never break: a question nobody can see must not block a
    close, because the user is then left with a window that answers neither button. layout_compute() owns the
-   decision (a grid area too short to give up the row says notice_on == 0); main.c only reads it back.
-   The text comes from confirm_message(); for a WINDOW it is built from how many sessions are at risk and
-   WHICH ones ("session 2 and 4 are still working" is information a yes/no answer cannot carry), for a TAB
-   from that tab alone. Answering YES closes every session named, not just the visible one — that is what the
-   count in the sentence promises. */
+   decision — a grid area too short to give up the row says notice_on == 0, a window too small to hold the box
+   and its two buttons says dialog.on == 0 — and main.c only reads the field back.
+   The two forms ask differently on purpose. A TAB close names the session and asks in one short row, because
+   a tab is cheap and a row costs a row of the terminal. A WINDOW close names the PROCESS (`Warning ! "nano"
+   is still running. Are you sure you want to close it ?`, the user's own sentence) and asks in a box over the
+   work, because that is the close that cannot be undone and the one a stray Mod+Q hits. The name comes from
+   pty_fg_name(), which reads /proc for the same foreground group pty_fg_busy() already tested — so the box
+   names exactly the process the predicate protected, and falls back to `session N` rather than inventing one
+   when the read fails. Answering YES for a window closes every session named, not just the visible one — that
+   is what the count in the sentence promises. */
 static int confirm_show(int what, int tabidx)
 {
     int idx[TAB_MAX];
+    char namebuf[TAB_MAX][PROC_NAME_MAX];
+    const char *names[TAB_MAX];
     int n = 0;
     if (what == CONFIRM_CLOSE_TAB) {
         if (tabidx >= 0 && tabidx < mux_count(&mux) && pty_fg_busy(&mux.tab[tabidx].pty)) {
@@ -833,13 +849,21 @@ static int confirm_show(int what, int tabidx)
         }
     } else {
         n = mux_running(&mux, idx, TAB_MAX);
+        for (int i = 0; i < n; i++) {
+            names[i] = pty_fg_name(&mux.tab[idx[i]].pty, namebuf[i], sizeof namebuf[i])
+                     ? namebuf[i] : NULL;
+        }
     }
     confirm_kind = what;
     confirm_tab = (what == CONFIRM_CLOSE_TAB) ? tabidx : -1;
-    confirm_message(what, n, n ? idx : NULL, confirm_text, sizeof confirm_text);
+    if (what == CONFIRM_CLOSE_TAB)
+        confirm_message(what, n, n ? idx : NULL, confirm_text, sizeof confirm_text);
+    else
+        confirm_warning(n, n ? idx : NULL, n ? names : NULL, confirm_text, sizeof confirm_text);
     layout_apply();          /* the row costs a grid row, so every session's grid changes with it */
     W.dirty = 1;
-    if (!g_layout.notice_on) {
+    int visible = (what == CONFIRM_CLOSE_TAB) ? g_layout.notice_on : g_layout.dialog.on;
+    if (!visible) {
         confirm_kind = CONFIRM_NONE;
         confirm_tab = -1;
         confirm_text[0] = 0;
@@ -2076,11 +2100,13 @@ static int send_key(uint32_t key, uint32_t serial)
         kbmods |= KB_ALT;
     if (superm && (eff & superm))
         kbmods |= KB_SUPER;
-    /* The question is modal: matched before EVERY binding, the file manager's keys and the PTY paths, so
-       nothing else can act while the user is answering — no chord, no band key, no byte to the shell. It
+    /* The question is modal whichever form it takes (a row for a tab, a box for a window): matched before
+       EVERY binding, the file manager's keys and the PTY paths, so nothing else can act while the user is
+       answering — no chord, no band key, no byte to the shell. It
        sits here rather than at the top of send_key() only because it needs `base` and `kbmods` to say which
-       key it swallowed. Enter/y confirms, Esc/n cancels; returning 0 means a held key never repeats an
-       answer, and the key-repeat timer's re-sends are swallowed like any other key. */
+       key it swallowed. Enter/y confirms, Esc/n cancels — the same two answers the box's buttons carry, so the
+       pointer and the keyboard can never disagree about what Yes means; returning 0 means a held key never
+       repeats an answer, and the key-repeat timer's re-sends are swallowed like any other key. */
     if (confirm_kind != CONFIRM_NONE) {
         if (base == XKB_KEY_Return || base == XKB_KEY_KP_Enter ||
             base == XKB_KEY_y || base == XKB_KEY_Y)
@@ -2510,6 +2536,33 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
             klog(L_DEBUG, "fm: preview selection finished: pane cell %d,%d -> %d,%d "
                           "(copy_on_release off — Ctrl+Shift+C to copy)",
                  g_fm.pv_ax, g_fm.pv_ay, g_fm.pv_bx, g_fm.pv_by);
+        }
+        W.dirty = 1;
+        return;
+    }
+
+    /* The confirm-quit BOX owns the pointer while it is up. It is checked before the bar, the file-manager
+       band and the panes for the same reason the band is checked before the application: a click on the Yes
+       button must answer the question and nothing else, and must not also close the tab underneath it, select
+       a file or walk nano's cursor. Both the press and the release are swallowed — a release that fell through
+       would be handled by code that assumes the press was its own.
+       Only a press ON A BUTTON answers. A press inside the box but off both buttons answers nothing, and so
+       does a press outside the box entirely: a click that lands near a button must never answer it by
+       accident, and a click on the terminal must never be read as the NO the user did not give. The keyboard
+       still works (Enter/Esc, in send_key), and it stays the only way to answer a box the pointer missed. */
+    if (g_layout.dialog.on) {
+        if (pressed) {
+            int hi = layout_hit_dialog(&g_layout, W.ptr_x, W.ptr_y);
+            if (hi >= 0) {
+                int yes = g_layout.dialog.btn[hi].yes;
+                klog(L_INFO, "confirm: the %s button was clicked at %d,%d",
+                     yes ? "Yes" : "No", W.ptr_x, W.ptr_y);
+                confirm_answer(yes);
+            } else {
+                klog(L_DEBUG, "confirm: a click at %d,%d is not on a button — nothing answered",
+                     W.ptr_x, W.ptr_y);
+            }
+            W.selecting = 0;
         }
         W.dirty = 1;
         return;

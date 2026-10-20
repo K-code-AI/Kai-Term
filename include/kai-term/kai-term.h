@@ -833,7 +833,8 @@ typedef struct Config {
     KeyBind key_toggle_layout;
     /* confirm_quit: what a close does when something is still running — CONFIRM_NEVER / CONFIRM_RUNNING
        (the default) / CONFIRM_ALWAYS. One gate covers closing the WINDOW and closing a TAB, because a tab
-       is where work is lost more often. The predicate is pty_fg_busy(); the question is confirm_message(). */
+       is where work is lost more often. The predicate is pty_fg_busy(); a TAB asks with confirm_message()
+       and one row, a WINDOW with confirm_warning() and a box it can click (see the Dialog section). */
     int  confirm_quit;
     /* ---- the in-window file manager (src/fm.c; its band is laid out by src/layout.c) ----
        fm_on: start with the file manager shown. Default off — a user who never presses the toggle sees
@@ -1008,6 +1009,12 @@ void pty_write(Pty *p, const void *buf, size_t len);
    shell in the foreground group, so it reads idle — measured, and documented as a limitation. */
 int fg_busy(pid_t fg, pid_t child);
 int pty_fg_busy(const Pty *p);
+/* What is running here, by name — the box says "nano", not "a command". The pure half parses what
+   /proc/<pid>/comm holds (trim the newline, refuse an empty or control-character name, never cut a UTF-8
+   sequence), so the decision is checkable without a process; pty_fg_name() is the syscall half (tcgetpgrp,
+   then read the file). Returns 1 when `out` holds a usable name. */
+int proc_comm_name(const char *raw, char *out, size_t cap);
+int pty_fg_name(const Pty *p, char *out, size_t cap);
 
 /* ---------- multiplexing: several terminal sessions in one window (src/mux.c) ---------- */
 
@@ -1078,11 +1085,14 @@ void mux_title(const Mux *m, char *out, size_t cap);
    at most `max`) with up to TAB_MAX of them. Returns 0 when every session is idle — the case where
    `confirm_quit = running` lets the close through with no question. */
 int mux_running(const Mux *m, int *idx, int max);
-/* The one-row question the window shows before it throws that work away. `what` is CONFIRM_QUIT (the
-   window) or CONFIRM_CLOSE_TAB (one session); n/idx come from mux_running() for the multi-session case,
-   which has to say HOW MANY and WHICH, because "session 2 and 4 are still working" is the information a
-   yes/no answer cannot carry. Returns the bytes written (always NUL-terminated). Lives here, not in
-   main.c, so the wording is a checkable decision rather than a string nobody can test. */
+/* The one-row question a TAB close shows. `what` is CONFIRM_CLOSE_TAB for that; the CONFIRM_QUIT branches are
+   SUPERSEDED — since s124 a WINDOW close asks with confirm_warning() and a box, and src/main.c never builds a
+   window sentence here (a source scan pins that). They are kept because this is a public entry point and its
+   safety contract (cap 0, a NULL buffer, a small cap) is checked through them; they are not what a user sees.
+   n/idx come from mux_running() for the multi-session case, which has to say HOW MANY and WHICH, because
+   "session 2 and 4 are still working" is the information a yes/no answer cannot carry. Returns the bytes
+   written (always NUL-terminated). Lives here, not in main.c, so the wording is a checkable decision rather
+   than a string nobody can test. */
 /* What a close is asking about. CONFIRM_NONE is 0 because main.c's `confirm_kind` doubles as "is a question
    up?" — and that is exactly the trap this enum fell into in s122: with `CONFIRM_QUIT = 0`, asking about the
    WINDOW set the state to the same value that means "nothing is being asked", so the question was never drawn,
@@ -1090,6 +1100,12 @@ int mux_running(const Mux *m, int *idx, int max);
    be 0; tests/test_vt.c pins it. */
 enum { CONFIRM_NONE = 0, CONFIRM_QUIT = 1, CONFIRM_CLOSE_TAB = 2 };
 int confirm_message(int what, int n, const int *idx, char *out, size_t cap);
+/* The sentence for the WINDOW box: `Warning ! "nano" is still running. Are you sure you want to close it ?`
+   n/idx come from mux_running(); names[] is the parallel list of process names from pty_fg_name(), where a
+   NULL or empty entry means the name could not be read and the sentence falls back to "session N" rather than
+   inventing one. More than one session pluralises the sentence and lists at most three names before
+   "and N more", because the box is one row of text in a window, not a process listing. */
+int confirm_warning(int n, const int *idx, const char *const *names, char *out, size_t cap);
 
 /* ---------- layout: where each session is drawn (src/layout.c) ----------
    Pure geometry, no Wayland/EGL/fd, so the whole tab-bar/split feature is unit-testable
@@ -1112,6 +1128,41 @@ enum { BAR_OFF = 0, BAR_AUTO = 1, BAR_ALWAYS = 2 };
 #define NOTICE_MAX   128    /* bytes of confirm-quit question (UTF-8, cut at a codepoint edge). Bigger
                                than confirm_message()'s longest row so the row a user is shown is never
                                cut by the buffer it travels in — only by the width of the window. */
+
+/* ---- the confirm-quit DIALOG: what a WINDOW close asks with ----
+   A tab close asks with the one-row notice above (it costs a grid row and stays out of the way). A window
+   close asks with a box in the middle of the window and two buttons you can click, because that close is the
+   one you cannot undo and the one a stray Mod+Q hits. The box is drawn OVER the terminal, so it costs no row:
+   the work being asked about stays exactly as it was. */
+#define PROC_NAME_MAX   64   /* bytes of a process name read out of /proc/<pid>/comm */
+#define DIALOG_MAX      256  /* bytes of the dialog's sentence */
+#define DIALOG_LINES    4    /* most lines the sentence is wrapped into */
+#define DIALOG_LINE_MAX 128  /* bytes in one wrapped line (>= the widest sentence that fits a window) */
+#define DIALOG_BTN_MAX  8    /* bytes of a button label */
+
+typedef struct {
+    int x, y, w, h;                /* window px */
+    int label_x;                   /* where the label starts inside the field — geometry's decision, not the
+                                      renderer's, so the label cannot be centred in one file and clipped in
+                                      another */
+    int yes;                       /* the ANSWER this button gives: 1 confirms the close, 0 cancels.
+                                      Storing the answer rather than a name is what keeps a hit test from
+                                      breaking the day the labels change. */
+    char label[DIALOG_BTN_MAX];
+} DialogBtn;
+
+typedef struct {
+    int on;                        /* 0 when the box cannot fit the window at all */
+    int x, y, w, h;                /* the box, window px */
+    int text_x, text_y;            /* the top-left of the FIRST text line, window px. Carried here rather
+                                      than recomputed by the renderer: the padding is a geometry decision,
+                                      and a renderer that redoes it can drift from the box it is drawing. */
+    int nline;
+    char line[DIALOG_LINES][DIALOG_LINE_MAX];   /* the sentence, wrapped HERE so the wrapping is a checked
+                                                   decision and the renderer draws exactly what geometry said */
+    int nbtn;
+    DialogBtn btn[2];              /* [0] = Yes, [1] = No */
+} Dialog;
 
 /* One session's box. x/y/w/h are window pixels (top-left origin, like the pointer events); cols/rows is
    what term_grid_geometry() says fits inside it, so the leftover pixels sit at the pane's right/bottom
@@ -1177,6 +1228,8 @@ typedef struct {
     int notice_on;
     int notice_x, notice_y, notice_w, notice_h;
     char notice[NOTICE_MAX];
+    Dialog dialog;     /* the window-close question: a centred box with two clickable buttons, drawn over the
+                          terminal so it costs no grid row (see the notice rule above for the tab row) */
     int npane;
     PaneGeom pane[TAB_MAX];
     FmGeom fm;         /* the file-manager band; pane[] is what is LEFT of the grid area after it */
@@ -1203,6 +1256,8 @@ typedef struct {
     int fm_size;       /* percent of the grid area's height the band asks for (clamped here) */
     int notice_on;     /* the confirm-quit question is up (it costs one grid row — see Layout) */
     const char *notice_text;   /* the row's text; NULL or empty with notice_on draws an empty row */
+    int dialog_on;     /* the WINDOW-close question: a centred box, drawn over the terminal, costing no row */
+    const char *dialog_text;   /* its sentence, from confirm_warning() */
     TabInfo tab[TAB_MAX];
 } LayoutReq;
 
@@ -1211,6 +1266,11 @@ void layout_compute(const LayoutReq *rq, Layout *out);
    point is in the margin, the gap or outside. */
 int layout_hit_bar(const Layout *l, int px, int py);
 int layout_hit_pane(const Layout *l, int px, int py);
+/* Which button of the confirm-quit DIALOG owns a pointer position: an index into Layout.dialog.btn[], or -1
+   for anywhere else — inside the box but off both buttons included. Checked BEFORE every other hit test in
+   main.c: while the box is up it owns the pointer, or a click on a button would also walk the shell's cursor
+   or select a tab underneath it. */
+int layout_hit_dialog(const Layout *l, int px, int py);
 /* FM_HIT_LIST / FM_HIT_PREVIEW when the point is over one of the file-manager panes, FM_HIT_NONE
    otherwise (including when the band is off). Checked BEFORE layout_hit_pane(): with the band on, the
    terminal pane starts below it, and a click inside the band must never reach the shell. */
@@ -1619,6 +1679,9 @@ ColorGlyph *font_color_glyph(Font *f, const uint32_t *seq, int n);
 void font_destroy(Font *f);
 
 /* ---------- emoji / width predicates (src/vt.c) ---------- */
+/* Drop a trailing incomplete UTF-8 sequence left by a BYTE-bounded cut (see src/vt.c). Every byte-cut of text
+   that is later drawn calls this — one rule, not four that can drift. */
+void utf8_trim_partial(char *s);
 int cp_is_emoji(uint32_t cp);        /* a base codepoint that may start an emoji cluster */
 int cp_is_cluster_extend(uint32_t cp);  /* ZWJ / variation selector / skin tone / tag char */
 int cp_is_wide(uint32_t cp);         /* occupies 2 grid cells (CJK + Emoji_Presentation) */
@@ -1755,6 +1818,13 @@ typedef struct Chrome {
        reason the rest of this struct is — a configured colour has to be checked where it becomes a vertex
        colour, not where it is parsed. */
     uint32_t notice_bg, notice_fg;
+    /* The window-close box. The field is a lifted paper so it reads as being above the terminal, the border
+       and the Yes label take the one colour that means "the thing in this window" (selection_color, as for the
+       band, the active tab item and the focus border), the No label takes the palette's red — a configured,
+       themeable colour, not a literal — and the button fields match the terminal's paper so the labels read
+       the same as everywhere else. Derived here for the same reason as every other colour in this struct: a
+       configured colour has to be checked where it becomes a vertex colour. */
+    uint32_t dialog_bg, dialog_border, dialog_fg, dialog_yes, dialog_no, dialog_btn_bg;
 } Chrome;
 void render_chrome(const Render *r, Chrome *out);
 

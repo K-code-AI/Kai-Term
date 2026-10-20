@@ -56,6 +56,21 @@ Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, 
 the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
 
+**A wrapped sentence in the close-confirmation box could drop a character and start the next line mid-character
+(2026-10-20, s124 — caught by the mutant harness before it ever shipped).** No user saw it: the box it lives in was
+still uncommitted when the harness found it. Cause in one line: `wrap_sentence()` in `src/layout.c` bounds a line by
+columns AND by bytes (`DIALOG_LINE_MAX`), and in a wide box the byte bound (127) binds first — it hard-broke a word
+there, trimmed the partial UTF-8 sequence off the end of the line, and then advanced the source pointer by the
+UNTRIMMED count, so the trimmed character disappeared from the sentence and the next line began on its leftover
+continuation byte, which the font draws as a codepoint of its own (measured: 147 of 150 characters reached the
+screen; with 3-byte characters, two of four lines started mid-character). Fix: the hard-break branch trims its own
+line and the pointer then steps over exactly the bytes that line KEPT. What keeps it out: four separate cuts in that
+function each have a check and a mutant of its own (`.scratch/s124/mutate.py`: `wrap_hardbreak_no_trim`,
+`wrap_advance_over_trimmed`, `short_no_trim`, `loop_no_trim`, all killed), and the checks validate the lines with a
+real UTF-8 decoder (`utf8_whole()`) and re-join them against the input, so a gap between two lines fails — with two
+lessons attached: a test sentence of identical characters cannot reveal a gap, and "the last byte is not a
+continuation byte" is not a property any correct UTF-8 string can satisfy.
+
 **The file manager took the keyboard when the pointer merely moved over the band (2026-10-19, s109).** User
 report: "When the file manager is open, hovering the mouse on it gives it the focus, same for the preview pane."
 The focus border jumped to the browser pane or the preview pane with no click, and the keyboard went with it.

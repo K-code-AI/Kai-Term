@@ -152,6 +152,42 @@ static void group_cursor_color(void)
     render_chrome(&r, &g6);
     CHECK(g6.notice_fg == 0xff11ee22u && g6.notice_bg == g5.notice_bg,
           "a different ink changes the question's TEXT and not its field (compared with g5)");
+
+    /* 9. The confirm-quit DIALOG — a window close's question, drawn OVER the terminal. Six colours, all
+       derived here and read by the draw pass (the source scans below pin the reading). The field is a LIFTED
+       paper: with no GL blending, "in front of" only exists if the colour differs from what is behind it, so
+       a field the exact colour of the cells it covers is a box nobody can see. The border and the Yes label
+       take the one configured colour that already owns every "this is the thing in this window" signal; the
+       No label takes the palette's RED, so a theme that restyles red restyles the button. Values copied from
+       .scratch/s123/colprobe2. */
+    CHECK(ch.dialog_bg == mix_ref(c.bg, c.fg, 15) && ch.dialog_bg != c.bg,
+          "default config: the box's field is a lifted paper, NOT the paper it is drawn over");
+    CHECK(ch.dialog_bg != ch.item_off_bg,
+          "the box's field is its own mix, not the bar's inactive item reused");
+    CHECK(ch.dialog_border == SEL_BG && ch.dialog_yes == SEL_BG,
+          "default config: the box's border and its Yes label take SEL_BG, like the band and the focus border");
+    CHECK(ch.dialog_fg == c.fg && ch.dialog_btn_bg == c.bg,
+          "default config: the sentence uses the default ink and the button fields the terminal's own paper");
+    CHECK(ch.dialog_no == 0xffcc5555u && ch.dialog_no == term_palette()[1],
+          "default config: the No label takes the palette's red, entry 1 — not a literal in the renderer");
+    CHECK(g5.dialog_border == 0xff220088u && g5.dialog_yes == 0xff220088u &&
+          g5.dialog_no == ch.dialog_no,
+          "selection_color = 220088: the box's border and Yes move with it, the red does not");
+    /* The red follows the palette, which is the whole reason it comes from term_palette() and not from a
+       constant: an application that repaints the palette with OSC 4 repaints the button, exactly as it
+       repaints a cell. Restored afterwards — the palette is process-wide state, so leaving it changed would
+       make a later check read a colour this one invented. */
+    term_set_palette_entry(1, 0xff00ff00u);
+    Chrome g7;
+    render_chrome(&r, &g7);
+    CHECK(g7.dialog_no == 0xff00ff00u && g7.dialog_no != ch.dialog_no,
+          "a repainted palette repaints the No label — the colour is live state, not a frozen default");
+    term_palette_entry_reset(1);          /* one entry back to built-in, the same call OSC 104;1 makes */
+    Chrome g8;
+    render_chrome(&r, &g8);
+    CHECK(g8.dialog_no == ch.dialog_no,
+          "restoring the built-in red restores the label (the palette is process-wide: this group must not "
+          "leave a colour behind for the checks that follow)");
 }
 
 /* ---------- the two source scans that cover what no headless test can run ---------- */
@@ -396,8 +432,9 @@ static void group_source_wiring(void)
           "src/main.c defines the window gate AND calls it (toplevel_close)");
     CHECK(src_word_count("src/main.c", "confirm_gate_tab") == 3,
           "src/main.c gates BOTH user-initiated tab closes (the key binding and the bar's middle click)");
-    CHECK(src_word_count("src/main.c", "confirm_answer") == 3,
-          "src/main.c defines the answer and reaches it from the modal key handler");
+    CHECK(src_word_count("src/main.c", "confirm_answer") == 4,
+          "src/main.c defines the answer and reaches it from BOTH the modal key handler and the box's "
+          "buttons (re-measured s123: the box's click is the fourth site)");
     CHECK(src_word_count("src/main.c", "confirm_clear") == 4,
           "the question is taken down on both answers AND when the tab it asked about closes on its own");
     /* The layout input and the visibility rule, as SUBSTRINGS: a word count would also count the comments
@@ -408,6 +445,51 @@ static void group_source_wiring(void)
           "src/main.c feeds the question row to the layout — without it the row is never drawn");
     CHECK(src_sub_count("src/main.c", "g_layout.notice_on") == 1,
           "src/main.c checks the row really is on screen before it lets the question block a close");
+
+    /* ---- confirm-quit: the WINDOW box's main.c wiring (s123) ----
+       A window close asks with a centred box and two clickable buttons; a tab close keeps the row. The
+       DECISIONS (the sentence, the name, the geometry, the hit test) are all checked in src/mux.c,
+       src/pty.c and src/layout.c — what these scans pin is that main.c actually asks for the box, reads
+       back whether it really got drawn, and gives the pointer to it. Counts measured on the tree that has
+       the wiring; re-measure, do not copy. */
+    CHECK(src_sub_count("src/main.c", "rq.dialog_on") == 1
+          && src_sub_count("src/main.c", "rq.dialog_text") == 1,
+          "src/main.c feeds the box to the layout — without it the box is never drawn");
+    CHECK(src_sub_count("src/main.c", "g_layout.dialog.on") == 2,
+          "src/main.c reads the box back twice: the visibility rule that stops a close, and the pointer gate");
+    CHECK(src_word_count("src/main.c", "layout_hit_dialog") == 1,
+          "src/main.c hit-tests the buttons — a box nobody can click is only half a box");
+    CHECK(src_word_count("src/main.c", "pty_fg_name") == 1,
+          "src/main.c reads the process name — the box says \"nano\", not \"a command\"");
+    CHECK(src_word_count("src/main.c", "confirm_warning") == 1
+          && src_word_count("src/main.c", "confirm_message") == 1,
+          "src/main.c builds the window sentence in mux.c and the tab sentence in mux.c — neither is "
+          "invented in a file no test links");
+    /* The row and the box are chosen by the KIND of question, never both for one: a window close that also
+       drew the row would cost a grid row it was supposed to avoid. */
+    CHECK(src_sub_count("src/main.c", "confirm_kind == CONFIRM_CLOSE_TAB") == 2
+          && src_sub_count("src/main.c", "confirm_kind == CONFIRM_QUIT") == 1,
+          "src/main.c gives the row to a tab close and the box to a window close (re-measure, do not copy)");
+
+    /* The box's six colours: derived in render_chrome() AND read by the draw pass. A field that is filled in
+       but never consumed is exactly the dead `cursor_color =` shape, and the draw pass is in no test binary.
+       Counts measured on the tree that draws the box. */
+    CHECK(src_word_count("src/render.c", "dialog_bg") == 3
+          && src_word_count("src/render.c", "dialog_border") == 2
+          && src_word_count("src/render.c", "dialog_fg") == 2
+          && src_word_count("src/render.c", "dialog_yes") == 2
+          && src_word_count("src/render.c", "dialog_no") == 2
+          && src_word_count("src/render.c", "dialog_btn_bg") == 3,
+          "src/render.c both derives AND consumes all six of the box's colours (re-measure, do not copy)");
+    /* The box is drawn from the palette's red, not from a literal — the same rule the cursor colour and the
+       highlight colour are under, and the reason a themed or OSC-repainted red repaints the No button too. */
+    CHECK(src_word_count("src/render.c", "term_palette") > 0,
+          "src/render.c takes the box's red from the process-wide palette, not from a literal");
+    /* Both the staging budget and the draw pass are gated on the layout's own flag: a token scan cannot see a
+       disabled branch, so without this a draw pass could be switched off (`if (0)`) and every count above
+       would still hold. Measured: the budget and the pass, two reads. */
+    CHECK(src_sub_count("src/render.c", "dialog.on") == 2,
+          "src/render.c gates BOTH the staging budget and the draw pass on Layout.dialog.on");
     CHECK(src_word_count("src/main.c", "mux_running") == 2 && src_word_count("src/main.c", "pty_fg_busy") == 2,
           "src/main.c asks the measured predicate rather than inventing its own busy test");
     /* The one link a headless test cannot execute: main() handing the configured value to the renderer and

@@ -21,7 +21,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s121 — **GREEN; step 4 (confirm-quit) is committed and pushed — read the state from git, not from here**)
+## Current Status (re-measured 2026-10-20, s124 — **GREEN; the WINDOW-close box is committed but NOT pushed — read the state from git, not from here**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -30,25 +30,20 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites — green, all four stages of step 4 included.** Both builds clean (exit 0, 0 warning lines) and
-  `./bin/test_vt` reports **1320 checks, 0 failures** (stage A's `confirm` groups took 1217 -> 1291, stage B's
-  notice-row geometry took it to 1320). Everything else is green: `./bin/dbg` **MODEL OK (0 problems)**,
-  `./bin/test_fm` **384 checks, 0 failures**, `./bin/test_render` **506 checks, 0 failures** (the renderer's
-  pure decisions — its colour choices, the cursor's shape, the question row's two colours — plus the source
-  scans that cover `main.c`, which is in no test binary), `CLI: 99 checks, 0 failures, 13 skipped` (headless;
-  8 of them are the "the settings file is parsed before any window exists" group step 4 added, which is also
-  the first check that the SHIPPED template parses clean end to end, values included). `make asan` is green on
-  THIS tree (s121): all four asan binaries exit 0, 0 warning lines, no LeakSanitizer or UBSan report. The last
-  measurement with EVERYTHING green at a COMMITTED tree was s117 at `ab0809a`. With a display
-  `tests/cli_test.sh` reported **141 checks, 0 failures, 0 skipped** (s109; the 50 window checks are the
-  difference from the headless 91 of that day). Step 4 added no command-line flag and 8 headless checks, so a
-  display run today would be 149 — **that number is arithmetic, not a measurement**: re-measure it, do not copy
-  it. What only its windowed group covers is `main()`'s own argv handling (`-c/--config`, `-b/--binds`,
-  combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display /
-  file-manager keys and the band's share. The config SEARCH order and the split-by-name rules are NOT exclusive
-  to it — `tests/test_vt.c`'s `cfgsearch` and `config split` groups cover those headless — and neither is
-  `--import-theme`: the import path needs no display, so s107 pinned it in the part that always runs. **Re-diff
-  these numbers, do not copy them.**
+- **Suites — green, the box included.** Both builds clean (exit 0, 0 warning lines) and `./bin/test_vt` reports
+  **1413 checks, 0 failures** (the confirm-quit wording, the process name, the box geometry and the four
+  wrap cuts are all in there). Everything else is green: `./bin/dbg` **MODEL OK (0 problems)**,
+  `./bin/test_fm` **384 checks, 0 failures**, `./bin/test_render` **524 checks, 0 failures** (the renderer's
+  pure decisions — its colour choices, the cursor's shape, the question row's two colours, the box's six —
+  plus the source scans that cover `main.c`, which is in no test binary), `CLI: 149 checks, 0 failures,
+  0 skipped` — **measured, not arithmetic**: this machine has a live `WAYLAND_DISPLAY=wayland-1`, so the
+  windowed group ran for real (twice in s124, ~15 real windows each time; ask before running it again while
+  the user is at the machine). `make asan` is green on THIS tree: all four asan binaries exit 0, 0 warning
+  lines, no LeakSanitizer or UBSan report. Command worth copying:
+  `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
+  `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'` — and **check the
+  build actually succeeded before quoting a number**: a failed link leaves the previous binary in `bin/` and
+  the suite happily prints its old total (s124 nearly recorded a 1412 that way).
 - **`make asan` is GREEN at `ab0809a` and again on the s121 tree — exit 0, 0 warning lines, no LeakSanitizer
   report** (s107, re-run s121). It was red
   when s106 closed, and both halves of the red came in with the uncommitted 1e work: two `-Wformat-truncation`
@@ -94,15 +89,20 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   kitty theme at `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to
   `~/.config/kai-term/kai-term.conf`, then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that
   an application set it, not the file. Hand these to them; do not map a window to judge a look yourself.
-  **Step 4's question row is on that list too** (s121): every decision in it is checked, nothing about how it
-  reads has been seen. The recipe to hand over: run `sleep 30` at the prompt, then press the window's close
-  button — one row at the bottom of the window in the selection colour should say which session is at risk, the
-  terminal above it should still be readable, `Enter` should quit and `Esc` should leave everything running;
-  `Ctrl`+`Shift`+`W` and a middle click on a tab item should ask the same way, an idle session should close with
-  no question at all, `confirm_quit = always` should ask even then, `confirm_quit = never` should never ask, and
-  `-d` should log the question and the answer either way.
+  **Step 4's question row is CONFIRMED — the user had eyes on it and says it works (2026-10-20, s124).** What
+  they saw was the row form (that is what was committed then). **The WINDOW-close BOX is the new item on this
+  list** (s124, unpushed at the time of writing): every decision in it is checked and 22 mutants prove the
+  checks bite, but no human has seen the box. The recipe to hand over: run `sleep 30` at the prompt, then close
+  the window (`Mod+Q`, or the compositor's close button) — a box should appear in the middle of the window,
+  over the terminal, saying `Warning ! "sleep" is still running. Are you sure you want to close it ?`, with the
+  terminal behind it unshrunk and still readable; `Yes`/`No` should answer to a click, `Enter`/`Esc` to the same
+  two answers, a click inside the box but off both buttons should answer nothing, and a click on the terminal
+  behind it should neither answer nor select. Then: `nano` should be named as `nano`; a second tab running
+  `sleep` should make the sentence plural and name both; an idle window should still close with no box at all;
+  `Ctrl+Shift+W` on a busy tab should still ask with the one-row notice, not the box; and a very narrow window
+  should close without asking rather than draw a box its buttons do not fit in (`-d` logs which happened).
 
-## Current Task — step 4, confirm-quit: DONE and pushed; the user's verdict on the row is what is left, then steps 5-7
+## Current Task — step 4 confirm-quit: the row is DONE, confirmed by the user; the WINDOW box is built and green, and their eyes on it are what is left. Then steps 5-7
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -336,7 +336,7 @@ non-vacuity harness is `.scratch/s116/mutate.py`, 13 kinds, every one caught):
   in no cell to select. README and ISSUES say that, and the `pvsel` group pins the span and the exact byte count
   so the sentence cannot drift back.
 
-### 4. Ask before quitting when something is still running — DONE (s120/s121, committed)
+### 4. Ask before quitting when something is still running — row DONE (s120/s121, confirmed by the user); WINDOW box DONE (s123/s124, awaiting their eyes)
 
 Today `toplevel_close()` sets `W.running = 0` immediately, closing the last tab does the same, and both close
 the pty master and `kill(child, SIGHUP)` — whatever was running dies with no warning.
@@ -427,12 +427,18 @@ returning what it WROTE and staying terminated, `cap == 0` and a NULL buffer tou
 - **YES for a window closes every session named in the sentence**, not just the visible one — that is what the
   count promises.
 
-**Not in the tree:** nothing that step 4 needs. What is left is the row's LOOK, which is the user's to confirm
-(recipe in "Current Status") — every decision in it has a check, nothing about how it reads does.
+**Not in the tree:** nothing step 4 needs. What is left is the BOX's LOOK, which is the user's to confirm (recipe
+in "Current Status") — every decision in it has a check and 22 mutants show those checks bite, nothing about how it
+reads has been seen. The row's look IS confirmed (2026-10-20).
 
-**Exact next action, in order:** (1) hand the user the step-4 recipe in "Current Status" and record their
-verdict — that is the only thing step 4 still owes; (2) then steps 5-7 of the s102 plan (middle-click paste,
-visual bell, plain-click URLs).
+**Superseded, and deliberately kept:** `confirm_message()`'s `CONFIRM_QUIT` branches are no longer what a window
+shows — `confirm_warning()` took that over — and `main.c` never calls it with `CONFIRM_QUIT` (a source scan pins
+that; the `main_tab_wording` mutant kills on it). They stay because the function is a public entry point whose
+safety contract (`cap == 0`, a NULL buffer, a small cap) is checked through them, and the header and the test group
+carry a NOTE saying so. Deleting them is a legitimate cleanup for a later session; it is not a bug.
+
+**Exact next action, in order:** (1) hand the user the box recipe in "Current Status" and record their verdict;
+(2) then steps 5-7 of the s102 plan (middle-click paste, visual bell, plain-click URLs).
 
 ### 5. Middle-click paste (opt-in, off by default)
 
@@ -1047,15 +1053,190 @@ numbers and the intermediate check counts are in git.
   mutant; and, worse, the harness **symlinked `include/` and then wrote the patched header through it,
   mutating the real project tree**. Now a copy, and every mutant run ends by asserting the project's own header
   still holds the expected enum and no source carries mutant text.
+- **2026-10-20, s123 — the WINDOW-close dialog, continued. The tree was RED when this session opened.**
+  The user's instruction: finish the redesign before pushing — pushing a broken feature is worse than not
+  pushing. Read the state from the tree, not from the page: `git status -sb` says `main` **ahead 1** of
+  `origin/main` (`357b4ee`, s122's enum fix, is NOT pushed), and three files are modified and uncommitted
+  (`include/kai-term/kai-term.h`, `src/layout.c`, `src/vt.c`) — the half-started dialog.
+  Objective: the user's report of 2026-10-20 asked for a WINDOW close to ask with a centred box, one sentence
+  naming the running process, and two clickable buttons, while a TAB close keeps the one-row notice. Text they
+  asked for, verbatim: `Warning ! "name of the process" is still running. Are you sure you want to close it ?`
+  Planned steps, each left green: (0) finish the half-done `trim_partial_utf8` -> `utf8_trim_partial` move so
+  the tree builds; (1) the process name — pure `proc_comm_name()` + syscall `pty_fg_name()` in pty.c;
+  (2) the wording — `confirm_warning()` in mux.c; (3) the geometry — `wrap_sentence()`, the box, the two
+  buttons and `layout_hit_dialog()` in layout.c; (4) the pixels — `Chrome.dialog_*` in `render_chrome()` and
+  the draw pass in `render_draw()`; (5) main.c's state, gate, layout feed, pointer hit test and modal keys;
+  (6) checks with an A/B and mutants, README + ISSUES, both builds, every suite, asan.
+  Expected outcome: `Mod+Q` on a busy window puts up a centred box that names the process and answers to a
+  click or to Enter/Esc; on an idle window it still closes at once; a tab close is unchanged.
+  DONE (0): the tree did not build. `src/layout.c:238` still called `trim_partial_utf8` after the function was
+  moved to `src/vt.c` as `utf8_trim_partial` — `error: implicit declaration of function 'trim_partial_utf8'`,
+  `make: *** [Makefile:45: build/layout.o] Error 1`. Fixed (call site and the comment naming it). Measured:
+  `make -j8` now exits 0 with **one** warning line left, `src/layout.c:77:13: 'wrap_sentence' defined but not
+  used` — that is the unwired dialog, not a defect; step (3) uses it. The tree is therefore NOT green yet and
+  nothing is committed until it is.
+  KNOWN-UNFINISHED at this point: steps 1-6 above. What is in the tree is the header's declarations and a
+  `wrap_sentence()` that is never called — and that first draft has a real bug in it: it compares a pointer
+  into the SOURCE string with `dst` (`last_space > dst`, `last_space - dst`) to find the wrap point, which is
+  two different objects. Step (3) rewrites it over indices into the source.
+  DONE (1, the process name): `proc_comm_name()` (pure) and `pty_fg_name()` (the syscall half) in `src/pty.c`.
+  The name comes from `/proc/<fg>/comm` where `fg` is the SAME `tcgetpgrp()` value `fg_busy()` already reads —
+  the foreground group's leader is exactly the process at risk, so the box names the thing the predicate
+  protected. The pure half trims the newline, refuses an empty name and refuses any byte < 0x20 or 0x7f (the
+  name goes inside a quoted sentence drawn one cell per codepoint), allows UTF-8, and runs the result through
+  `utf8_trim_partial` because the byte cap can cut a multi-byte name in half. `pty_fg_name` uses open/read, not
+  fopen: it runs inside a Wayland event handler on the way to closing the window, so no malloc and no stdio
+  buffer. It refuses `fg <= 0` — the same dead-session guard `fg_busy()` refuses on.
+  DONE (2, the wording): `confirm_warning()` in `src/mux.c` (plus the static `name_phrase()` / `name_list()`).
+  The wording lives in mux.c for the same reason `confirm_message()` does — main.c is in no test binary, so a
+  string there is a claim and a string here is a check. Measured strings (`.scratch/s123/msgprobe`, the checks
+  copy these, they are not typed from the page):
+    1 named   `Warning ! "nano" is still running. Are you sure you want to close it ?`  (the user's sentence)
+    1 unnamed `Warning ! session 3 is still running. Are you sure you want to close it ?`
+    2 named   `Warning ! "nano" and "sleep" are still running. Are you sure you want to close them ?`
+    3 named   `Warning ! "nano", "sleep" and "htop" are still running. ... close them ?`
+    5 named   `Warning ! "a", "b", "c" and 2 more are still running. ... close them ?`
+    n <= 0    `Warning ! Are you sure you want to close Kai-Term ?`
+  Three names is the cap, and the "and" goes before the last NAME only when the list ENDS with a name —
+  `"a", "b" and "c" and 2 more` reads as a mistake. A name that could not be read falls back to `session N`
+  rather than inventing one ("a command" is exactly what the user's box replaces).
+  DONE (3, the geometry): `wrap_sentence()` rewritten, the box and its two buttons in `layout_compute()`, and
+  `layout_hit_dialog()`. The first draft in the tree was wrong and is gone: it looked for the wrap point by
+  comparing a pointer into the SOURCE string against `dst` (`last_space > dst`, `last_space - dst`) — two
+  different objects, so the pointer compare and the subtraction are both meaningless. The rewrite works on
+  byte offsets into the source and keeps `cut`, the offset of the last COMPLETED word.
+  Measured (`.scratch/s123/dlgprobe`, `dlgprobe2` — cell 10x20, pad 8, gap 4):
+  * **The box costs the terminal no row** — the whole point of drawing it over the grid. Same window with the
+    box off and on: `pane=(8,8 1184x784) cols=118 rows=39` both times.
+  * The box hugs its text: a 70-column sentence in a 1200x800 window gives `box=(240,370 720x60)` —
+    (70+2) cells wide, centred in the GRID area (not the window), so the bar and the margin are excluded.
+  * The buttons set a width FLOOR: `need_w = (5+4)cw + 2cw + 2pad`. A 60px-wide window therefore gets
+    `on=0` — a box narrower than the two answers it holds cannot be clicked, and main.c's rule (a close is
+    never blocked by a question the user cannot see) closes the window instead.
+  * A word wider than the line is hard-broken at the column limit, never inside a codepoint: a 70-letter name
+    at 36 columns gives `line[1] = "aaaa...aaa` and `line[2] = aaa...aaa"`.
+  * A sentence longer than DIALOG_LINES keeps the last line and ends it in ` ...` (`word13 word14 word15
+    word16 word ...`) — visible shortening, not a silent cut, and the buttons are still there.
+  * `layout_hit_dialog` returns the button index at each button centre and -1 at the box centre and outside.
+    A click inside the box but off both buttons answers NOTHING on purpose: a click near a button must not
+    answer it by accident and a click outside must not be read as a NO the user did not give.
+  * `proc_comm_name` measured (`.scratch/s123/msgprobe`, `nameprobe2`): trims `\n` and `\r\n`; refuses empty,
+    NULL, a control byte and DEL; allows UTF-8; a byte cap that would split a codepoint refuses the whole name
+    rather than emitting a dangling lead byte; **`cap == 0` touches ZERO bytes of the caller's buffer** — the
+    same lesson s116 pinned for `fm_preview_selection_text`'s `out[-1]`, applied before it could happen here.
+  * `pty_fg_name` on a REAL pty (`.scratch/s123/msgprobe`) names the process: `sleep` from +300 ms on. Note
+    `pty_fg_busy` says **idle** for that whole run — this is the documented `-e` limitation (s121: `sh -c` puts
+    the command in the child's own foreground group), NOT a new bug; the name still reads because the group
+    leader is the command. Two probe bugs worth remembering: `"a\x7fb"` is ONE hex escape to gcc (0x7fb), not
+    DEL + `b`, so the first probe never tested DEL at all; and a `cap == 0` tail check that reads `strlen()` of
+    a buffer the function never terminated reports a write that never happened.
+- **2026-10-20, s124 — the WINDOW-close dialog, finished. The tree was RED when this session opened.**
+  The user came back with two things: "continue working on Kai-Term", and **the verdict step 4 owed since
+  s121 — they had eyes on the quit confirmation and it works.** That closes the step-4 row from the
+  "owed to the user's eye" list (the ROW, which is what was committed; the box below is new and is a NEW
+  debt on that list).
+  Read the state from the tree, not from the page. `git status -sb`: `main` **ahead 1** of `origin/main`
+  (`357b4ee`, s122's enum fix, is still NOT pushed) and ten files modified and uncommitted. The s123 entry
+  stopped at step (3); the tree actually holds steps (4) and (5) too — `Chrome.dialog_*` derived AND consumed
+  in `render_draw()`, and main.c's state/gate/layout-feed/pointer-hit/modal-keys wiring — so the page
+  understated the tree by two stages. Measured at open:
+  * `make -j8` exit 0, **0 warning lines** (the `wrap_sentence defined but not used` warning s123 left is
+    gone — the function is wired now).
+  * `make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0 but **1 warning line**:
+    `tests/test_vt.c:4580: declaration of 'n' shadows a previous local [-Wshadow]`.
+  * `./bin/test_vt` **1403 checks, 2 FAILURES**; `dbg` MODEL OK; `test_fm` 384/0; `test_render` 524/0.
+  Objective: take the tree to green and ship the box — the user's sentence, a centred box, two clickable
+  buttons — with checks that are non-vacuous, both builds clean, asan clean, README/ISSUES true, committed
+  and pushed.
+  Planned steps: (1) find out whether each failure is a code bug or a check bug, by probe, not by reading;
+  (2) fix whichever side is wrong; (3) kill the shadow warning; (4) re-run every suite and both builds;
+  (5) A/B and mutants on the new checks; (6) README + ISSUES; (7) `make asan`; (8) commit, `git fetch`, push.
+  MEASURED (1) — **both failures are bad checks, not bad code**, and both were written from the page instead
+  of from a probe (`.scratch/s124/wrapprobe`, `.scratch/s124/nameprobe`):
+  * `dialog layout: no line ends on a UTF-8 continuation byte` can NEVER pass for real UTF-8 text: a COMPLETE
+    2-byte codepoint ENDS on a continuation byte. The probe shows the wrap is correct — 150 x U+00E9 at
+    33 columns gives three lines of 66 bytes = 33 whole codepoints each, and the last line ends ` ...`;
+    the flagged byte `0xa9` is the second byte of a complete U+00E9. The property that matters is "no line
+    ends on an INCOMPLETE sequence", which is what the check has to say.
+  * `comm: a cap that would SPLIT a codepoint refuses the name` tests `cap = 3` on `"éà"`, and cap 3 does not
+    split anything: `keep = cap - 1 = 2` bytes is exactly one whole codepoint. The measured contract is
+    **keep the whole codepoints that fit, refuse only when not even one fits**: cap 1,2 -> 0; cap 3,4 -> `é`;
+    cap 5,6 -> `éà`; a 4-byte emoji refuses at caps 1-4 and passes at 5; the canary past the cap is untouched
+    at every cap. This CONTRADICTS the s123 line above ("refuses the whole name") — that line is what the
+    check was written from, and it is wrong; the neighbouring cap=4 check in the same group already asserted
+    the opposite (shortening), which is how the pair could sit in one file unnoticed.
+  Next action: rewrite those two checks over the measured contract, then steps (3)-(8).
+  DONE (2, the two checks rewritten over the measurement, `tests/test_vt.c`):
+  * The comm cap block now pins the whole measured ladder instead of one wrong case: cap 5 keeps `éà`, cap 4
+    (a bound INSIDE a sequence) trims the partial one and returns `é`, cap 3 (a bound ON an edge) keeps `é`,
+    cap 2 refuses because not one codepoint fits, the 4-byte emoji refuses at cap 4 and passes at cap 5.
+    Two new cases came with it — the emoji at a cap that HOLDS it, so the refusal check cannot be passed by a
+    parser that rejects every multi-byte name.
+  * The wrap check got a real validator, `utf8_whole()`, which decodes from the start and fails on a truncated
+    sequence or on a continuation byte where a lead byte belongs. The old predicate is gone. A `drew_multi`
+    guard sits in front of it so the check cannot be passed by a box that drew nothing, and a second case
+    exercises the OTHER branch — a single word wider than the line, hard-broken at a column limit — which the
+    first draft never touched.
+  DONE (3, the shadow warning): it went with the deleted `size_t n` in the old predicate; no separate fix was
+  needed and none was invented.
+  MEASURED (4) — both builds and every suite, at this tree:
+  * `make bin/test_vt bin/dbg bin/test_fm bin/test_render` -> **0 warning lines** (`grep -ciE 'warning|error'`).
+  * `./bin/test_vt` **1408 checks, 0 failures** (1403 with the 2 failures before; +5 net from the rewritten
+    comm ladder and the two new wrap cases). `./bin/dbg` **MODEL OK (0 problems)**. `./bin/test_fm` **384/0**.
+    `./bin/test_render` **524/0**.
+  * `./tests/cli_test.sh` -> **CLI: 149 checks, 0 failures, 0 skipped**. Note what that means: this machine has
+    a live `WAYLAND_DISPLAY=wayland-1`, so the probe window passed and the **windowed group ran for real** —
+    149 is no longer the arithmetic s121 predicted, it is a measurement, and it is the first windowed run since
+    s109. It mapped ~15 real windows; that is a thing to ask the user about before repeating, not a routine
+    command.
+  Next action: (5) A/B and mutants on the s123/s124 checks — every new check has to be shown to fail when the
+  behaviour it names is removed.
+  DONE (5, `.scratch/s124/mutate.py`, 22 mutants + a no-op control). The control is not decoration: it builds
+  and runs the STAGING tree with nothing removed and must report 0 failures, or "KILLED" would only mean the
+  staging tree was already broken. It does (1408/0 and 524/0 at the time it was first run).
+  **The harness found a real bug, which is the whole reason it is worth writing.** `wrap_no_trim` SURVIVED the
+  first run: removing `utf8_trim_partial()` from `wrap_sentence()` changed nothing any check could see. Chasing
+  why led to `.scratch/s124/wrap2`, which shows what happens when a line's BYTE bound (127) binds before its
+  COLUMN bound does — only in a WIDE box, which no check in the tree used:
+  * `wrap_sentence()` hard-broke a word at 127 bytes, trimmed the partial codepoint out of the line, and then
+    advanced the source pointer by the UNTRIMMED count. Two consequences, both measured: the trimmed character
+    vanishes from the sentence (147 of 150 codepoints reach the screen), and the NEXT line starts on its
+    leftover continuation byte (`line[1] = a9 c3 a9 ...`), which the font draws as a codepoint of its own.
+    With 3-byte characters two of the four lines start mid-codepoint.
+  * Fix in `src/layout.c`: the line trims itself in the hard-break branch and `p` then steps over exactly the
+    bytes the line KEPT. "A cut has to agree with the advance."
+  Two more holes the harness exposed, both in the CHECKS rather than the code:
+  * A sentence of 150 identical characters cannot reveal a gap — every byte position looks like every other,
+    so the "nothing was dropped" check passed a mutant that had skipped a whole codepoint. The inputs are now
+    VARYING (U+00C0, U+00C1, ... and U+2800, U+2801, ...).
+  * `utf8_whole()` as first written accepted a continuation byte that STARTS a codepoint (it derived the
+    length from whatever byte it was on). It now refuses one, which is what catches the second half of the bug.
+  Four cuts in `wrap_sentence()` now have a check and a mutant each — the hard-break trim, the advance that has
+  to agree with it, the `" ...` shortening clamp (reachable only with a sentence too long for a WIDE box: the
+  `" ...` hides the bad byte from any check that only looks at a line's tail), and the post-loop trim that
+  handles malformed INPUT. Plus a case for a sentence that simply ends mid-codepoint.
+  MEASURED (final, this tree): both builds **0 warning lines**; `./bin/test_vt` **1413 checks, 0 failures**;
+  `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **384/0**; `./bin/test_render` **524/0**.
+  A trap worth recording: mid-edit, `make bin/test_vt` FAILED (`conflicting types for 'big'`, `'ln' shadows`) —
+  and the suite still printed its old numbers, because a failed link leaves the previous binary in `bin/`. The
+  1412 I nearly wrote down was a stale binary. Re-measure after a clean build, never from the last run.
+  Mutant table (each row is one removed decision; KILLED = at least one suite noticed):
+    pty_no_trim 3 | pty_no_control 3 | pty_cap_offbyone 5 | mux_plural 3 | mux_name_cap 1 | mux_invent_name 3
+    | mux_and_sep 2 | wrap_hardbreak_no_trim 3 | wrap_advance_over_trimmed 3 | short_no_trim 1 | loop_no_trim 1
+    | wrap_no_dots 2 | box_no_floor 2 | box_no_centre 2 | hit_always_yes 5 | red_is_literal 2(render)
+    | box_flat 1(render) | draw_off 1(render) | main_no_feed 2(render) | main_always_vis 2(render)
+    | main_no_pointer 1(render) | main_tab_wording 1(render). 22/22 killed, control survives.
+  Next action: (6) README + ISSUES, (7) `make asan`, (8) commit and push.
 
 ## Next Steps
 
-1. **Now: step 4, confirm-quit — DONE, committed and pushed (s121, `4bcd56b`).** Read the state from git
-   (`git status -sb`, `git log --oneline origin/main -1`), never from this page. What it still owes is the
-   user's verdict on the question row — the recipe is in "Current Status"; nothing about how it reads has been
-   seen, though every decision in it has a check. Do NOT re-derive the foreground-group facts, re-write stage A's
-   checks or re-do stages B/C/D: the s120 and s121 entries record the A/B and the mutants each was measured
-   against (`test_vt` 1320/0, `test_render` 506/0, headless CLI 99/0/13, asan clean).
+1. **Now: the WINDOW-close box — built, green, committed (s124).** Read the state from git (`git status -sb`,
+   `git log --oneline origin/main -1`), never from this page. What it still owes is the user's eyes on the box —
+   the recipe is in "Current Status"; every decision in it has a check and 22 mutants prove the checks bite, but
+   nobody has seen it. The step-4 ROW is confirmed by the user (2026-10-20) — do not re-ask about it. Do NOT
+   re-derive the foreground-group facts, re-write stage A's checks or re-do stages B/C/D: the s120, s121, s122,
+   s123 and s124 entries record the A/B and the mutants each was measured against (`test_vt` 1413/0,
+   `test_render` 524/0, CLI 149/0/0 with a display, asan clean).
    **Then steps 5-7 of the s102 plan** (middle-click paste, visual bell, plain-click URLs). Each is measured and
    gated in "Current Task"; the decisions that would have blocked them are already made.
 2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look

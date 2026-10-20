@@ -57,6 +57,39 @@ int utf8_encode(uint32_t cp, char *out)
     return 4;
 }
 
+/* Drop a trailing incomplete UTF-8 sequence.
+   Cutting a string to a BYTE bound (snprintf into a fixed buffer) can split a codepoint, and a dangling lead
+   byte then reaches the renderer as a codepoint of its own. Every place that byte-cuts text later drawn — a
+   tab-bar label, the confirm-quit row, the dialog's sentence, a process name read out of /proc — calls this,
+   so there is one rule rather than four that can drift. Walks back at most 4 bytes, because that is all a
+   trailing sequence can be. */
+void utf8_trim_partial(char *s)
+{
+    size_t n = strlen(s);
+    if (!n)
+        return;
+    size_t i = n, lead_at = n;
+    int lead = -1;
+    while (i > 0 && n - i < 4) {
+        i--;
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80)
+            return;                 /* ends with ASCII: nothing to trim */
+        if (c >= 0xc0) {            /* a lead byte: is its sequence complete in this buffer? */
+            lead = c;
+            lead_at = i;
+            break;
+        }
+    }
+    if (lead < 0) {                 /* malformed input: trailing continuation bytes with no lead */
+        s[i] = 0;
+        return;
+    }
+    int want = lead >= 0xf0 ? 4 : (lead >= 0xe0 ? 3 : 2);
+    if ((int)(n - lead_at) < want)
+        s[lead_at] = 0;
+}
+
 /* ---------------- codepoint predicates ---------------- */
 
 /* Codepoints that can START an emoji grapheme cluster (the anchor of a ZWJ / modifier

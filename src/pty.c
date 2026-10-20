@@ -180,3 +180,68 @@ int pty_fg_busy(const Pty *p)
         return 0;
     return fg_busy(tcgetpgrp(p->mfd), p->child);
 }
+
+/* What is running here, BY NAME. The box the user asked for says `Warning ! "nano" is still running.`, not
+   "a command" — a user who typed `nano` recognises their own word and does not have to wonder which session
+   is meant. The DECISION about the text is kept apart from the file read for the same reason fg_busy() is:
+   a test can put every case through `proc_comm_name` without owning a process.
+   /proc/<pid>/comm is the kernel's own name for the process: TASK_COMM_LEN-1 = 15 bytes plus a newline, so
+   it is always short enough for one row of a window, and it is the name of the FOREGROUND group's leader,
+   which is exactly the process fg_busy() says is at risk. It is read with open/read rather than fopen
+   because this runs inside a Wayland event handler on the way to closing the window: no malloc, no stdio
+   buffer, nothing that can fail in a way the close path has to unwind. */
+int proc_comm_name(const char *raw, char *out, size_t cap)
+{
+    if (!out || cap == 0)
+        return 0;
+    out[0] = 0;
+    if (!raw)
+        return 0;
+
+    size_t n = strlen(raw);
+    while (n && (raw[n - 1] == '\n' || raw[n - 1] == '\r'))
+        n--;                    /* comm is newline-terminated; the sentence must not be */
+
+    /* The name goes inside a quoted sentence and is drawn one cell per codepoint, so a control character
+       would draw a control code or move the cursor of the window that is asking. Nothing real puts one in a
+       comm, and refusing is cheaper than escaping. Bytes >= 0x80 are allowed: a name may be UTF-8. */
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)raw[i];
+        if (c < 0x20 || c == 0x7f)
+            return 0;
+    }
+    if (!n)
+        return 0;
+
+    size_t keep = n < cap - 1 ? n : cap - 1;
+    memcpy(out, raw, keep);
+    out[keep] = 0;
+    utf8_trim_partial(out);     /* the byte cap can cut a multi-byte name in half */
+    return out[0] ? 1 : 0;
+}
+
+int pty_fg_name(const Pty *p, char *out, size_t cap)
+{
+    if (!out || cap == 0)
+        return 0;
+    out[0] = 0;
+    if (!p || p->mfd < 0)
+        return 0;
+
+    pid_t fg = tcgetpgrp(p->mfd);
+    if (fg <= 0)
+        return 0;               /* the same dead-session guard fg_busy() refuses on */
+
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%lld/comm", (long long)fg);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return 0;               /* the process is gone, or /proc is not mounted */
+    char raw[PROC_NAME_MAX + 8];
+    ssize_t n = read(fd, raw, sizeof raw - 1);
+    close(fd);
+    if (n <= 0)
+        return 0;
+    raw[n] = 0;
+    return proc_comm_name(raw, out, cap);
+}
