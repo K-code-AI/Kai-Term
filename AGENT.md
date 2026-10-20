@@ -600,7 +600,10 @@ look, bell flash) to the user.
   `cursor_width = 2`, DECSCUSR honoured, no `cursor_style` key) — probe first, A/B every new check, hand the
   look to the user.
 - **2026-10-19, s106 — this cleanup (docs only, no source touched).** 1942 -> 1459 lines, 183,517 -> 137,411
-  bytes. The s101-s105 step-by-step narrative collapsed into the era entries above, and the "measured starting
+  bytes (the 1942 side is verifiable: `git show 8add0e5:AGENT.md | wc -l` — the cleanup sat uncommitted while
+  1e was taken green, so the feature commit still carried the pre-cleanup text; the file landed as 1514 lines
+  in `ebd62d9`, because s107's own entries were added on top of the 1459). The s101-s105 step-by-step
+  narrative collapsed into the era entries above, and the "measured starting
   point" and done-step plan blocks went to git history. Every mechanism name, measured number and pitfall was
   checked to survive outside the deleted text before it was deleted (the check: build the post-deletion text and
   grep it for each name — `exec_c0`, `clipboard_mime_rank`, `paste_repair`, `config_find`, `apply_bind_key`,
