@@ -2,6 +2,8 @@
 #include "kai-term.h"
 
 #include <ctype.h>           /* the config-template name scan (same classes src/config.c uses) */
+#include <dirent.h>          /* rm_tree: the scratch trees the import group builds */
+#include <stdlib.h>          /* malloc for the derived name lists */
 #include <sys/stat.h>        /* the shell-integration directory: created, 0700, removed again */
 #include <unistd.h>          /* access() on a request file that must or must not exist */
 
@@ -490,6 +492,136 @@ static const uint8_t PNG8_ZLIB[237] = {
     0x41,0x17,0x18,0x37,0xfe,0x00,0x00,0x00,0x00,0x49,0x45,0x4e,
     0x44,0xae,0x42,0x60,0x82,0x96,0x43,0x5d,0x9a,
 };
+
+/* Write a scratch file this test owns. */
+static int wr_file(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "w");
+    if (!f)
+        return -1;
+    fputs(text, f);
+    int bad = ferror(f);
+    if (fclose(f) != 0)
+        bad = 1;
+    return bad ? -1 : 0;
+}
+
+/* Remove a tree this test created. Only ever called on paths under /tmp/<this pid>. */
+static void rm_tree(const char *path)
+{
+    DIR *d = opendir(path);
+    if (!d) {
+        remove(path);
+        return;
+    }
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+        char child[4096];
+        snprintf(child, sizeof child, "%s/%s", path, de->d_name);
+        rm_tree(child);
+    }
+    closedir(d);
+    rmdir(path);
+}
+
+/* The long option names usage() prints, read out of src/main.c — the same derivation the templates use.
+   Each printed option is one string literal whose text starts with spaces then '-'; the prose line
+   ("Long options also accept the --name=VALUE form.") does not, and must not count. */
+static int usage_opts_of(const char *path, const char *names[], int cap)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    char line[4096];
+    int in = 0, n = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (!in) {
+            if (strstr(line, "static void usage("))
+                in = 1;
+            continue;
+        }
+        if (line[0] == '}')
+            break;
+        char *q = strchr(line, '"');
+        if (!q)
+            continue;
+        char *p = q + 1;
+        while (*p == ' ')
+            p++;
+        if (*p != '-')
+            continue;                          /* prose, not an option line */
+        char *d = strstr(p, "--");
+        if (!d || !isalpha((unsigned char)d[2]))
+            continue;
+        char *e = d + 2;
+        while (*e && (isalnum((unsigned char)*e) || *e == '-'))
+            e++;
+        size_t len = (size_t)(e - (d + 2));
+        if (n >= cap)
+            break;
+        char *buf = malloc(len + 1);
+        if (!buf)
+            break;
+        memcpy(buf, d + 2, len);
+        buf[len] = 0;
+        names[n++] = buf;
+    }
+    fclose(f);
+    return in ? n : -1;
+}
+
+/* The long option names README's option table documents: the third column of each table row. A separator
+   row (`|---|---|---|`) has no letter after its dashes, which is what keeps it out. */
+static int readme_opts_of(const char *path, const char *names[], int cap)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    char line[4096];
+    int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] != '|')
+            continue;
+        /* The long spelling is the SECOND column: leading pipe, end of column one, end of column two. */
+        char *p0 = strchr(line, '|');
+        if (!p0)
+            continue;
+        char *p1 = strchr(p0 + 1, '|');
+        if (!p1)
+            continue;
+        char *p2 = strchr(p1 + 1, '|');
+        size_t span = p2 ? (size_t)(p2 - (p1 + 1)) : strlen(p1 + 1);
+        char cell[512];
+        if (span >= sizeof cell)
+            span = sizeof cell - 1;
+        memcpy(cell, p1 + 1, span);
+        cell[span] = 0;
+        char *d = cell;
+        while ((d = strstr(d, "--")) != NULL) {
+            if (isalpha((unsigned char)d[2]))
+                break;
+            d++;
+        }
+        if (!d)
+            continue;
+        char *e = d + 2;
+        while (*e && (isalnum((unsigned char)*e) || *e == '-'))
+            e++;
+        size_t len = (size_t)(e - (d + 2));
+        if (n >= cap)
+            break;
+        char *buf = malloc(len + 1);
+        if (!buf)
+            break;
+        memcpy(buf, d + 2, len);
+        buf[len] = 0;
+        names[n++] = buf;
+    }
+    fclose(f);
+    return n;
+}
 
 int main(void)
 {
@@ -4701,6 +4833,387 @@ int main(void)
         term_palette_reset();
         term_set_osc_colors(1);
         term_destroy(&T);
+    }
+
+    /* ---------- importing a foreign theme (`--import-theme`, step 1e) ----------
+       The importer's job is a translation of NAMES and of COLOUR SPELLINGS, so the checks are about values:
+       what a given file becomes, not that a function ran. Every count and every colour below is what
+       .scratch/s105/importprobe printed for these exact texts — the corpus is the probe's corpus, and the
+       kitty file is the user's own ~/.config/kitty/themes/noctalia.conf, copied verbatim.
+       Two things this group exists to keep out: a format guessed wrong (a colour that looks fine and is
+       wrong), and a colour folded wrong — the xfce 12-hex-digit form is the same overflow class as the s102
+       cube and the s104 rgb:ffff rounding, and the check on it asserts the FOLDED value, not just "nonzero".
+       Scratch tree under /tmp, HOME/XDG pointed at it, everything restored after. */
+    {
+        char base[128];
+        snprintf(base, sizeof base, "/tmp/kterm_import_%d", (int)getpid());
+        char d_xdg[256], d_home[256], p_kitty[256], p_xres[256], p_alac[256], p_kons[256];
+        char p_xfce[256], p_json[256], p_plist[256], p_nonsense[256], p_named[256];
+        snprintf(d_xdg,      sizeof d_xdg,      "%s/xdg", base);
+        snprintf(d_home,     sizeof d_home,     "%s/.config", base);
+        snprintf(p_kitty,    sizeof p_kitty,    "%s/noctalia.conf", base);
+        snprintf(p_xres,     sizeof p_xres,     "%s/solarized.Xresources", base);
+        snprintf(p_alac,     sizeof p_alac,     "%s/darcula.toml", base);
+        snprintf(p_kons,     sizeof p_kons,     "%s/breeze.colorscheme", base);
+        snprintf(p_xfce,     sizeof p_xfce,     "%s/cattery.terminalrc", base);
+        snprintf(p_json,     sizeof p_json,     "%s/campbell.json", base);
+        snprintf(p_plist,    sizeof p_plist,    "%s/dusk.itermcolors", base);
+        snprintf(p_nonsense, sizeof p_nonsense, "%s/notes.txt", base);
+        snprintf(p_named,    sizeof p_named,    "%s/theme.txt", base);
+
+        char save_xdg[4096], save_home[4096];
+        int had_xdg = getenv("XDG_CONFIG_HOME") != NULL;
+        snprintf(save_xdg, sizeof save_xdg, "%s", getenv("XDG_CONFIG_HOME") ? getenv("XDG_CONFIG_HOME") : "");
+        snprintf(save_home, sizeof save_home, "%s", getenv("HOME") ? getenv("HOME") : "");
+
+        mkdir(base, 0700);
+        mkdir(d_xdg, 0700);
+        mkdir(d_home, 0700);
+
+        /* The corpus, verbatim from .scratch/s105/corpus/ (the kitty file is the user's own). */
+        static const char *KITTY =
+            "color0 #0b2c47\ncolor1 #fd4663\ncolor2 #64c3e8\ncolor3 #5b7ef6\n"
+            "color4 #906cff\ncolor5 #90d4ef\ncolor6 #90a4ef\ncolor7 #f2f3f3\n"
+            "color8 #606c70\ncolor9 #fd4663\ncolor10 #64c3e8\ncolor11 #5b7ef6\n"
+            "color12 #906cff\ncolor13 #90d4ef\ncolor14 #90a4ef\ncolor15 #f2f3f3\n"
+            "\ncursor                #f2f3f3\ncursor_text_color     #082135\n"
+            "background            #082135\nforeground            #f2f3f3\n"
+            "selection_foreground  #afb4b6\nselection_background  #0b2c47\n"
+            "active_border_color   #64c3e8\ninactive_border_color #0b2c47\n"
+            "url_color             #64c3e8\n\n"
+            "active_tab_foreground   #182125\nactive_tab_background   #64c3e8\n"
+            "inactive_tab_foreground #afb4b6\ninactive_tab_background #0b2c47\n"
+            "cursor_trail_color      #afb4b6\n";
+        static const char *XRES =
+            "! Solarized dark — the xcolors.net spelling\n"
+            "XTerm*background: #002b36\nXTerm*foreground: #657b83\n"
+            "XTerm*cursorColor: #93a1a1\nXTerm*color0: #073642\nXTerm*color1: #dc322f\n"
+            "XTerm*color2: #859900\nXTerm*color3: #b58900\nXTerm*color4: #268bd2\n"
+            "XTerm*color5: #d33682\nXTerm*color6: #2aa198\nXTerm*color7: #eee8d5\n"
+            "XTerm*color8: #002b36\nXTerm*color9: #cb4b16\nXTerm*color10: #586e75\n"
+            "XTerm*color11: #657b83\nXTerm*color12: #839496\nXTerm*color13: #6c71c4\n"
+            "XTerm*color14: #93a1a1\nXTerm*color15: #fdf6e3\n"
+            "! keys Kai-Term has nowhere for\n"
+            "XTerm*colorUL: #268bd2\nXTerm*pointerColor: #268bd2\n"
+            "xterm*faceName: DejaVu Sans Mono\n";
+        static const char *ALAC =
+            "# alacritty.toml — the v0.13 table syntax\n"
+            "[colors.primary]\nbackground = '#1d1f21'\nforeground = '#c5c8c6'\n\n"
+            "[colors.cursor]\ntext = '#1d1f21'\ncursor = '#c5c8c6'\n\n"
+            "[colors.selection]\ntext = 'CellForeground'\nbackground = '#eaeaea'\n\n"
+            "[colors.normal]\nblack = '#1d1f21'\nred = '#cc6666'\ngreen = '#b5bd68'\n"
+            "yellow = '#f0c674'\nblue = '#81a2be'\npurple = '#b294bb'\ncyan = '#8abeb7'\n"
+            "white = '#c5c8c6'\n\n"
+            "[colors.bright]\nblack = '#666666'\nred = '#d54e53'\ngreen = '#b9ca4a'\n"
+            "yellow = '#e7c547'\nblue = '#7aa6da'\npurple = '#c397d4'\ncyan = '#70c0b1'\n"
+            "white = '#eaeaea'\n";
+        static const char *KONSOLE =
+            "[General]\nDescription=Breeze Dark\n\n"
+            "[Background]\nColor=23,32,38\n\n[Foreground]\nColor=252,252,252\n\n"
+            "[Color0]\nColor=23,32,38\n[Color1]\nColor=237,98,104\n"
+            "[Color2]\nColor=100,171,69\n[Color3]\nColor=233,178,52\n"
+            "[Color4]\nColor=56,111,187\n[Color5]\nColor=199,99,171\n"
+            "[Color6]\nColor=26,188,156\n[Color7]\nColor=239,240,241\n\n"
+            "[Color0Intense]\nColor=112,120,128\n[Color1Intense]\nColor=224,108,117\n"
+            "[Color2Intense]\nColor=117,189,86\n[Color3Intense]\nColor=244,190,96\n"
+            "[Color4Intense]\nColor=74,130,200\n[Color5Intense]\nColor=211,114,182\n"
+            "[Color6Intense]\nColor=55,205,175\n[Color7Intense]\nColor=252,252,252\n\n"
+            "[Cursor]\nColor=239,240,241\n\n"
+            "[BackgroundIntense]\nColor=23,32,38\n[ForegroundIntense]\nColor=252,252,252\n";
+        static const char *XFCE =
+            "[Configuration]\nMiscAlwaysShowTabs=FALSE\n\n"
+            "[Colors]\nColorBackground=#1c1c1c1c1c1c\nColorForeground=#cccccccccccc\n"
+            "ColorCursor=#e3e3e3e3e3e3\n"
+            "ColorPalette=#1c1c1c1c1c1c;#c75a5a5a5a5a;#707080806e6e;#e8e8a0a06464;"
+            "#58688888b0b0;#a888a888c8c8;#56888888a0a0;#cccccccccccc;#6d6d6d6d6d6d;"
+            "#c75a5a5a5a5a;#707080806e6e;#e8e8a0a06464;#58688888b0b0;#a888a888c8c8;"
+            "#56888888a0a0;#cccccccccccc\n";
+        static const char *JSON =
+            "{\n  \"name\": \"Campbell\",\n  \"background\": \"#0C0C0C\",\n"
+            "  \"foreground\": \"#CCCCCC\",\n  \"cursorColor\": \"#FFFFFF\",\n"
+            "  \"selectionBackground\": \"#FFFFFF\",\n  \"black\": \"#0C0C0C\",\n"
+            "  \"red\": \"#C50F1F\",\n  \"green\": \"#13A10E\",\n  \"yellow\": \"#C19C00\",\n"
+            "  \"blue\": \"#0037DA\",\n  \"purple\": \"#881798\",\n  \"cyan\": \"#3A96DD\",\n"
+            "  \"white\": \"#CCCCCC\",\n  \"brightBlack\": \"#767676\",\n"
+            "  \"brightRed\": \"#E74856\",\n  \"brightGreen\": \"#16C60C\",\n"
+            "  \"brightYellow\": \"#F9F1A5\",\n  \"brightBlue\": \"#3B78FF\",\n"
+            "  \"brightPurple\": \"#B4009E\",\n  \"brightCyan\": \"#61D6D6\",\n"
+            "  \"brightWhite\": \"#F2F2F2\",\n  \"backgroundImage\": null,\n"
+            "  \"overlineOnTextStyle\": false\n}\n";
+        static const char *PLIST =
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n"
+            "  <key>Ansi 0 Color</key>\n  <dict>\n"
+            "    <key>Blue Component</key><real>0.0</real>\n"
+            "    <key>Green Component</key><real>0.0</real>\n"
+            "    <key>Red Component</key><real>0.0</real>\n  </dict>\n</dict>\n</plist>\n";
+        static const char *NONSENSE = "this is not a theme at all\njust some prose about colours\n";
+
+        CHECK(wr_file(p_kitty, KITTY) == 0 && wr_file(p_xres, XRES) == 0
+              && wr_file(p_alac, ALAC) == 0 && wr_file(p_kons, KONSOLE) == 0
+              && wr_file(p_xfce, XFCE) == 0 && wr_file(p_json, JSON) == 0
+              && wr_file(p_plist, PLIST) == 0 && wr_file(p_nonsense, NONSENSE) == 0,
+              "import: the corpus was written (the same texts the probe measured)");
+
+        /* --- the sniff: content, not file name, and never a guess --- */
+        CHECK(theme_sniff(KITTY) == THF_KAI, "import: `color0 #0b2c47` lines are kai-term/kitty");
+        CHECK(theme_sniff(XRES) == THF_XRES, "import: a `Name*key: value` line is Xresources");
+        CHECK(theme_sniff(ALAC) == THF_ALACRITTY, "import: [colors.primary] is alacritty");
+        CHECK(theme_sniff(KONSOLE) == THF_KONSOLE, "import: [Background] + Color= is Konsole");
+        CHECK(theme_sniff(XFCE) == THF_XFCE, "import: ColorPalette= is XFCE4 (checked before Konsole)");
+        CHECK(theme_sniff(JSON) == THF_JSON, "import: a leading brace is JSON");
+        CHECK(theme_sniff(PLIST) == THF_PLIST, "import: <plist / Red Component is iTerm2");
+        CHECK(theme_sniff(NONSENSE) == THF_UNKNOWN, "import: prose is not a theme — nothing is guessed");
+        CHECK(theme_sniff("") == THF_UNKNOWN, "import: an empty file is not a theme either");
+        CHECK(strcmp(theme_format_name(THF_KONSOLE), "Konsole") == 0,
+              "import: the format has a name the report and the log can print");
+
+        /* --- what each format becomes. The counts are the probe's. --- */
+        ThemeVals v;
+        CHECK(theme_parse_text(KITTY, THF_KAI, &v, p_kitty) == 0
+              && v.n_set == 20 && v.n_drop == 10,
+              "import: the user's own kitty file gives 20 colours and drops 10 keys — re-diff, do not copy");
+        CHECK(v.fg == 0xfff2f3f3u && v.bg == 0xff082135u && v.cur == 0xfff2f3f3u
+              && v.sel == 0xff0b2c47u,
+              "import: kitty ink/paper/cursor/selection_background land");
+        CHECK(v.col[0] == 0xff0b2c47u && v.col[1] == 0xfffd4663u && v.col[15] == 0xfff2f3f3u,
+              "import: all 16 kitty palette entries land");
+
+        CHECK(theme_parse_text(XRES, THF_XRES, &v, p_xres) == 0 && v.n_set == 19 && v.n_drop == 3,
+              "import: Xresources gives 19 colours (it names no selection colour) — re-diff");
+        CHECK(v.bg == 0xff002b36u && v.fg == 0xff657b83u && v.cur == 0xff93a1a1u,
+              "import: the `XTerm*` prefix is stripped and cursorColor is the cursor");
+        CHECK(v.sel == 0,
+              "import: a colour the file never names stays UNSET (0), so Kai-Term's own default survives "
+              "instead of black");
+
+        CHECK(theme_parse_text(ALAC, THF_ALACRITTY, &v, p_alac) == 0 && v.n_set == 20 && v.n_drop == 2,
+              "import: alacritty gives 20 colours and drops the two `text` keys — re-diff");
+        CHECK(v.bg == 0xff1d1f21u && v.sel == 0xffeaeaeau,
+              "import: [colors.primary] background and [colors.selection] background are read");
+        CHECK(v.col[8] == 0xff666666u && v.col[15] == 0xffeaeaeau,
+              "import: [colors.bright] is entries 8-15, not a second copy of the dark eight");
+
+        CHECK(theme_parse_text(KONSOLE, THF_KONSOLE, &v, p_kons) == 0 && v.n_set == 19 && v.n_drop == 2,
+              "import: Konsole gives 19 colours and drops the two Intense ink/paper — re-diff");
+        CHECK(v.col[0] == 0xff172026u && v.col[8] == 0xff707880u && v.col[15] == 0xfffcfcfcu,
+              "import: ColorN is the dark eight and ColorNIntense the BRIGHT eight — mapping them onto "
+              "each other throws half the palette away");
+        CHECK(!strcmp(v.name, "Breeze Dark"), "import: [General] Description is the theme's name");
+
+        CHECK(theme_parse_text(XFCE, THF_XFCE, &v, p_xfce) == 0 && v.n_set == 19 && v.n_drop == 1,
+              "import: XFCE4 gives 19 colours and drops the one non-colour key — re-diff");
+        CHECK(v.bg == 0xff1c1c1cu && v.fg == 0xffccccccu && v.cur == 0xffe3e3e3u,
+              "import: `#1c1c1c1c1c1c` is 16-BIT components and folds to #1c1c1c — truncating it instead "
+              "gives #1c1c1c1c, an alpha of 0x1c (the s102/s104 overflow class in a new place)");
+        CHECK(v.col[1] == 0xffc75a5au && v.col[15] == 0xffccccccu,
+              "import: the ';' palette fills entries 0-15 in order");
+
+        CHECK(theme_parse_text(JSON, THF_JSON, &v, p_json) == 0 && v.n_set == 20 && v.n_drop == 0,
+              "import: a Windows Terminal scheme gives 20 colours — re-diff");
+        CHECK(!strcmp(v.name, "Campbell"), "import: the scheme's own `name` is taken, not a profile's");
+        CHECK(v.col[8] == 0xff767676u && v.col[15] == 0xfff2f2f2u,
+              "import: brightBlack..brightWhite are entries 8-15 (they were briefly mapped onto 0-7, which "
+              "then looked like duplicates and were dropped)");
+
+        /* --- refusals: nothing is written, nothing is guessed --- */
+        CHECK(theme_parse_text(PLIST, THF_PLIST, &v, p_plist) == -1,
+              "import: an iTerm2 plist is refused rather than approximated from 0.0-1.0 floats");
+        CHECK(theme_parse_text(NONSENSE, THF_UNKNOWN, &v, p_nonsense) == -1,
+              "import: an unknown format parses to nothing");
+        CHECK(theme_parse_text("font_size = 9\nnonsense = 1\n", THF_KAI, &v, p_nonsense) == -1,
+              "import: a file with no colour in it is refused, not written as an empty theme");
+        CHECK(theme_parse_text("background = notacolor\n", THF_KAI, &v, p_nonsense) == -1,
+              "import: an unreadable colour is refused — it does not become black");
+        CHECK(theme_parse_text("background = rgb:ff/ff/ff\n", THF_KAI, &v, p_nonsense) == -1,
+              "import: the OSC colour spelling is NOT accepted here; a theme file uses the config spelling");
+
+        /* --- where it goes --- */
+        setenv("HOME", base, 1);
+        setenv("XDG_CONFIG_HOME", d_xdg, 1);
+        char dir[4096], want[4096];
+        theme_dest_dir(dir, sizeof dir);
+        snprintf(want, sizeof want, "%s/kai-term/themes", d_xdg);
+        CHECK(!strcmp(dir, want),
+              "import: $XDG_CONFIG_HOME/kai-term/themes is the destination, created on the way");
+        setenv("XDG_CONFIG_HOME", "", 1);
+        theme_dest_dir(dir, sizeof dir);
+        snprintf(want, sizeof want, "%s/.config/kai-term/themes", base);
+        CHECK(!strcmp(dir, want), "import: with no XDG_CONFIG_HOME the HOME directory is used");
+        setenv("HOME", "", 1);
+        theme_dest_dir(dir, sizeof dir);
+        CHECK(dir[0] == 0,
+              "import: with neither HOME nor XDG there is NO destination — /etc is never written to, "
+              "because importing must not need root");
+        setenv("HOME", base, 1);
+        setenv("XDG_CONFIG_HOME", d_xdg, 1);
+
+        /* --- the whole chain, and the overwrite rule --- */
+        char dest[4096];
+        CHECK(theme_import(p_kitty, dest, sizeof dest, 0) == 0, "import: the kitty file imports");
+        CHECK(strstr(dest, d_xdg) == dest && !strcmp(dest + strlen(dest) - 6, ".theme"),
+              "import: it lands in the XDG themes directory as NAME.theme");
+        snprintf(want, sizeof want, "%s/kai-term/themes/noctalia.theme", d_xdg);
+        CHECK(!strcmp(dest, want),
+              "import: with no `name` key the file is named for the source file's stem");
+        char nm[128];
+        theme_name_of_path(dest, nm, sizeof nm);
+        CHECK(!strcmp(nm, "noctalia"), "import: the `theme =` value to print is the name without .theme");
+
+        /* The written file is read back by the SAME reader a hand-written theme uses — if the writer and the
+           reader disagree, this is where it shows, and the user's next launch is where it would hurt. */
+        Config c;
+        config_default(&c);
+        term_palette_reset();
+        int applied = theme_apply_file(&c, dest);
+        CHECK(applied == 20,
+              "import: the written file applies 20 colours through theme_apply_file — round trip");
+        CHECK(c.fg == 0xfff2f3f3u && c.bg == 0xff082135u && c.cursor_color == 0xfff2f3f3u
+              && c.selection_color == 0xff0b2c47u,
+              "import: and the four chrome colours come back exactly as the importer read them");
+        CHECK(term_palette()[1] == 0xfffd4663u && term_palette()[15] == 0xfff2f3f3u,
+              "import: and so do the palette entries an application reads with SGR 38;5;N");
+
+        /* A file that names no selection colour must not gain one. */
+        CHECK(theme_import(p_xres, dest, sizeof dest, 1) == 0, "import: the Xresources file imports");
+        config_default(&c);
+        term_palette_reset();
+        applied = theme_apply_file(&c, dest);
+        CHECK(applied == 19, "import: its 19 colours are written and re-read");
+        CHECK(c.selection_color == SEL_BG,
+              "import: an unset colour is left OUT of the written file, so the built-in survives rather "
+              "than becoming black");
+
+        /* Already there: say so, change nothing, and let the caller ask. */
+        char keep[4096];
+        CHECK(theme_import(p_xres, keep, sizeof keep, 1) == 0, "import: a baseline import to overwrite");
+        FILE *kf = fopen(keep, "w");
+        if (kf) { fputs("# a sentinel the importer must not remove\n", kf); fclose(kf); }
+        char dest2[4096];
+        CHECK(theme_import(p_xres, dest2, sizeof dest2, 0) == 1,
+              "import: an existing theme returns 1 — the caller asks, it does not decide");
+        kf = fopen(keep, "r");
+        char first[64] = "";
+        if (kf) { if (!fgets(first, sizeof first, kf)) first[0] = 0; fclose(kf); }
+        CHECK(!strcmp(first, "# a sentinel the importer must not remove\n"),
+              "import: and the existing file is UNTOUCHED when the answer has not been given");
+        CHECK(theme_import(p_xres, dest2, sizeof dest2, 1) == 0,
+              "import: with overwrite granted the same call writes it");
+        kf = fopen(keep, "r");
+        if (kf) { if (!fgets(first, sizeof first, kf)) first[0] = 0; fclose(kf); }
+        CHECK(!strncmp(first, "# Kai-Term theme, imported from ", 30),
+              "import: and the replaced file starts with the import header");
+
+        /* A `name` key names the file; the name is made safe first. */
+        /* The three names below are what the real binary wrote, measured before the check was written:
+           `13th Floor` -> 13th-Floor, `../../evil` -> evil (a leading '.' or '/' is dropped, so there is
+           nothing to escape with), and a non-ASCII name keeps only its ASCII runs. That last one is a known
+           limit worth naming: the C locale has no isalnum for UTF-8 bytes, so `über — Café!` becomes
+           `ber-Caf`. The theme still loads; only the file name is plain. */
+        CHECK(wr_file(p_named, "name = 13th Floor\nbackground = #101010\n") == 0,
+              "import: a named theme file was written");
+        snprintf(want, sizeof want, "%s/kai-term/themes/13th-Floor.theme", d_xdg);
+        CHECK(theme_import(p_named, dest, sizeof dest, 0) == 0 && !strcmp(dest, want),
+              "import: `name = 13th Floor` becomes 13th-Floor.theme (a space is not a file-name character)");
+        CHECK(wr_file(p_named, "name = ../../evil\nbackground = #101010\n") == 0,
+              "import: a hostile name was written");
+        snprintf(want, sizeof want, "%s/kai-term/themes/evil.theme", d_xdg);
+        CHECK(theme_import(p_named, dest, sizeof dest, 1) == 0 && !strcmp(dest, want),
+              "import: `name = ../../evil` cannot leave the themes directory — the dots and slashes are gone");
+
+        /* A name longer than ThemeVals.name is CUT, and the cut is a reported decision rather than an
+           accident — it is the file name the theme is written under. Measured with the real binary before
+           the check was written: a 236-byte name keeps its first 127 bytes, logs `the theme's name is 236
+           bytes — only the first 127 are kept`, the import still succeeds, and the written file re-reads
+           through the same cap. The name alternates 'a'/'b' so an off-by-one in the cap changes the LAST
+           character of the stem as well as its length; the CLI suite pins the log line. */
+        char longname[141], stem[128], body[512];
+        for (int i = 0; i < 140; i++)
+            longname[i] = (i % 2) ? 'b' : 'a';
+        longname[140] = 0;
+        for (int i = 0; i < 127; i++)
+            stem[i] = (i % 2) ? 'b' : 'a';
+        stem[127] = 0;
+        snprintf(body, sizeof body, "name = %s\nbackground = #101010\n", longname);
+        CHECK(wr_file(p_named, body) == 0, "import: an over-long theme name was written");
+        snprintf(want, sizeof want, "%s/kai-term/themes/%s.theme", d_xdg, stem);
+        CHECK(theme_import(p_named, dest, sizeof dest, 1) == 0 && !strcmp(dest, want),
+              "import: a 140-byte name keeps exactly its first 127 bytes as the file name — re-diff, do not copy");
+
+        /* Refusals write nothing at all. */
+        CHECK(theme_import(p_plist, dest, sizeof dest, 0) == -1 && dest[0] == 0,
+              "import: a refused format leaves no file and no path behind");
+        CHECK(theme_import(p_nonsense, dest, sizeof dest, 0) == -1,
+              "import: an unrecognised file is refused");
+        CHECK(theme_import("/no/such/theme.file", dest, sizeof dest, 0) == -1,
+              "import: a missing file is refused");
+        CHECK(theme_import(base, dest, sizeof dest, 0) == -1,
+              "import: a DIRECTORY named like a theme is refused (same rule as config_find)");
+
+        /* Tear down, and leave HOME, XDG and the palette as the rest of the suite expects them. */
+        term_palette_reset();
+        if (had_xdg)
+            setenv("XDG_CONFIG_HOME", save_xdg, 1);
+        else
+            unsetenv("XDG_CONFIG_HOME");
+        setenv("HOME", save_home, 1);
+        remove(p_kitty);
+        remove(p_xres);
+        remove(p_alac);
+        remove(p_kons);
+        remove(p_xfce);
+        remove(p_json);
+        remove(p_plist);
+        remove(p_nonsense);
+        remove(p_named);
+        rm_tree(d_xdg);
+        rm_tree(d_home);
+        rmdir(base);
+    }
+
+    /* ---------- the option list is pinned to the docs, not to a hand-copied list ----------
+       AGENT.md has long claimed "README's option table matches usage() by set difference". It did not: the
+       only option coverage was a hand-written list of 7 strings in tests/cli_test.sh, which is exactly the
+       list that goes stale when a flag is added. This derives the names from usage() in src/main.c and
+       compares them with README's table in both directions. */
+    {
+        const char *uopts[32], *ropts[32];
+        int nu = usage_opts_of("src/main.c", uopts, 32);
+        int nr = readme_opts_of("README.md", ropts, 32);
+        CHECK(nu > 0, "options: the option names were read out of usage() in src/main.c (did it move?)");
+        CHECK(nr > 0, "options: the option names were read out of README.md's table");
+        CHECK(nu == 9, "options: usage() prints 9 options — re-diff, do not copy");
+        int missing = 0, extra = 0;
+        if (nu > 0 && nr > 0) {
+            for (int i = 0; i < nu; i++) {
+                int found = 0;
+                for (int j = 0; j < nr; j++)
+                    if (!strcmp(uopts[i], ropts[j]))
+                        found = 1;
+                if (!found) {
+                    klog(L_WARN, "options: usage() prints --%s and README does not", uopts[i]);
+                    missing++;
+                }
+            }
+            for (int j = 0; j < nr; j++) {
+                int found = 0;
+                for (int i = 0; i < nu; i++)
+                    if (!strcmp(uopts[i], ropts[j]))
+                        found = 1;
+                if (!found) {
+                    klog(L_WARN, "options: README documents --%s and usage() does not print it", ropts[j]);
+                    extra++;
+                }
+            }
+        }
+        CHECK(missing == 0, "options: every option usage() prints is in README's table");
+        CHECK(extra == 0, "options: README documents no option usage() does not print");
+        /* Both readers malloc the names they read, and LeakSanitizer runs over this whole binary: leaving
+           them is 134 bytes in 18 allocations that has nothing to do with the shipped code and hides a real
+           leak when one appears. The cast is the same one the settings/binding name lists use. */
+        for (int i = 0; i < nu; i++)
+            free((char *)uopts[i]);
+        for (int i = 0; i < nr; i++)
+            free((char *)ropts[i]);
     }
 
     /* ---------- source hygiene: the "\x1bc" hex-escape trap (see src_hexesc_count) ----------

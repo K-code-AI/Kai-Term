@@ -141,6 +141,8 @@ The default startup directory is the user's home directory. You can change it in
 | `-w DIR` | `--workingdir DIR` | Set the startup directory for this launch |
 | `-c FILE` | `--config FILE` | Read the settings from FILE instead of the searched `kai-term.conf` |
 | `-b FILE` | `--binds FILE` | Read the key bindings from FILE instead of the searched `kai-term.bind` |
+| — | `--import-theme FILE` | Import a theme written for another terminal, write it into `themes/`, and exit |
+| — | `--force` | With `--import-theme`: overwrite an existing theme file instead of asking |
 | `-d` | `--debug` | Enable debug logging |
 | `-v` | `--version` | Print the version and exit |
 | `-h` | `--help` | Show the option list and exit |
@@ -522,6 +524,38 @@ lets a `pywal`-style tool theme a live Kai-Term with no file at all. Three conse
 `kai-term -d` logs every one of these: `osc: OSC 11 set the default background to #082135 — the kai-term.conf
 background line no longer describes this window`. With `osc_colors = 0` the four sequences are ignored, colour
 queries get no answer, and the title sequences (OSC 0/1/2) keep working — the switch is about colours only.
+
+**Importing a theme written for another program.** `--import-theme FILE` reads one file, writes it into the
+first writable `themes/` directory of the config search, and exits: no window, no shell, no root.
+
+```
+$ kai-term --import-theme ~/Downloads/Breeze.colorscheme
+imported /home/you/Downloads/Breeze.colorscheme
+  -> /home/you/.config/kai-term/themes/Breeze-Dark.theme
+enable it in kai-term.conf:  theme = Breeze-Dark
+```
+
+The format is decided by the file's CONTENT, never by its name. Read: Kai-Term's own and kitty's spelling,
+Xresources (`XTerm*color1: #dc322f`), `alacritty.toml`, Konsole `.colorscheme` (the modern sections and the
+legacy `[Color Scheme]`), xfce4-terminal `terminalrc`, and a Windows Terminal / VS Code JSON scheme. Refused,
+with the reason in the log: an iTerm2 `.itermcolors` (its colours are 0.0-1.0 floats in an XML plist, and a
+reader nobody here can check against iTerm2 is worse than a refusal that says what it looked for) and anything
+nothing matched. Kai-Term never guesses a format, and never guesses a colour either — an X11 name like `red`
+is reported as dropped (`import:1: 'background' is not a colour Kai-Term can read …`) rather than
+approximated, and the rest of the file still imports.
+
+When a theme of that name already exists Kai-Term asks instead of deciding:
+
+```
+Warning: a theme with the same name already exists. Overwrite? [y/N]
+```
+
+`y` overwrites; anything else, or no terminal to answer from (a script, a closed stdin), writes nothing and
+exits `1` with `nothing written. Re-run with --force to overwrite without asking.` `--force` skips the
+question. The written file is Kai-Term's own format, so an imported theme is read afterwards by the same
+reader as a hand-written one; the name it lands under is the theme's own `name` (or the source file's stem),
+made safe — `Breeze Dark` becomes `Breeze-Dark`, and a name longer than 127 bytes is cut with a log line
+saying so.
 
 ### Key bindings (`kai-term.bind`)
 

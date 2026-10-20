@@ -153,13 +153,81 @@ for flag in -C -f -s -r -o -x --bogus; do
 done
 
 # ---------------- options that need an argument ----------------
-for flag in -e -w -c -b --exec --workingdir --config --binds; do
+for flag in -e -w -c -b --exec --workingdir --config --binds --import-theme; do
     run_split "$flag"
     ck "$rc" 1 "$flag with no argument exits 1"
     # the message echoes the flag exactly as the user typed it
     ck "$(printf '%s\n' "$stderr_only" | sed -n '1p')" "kai-term: $flag needs an argument" \
        "$flag with no argument message"
 done
+
+# ---------------- --import-theme: a one-shot operation, and a headless one ----------------
+# This group runs whether or not there is a display, and that is deliberate: the flag reads one file, writes
+# one file and exits, so it is the ONLY part of main() after the option parser that the CLI suite can cover
+# without mapping a window. Everything here points HOME and XDG_CONFIG_HOME at the scratch tree, so nothing
+# is ever written into the developer's own ~/.config/kai-term.
+imp="$tmp/imp"
+mkdir -p "$imp/home" "$imp/xdg"
+printf 'background #101010\nforeground #eeeeee\ncursor #ff0000\ncolor1 #cc0000\nselection_background #0b2c47\nname = Imp Test\n' > "$imp/src.conf"
+env_home="$imp/home"; env_xdg="$imp/xdg"
+run_env -d --import-theme "$imp/src.conf"
+ck "$rc" 0 "--import-theme FILE exits 0"
+ck "$(printf '%s\n' "$out" | grep -c -- "imported $imp/src.conf")" 1 "--import-theme reports what it read"
+ck "$(printf '%s\n' "$out" | grep -c 'theme = Imp-Test')" 1 "--import-theme prints the theme = line to enable it"
+ck "$([ -f "$imp/xdg/kai-term/themes/Imp-Test.theme" ] && echo 1 || echo 0)" 1 \
+   "and the theme file is really there, named for the file's own name"
+ck "$(printf '%s\n' "$out" | grep -c 'layout:')" 0 \
+   "--import-theme does NOT launch: no layout, no window, no shell"
+# It is a one-shot operation, so the settings file is never read at all. With -d and an empty scratch HOME a
+# launch logs 'no kai-term.conf in ...'; seeing neither of those lines is what proves config_load was skipped,
+# rather than the report being buried under it.
+ck "$(printf '%s\n' "$out" | grep -c 'config loaded from')" 0 \
+   "and it runs before the settings file is read — config_load never happens on this path"
+ck "$(printf '%s\n' "$out" | grep -c 'no kai-term.conf in')" 0 \
+   "not even the 'I found no settings file' line is printed"
+
+# Asking before overwriting (the user's answer, s102 question 8). stdin is closed in run_env, so there is no
+# answer to read: that must be a refusal that says how to get the other answer, never a guess.
+cp "$imp/xdg/kai-term/themes/Imp-Test.theme" "$imp/first"
+run_env --import-theme "$imp/src.conf"
+ck "$rc" 1 "re-running without --force exits 1 — nothing was written"
+ck "$(printf '%s\n' "$out" | grep -c 'Overwrite? \[y/N\]')" 1 "and it asks, on stdout, where the user sees it"
+ck "$(printf '%s\n' "$out" | grep -c 'nothing written. Re-run with --force')" 1 \
+   "and a run with no stdin to answer from says so and names --force"
+ck "$(cmp -s "$imp/first" "$imp/xdg/kai-term/themes/Imp-Test.theme" && echo same || echo changed)" same \
+   "and the existing theme is UNTOUCHED until the answer is given"
+run_env --import-theme "$imp/src.conf" --force
+ck "$rc" 0 "--force overwrites without asking"
+ck "$([ -f "$imp/xdg/kai-term/themes/Imp-Test.theme" ] && echo 1 || echo 0)" 1 \
+   "--force leaves a theme file behind"
+run_env --import-theme="$imp/src.conf" --force
+ck "$rc" 0 "--import-theme=FILE (the inline form) works too"
+
+# A file that is not a theme is refused out loud, and it writes nothing.
+printf 'this is not a theme at all\njust prose\n' > "$imp/notes.txt"
+run_env --import-theme "$imp/notes.txt" --force
+ck "$rc" 1 "an unrecognised file exits 1"
+ck "$(printf '%s\n' "$out" | grep -c 'is not a theme I recognise')" 1 \
+   "and the refusal lists what it looked for"
+ck "$(ls "$imp/xdg/kai-term/themes" | wc -l | tr -d ' ')" 1 \
+   "and a refused file wrote nothing into the themes directory"
+run_env --import-theme "$imp/no-such-file.conf" --force
+ck "$rc" 1 "a missing file exits 1"
+
+# A name too long for ThemeVals.name is cut, and the cut is reported rather than silent — it is the file
+# name the theme lands under. Measured before this check was written: 236 bytes keeps 127.
+awk 'BEGIN { n = "Very-Long-Theme-Name-"; while (length(n) < 200) n = n "abcdefghij";
+           print "name = " n; print "background = #101010" }' > "$imp/long.conf"
+run_env --import-theme "$imp/long.conf" --force
+ck "$rc" 0 "an over-long theme name still imports"
+ck "$(printf '%s\n' "$out" | grep -c "only the first 127 are kept")" 1 \
+   "and the name that did not fit is reported, not quietly truncated"
+
+# --force means nothing on its own, and must not be an error or a mystery.
+run_split --force -h
+ck "$rc" 0 "--force alone is accepted"
+ck "$(printf '%s\n' "$stdout_only" | sed -n '1p')" "usage: $BIN [OPTION]..." "--force alone does not change what runs"
+env_home=""; env_xdg=""
 
 # ---------------- the config file flag ----------------
 printf 'app_id = cli-suite\nfont_size = 30\n' > "$tmp/conf"

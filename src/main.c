@@ -2880,6 +2880,8 @@ static void usage(const char *argv0, FILE *out)
             "  -w, --workingdir DIR     start the shell in DIR (default: $HOME)\n"
             "  -c, --config FILE        read FILE instead of the searched kai-term.conf\n"
             "  -b, --binds FILE         read FILE instead of the searched kai-term.bind\n"
+            "      --import-theme FILE  import a theme from another terminal and exit\n"
+            "      --force              with --import-theme: overwrite without asking\n"
             "  -d, --debug              enable debug logging\n"
             "  -v, --version            print the version and exit\n"
             "  -h, --help               show this help and exit\n\n"
@@ -2920,6 +2922,8 @@ int main(int argc, char **argv)
     const char *opt_config = NULL;
     const char *opt_binds = NULL;
     const char *opt_wdir = NULL;
+    const char *opt_import = NULL;
+    int opt_force = 0;
     int opt_debug = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -2953,6 +2957,15 @@ int main(int argc, char **argv)
             if (!v)
                 return 1;
             opt_binds = v;
+        } else if (longopt(a, "--import-theme", &val)) {
+            /* Long form only. `-f` was retired in session 43 and tests/cli_test.sh pins that it is still
+               REJECTED, so the new flag must not quietly take its short spelling back. */
+            const char *v = opt_value(val, argv, &i, argc, a);
+            if (!v)
+                return 1;
+            opt_import = v;
+        } else if (longopt(a, "--force", &val)) {
+            opt_force = 1;
         } else {
             /* One generic path for every option Kai-Term does not take, including the flags that were
                dropped in the past: no per-flag explanation, just the message and the option list. */
@@ -2968,6 +2981,37 @@ int main(int argc, char **argv)
        The binding file is read SECOND on purpose: for a name both files set, kai-term.bind wins. */
     if (opt_debug)
         kai_term_loglevel = L_DEBUG;
+
+    /* `--import-theme` is a one-shot operation, not a launch: it reads one file, writes one file and exits.
+       It runs BEFORE config_load so the settings file's own log lines do not bury the import report, and it
+       needs no display — which is why tests/cli_test.sh can check it even with KAI_TERM_TEST_NO_WINDOW=1.
+       All the translation lives in src/theme.c; what is here is the flag, the question, and the report. */
+    if (opt_import) {
+        char dest[4096];
+        int rc = theme_import(opt_import, dest, sizeof dest, opt_force);
+        if (rc == 1) {
+            /* The user's answer, s102 question 8: ask — do not silently overwrite and do not silently
+               refuse. Their wording, with the grammar tidied: "Warning a theme with the same name already
+               exist. Overwrite ? [y/N]". No answer to read (closed stdin, a script) is a refusal that says
+               how to get the other answer, rather than a guess. */
+            fputs("Warning: a theme with the same name already exists. Overwrite? [y/N] ", stdout);
+            fflush(stdout);
+            char ans[128];
+            if (!(fgets(ans, sizeof ans, stdin) && (ans[0] == 'y' || ans[0] == 'Y'))) {
+                fputs("kai-term: nothing written. Re-run with --force to overwrite without asking.\n",
+                      stderr);
+                return 1;
+            }
+            rc = theme_import(opt_import, dest, sizeof dest, 1);
+        }
+        if (rc != 0)
+            return 1;
+        char nm[128];
+        theme_name_of_path(dest, nm, sizeof nm);
+        printf("imported %s\n  -> %s\nenable it in kai-term.conf:  theme = %s\n", opt_import, dest, nm);
+        return 0;
+    }
+
     config_load(&conf, opt_config);
     config_load_binds(&conf, opt_binds);
     /* The theme, if the settings file named one, is applied AFTER both files have been read: a colour the

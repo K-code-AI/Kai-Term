@@ -831,6 +831,61 @@ int  theme_apply_file(Config *c, const char *path);
    or 0 when no theme is configured. */
 int  theme_apply_config(Config *c);
 
+/* ---- importing a theme written for ANOTHER program (`--import-theme`, step 1e) ----
+   The whole importer lives here rather than in main(): main() is in no linked test binary, so a flag whose
+   work is done in main() would be covered only by the CLI script. What is testable is the part that can get
+   a colour WRONG — the sniff, the name mapping, the colour folding — and that is what these functions are.
+   Every one of them is headless: file in, file out, no Wayland, no GL. */
+/* The formats `--import-theme` reads. THF_UNKNOWN means "nothing matched": the importer then refuses and
+   lists what it looked for, it never guesses a format (a guessed format is a wrong colour that looks fine). */
+enum {
+    THF_KAI = 0,     /* kai-term's own `key = value`, and kitty's `key value` — one reader serves both */
+    THF_XRES,        /* Xresources: `XTerm*color1: #dc322f` */
+    THF_ALACRITTY,   /* alacritty.toml: `[colors.normal]` + `red = '#cc6666'` */
+    THF_KONSOLE,     /* Konsole .colorscheme: `[Color1]` + `Color=237,98,104`, and the legacy [Color Scheme] */
+    THF_XFCE,        /* xfce4-terminal terminalrc: `ColorPalette=#..;#..` and ColorBackground/Foreground/Cursor */
+    THF_JSON,        /* a Windows Terminal / VS Code colour scheme */
+    THF_PLIST,       /* iTerm2 .itermcolors: recognised and REFUSED — see theme_import */
+    THF_UNKNOWN
+};
+const char *theme_format_name(int fmt);
+/* Which format `text` is, from its content, not its file name: a theme called `x.conf` may be any of them.
+   Returns one of the THF_* values above. */
+int theme_sniff(const char *text);
+
+/* The colours one imported file names. A field of 0 means "the file did not set it" — no colour a theme can
+   ask for is 0x00000000 (see theme_color in src/theme.c) — so an unset colour falls back to Kai-Term's own
+   default rather than to black. */
+typedef struct ThemeVals {
+    uint32_t fg, bg, cur, sel;
+    uint32_t col[16];
+    char     name[128];    /* the file's own name, when it carries one */
+    int      n_set;        /* colours actually stored, 0-20 */
+    int      n_drop;       /* keys read but with nowhere to go, or not understood */
+} ThemeVals;
+
+/* Read `text` as format `fmt` into `v`. Returns 0 when at least one colour was found, -1 when the format is
+   one Kai-Term refuses or the file holds no colour at all. Every key it drops is logged. */
+int theme_parse_text(const char *text, int fmt, ThemeVals *v, const char *src_path);
+
+/* Write `v` as a Kai-Term .theme file. Returns 0 or -1. The output is the native format, so an imported
+   theme is then read by the SAME reader as a hand-written one — that round trip is a check in test_vt.c. */
+int theme_write_file(const ThemeVals *v, const char *path, const char *src_path, int fmt);
+
+/* Where an imported theme goes: the FIRST themes/ directory of the config search that can be created
+   ($XDG_CONFIG_HOME/kai-term/themes, else ~/.config/kai-term/themes). Never /etc — importing must not need
+   root. Empty `out` when neither is usable. */
+void theme_dest_dir(char *out, size_t cap);
+/* The `theme =` value a written path corresponds to: the file name without its .theme suffix. */
+void theme_name_of_path(const char *path, char *out, size_t cap);
+
+/* The whole chain: read `src_path`, sniff it, map it, and write <dest dir>/<name>.theme.
+   `overwrite` decides what happens when that file already exists. Returns:
+     0  written (out_path holds it)
+     1  it already exists and overwrite was not granted — the caller asks the user, then calls again
+    -1  refused or unreadable (the log says why; nothing was written) */
+int theme_import(const char *src_path, char *out_path, size_t cap, int overwrite);
+
 /* ---------- pty ---------- */
 typedef struct Pty {
     int mfd;
