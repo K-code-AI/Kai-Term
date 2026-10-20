@@ -1212,6 +1212,11 @@ look, bell flash) to the user.
   numbers above). The windowed CLI group was NOT run — no window is mapped while the user is at the machine, and
   step 3b added no flag, so nothing in it is new. `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE"` and
   `grep -rn "TODO|FIXME|XXX"` over `src/ include/ tests/` still return only the documented lines.
+  **Close-out:** two commits, `ab0809a` (the feature: header, fm.c, main.c, vt.c, test_fm.c, README, ISSUES)
+  and this journal entry; pushed, and verified from git — `git status -sb` reports `## main...origin/main` with
+  nothing but the untracked `.scratch/`, and `git log --oneline origin/main -1` is this commit. Nothing is
+  uncommitted. **Next session opens on step 4, confirm-quit** (its plan is under "Current Task"); its first
+  action is the `tcgetpgrp` probe, not code.
 
 ## Next Steps
 
