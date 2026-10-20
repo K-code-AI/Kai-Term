@@ -571,8 +571,46 @@ DONE: step 5 committed as `f3c812a` ("Middle click: an opt-in paste, with one ow
 verified from git, not from memory: `git log --oneline origin/main -1` prints `f3c812a` and `git status -sb`
 shows `main...origin/main` with nothing ahead. `.scratch/` stayed untracked and was never `git add`-ed.
 
-NEXT: step 6, the visual bell. Read the BEL path first (`exec_c0()`'s `case 0x07` in `src/vt.c` is where it
-disappears today) and the batch-A staging budget in `src/render.c` before writing anything.
+NEXT: step 6, the visual bell. Its task block is below.
+
+**Task block, s126 — step 6, the visual bell. Objective, measured starting point, planned steps, expected
+outcome.**
+MEASURED starting point (read from the tree at `26b20d9`, not assumed):
+* `exec_c0()` in `src/vt.c`: `case 0x07: break;   /* BEL: nothing to do here */` — that is the whole of today's
+  BEL handling in the ground state and inside a CSI. BEL is ALSO the ST terminator in three string states
+  (`src/vt.c:3858` OSC, `:3876` APC, `:3897`), and those never reach `exec_c0` — so "a BEL rings" and "a BEL ends
+  a sequence" are two rules that must not be merged, and the second must not ring.
+* The vt.c → main.c hand-off flag already has a shape: `Term.colors_dirty` (+ the two old colours), zeroed by
+  `term_init()`'s memset with the rest of `Term`, raised by the parser, consumed by the pty-read branch.
+* `Tab` (the mux struct in the header) is where per-session window-facing state that must survive `mux_close()`
+  shifting the array lives: `attention`, `cd_req`, `int_dead`, `int_gen`.
+* `render_draw()`'s batch A order is: every pane's cell backgrounds → the fm band's backgrounds → the bar items →
+  the notice field → the dialog; then the pictures; then batch B (selection bands, glyphs, the cursor quad, bar
+  labels, the border). The staging budget is `maxq` at `src/render.c:1203`. Later quad wins — there is no GL
+  blending — so "over the backgrounds, under the text" means "appended to batch A".
+* `mix_c(a, b, k100)` (`src/render.c:660`) is the only colour mixer and `render_chrome()` is where a configured
+  colour becomes a vertex colour. `mono_ms()` (`src/main.c:259`) is the CLOCK_MONOTONIC ms clock.
+* The frame timer `tfd` fires every 8 ms and calls `blink_update()` + `fm_cd_tick()`; the redraw happens only when
+  `W.dirty || W.resized`. So anything that changes on a schedule needs a tick that sets `dirty` while it is live —
+  `blink_update()` is the precedent, and its rule ("the tick only flips state and sets dirty; never draw from a
+  listener") applies here.
+* Config: **38** settings names; an enum-valued key is parsed warn-and-KEEP (`confirm_quit`), which is NOT what a
+  bool does (`cfg_bool` reads only 0/off/no/false as off — the s125 lesson).
+Objective: a BEL the user can SEE, on by default, with no new dependency, no GL blending and no per-frame cost
+when nothing rang.
+Planned stages, each left green: **(A)** `Term.bell_rang` set by `exec_c0`'s BEL + the pure `bell_strength(now,
+rang, dur)` and the `BELL_FLASH_MS` / `BELL_MIX_MAX` rules in the header, checked in `tests/test_vt.c` (a BEL sets
+the flag; a BEL that terminates an OSC/APC does NOT ring; the strength ladder). **(B)** the key `bell = visual|off`
+(default **visual**), enum parse with warn-and-keep, template line, README row, `ns` 38 -> 39. **(C)** `render_bell
+(bg, fg, strength)` in `src/render.c` (pure, checked by `tests/test_render.c`) + ONE quad per flashing pane
+appended to batch A + the `maxq` budget. **(D)** `main.c`: `Tab.bell_ms`, the pty-read hand-off, `rend.now_ms` /
+`rend.bell_ms[]` filled per frame, and a `bell_tick()` on the frame timer that keeps the window dirty while a flash
+is live. **(E)** README + ISSUES, both builds, every suite, asan, and a mutant harness.
+Expected outcome: with the default `bell = visual` a BEL washes that pane's field toward the ink and fades it out
+over `BELL_FLASH_MS`, text and pictures staying readable over it; `bell = off` draws nothing at all; a bell in a
+session that is NOT drawn flashes nothing (the bar's `*` stays the mark for that); in side-by-side view only the
+pane whose session rang flashes. What will still be owed to the user's eye: that it reads as a bell and not as a
+glitch — no headless check can see a pixel.
 
 The user: "I actually hate middle click paste, but we could add it as an option (off by default)". Their answer
 to question 5 settles the design: **it pastes the CLIPBOARD**, so no `wl_primary` work is needed at all and that
