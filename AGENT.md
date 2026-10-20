@@ -589,6 +589,14 @@ look, bell flash) to the user.
   s106 journal cleanup, and "green" has to mean the commit, not the directory. The journal and ISSUES.md follow
   as a second commit, which is the only split that keeps every commit green: committing the importer as s105
   left it would have committed a red `make asan`.
+  **Pushed** (`01f97a2..ebd62d9`, two commits; `main` level with `origin/main`). Session state at close: no
+  uncommitted work, no red target, nothing half-edited, and the A/B harnesses left in `.scratch/s107/`
+  (`ab_noimport/`, `head_tree/`) for re-running. Still owed from 1e: the user's eye on an imported theme, and
+  the windowed group of `tests/cli_test.sh` (not run — the user was at the machine). The next session opens on
+  plan step 2, the cursor bar: Current Task / 2 already holds the measured facts (a separate quad in batch B
+  under the glyphs, a fourth timerfd, blink phase in `W` and never in `Term`, `cursor_blink = 1000`,
+  `cursor_width = 2`, DECSCUSR honoured, no `cursor_style` key) — probe first, A/B every new check, hand the
+  look to the user.
 - **2026-10-19, s106 — this cleanup (docs only, no source touched).** 1942 -> 1459 lines, 183,517 -> 137,411
   bytes. The s101-s105 step-by-step narrative collapsed into the era entries above, and the "measured starting
   point" and done-step plan blocks went to git history. Every mechanism name, measured number and pitfall was
