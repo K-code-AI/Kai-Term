@@ -23,8 +23,8 @@ The four items this file was once holding for the user's eye were answered 2026-
 preview-pane key scrolling and the 75 % band's look all work in their window. `--import-theme` was confirmed
 working by the user 2026-10-19 (s107's feature), so the theme import carries no open question either.
 
-Re-measured 2026-10-19 (s109, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
-(`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **1130
+Re-measured 2026-10-19 (s110, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
+(`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **1133
 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **305 checks, 0 failures**;
 `./bin/test_render` **25 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks,
 0 failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no sanitizer report.
@@ -73,6 +73,18 @@ checks fail (the 2 that pass are the `fm_focus_on_hover = 1` opt-in checks, whic
 to `1` so it disagrees with the built-in default gives 1 more. README's two sentences that documented the old
 behaviour were corrected.
 
+**README's settings and binding tables were not pinned to the parser — a key could be undocumented and every
+check stayed green (2026-10-19, s110).** No user symptom, found while verifying the entry above. AGENT.md claimed
+the derived name lists were compared with "README's tables"; only the command-line OPTION table was ever read
+(`readme_opts_of`). Measured: deleting the `fm_focus_on_hover` row from README's settings table left all 1130
+checks passing — so a key could reach the parser, the shipped template and the tests and still be missing from
+the file a user reads. Fix: `readme_table_names_of()` reads the first cell of every row in a named section and
+`names_diff()` set-differences it against the parser's list in both directions, applied to README's settings and
+binding tables (`test_vt` 1130 -> 1133). README itself needed no edit — its tables were already complete. Proven
+to bite (`.scratch/s110/ab_readme/`, baseline 1133/0): deleting a settings row, deleting a binding row, adding a
+row no parser accepts, deleting the whole table and renaming the section heading each report **1 failure**. The
+theme table is deliberately not diffed — README collapses `color0` … `color15` into one row, so a name-by-name
+comparison would fail on purpose; those 23 names stay pinned through `config/kai-term.theme`.
 
 **`make asan` red on the theme importer — two warnings only the sanitizer build sees, and a harness leak
 (2026-10-19, s107).** No user symptom; the defects were in the build and in the suite, and they mattered because

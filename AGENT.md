@@ -23,7 +23,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-19, s109 — build, every suite and `make asan` all green)
+## Current Status (re-measured 2026-10-19, s110 — build, every suite and `make asan` all green)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -33,7 +33,7 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
 - **Suites** (`KAI_TERM_TEST_NO_WINDOW=1 make test`, exit 0): `CLI: 91 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **1130 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305
+  `./bin/test_vt` **1133 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305
   checks, 0 failures**, `./bin/test_render` **25 checks, 0 failures** (the renderer's pure colour decisions —
   no display, no GL context). With a display `tests/cli_test.sh` reports **141 checks, 0 failures, 0 skipped**
   (measured again in s109; the 50 window checks are the difference from the headless 91). What only its
@@ -55,7 +55,10 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
 - **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **33** setting names and the
   **24** binding names out of the two strcmp ladders in `src/config.c`, the **23** theme names out of
   `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in `src/main.c`, and compares
-  each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's tables. A
+  each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's tables —
+  the option table by `readme_opts_of()`, README's **settings** and **binding** tables by
+  `readme_table_names_of()` + `names_diff()` (added s110: before it, deleting a settings row from README left
+  every check green, so that half of this sentence was a claim and not a check). A
   name added to a parser without a template line, a template line no parser knows, and a deleted template line
   each fail a check. Never hand-copy a name list into a test — derive it from the source.
 - **No leftover probe or experiment in the tree, and no `TODO`/`FIXME`/`XXX`.** `grep -rnE
@@ -672,14 +675,64 @@ look, bell flash) to the user.
   rule (`return hit == FM_HIT_PREVIEW ? FM_FOCUS_PREVIEW : FM_FOCUS_LIST;`, ignoring `steps` and the key —
   exactly what `main.c` did) and the same 305 checks report **7 failures**. The 2 that pass there are the
   `fm_focus_on_hover = 1` opt-in checks, which *should* pass under the old rule — that is what the opt-in is.
-  Two more mutations in `.scratch/s107/ab_tpl2/` prove the docs gate bites (a copy that holds README.md —
-  the earlier `ab_tpl/` copy did not, so its counts counted a missing file): deleting the
-  `fm_focus_on_hover = 0` line in `config/kai-term.conf` -> 1 failure ("kai-term.conf does not list
-  fm_focus_on_hover"), and changing it to `1` so it disagrees with the built-in default -> 1 failure
+  Two more mutations in `.scratch/s107/ab_tpl/` prove the docs gate bites: commenting out the
+  `fm_focus_on_hover = 0` line in `config/kai-term.conf` -> 2 failures ("kai-term.conf does not list
+  fm_focus_on_hover"), and changing it to `1` so it disagrees with the built-in default -> 2 failures
   ("template: fm_focus_on_hover matches"). README's two places that documented the old behaviour ("a click on
   it, or the wheel over it, focuses it") were corrected — a stale sentence in the docs is a bug the user reads.
   **Owed to the user's eye:** that hovering the band no longer moves the focus border, that a click still
   does, and that the wheel still scrolls the listing and the preview body without taking the keyboard.
+
+- **2026-10-19, s110 — verify s109 and finish it. Objective, plan, and what the verification found.**
+  The user: "Hovering focus is now fixed, but not sure all the docs have been updated. Do the verification,
+  finish it." So: re-measure every number the s109 entries claim, re-run the A/Bs rather than trust their
+  recorded counts, and diff the three docs against the code by hand. Plan: (1) both builds + every suite +
+  `make asan`; (2) the marker greps and the derived name counts; (3) re-run `.scratch/s107/ab_wheel/` and
+  the two `ab_tpl` mutations; (4) hand-diff README's settings/binding tables against the parser's name lists;
+  (5) fix whatever the diff shows, A/B the fix, re-measure, commit.
+  **Measured, matches the docs:** `make clean && make -j8` exit 0 / 0 warning lines; the four test binaries
+  exit 0 / 0 warning lines; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 with CLI 91/0/13, test_vt 1130/0,
+  MODEL OK, test_fm 305/0, test_render 25/0; `make asan` exit 0, 0 warning lines, no LeakSanitizer report.
+  The marker greps still return only the three self-splitting lines in `tests/test_render.c` and only
+  `mkdtemp`'s template plus one test's fill string. Derived counts re-read out of the source: 33 settings,
+  24 bindings, 23 theme names, 9 options in `usage()` — all as claimed. `fm_focus_set`/`g_fm.focus` writes in
+  `src/main.c` re-counted: the wheel path is the only one a moving pointer can reach, and the click path
+  (`fm_pointer_select`, one call site, `ptr_button`) still takes the keyboard — the fix is where it should be.
+  **Two doc defects found, both real:**
+  (a) **The `ab_tpl` failure counts in this file and in ISSUES.md are wrong.** Re-run in a harness copy that
+  holds README.md (`.scratch/s107/ab_tpl2/`, baseline 1130/0): deleting the `fm_focus_on_hover = 0` line gives
+  **1** failure ("config/kai-term.conf does not list fm_focus_on_hover — the file says it holds every
+  default"), and setting it to `1` against the built-in `0` gives **1** failure ("template:
+  fm_focus_on_hover matches"). Not 2 and 2. The old harness `.scratch/s107/ab_tpl/` has no README.md, so its
+  second failure was `options: the option names were read out of README.md's table` — an artifact of the copy,
+  not of the mutation. The gate still bites; the numbers were inflated.
+  (b) **README's settings and binding tables were NOT pinned by any check**, which is what "not sure all the
+  docs have been updated" was right to suspect. Measured: deleting the `fm_focus_on_hover` row from README's
+  settings table leaves all 1130 checks green. The Current Status claim that the name lists are compared with
+  "README's tables" was true only for the command-line OPTION table (`readme_opts_of`); the settings and
+  binding tables were never read. (The hand-diff of the CURRENT README is clean — 33 rows matching the 33
+  parser names, 24 matching the 24 bindings — so nothing is missing today; what is missing is the check that
+  keeps it that way.) Fix: read both tables the way the templates are read and set-difference them in both
+  directions. README's theme table is deliberately NOT set-differenced: it collapses `color0` … `color15` into
+  one row, so a name-by-name diff would fail on purpose; those 23 names stay pinned through
+  `config/kai-term.theme`.
+  **Not re-run by me:** the windowed group of `tests/cli_test.sh` (the 141/0/0). It maps ~15 real windows and
+  AGENT.md's rule is to ask before that run, not to do it unprompted while the user is at the machine. The
+  number quoted is s109's, measured on this same uncommitted tree; a probe launch is the gate if it is re-run.
+  **Done.** (a) The two inflated counts are corrected here and in ISSUES.md, and the harness that produced them
+  is replaced by `.scratch/s107/ab_tpl2/` (a copy that DOES hold README.md, baseline 1130/0).
+  (b) `readme_table_names_of()` + `names_diff()` in `tests/test_vt.c` read README's settings and binding tables
+  the way `tpl_check_names()` reads the templates, and the template group set-differences each against the
+  parser's list in both directions. `test_vt` 1130 -> **1133** (the heading guard and the two tallies). README
+  itself needed no edit — its tables were already complete; what was missing was the check.
+  **A/B, run not assumed** (`.scratch/s110/ab_readme/`, baseline 1133/0): delete the `fm_focus_on_hover`
+  settings row -> **1 failure** ("README's settings table does not document `fm_focus_on_hover` — the parser
+  accepts it"); delete the `fm_key_path` binding row -> **1 failure**; add a `made_up_key` row -> **1 failure**
+  ("… documents `made_up_key`, which no parser accepts"); delete the whole settings table -> **1 failure** of
+  the heading guard; rename the heading away from `### Settings` -> **1 failure** of the same guard. Renaming
+  it to `### Settings file (…)` does NOT fail, on purpose: the match is on the heading's prefix, so re-wording
+  a section keeps the check alive. A/B of the corrected `ab_tpl` numbers is in (a) above; `ab_wheel` was
+  re-run unchanged and still reports 7 failures out of 305.
 
 ## Next Steps
 
@@ -789,7 +842,7 @@ Kai-Term/
 ├── config/kai-term.theme        # the shipped THEME example: all 23 theme names at the built-in colours
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 1130 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt machinery
+├── tests/test_vt.c              # 1133 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt machinery
 ├── tests/test_fm.c              # 305 checks: the file-manager model, previews, decoders, band geometry, pointer rules
 ├── tests/test_render.c          # 25 checks: the renderer's pure colour decisions (no display, no GL call)
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
@@ -863,7 +916,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 1130 checks: parser (a C0 byte inside a control sequence — executed, sequence still
+- `tests/test_vt.c` — 1133 checks: parser (a C0 byte inside a control sequence — executed, sequence still
   collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
   (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
   ordering), grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J, bracketed paste, `term_init`
@@ -874,7 +927,8 @@ Kai-Term/
   gate, the vertical-then-horizontal order, the end-of-line column clamp, the buffer bounds), the graphics path
   (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll anchoring/id replacement/DA1-DA2-DSR
   answers), mux, keybind/keymods parsing, config keys and template name-coverage (the two config ladders, the
-  theme table, and `usage()` vs README's option table), the `hex escape` gate, `layout_compute` /
+  theme table, and `usage()` vs README's option table, and since s110 README's own settings and binding tables
+  diffed against the parser in both directions), the `hex escape` gate, `layout_compute` /
   `layout_grid_size` / `layout_initial_size` (the tab bar, the panes and the band's SHARE: `fm_size` percent,
   both clamps, the terminal's floor, the share surviving a resize and a zoom, three startup round trips), the
   palette/cube/OSC-colour groups, the theme file and precedence, the theme importer (sniff, per-format mapping,

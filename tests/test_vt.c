@@ -623,6 +623,95 @@ static int readme_opts_of(const char *path, const char *names[], int cap)
     return n;
 }
 
+/* The names one README markdown table documents: the FIRST cell of each table row inside the section whose
+   heading starts with `heading` (e.g. "### Settings"), taken only when that cell is a single back-quoted
+   name. The heading test is what keeps the settings table, the binding table and the shortcut tables from
+   being read as one list; a separator row (`|---|---|---|`) and a prose cell have no back-quoted name and
+   drop out. Returns -1 when the heading is not in the file at all, so a renamed section reports "the check
+   could not find the table" instead of "the table is empty and correct". */
+static int readme_table_names_of(const char *path, const char *heading, const char *names[], int cap)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    char line[4096];
+    int in = 0, found_heading = 0, n = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#') {
+            in = !strncmp(line, heading, strlen(heading));
+            if (in)
+                found_heading = 1;
+            continue;
+        }
+        if (!in || line[0] != '|')
+            continue;
+        char *p1 = strchr(line + 1, '|');            /* end of the first cell */
+        if (!p1)
+            continue;
+        size_t span = (size_t)(p1 - (line + 1));
+        char cell[256];
+        if (span >= sizeof cell)
+            span = sizeof cell - 1;
+        memcpy(cell, line + 1, span);
+        cell[span] = 0;
+        char *q = cell;
+        while (*q == ' ' || *q == '\t')
+            q++;
+        if (*q != '`')
+            continue;
+        q++;
+        char *e = q;
+        while (isalnum((unsigned char)*e) || *e == '_')
+            e++;
+        if (e == q || *e != '`')                    /* `color0` … `color15`, or prose */
+            continue;
+        size_t len = (size_t)(e - q);
+        if (n >= cap)
+            break;
+        char *buf = malloc(len + 1);
+        if (!buf)
+            break;
+        memcpy(buf, q, len);
+        buf[len] = 0;
+        names[n++] = buf;
+    }
+    fclose(f);
+    return found_heading ? n : -1;
+}
+
+/* Set difference in both directions between a name list the parser owns and one a document lists. Returns
+   the number of mismatches and prints each one; `what` names the document in the message. */
+static int names_diff(const char *what, const char *const *code, int nc,
+                      const char *const *doc, int nd)
+{
+    int bad = 0;
+    for (int i = 0; i < nc; i++) {
+        int seen = 0;
+        for (int j = 0; j < nd; j++)
+            if (!strcmp(doc[j], code[i])) {
+                seen = 1;
+                break;
+            }
+        if (!seen) {
+            printf("FAIL: %s does not document `%s` — the parser accepts it\n", what, code[i]);
+            bad++;
+        }
+    }
+    for (int j = 0; j < nd; j++) {
+        int seen = 0;
+        for (int i = 0; i < nc; i++)
+            if (!strcmp(doc[j], code[i])) {
+                seen = 1;
+                break;
+            }
+        if (!seen) {
+            printf("FAIL: %s documents `%s`, which no parser accepts\n", what, doc[j]);
+            bad++;
+        }
+    }
+    return bad;
+}
+
 int main(void)
 {
     term_init(&T, 10, 20, 100);
@@ -2497,6 +2586,34 @@ int main(void)
                 nbad += tpl_check_names(tpl_bind, (const char *const *)bind_names, nb);
             CHECK(nbad == 0,
                   "template: kai-term.conf and kai-term.bind list exactly the names the parser accepts");
+
+            /* --- README's own tables, in both directions --------------------------------------
+               The templates were pinned to the parser; README was pinned only for the command-line
+               options. Measured before this check existed (s110): deleting the `fm_focus_on_hover` row
+               from README's settings table left every check green, so a key could be added to the parser,
+               to the template and to the tests and stay invisible in the file a user actually reads. The
+               two tables are now read the way the templates are. README's THEME table is deliberately not
+               diffed: it collapses `color0` … `color15` into one row, so a name-by-name comparison would
+               fail on purpose; those 23 names stay pinned through config/kai-term.theme. */
+            const char *rset[64], *rbind[64];
+            int nrs = readme_table_names_of("README.md", "### Settings", rset, 64);
+            int nrb = readme_table_names_of("README.md", "### Key bindings", rbind, 64);
+            CHECK(nrs > 0 && nrb > 0,
+                  "template: README's settings and binding tables were read (did a heading move?)");
+            int rbad = 0;
+            if (ns > 0 && nrs > 0)
+                rbad += names_diff("README's settings table", set_names, ns, rset, nrs);
+            CHECK(rbad == 0,
+                  "template: README's settings table lists exactly the settings the parser accepts");
+            rbad = 0;
+            if (nb > 0 && nrb > 0)
+                rbad += names_diff("README's binding table", bind_names, nb, rbind, nrb);
+            CHECK(rbad == 0,
+                  "template: README's binding table lists exactly the bindings the parser accepts");
+            for (int i = 0; i < nrs; i++)
+                free((char *)rset[i]);
+            for (int i = 0; i < nrb; i++)
+                free((char *)rbind[i]);
 
             for (int i = 0; i < ns; i++)
                 free((char *)set_names[i]);
