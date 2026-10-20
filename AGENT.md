@@ -23,7 +23,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s112 — build, every suite and `make asan` all green)
+## Current Status (re-measured 2026-10-20, s117 — build, every suite and `make asan` all green)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -33,11 +33,11 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
 - **Suites** (`KAI_TERM_TEST_NO_WINDOW=1 make test`, exit 0): `CLI: 91 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **1217 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305
+  `./bin/test_vt` **1217 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **384
   checks, 0 failures**, `./bin/test_render` **495 checks, 0 failures** (the renderer's pure decisions — its
   colour choices AND the cursor's shape — no display, no GL context). With a display `tests/cli_test.sh` reports
   **141 checks, 0 failures, 0 skipped** (last measured s109; the 50 window checks are the difference from the
-  headless 91 — step 2 added no command-line flag, so nothing in that group is new). What only its
+  headless 91 — steps 2 and 3b added no command-line flag, so nothing in that group is new). What only its
   windowed group covers is `main()`'s own argv handling (`-c/--config`, `-b/--binds`, combined flags, `-d`
   beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys
   and the band's share. The config SEARCH order and the split-by-name rules are NOT exclusive to it —
@@ -70,26 +70,26 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   rather than leave a claim that no longer matches the grep.
 - **No `install` target**, and nothing copies `config/*` to `/etc/kai-term` — deliberate; README tells the user
   to copy the templates. Adding one is the user's call.
-- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. Step 2 (s112) is pushed — verified
-  2026-10-20: `git status -sb` shows `## main...origin/main` with nothing ahead or behind, and
-  `git log --oneline origin/main -1` is the s112 journal commit.
-  Read the remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written
-  here. `git fetch` before push — the user commits on GitHub too. Never commit `bin/` or `build/` — and note
+- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. Step 3b (the preview pane's text
+  selection) is committed and pushed — but read that from git, never from here: `git status -sb` and
+  `git log --oneline origin/main -1`. `git fetch` before push — the user commits on GitHub too. Never commit
+  `bin/` or `build/` — and note
   `.scratch/` is NOT in `.gitignore`, so it shows as untracked and must never be `git add`-ed wholesale.
 - **Owed to the user's eye, not to a harness:** the look of a themed window, a live OSC colour repaint, the
-  configured `cursor_color`, and the whole step-2 cursor — a bar that reads as a bar, the 1 s blink rhythm, the
-  blink stopping when the window loses focus, and vim/fish getting the shape they ask for. None of those four
-  have ever been confirmed in the user's window; every one of them has a check on the DECISION and none has a
-  check on the PIXEL. (`--import-theme` and the theme file itself HAVE been: the user confirmed the import
-  works, 2026-10-19.) **Step 3 HAS been** — the user tried the double/triple click in their own window and said
-  it worked (2026-10-20, s114), which also settles the one part of it that lives in `main.c` and so has no
-  headless check: a word/line gesture selecting inside a program that owns its screen instead of walking that
-  program's cursor. Recipe for the theme: put
+  configured `cursor_color`, the whole step-2 cursor — a bar that reads as a bar, the 1 s blink rhythm, the
+  blink stopping when the window loses focus, and vim/fish getting the shape they ask for — and now **step 3b,
+  the preview pane's selection**: that a drag there highlights, that the band reads as the same highlight as
+  the terminal's, and that a double click picks the word they meant. None of those have ever been confirmed in
+  the user's window; every one of them has a check on the DECISION and none has a check on the PIXEL. (`--import-theme`,
+  the theme file and **step 3, the double/triple click** HAVE been confirmed by the user — the import
+  2026-10-19, the click gesture 2026-10-20, s114.) Step 3b's `main.c` half (the pointer mapping, the release
+  that ends a drag, the copy precedence) is in the file no test binary links, so it is the part the user's eye
+  actually settles. Recipe for the theme: put
   their kitty theme at `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to
   `~/.config/kai-term/kai-term.conf`, then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that
   an application set it, not the file. Hand these to them; do not map a window to judge a look yourself.
 
-## Current Task — step 3b, text selection in the preview pane (user-requested, s114). Plan step 4 waits
+## Current Task — step 3b is DONE and committed (s117). Next is plan step 4, confirm-quit
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -148,6 +148,9 @@ re-ask them, and do not re-propose what was dropped.
 - **Step 3 — double-click a word, triple-click a line (DONE, s114).** `term_word_span()` / `term_line_span()` /
   `term_click_count()` in vt.c, the gesture state in `W`, one shared `CLICK_DCLICK_MS`, and the key
   `click_selects_word = 1` (settings names 35 -> 36). Its own section below holds the rules.
+- **Step 3b — the same selection in the file manager's preview pane (DONE, s117).** `cell_row_word_span()` in
+  vt.c (the shared row rule), the selection state and the six `fm_preview_*` selection functions in fm.c, the
+  gesture in `src/main.c`. No new config key. Its own section below holds the rules.
 
 ### 1e. `--import-theme FILE` — DONE (built s105, taken green and committed s107)
 
@@ -257,46 +260,77 @@ The rules a later change must not break, all of them checked:
 - **A word the WINDOW broke is selected per row** (measured: `0..19` then `0..7` at 20 cols). Documented in
   README and in ISSUES.md "Known limitations" — the triple click is the gesture that takes a wrapped line.
 
-### 3b. Text selection in the file manager's preview pane — the user asked for it (2026-10-20, s114)
+### 3b. Text selection in the file manager's preview pane — DONE (built s115/s116, taken green and committed s117)
 
-Their words: "could we also do the same for the preview pane ? that and text selection. That would be useful."
-Two things, not one: (a) the preview pane has **no text selection at all** today — a click there selects an
-entry or hands over the keyboard and never highlights a range of previewed text — and (b) once there is a
-selection, the double/triple-click word/line gesture of step 3 should work in it too.
+The user's words: "could we also do the same for the preview pane ? that and text selection. That would be
+useful." What is in the tree: `cell_row_word_span()` in `src/vt.c` — the row-level word rule lifted onto a
+`const Cell *row` + cols, with `term_word_span()` now a wrapper over it — the selection state in `FileMgr`
+(`pv_sel_on`, `pv_ax/pv_ay/pv_bx/pv_by`), `fm_preview_select()` / `_select_clear()` / `_selected()` /
+`_word_span()` / `_row_span()` / `_selection_text()` in `src/fm.c`, the band painted into the cells' own `bg`
+by `paint_preview()`, and the gesture in `src/main.c` (`pv_cell()`, the preview's own click pair, the drag flag
+`W.pv_selecting`, the release that ends a drag, and a `selection_copy()` with one owner per copy). **No new
+config key** — `click_selects_word` is the one switch for the gesture, and a second knob for the same gesture
+in a second pane is something nobody would understand.
 
-**Measured starting point (s114, before writing any code):** `layout_hit_fm()` answers `FM_HIT_PREVIEW` for a
-point over that pane, and `src/main.c`'s `ptr_button()` handles a press there through `fm_pointer_select()`
-BEFORE the mouse-reporting branch and before any text-selection code — so a click in the preview pane can
-never currently start a selection. `FileMgr.pv_scroll` is the pane body's scroll, `fm_preview_scroll_max()`
-its clamp, and the preview's text lives in the `FmPreview` built by `fm_preview_build()` (kinds
-`FMP_DIR/FMP_TEXT/FMP_IMAGE/FMP_META/FMP_EMPTY`). Nothing else has been measured yet.
+The measured facts the design rests on (`.scratch/s115/pvprobe` and `selprobe{,2,3,4}` — do not re-derive):
+- `FmPane` is a **flat `Cell` array**, `cell[y*cols+x]`, with the same `ATTR_WIDE` anchor+continuation
+  convention a session grid uses, so a preview range is expressible in pane cells and the word rule can be
+  SHARED rather than copied.
+- The head is rows `0 .. preview_head_rows()-1` (name, then path, then an error line when there is one); the
+  body starts at the row `paint_preview_head()` leaves and its text starts at **column 2** — the two-column
+  gutter is never written. The head rows are selectable text too, which is right: the file's name is text.
+- **A line is CUT at the right edge, never wrapped**, so one file line is exactly one pane row and `pv_scroll`
+  counts lines = rows. The preview's LINE gesture is therefore "the row", with no wrap marks to walk — the
+  opposite of a session grid's case. Tabs are 4-column stops aligned to the text start.
+- A wide glyph at the pane's LAST column is not widened (`wide = cp_is_wide(cp) && x + 1 < p->cols`), so the
+  right edge can hold an anchor with no continuation cell.
+- The highlight mechanism already existed: a selection changes a cell's **`bg`** only, and `fm_paint()` already
+  receives `selection_color`. So the band needed no renderer change and no new quad — and that is also what
+  makes it headless-checkable in `tests/test_fm.c`, which already inspects pane cells.
 
-**Plan — measure first, then write checks around what the probe printed:**
-1. Probe the preview model headlessly (`.scratch/s115/`): how the text rows are stored (one string per row?
-   fixed column grid? tabs expanded? wide glyphs?), how `fm_paint()` maps a row to a screen row, and what
-   `pv_scroll` does to that mapping. A selection needs a coordinate system, and guessing it is how the s96
-   "guard reads a field that has not been applied yet" bug happened.
-2. Decide the copy path: the preview text is NOT a `Term` grid, so `term_selection_text()` cannot serve it.
-   Either the selection is expressed in the preview's own row/col space with its own text builder, or the
-   copied bytes come straight from the `FmPreview`'s stored text. Whichever it is, `selection_copy()` must end
-   up offering exactly one thing to the clipboard, and the log line must report what the OWNER of the state
-   reports (Key Decisions: a log line that prints its own argument can lie).
-3. Word/line gesture in the pane: `term_word_span()`/`term_line_span()` read a `Grid`, so the preview needs
-   either its own span functions sharing `word_cell()`/`trailing_punct()` (the RULE is the thing step 3
-   pinned — do not fork it into a second copy that can drift) or a way to present preview rows as cells.
-   Preview text does not soft-wrap the way a terminal does (measure whether it wraps at all), so the LINE
-   half is probably "the one logical row the file holds", which for a long line may be wider than the pane —
-   that is a decision to make from the probe, not now.
-4. Interaction gates that must keep winning: the bar, the LIST pane's click-to-select and double-click-to-open,
-   the keyboard-focus handover (`FM_FOCUS_*`), and a program that grabbed the mouse. A drag in the preview
-   pane must select text, not scroll the pane; the wheel already owns `pv_scroll`.
-5. New key only if the behaviour needs a switch — decide after the probe; if one is added it needs the
-   template line, the README row and the template-parity check, and the settings count moves again.
+The rules a later change must not break, all of them checked (the `pvsel` group in `tests/test_fm.c`; the
+non-vacuity harness is `.scratch/s116/mutate.py`, 13 kinds, every one caught — counts in the s117 entry):
+- **One copy of the word rule.** `fm_preview_word_span()` calls vt.c's `cell_row_word_span()`. A second
+  `trailing_punct()` in fm.c is exactly the drift the one-colour-parser rule exists to prevent, and the
+  `word_rule_forked` mutant (6 failures) is what catches it. `punct_ascii_only` — the same mutant s114 ran
+  against a session — fails the PREVIEW's checks too, because the preview has no table of its own.
+- **The row gesture spans the row's OWN cells, not the pane's width.** The gutter was never written, so a span
+  from column 0 copies two spaces the file does not contain and pastes them into the user's shell. A line the
+  FILE indents is safe either way, because those spaces are real cells — "the first cell that holds something"
+  is exactly where the file's own text starts. A row holding nothing spans the whole row: the gesture still
+  means something, it just copies nothing.
+- **The copy reads each row inside its USED range**, so a middle row of a multi-row selection does not turn the
+  gutter into leading spaces; a gap BETWEEN two used cells (an entry name and its right-aligned size) is still
+  a space. Trailing blanks per row are trimmed, rows are joined with `\n`, and a wide continuation cell
+  contributes nothing — the same rules `term_selection_text()` follows, for the same reason.
+- **The band lands only on a cell that HOLDS something** (a glyph, a real space, or the continuation half of a
+  wide glyph), never on the never-written space past the end of a line — `term_cell_highlightable()`'s rule in
+  a session. It writes `bg` and leaves `fg` alone, so a syntax-coloured keyword stays readable under it, and it
+  is painted LAST so it sits over whatever the body wrote.
+- **Endpoints are clamped to the pane and normalised in READING order.** The clamp is not cosmetic: the
+  `no_clamp` mutant walks the painter off the pane and dies of SIGSEGV. Normalising by COLUMN alone anchors a
+  drag that went down-and-left on the LATER row, after which `fm_preview_selected()` answers "nothing" for
+  every row — a drag that selected nothing at all, and the first two checks of that pair pass with that mutant.
+- **Invalidation is total:** a new preview, a `pv_scroll` that actually moved, and a pane resize each clear the
+  range, because in every one of those cases the cells the endpoints name hold different text. A wheel gesture
+  that moved nothing is not a scroll and keeps the selection. `fm_close()` clears it, and `main.c` drops its
+  drag flag in the same breath.
+- **One selection at a time in the window.** A press in the preview clears the session's highlight and a press
+  in a terminal pane clears the pane's, so `selection_copy()`'s precedence (preview first, then the session) is
+  a fallback and never a guess — and its log line names the owner that served the bytes.
+- **The preview's click pair is kept apart from the LIST's.** That pair compares a view POSITION (a second click
+  on the same ENTRY opens it); this one compares a pane CELL. The two numbers are not comparable, and merging
+  them would let a click in one pane break the other's gesture. Only the LEFT button selects text — a right or
+  middle click in that pane still only moves the keyboard, exactly as before step 3b.
+- **A release ends the drag BEFORE every hit test** in `ptr_button()`: an early return in the bar, band or pane
+  branch would leave a drag live, and the next motion event would keep extending a range under a pointer the
+  user already let go of.
+- **`cap == 0` writes nothing at all** — not even one byte before the caller's buffer (the s117 entry has the
+  ASan finding and the check that pins it).
 
-**Expected outcome:** a drag in the preview pane highlights a range and `Ctrl+Shift+C` copies it; a double
-click selects the word and a triple click the line, using the same punctuation rule as the terminal; every
-existing band gesture keeps working. Headless checks in `tests/test_fm.c` (the model half), A/B against the
-code that lacks it, and the look handed to the user.
+What no headless check reaches is the `main.c` half — `pv_cell()`'s pointer mapping, the release that ends a
+drag, the copy precedence. It builds warning-free and it is the part the user's eye settles; the look of the
+band and the feel of the gesture in a real window are still owed by them, not by a harness.
 
 ### 4. Ask before quitting when something is still running
 
@@ -1066,6 +1100,118 @@ look, bell flash) to the user.
   verdict of step 3, including the `main.c` half no headless check reaches. **The same message opened step 3b:**
   the preview pane should get text selection and the same word/line gesture. That is the current task (its plan
   above); step 4, confirm-quit, waits behind it.
+- **s116 — step 3b resumed mid-task: the model half is in the tree, the pointer half is not.**
+  **Starting state, measured before touching anything:** `git status` shows `AGENT.md`,
+  `include/kai-term/kai-term.h`, `src/fm.c`, `src/vt.c` modified and uncommitted. `make clean && make -j8`
+  exit 0 / **0 warning lines**, the four test binaries exit 0 / **0 warning lines**, and every suite is green
+  at the s114 counts (test_vt 1217/0, dbg MODEL OK, test_fm 305/0, test_render 495/0, CLI 91/0/13 skipped).
+  So the previous session stopped *between* two halves with a green tree, not inside a broken edit — that is
+  the last verified state, and nothing has to be re-done.
+  **What the uncommitted diff already holds (read, not guessed):** `cell_row_word_span()` in vt.c — the
+  row-level word rule lifted onto `const Cell *row` + cols, with `term_word_span()` now a wrapper over it, so
+  the preview and a session share ONE punctuation rule (the plan's "do not fork it"); `FileMgr.pv_sel_on` +
+  `pv_ax/pv_ay/pv_bx/pv_by`; `fm_preview_select()`, `_select_clear()`, `_selected()`, `_word_span()`,
+  `_row_span()`, `_selection_text()`; invalidation wired into `fm_set_size()` (AFTER the realloc, where
+  `fm_preview_scroll_max()` can see the new pane — the s96 rule), `fm_install_preview()` and
+  `fm_preview_scroll()`; and the band painted into the cells' own `bg` by `paint_preview()`, skipping
+  never-written cells so it cannot float over the space past the end of a line.
+  **Objective:** the missing half — the gesture in `src/main.c` (press/drag/release in the preview pane, a
+  double click selects the word, a triple the row), the copy path (`selection_copy()` must have ONE owner per
+  copy, and its log line must report which owner served it), then headless checks in `tests/test_fm.c`, an
+  A/B against the code that lacks it, and README/ISSUES.md.
+  **Plan:** (1) probe the new model headlessly (`.scratch/s115/selprobe.c`) and print the pane cells, the
+  spans and the copied bytes, so every check is written around measured numbers; (2) `main.c`: a preview-pane
+  cell mapper next to `sel_cell()`, a click-count pair kept apart from the LIST's (it counts a CELL, not a
+  view position), a drag flag on `W`, release handled before every hit test so a drag that ends over the bar
+  or another pane cannot stay live; (3) `selection_copy()` prefers the preview's selection when the band has
+  one, per the plan's decision; (4) `tests/test_fm.c` group; (5) both builds + every suite + `make asan`;
+  (6) A/B against HEAD and report the failure count; (7) docs, commit, push.
+  **Expected outcome:** a drag in the preview pane highlights a range, `Ctrl+Shift+C` copies it, a double
+  click takes the word and a triple the row with the terminal's punctuation rule, and the list pane's
+  click-to-select / double-click-to-open, the keyboard handover and the wheel all keep winning where they
+  already win.
+  **Probe first (`.scratch/s115/selprobe.c`, run — not reasoned about).** Measured in a 30x12 preview pane:
+  `file.txt` ("hello world / second line") paints its body from **row 2, column 2**; a word span at (2,2) is
+  `2..6` ("hello"), at (8,2) `8..12` ("world"), and on the HEAD row (2,0) `1..8` ("file.txt") — the head is
+  selectable text too, which is right and worth pinning. A row span is `0..29` (the whole pane width) and the
+  copy trims the trailing blanks, so selecting (2,2)->(29,2) copies exactly `hello world`. A drag that runs
+  past the pane's bottom clamps (`(2,2)->(20,20)` stores `2,2 -> 20,11`). The band the painter writes stops at
+  the last real glyph (`y2:2-12` for a row-wide selection), so it never floats over the never-written space.
+  Wide glyphs: `你好` occupies cols 2-5 (anchor + continuation each), a word span covers `2..5`, and a copy
+  ending mid-pair still yields the whole glyph once. Punctuation: `two-three, four.` gives `6..14`
+  ("two-three") and `17..20` ("four") — the SAME rule as a session, because it is the same function.
+  Invalidation confirmed live: `pv_sel_on` goes 1 -> 0 on `fm_preview_scroll()`, on `fm_set_size()` and on a
+  new preview.
+  **The gesture half is now in `src/main.c`** (build exit 0, 0 warning lines): `pv_cell()` maps the pointer to
+  a preview-pane cell next to `sel_cell()` (same exactness argument, clamped so a drag that leaves the pane
+  extends to its edge); `fm_pointer_select()`'s `FM_HIT_PREVIEW` branch counts the click with
+  `term_click_count()` against the same `CLICK_DCLICK_MS` and `conf.click_selects_word`, and selects the cell,
+  the word or the row; `ptr_motion()` extends it from the remembered anchor; `ptr_button()` ends the drag on
+  release **before every hit test**, because an early return in the bar/band/pane branches would leave a drag
+  live under a pointer the user already let go of. `selection_copy()` now has one owner per copy (preview
+  first, then the session) and its log line names the owner. Two decisions taken here, both recorded for the
+  docs: (a) **one selection at a time in the window** — a press in the preview clears the session's highlight
+  and a press in a terminal pane clears the pane's, so the precedence order is a fallback and never a guess;
+  (b) the drag flag and the click pair are kept apart from the LIST pane's (`fm_click_pos` compares a view
+  POSITION, this compares a CELL — the two numbers are not comparable). `fm_close()` and a newly installed
+  preview clear both halves.
+  **Next:** the headless group in `tests/test_fm.c`, then both builds + every suite + `make asan`, then the
+  A/B against HEAD, then README/ISSUES.md, commit, push.
+- **s117 — step 3b taken green: the harness re-run rather than trusted, and one real defect found.**
+  **Starting state, measured:** the tree held the WHOLE feature uncommitted — `AGENT.md ISSUES.md README.md
+  include/kai-term/kai-term.h src/fm.c src/main.c src/vt.c tests/test_fm.c` modified — i.e. the s116 session
+  had gone past its own "Next:" line (the `tests/test_fm.c` group and the README/ISSUES wording were already
+  written) and stopped before any of it was verified or committed. So the first action was to re-measure, not
+  to write: `make clean && make -j8` exit 0 / **0 warning lines**, `make bin/test_vt bin/dbg bin/test_fm
+  bin/test_render` exit 0 / **0 warning lines**, and every suite green — `test_vt 1217/0`, `dbg MODEL OK`,
+  **`test_fm 380/0`** (the pvsel group is the 305 -> 380), `test_render 495/0`, `CLI 91/0/13 skipped`
+  (headless; no windows while the user is at the machine). `make asan` exit 0, **0 warning lines**, no
+  LeakSanitizer report, same counts.
+  **The non-vacuity harness exists and was RE-RUN, not quoted** — `.scratch/s116/mutate.py`, every kind caught.
+  Final counts at 384 checks: `feature-ab` (the six new functions stubbed back to "nothing selected", the band
+  removed, the three invalidation calls cut) **41 failures of 384**; `band_floats` 8; `word_rule_forked` 6 (fm.c
+  growing its own word rule instead of calling vt.c's — the drift the design exists to prevent);
+  `wide_copied_twice` 3, `row_span_gutter` 3; `copy_gutter` 2, `no_normalise` 2, `punct_ascii_only` 2 (the same
+  mutant s114 ran against a session, failing the PREVIEW's checks because the preview has no table of its own);
+  `scroll_keeps` 1, `resize_keeps` 1, `new_preview_keeps` 1, `cap_zero_unguarded` 1. `no_clamp` printed 1 FAIL
+  and then **died of SIGSEGV** — a finding in itself: without the clamp in `fm_preview_select()` the painter
+  walks off the pane, so that check is pinned by a crash, not by a count. As the s107 lesson says, the absence
+  A/B's survivors are the negative checks (a stub that selects nothing satisfies "nothing is selected before a
+  gesture") — those are pinned by the mutants above, not by the A/B.
+  **One real defect, found by reading the new code and then MEASURING it** (`.scratch/s116/capzero.c`, built
+  with ASan): `fm_preview_selection_text()` guarded its first store with `if (cap) out[0] = 0;` but its
+  terminating store is `out[n < cap ? n : cap - 1] = 0;`, which for `cap == 0` is `out[-1]` — ASan: WRITE of
+  size 1 one byte before the caller's array, `src/fm.c:1847`. No caller in the tree passes 0, which is why the
+  guard went in the function and not in the callers: it is a public entry point in the header. Fix: `if
+  (!cap) return 0;` before any write. `make asan` cannot find this on its own — the suite never passes 0 — so
+  the check that pins it is being added to `tests/test_fm.c`.
+  **The check landed** (`tests/test_fm.c`, pvsel group): the buffer is the SECOND byte of a two-byte array
+  (`pad + 1`), so `out[-1]` is `pad[0]` by pointer arithmetic and the plain (non-sanitizer) build sees the
+  underflow — `381 checks, 0 failures` in both `bin/test_fm` and `bin/test_fm_asan`, 0 warning lines. The
+  mutant that pins it is `cap_zero_unguarded` in `.scratch/s116/mutate.py` (the guard replaced by the original
+  `if (cap) out[0] = 0;`), and it fails exactly one check.
+  **A documentation claim the code does not support, found by probing it rather than reading it.** README and
+  ISSUES both said the preview's copy gives back "the whole line as the file holds it" when a line is longer
+  than the pane. `.scratch/s116/longline` (a 130-character line in a 30-column pane) says otherwise: the row
+  span is `2..29` and the copy is **28 bytes** — the pane CUTS the line and never scrolls sideways, so the tail
+  is in no cell to select. Both files now say what the row can actually reach, and the `pvsel` group gained a
+  `long.txt` (the alphabet five times) plus three checks pinning `2..29` and the exact 28-byte copy, so the
+  sentence cannot drift back. Two mistakes on the way, both already this file's lessons: the block was first
+  inserted in the MIDDLE of the group, where installing that preview silently replaced the preview the checks
+  BELOW it read (a check went red for a setup reason, not a model one), and the first build of it errored
+  (`n` undeclared) while the run immediately after printed `381 checks, 0 failures` from the STALE binary.
+  The count moved to **384** only once the build exited 0.
+  **Next:** re-run everything from `make clean` — both builds, every suite, `make asan`, the mutation harness —
+  then commit and push (`git fetch` first). Still owed to the user's eye: the look of the preview band and the
+  feel of the gesture in a real window.
+  **Final verification, all of it re-run from `make clean` after the last edit:** `make -j8` exit 0 / **0
+  warning lines**; `make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0 / **0 warning lines**;
+  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 91 checks, 0 failures, 13 skipped`, `test_vt 1217/0`,
+  `dbg MODEL OK`, **`test_fm 384/0`**, `test_render 495/0`; `make asan` exit 0, **0 warning lines**, no
+  LeakSanitizer report, same counts; the 13-kind mutation harness re-run at 384 checks, every kind caught (the
+  numbers above). The windowed CLI group was NOT run — no window is mapped while the user is at the machine, and
+  step 3b added no flag, so nothing in it is new. `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE"` and
+  `grep -rn "TODO|FIXME|XXX"` over `src/ include/ tests/` still return only the documented lines.
 
 ## Next Steps
 
@@ -1079,17 +1225,23 @@ look, bell flash) to the user.
    `cursor_blink = 0`; then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'` for a
    steady one, and `vim`/`fish` should set their own shape as they always tried to. If the bar is too thin or too
    thick at their font size, `cursor_width` is the knob; if the rhythm is wrong, `cursor_blink`.
-2. **Now: step 3b, text selection in the preview pane** — the user asked for it on 2026-10-20 ("could we also do
-   the same for the preview pane ? that and text selection"). Its plan is in "Current Task"; the first action is
-   the headless probe of the preview's text model, not code. **Then steps 4-7 of the s102 plan** (confirm-quit,
-   middle-click paste, visual bell, plain-click URLs). Each is measured and gated in "Current Task"; the
-   decisions that would have blocked them are already made. Do not re-derive the measured facts.
+2. **Step 3b, the preview pane's text selection — BUILT, GREEN AND COMMITTED (s117); what is owed is the
+   user's eye.** What is in the tree and the rules it must not break are in that step's own section. **To hand
+   to the user:** open the band (`Ctrl+Shift+F` by default), select a text file, then drag in the preview pane —
+   the band should be the same colour as a terminal selection; `Ctrl`+`Shift`+`C` should paste exactly the
+   file's own text (no leading indent, a long line as one line); a double click should take the word and a
+   triple click the row; scrolling or resizing the pane should drop the highlight. **Next up: step 4,
+   confirm-quit**, then steps 5-7 of the s102 plan (middle-click paste, visual bell, plain-click URLs). Each is
+   measured and gated in "Current Task"; the decisions that would have blocked them are already made. Do not
+   re-derive the measured facts.
 3. **Owed to the user's eye:** the look of a themed window, a live OSC repaint, the configured `cursor_color`,
-   and the whole cursor of step 2 — that the bar reads as a bar, that the 1 s blink is the rhythm they wanted,
-   that it stops blinking when the window loses focus, and that vim/fish get the shape they ask for. No longer on
-   that list: `--import-theme` (confirmed s108) and **step 3, the double/triple click — confirmed by the user in
-   their own window on 2026-10-20**. Nothing about the rest is a harness question; every one of them has a check
-   on the decision and none has a check on the pixel.
+   the whole cursor of step 2 — that the bar reads as a bar, that the 1 s blink is the rhythm they wanted, that
+   it stops blinking when the window loses focus, and that vim/fish get the shape they ask for — and **step 3b,
+   the preview pane's selection**: that a drag there highlights, that the band reads as the same highlight as
+   the terminal's, that a double click picks the word they meant, and that `Ctrl`+`Shift`+`C` gives the file's
+   own text. No longer on that list: `--import-theme` (confirmed s108) and **step 3, the double/triple click —
+   confirmed by the user in their own window on 2026-10-20**. Nothing about the rest is a harness question;
+   every one of them has a check on the decision and none has a check on the pixel.
 4. **The windowed group of `tests/cli_test.sh` ran in s108 (141/0/0) at the user's request and passed.** It
    maps ~15 real windows, so it is still a run to ask about, not one to do unprompted while the user is at the
    machine. Check `nvidia-smi` first: a refused atlas upload fails EVERY window check for one unrelated reason
@@ -1166,8 +1318,11 @@ look, bell flash) to the user.
    `s103/ab_ris`, `s103/ab_hex` (the mutation harnesses behind the hex-escape gate), `s104/ab_osc`,
    `s104/ab_nosweep` (the OSC sweep gates), `s105/importprobe.c` + `s105/corpus/` (the eight-format import
    corpus every importer number was copied from), `s107/ab_noimport/` (HEAD's `src/theme.c` with the 1e API
-   stubbed out — the importer's A/B, 44 failures) and `s107/head_tree/` (a full HEAD build, what the new CLI
-   checks were A/B'd against). One fact to keep in mind: this file cites those paths and a
+   stubbed out — the importer's A/B, 44 failures), `s107/head_tree/` (a full HEAD build, what the new CLI
+   checks were A/B'd against), `s115/pvprobe` + `s115/selprobe{,2,3,4}` (the preview pane's own cell grid — every
+   number in the `pvsel` group was printed by one of them before the check was written) and `s116/mutate.py` +
+   `s116/capzero.c` (the step-3b non-vacuity harness: the feature A/B plus 12 mutants, and the ASan probe that
+   found the `out[-1]` write). One fact to keep in mind: this file cites those paths and a
    fresh clone cannot run them — so anything that is a real regression gate belongs in `tests/` eventually.
 8. **Git:** keep committing verified work; `git fetch` before pushing.
 
@@ -1187,7 +1342,7 @@ Kai-Term/
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
 ├── tests/test_vt.c              # 1217 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt machinery, click selection
-├── tests/test_fm.c              # 305 checks: the file-manager model, previews, decoders, band geometry, pointer rules
+├── tests/test_fm.c              # 384 checks: the file-manager model, previews, decoders, band geometry, pointer rules, the preview pane's text selection
 ├── tests/test_render.c          # 495 checks: the renderer's pure decisions — colour choices and cursor shape
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # drives the REAL bin/kai-term: 141 checks / 0 skipped with a display,
@@ -1287,7 +1442,7 @@ Kai-Term/
   itself is in no test binary — that machine is covered by `.scratch/s86/follow2.c` and the live harness. Two
   invariants with dedicated checkers: the `row[]` permutation (also `tests/dbg.c`) and the startup-size round
   trip.
-- `tests/test_fm.c` — 305 checks against a real temporary directory tree (dirs, a dotfile, a dangling symlink, a
+- `tests/test_fm.c` — 384 checks against a real temporary directory tree (dirs, a dotfile, a dangling symlink, a
   FIFO, an unreadable dir, four image formats, a binary file): scan + sort + caps + truncation, the hidden filter
   and `fm_set_hidden`, selection and scrolling (`fm_row_pos`, `ensure_visible`), navigation, the request-id rule
   (a stale answer is dropped), every preview kind and its error path, the highlighter reaching the cells, the
@@ -1298,7 +1453,12 @@ Kai-Term/
   what the NEW pane can show), the selection colour reaching `fm_paint()`, the band's rects inside
   `layout_compute()`, and the wheel-over-the-band keyboard rule (`fm_wheel_focus`: a gesture that scrolled
   nothing never moves the keyboard, the default needs a CLICK to focus a pane, and `fm_focus_on_hover = 1`
-  restores the older pointer-decides behaviour).
+  restores the older pointer-decides behaviour), and the **`pvsel` group** — a text selection inside the preview
+  pane (step 3b): the press/drag range, the reading-order normalisation, the clamping, the word and row spans
+  read back as the TEXT they cover, the wide-glyph rules (span, band and copy), the band read straight out of
+  the pane cells cell-for-cell (`band_mismatches()`), the copy's buffer bounds including `cap == 0`, the
+  invalidation on scroll / resize / a new preview, a directory preview's entry list being selectable too, and
+  what a row wider than the pane can copy (28 cells of a 130-character line).
 - `tests/test_render.c` — 495 checks, the only coverage of the renderer's decisions that needs no display (its
   colour choices AND the cursor's shape, `render_cursor()`'s truth table):
   it links `render.o` (plus `fm.o font.o img.o vt.o shellint.o layout.o mux.o config.o`, which is what
