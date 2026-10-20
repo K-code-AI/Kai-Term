@@ -567,7 +567,12 @@ counts paragraph now reads s126.
   headless check can inject a button), and the `W.selecting = 0` inside the paste branch — a middle press while a
   left drag is held ends the drag, and the left release still finalizes the selection. No check covers that line.
 
-NEXT: commit step 5 (`git fetch` first — the user commits on GitHub too), then step 6, the visual bell.
+DONE: step 5 committed as `f3c812a` ("Middle click: an opt-in paste, with one owner per surface") and PUSHED —
+verified from git, not from memory: `git log --oneline origin/main -1` prints `f3c812a` and `git status -sb`
+shows `main...origin/main` with nothing ahead. `.scratch/` stayed untracked and was never `git add`-ed.
+
+NEXT: step 6, the visual bell. Read the BEL path first (`exec_c0()`'s `case 0x07` in `src/vt.c` is where it
+disappears today) and the batch-A staging budget in `src/render.c` before writing anything.
 
 The user: "I actually hate middle click paste, but we could add it as an option (off by default)". Their answer
 to question 5 settles the design: **it pastes the CLIPBOARD**, so no `wl_primary` work is needed at all and that
