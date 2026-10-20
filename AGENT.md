@@ -21,7 +21,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s124 — **GREEN; the WINDOW-close box is committed but NOT pushed — read the state from git, not from here**)
+## Current Status (re-measured 2026-10-20, s124 — **GREEN; the WINDOW-close box is committed AND pushed (`aab3e15`) — read the state from git, not from here**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -1227,6 +1227,37 @@ numbers and the intermediate check counts are in git.
     | box_flat 1(render) | draw_off 1(render) | main_no_feed 2(render) | main_always_vis 2(render)
     | main_no_pointer 1(render) | main_tab_wording 1(render). 22/22 killed, control survives.
   Next action: (6) README + ISSUES, (7) `make asan`, (8) commit and push.
+  DONE (6, the docs): README's feature bullet, its `confirm_quit` settings row and its "Asking before a close
+  throws work away" section now describe the TWO forms — a window asks with a box that names the process, a tab
+  with the one-row notice — and every sentence quoted in README was printed by `.scratch/s124/wording`, not
+  typed from the page (`A command is running here. Close it?  [Enter] yes  [Esc] no` is the tab row; the box's
+  sentences are the `Warning !` family). The "a window too short to give up a row closes without asking" line
+  became the general rule it always was: a question you cannot see never blocks a close. ISSUES gained one
+  `Fixed` entry for the wrap bug, marked as caught before it shipped. The docs-pinning checks (README's settings
+  and binding tables against the parsers) stayed green through the edit — 1413/0 after it, not just before it.
+  Also corrected, because the page had started to lie: `confirm_message()`'s `CONFIRM_QUIT` wording is no longer
+  what a window shows. The header comment ("the one-row question the window shows"), the Config comment ("the
+  question is confirm_message()") and the test group's heading ("the exact row the window shows") all said
+  otherwise; each now says the branches are superseded and kept only for the safety contract they carry. The
+  `main_tab_wording` mutant is what proves main.c really does use the new wording.
+  DONE (7, asan): `make asan` on this tree — 0 warning lines, all four asan binaries green (1413/0, MODEL OK,
+  384/0, 524/0), no LeakSanitizer or UBSan report.
+  DONE (8, committed and pushed): `aab3e15 "Confirm-quit: a window asks with a box that names the process"`
+  (12 files, +1523/-118). `git fetch` first — nothing had landed on GitHub. `git push` took `12b789a..aab3e15`,
+  which pushed s122's `357b4ee` as well: `git status -sb` now reads `main...origin/main` with nothing ahead, and
+  the only untracked thing is `.scratch/`, which is never `git add`-ed. Verified at the COMMITTED tree, not at a
+  dirty one: `make clean && make -j8` and the test build both exit 0 with **0 warning lines**, and the suites
+  report **1413/0, MODEL OK, 384/0, 524/0**.
+  WHAT THIS SESSION LEARNED, worth carrying: (a) a mutant harness is not a formality — it found a live bug in
+  code that every check in the tree called correct, and it found it by SURVIVING; (b) a check written from the
+  page rather than from a probe is a liability: two of the three wrong checks here asserted something the code
+  never did, and one asserted something no correct UTF-8 string can satisfy; (c) a test input made of identical
+  characters cannot reveal a gap; (d) a failed link leaves the old binary in `bin/`, so a suite can print a
+  confident number for code that no longer builds.
+  OWED NOW: the user's eyes on the box (recipe in "Current Status"). The row they confirmed is closed.
+  Next session: steps 5-7 of the s102 plan — middle-click paste (opt-in, off by default, pastes the CLIPBOARD),
+  the visual bell, plain-click URLs. All three are measured and gated in "Current Task"; their blocking
+  decisions are already made.
 
 ## Next Steps
 
