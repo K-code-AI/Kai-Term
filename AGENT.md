@@ -69,7 +69,8 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   rather than leave a claim that no longer matches the grep.
 - **No `install` target**, and nothing copies `config/*` to `/etc/kai-term` — deliberate; README tells the user
   to copy the templates. Adding one is the user's call.
-- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. s90-s104 and 1e (s107) are pushed.
+- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. s90-s104, 1e (s107), s109 and s110
+  are pushed (verified 2026-10-19: `git status -sb` shows no ahead/behind).
   Read the remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written
   here. `git fetch` before push — the user commits on GitHub too. Never commit `bin/` or `build/`.
 - **Owed to the user's eye, not to a harness:** the look of a themed window, a live OSC colour repaint, and the
@@ -733,6 +734,18 @@ look, bell flash) to the user.
   it to `### Settings file (…)` does NOT fail, on purpose: the match is on the heading's prefix, so re-wording
   a section keeps the check alive. A/B of the corrected `ab_tpl` numbers is in (a) above; `ab_wheel` was
   re-run unchanged and still reports 7 failures out of 305.
+  **Committed and pushed.** Two commits, split so each one's own claims are true at that commit: `2ebaf3b`
+  "File manager: the wheel no longer takes the keyboard — a click does" (the s109 feature; verified at that
+  tree: both builds 0 warning lines, `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 with test_vt **1130/0**,
+  test_fm 305/0, test_render 25/0, CLI 91/0/13) and `0435567` "Tests: README's settings and binding tables
+  pinned to the parser" (the new gate + the corrected counts; verified at that tree: test_vt **1133/0**).
+  `git fetch` first, then `git push`: `git status -sb` now reports `main...origin/main` with no ahead/behind,
+  and `git log --oneline origin/main -1` is the docs commit. A probe launch (`./bin/kai-term -d -e true`, one
+  window, exit 0, no atlas/video-memory line, reached `kai-term exiting`) re-confirmed a real launch on this
+  tree; the full windowed group was NOT re-run — it maps ~15 windows and the rule is to ask first.
+  **Owed to the user's eye, unchanged from s109:** that hovering the band no longer moves the focus border,
+  that a click still does, and that the wheel still scrolls the listing and the preview body without taking the
+  keyboard. Nothing about those three is a harness question.
 
 ## Next Steps
 
