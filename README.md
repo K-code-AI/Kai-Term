@@ -19,6 +19,11 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
 - **Text and colors** — UTF-8 text, 16-color, 256-color, and 24-bit truecolor support. The ANSI 16, the
   ink, the paper, the cursor and the selection highlight come from a theme file — kitty's format is read
   unchanged, and `kai-term.conf` keeps the last word on any colour it mentions itself.
+- **A blinking bar cursor** — A thin vertical bar at the left edge of the cell, on for one second and off for
+  one second (both the width and the half-period are settings, and `cursor_blink = 0` makes it steady). It
+  stops blinking while the window has no focus. A program can ask for a different shape with DECSCUSR
+  (`ESC[1 q` block, `ESC[3 q` bar, `ESC[5 q` underline) — what `vim`, `neovim` and `fish` do — and can ask
+  for a steady cursor, but it cannot switch the blink back on once you turned it off.
 - **Scrollback** — Retains history (2000 lines by default) and scrolls with the mouse wheel or the
   keyboard; new output snaps the view back to the live bottom.
 - **Full-screen applications** — The alternate screen (`vim`, `htop`, `less`, `nano`) is supported; the
@@ -432,6 +437,8 @@ the program.
 | `copy_on_release` | `0` | Copy to the clipboard when the selection drag is released |
 | `wheel_sends_keys` | `1` | Inside a full-screen program that never asked for the mouse (`nano`, `less`, `man`), the wheel sends cursor-key presses, which is what scrolls them (`0` leaves the wheel doing nothing there) |
 | `click_moves_cursor` | `1` | In that same state, a left click that does not drag walks the program's own cursor to the clicked cell (`0` means a click only ever selects text). A drag always selects, and `Shift` + click always selects |
+| `cursor_blink` | `1000` | Cursor blink half-period in ms: the bar is drawn for this long, then hidden for this long (`0` = steady). Your setting is the ceiling — a program can ask for a steady cursor with DECSCUSR but cannot switch the blink back on. Blinking also stops while the window has no focus (clamped to 0–10000) |
+| `cursor_width` | `2` | Pixels wide the bar cursor is — and how tall an underline is, when a program asks for one. Never wider than a third of a cell, so a large value cannot turn the bar back into a block (clamped to 1–64) |
 | `repeat_delay` | `300` | Milliseconds a key must be held before it starts repeating (`0` disables repeating) |
 | `repeat_rate` | `30` | Repeats per second once a key starts repeating |
 | `max_tabs` | `8` | Sessions one window may hold (clamped to 1–64) |

@@ -62,6 +62,12 @@ void config_default(Config *c)
        nothing that worked before. See Config in kai-term.h for what each one does and what it can surprise. */
     c->wheel_sends_keys = 1;
     c->click_moves_cursor = 1;
+    /* The cursor: a thin bar (there is no `cursor_style` key — the user asked for one look) that is on for
+       1000 ms and off for 1000 ms, the classic rhythm. 0 turns the blink off and an application cannot turn
+       it back on (see the CURBLINK enum comment). 2 px is the width that reads as a hairline at 14px but is
+       still one whole pixel on a HiDPI-free 1x display; render_cursor() clamps it to a third of a cell. */
+    c->cursor_blink = 1000;
+    c->cursor_width = 2;
     c->repeat_delay = 300;     /* ms before a held key repeats (0 = Kai-Term does not repeat) */
     c->repeat_rate = 30;       /* repeats per second once repeating */
     /* A few pixels of margin on every side. Compositors round the window corners (niri does), and with
@@ -509,6 +515,16 @@ static void apply_setting(Config *c, const char *key, char *val)
            cursor to the clicked cell. 0 = a click only ever selects text. A drag always selects, and
            Shift + click always selects, whatever this says. */
         c->click_moves_cursor = cfg_bool(val) ? 1 : 0;
+    } else if (!strcmp(key, "cursor_blink")) {
+        /* Half-period in ms: the cursor is drawn for this long, then hidden for this long. 0 = steady.
+           The upper clamp is only there to stop a typo (`cursor_blink = 100000`) leaving a cursor that
+           looks broken; nothing sane needs more than a few seconds. Blinking is additionally gated on the
+           window having focus and on DEC 25l — see blink_half_ms() in src/main.c. */
+        c->cursor_blink = iclamp_(atoi(val), 0, 10000);
+    } else if (!strcmp(key, "cursor_width")) {
+        /* px of bar (and of underline). Clamped to at least 1 here and to a third of a cell in
+           render_cursor(), so a huge value can never turn the bar back into a block. */
+        c->cursor_width = iclamp_(atoi(val), 1, 64);
     } else if (!strcmp(key, "repeat_delay")) {
         /* 0 turns Kai-Term's own repeat off and leaves it to the compositor. */
         c->repeat_delay = iclamp_(atoi(val), 0, 5000);

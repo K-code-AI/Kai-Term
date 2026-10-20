@@ -1297,6 +1297,82 @@ int main(void)
     feed("\x1b[?25h");
     CHECK(T.show_cursor == 1, "show cursor");
 
+    /* --- DECSCUSR (CSI Ps SP q): the shape and the blink an application asks for ----------------
+       Measured BEFORE the code existed (.scratch/s111/decusrprobe, 2026-10-19): twelve forms were fed and
+       every one was consumed and changed NOTHING — the parser collected the space, dropped it, and the
+       `q` case did not exist. So the sequence was invisible, which is why vim, neovim and fish (all of
+       which send it when they take the screen) could not set their cursor. xterm's table is what is
+       implemented: 0 (omitted) and 1 = blinking block, 2 = steady block, 3/4 = bar, 5/6 = underline, the
+       odd/even split deciding the blink. Anything else is ignored, not guessed.
+       The SPACE is part of the sequence: `CSI Ps q` (no intermediate) is a different, unimplemented
+       spelling, and requiring the space is what keeps Parser.inter from being read as "any q". */
+    CHECK(T.cur_style == CUR_UNSET && T.cur_blink == CURBLINK_UNSET,
+          "a fresh session has never been asked for a shape (CUR_UNSET, so the configured bar wins)");
+    feed("\x1b[3 q");
+    CHECK(T.cur_style == CUR_BAR && T.cur_blink == CURBLINK_BLINK, "ESC[3 q is a blinking bar");
+    CHECK(T.cx == 0 && T.cy == 0 && !grid_has_glyph(),
+          "and it paints nothing: no glyph, the cursor unmoved");
+    feed("XY");
+    CHECK(T.cx == 2 && T.cy == 0, "the bytes after it are ordinary text at the cursor");
+    feed("\x1b[ q");
+    CHECK(T.cur_style == CUR_BLOCK && T.cur_blink == CURBLINK_BLINK,
+          "ESC[ q (no parameter) is a blinking block, as in xterm");
+    feed("\x1b[0 q");
+    CHECK(T.cur_style == CUR_BLOCK && T.cur_blink == CURBLINK_BLINK, "ESC[0 q is the same as ESC[1 q");
+    feed("\x1b[2 q");
+    CHECK(T.cur_style == CUR_BLOCK && T.cur_blink == CURBLINK_STEADY, "ESC[2 q is a steady block");
+    feed("\x1b[4 q");
+    CHECK(T.cur_style == CUR_BAR && T.cur_blink == CURBLINK_STEADY, "ESC[4 q is a steady bar");
+    feed("\x1b[5 q");
+    CHECK(T.cur_style == CUR_UNDERLINE && T.cur_blink == CURBLINK_BLINK,
+          "ESC[5 q is a blinking underline");
+    feed("\x1b[6 q");
+    CHECK(T.cur_style == CUR_UNDERLINE && T.cur_blink == CURBLINK_STEADY,
+          "ESC[6 q is a steady underline");
+    /* Ignored, not guessed: an unknown parameter keeps the last shape. */
+    feed("\x1b[3 q");
+    feed("\x1b[9 q");
+    CHECK(T.cur_style == CUR_BAR && T.cur_blink == CURBLINK_BLINK,
+          "ESC[9 q is not a shape Kai-Term knows, so the bar it already had stays");
+    feed("\x1b[99 q");
+    CHECK(T.cur_style == CUR_BAR, "and so is ESC[99 q");
+    /* The private form is a different sequence and must not reach this case. */
+    feed("\x1b[?1 q");
+    CHECK(T.cur_style == CUR_BAR && T.cur_blink == CURBLINK_BLINK,
+          "ESC[?1 q is not DECSCUSR — the shape is untouched");
+    /* Parser.inter is reset at every CSI: without that, a bare `q` after a real DECSCUSR would inherit
+       the earlier space and be read as a shape request. Steady underline is the state to watch, because the
+       sequence that must NOT change it (`ESC[1q`) would ask for a blinking BLOCK — both fields move if the
+       space carried over. Measured with .scratch/s112/qprobe, which is also what caught this check being
+       written against `ESC[5 q` (a BLINKING underline) and expecting steady. */
+    feed("\x1b[6 q");
+    CHECK(T.cur_style == CUR_UNDERLINE && T.cur_blink == CURBLINK_STEADY,
+          "ESC[6 q is a steady underline (the state the next line must survive)");
+    feed("\x1b[1q");
+    CHECK(T.cur_style == CUR_UNDERLINE && T.cur_blink == CURBLINK_STEADY,
+          "ESC[1q without the space is NOT DECSCUSR — the intermediate does not carry over");
+    /* DECSCUSR is per session, and 0 means "never asked": a new tab starts from Kai-Term's own default,
+       not from whatever the program in the previous tab requested. */
+    {
+        Term T2;
+        term_init(&T2, 10, 20, 100);
+        CHECK(T2.cur_style == CUR_UNSET && T2.cur_blink == CURBLINK_UNSET,
+              "a second session starts with no shape requested");
+        const char *ask = "\x1b[1 q";
+        term_parse(&T2, (const uint8_t *)ask, strlen(ask));
+        CHECK(T2.cur_style == CUR_BLOCK, "and an application asking there changes only that session");
+        CHECK(T.cur_style == CUR_UNDERLINE, "leaving this one's underline alone");
+        term_destroy(&T2);   /* term_init allocated a grid: the asan suite counts a leak of it */
+    }
+    /* Entering the alternate screen keeps the request: vim sets its cursor inside the alt screen and
+       expects it to hold for the whole time it owns the screen. */
+    feed("\x1b[?1049h");
+    CHECK(T.cur_style == CUR_UNDERLINE && T.cur_blink == CURBLINK_STEADY,
+          "the alt screen does not wipe a DECSCUSR request");
+    feed("\x1b[?1049l");
+    CHECK(T.cur_style == CUR_UNDERLINE && T.cur_blink == CURBLINK_STEADY,
+          "and leaving it does not either");
+
     /* --- mouse mode bits (?1000/?1002/?1006) --- */
     feed("\x1b[?1000;1006h");
     CHECK((T.mouse_mode & MOUSE_PRESS) && (T.mouse_mode & MOUSE_SGR) &&
@@ -2238,6 +2314,48 @@ int main(void)
         }
     }
 
+    /* --- config: the cursor settings -------------------------------------------------------
+       The cursor is a bar (no `cursor_style` key — the user asked for one look), so the only two
+       numbers a user can set about it are how long each half of the blink lasts and how many pixels
+       wide it is. Both are clamped: `cursor_blink = 0` is the meaningful off switch, and a
+       `cursor_width` of 0 would draw nothing while a huge one would be a block wearing a hat — the
+       renderer clamps it to a third of a cell again, which is a geometry question and belongs to
+       render_cursor() (pinned in tests/test_render.c, not here). */
+    {
+        Config c;
+        const char *path = "/tmp/kterm_test_config_cursor.conf";
+        config_default(&c);
+        CHECK(c.cursor_blink == 1000, "config: cursor_blink defaults to a 1000 ms half-period");
+        CHECK(c.cursor_width == 2, "config: cursor_width defaults to 2 px");
+        FILE *f = fopen(path, "w");
+        CHECK(f != NULL, "config: temp config file writable (cursor)");
+        if (f) {
+            fclose(f);
+            f = fopen(path, "w");
+            fputs("cursor_blink = 0\ncursor_width = 5\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.cursor_blink == 0, "config: cursor_blink = 0 means steady");
+            CHECK(c.cursor_width == 5, "config: cursor_width read from the file");
+            f = fopen(path, "w");
+            fputs("cursor_blink = 99999\ncursor_width = 0\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.cursor_blink == 10000, "config: cursor_blink is clamped to 10000 ms");
+            CHECK(c.cursor_width == 1, "config: cursor_width is clamped to at least 1 px");
+            f = fopen(path, "w");
+            fputs("cursor_blink = -5\ncursor_width = 999\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.cursor_blink == 0, "config: a negative cursor_blink clamps to 0 (steady)");
+            CHECK(c.cursor_width == 64, "config: cursor_width is clamped to at most 64 px");
+            remove(path);
+        }
+    }
+
     /* ---------- config: the search order, and the binding file ----------------------------------
        Two things are pinned here, and neither needs a display:
          1. WHERE a file comes from — $XDG_CONFIG_HOME/kai-term, then ~/.config/kai-term, then
@@ -2505,6 +2623,8 @@ int main(void)
                   "template: wheel_sends_keys matches");
             CHECK(t.click_moves_cursor == d.click_moves_cursor,
                   "template: click_moves_cursor matches");
+            CHECK(t.cursor_blink == d.cursor_blink && t.cursor_width == d.cursor_width,
+                  "template: cursor_blink/cursor_width match (and the shipped lines really are 1000/2)");
             CHECK(t.repeat_delay == d.repeat_delay && t.repeat_rate == d.repeat_rate,
                   "template: the key-repeat timings match");
             CHECK(t.max_tabs == d.max_tabs, "template: max_tabs matches");
@@ -2577,8 +2697,8 @@ int main(void)
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 33 && nb == 24,
-                  "template: the parser accepts 33 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 35 && nb == 24,
+                  "template: the parser accepts 35 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);

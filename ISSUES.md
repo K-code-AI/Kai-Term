@@ -23,19 +23,21 @@ The four items this file was once holding for the user's eye were answered 2026-
 preview-pane key scrolling and the 75 % band's look all work in their window. `--import-theme` was confirmed
 working by the user 2026-10-19 (s107's feature), so the theme import carries no open question either.
 
-Re-measured 2026-10-19 (s110, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
-(`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **1133
-checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **305 checks, 0 failures**;
-`./bin/test_render` **25 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks,
-0 failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no sanitizer report.
-The windowed group of `tests/cli_test.sh` ran again in s109: **141 checks / 0 failures / 0 skipped** — the 50
-window checks plus the 91 that always run. What only that group covers is `main()`'s argv handling for the
-flags that OPEN a window (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and
-that a real launch applies the multiplexing / display / file-manager keys and the band's share; all of it still
-holds. `--import-theme` is not in that list — it needs no display, so s107 pinned it headless. The config
-search order and the settings-vs-binding file rules are covered headless in `tests/test_vt.c` (13 `cfgsearch`
-checks + the `config split` group), so they are not a gap. No `TODO`/`FIXME`/`XXX` and no
-`TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
+Re-measured 2026-10-20 (s112, from `make clean`, on the tree that added the bar cursor): `make -j8` exit 0 with
+**0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
+**0 warning lines**; `./bin/test_vt` **1163 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+`./bin/test_fm` **305 checks, 0 failures**; `./bin/test_render` **495 checks, 0 failures**;
+`KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks, 0 failures, 13 skipped` + those four);
+`make asan` exit 0 with the same counts, 0 warning lines and no sanitizer report. The windowed group of
+`tests/cli_test.sh` was NOT re-run this session (no window is mapped while the user is at the machine); the
+last time it ran was s109: **141 checks / 0 failures / 0 skipped** — the 50 window checks plus the 91 that
+always run. What only that group covers is `main()`'s argv handling for the flags that OPEN a window
+(`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies
+the multiplexing / display / file-manager keys and the band's share. Step 2 added no command-line flag, so
+nothing in that group is new. `--import-theme` is not in that list — it needs no display, so s107 pinned it
+headless. The config search order and the settings-vs-binding file rules are covered headless in
+`tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. No
+`TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
 what is verified and what is not is AGENT.md's "Current Status". This file carries only: what is broken, what was

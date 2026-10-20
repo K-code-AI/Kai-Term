@@ -2462,6 +2462,33 @@ static void csi_dispatch(Term *t, int fin)
             TERM_RESP(t, "\x1b[?64;1;2;6;7;12;22c");
         }
         break;
+    case 'q':
+        /* DECSCUSR — `CSI Ps SP q` sets the cursor shape and its blink. The SPACE is the sequence: the
+           parser used to drop intermediate bytes, so `ESC[3 q` reached here indistinguishable from
+           `ESC[3q` and nothing acted on it at all (measured 2026-10-19 with
+           .scratch/s111/decusrprobe: every form was consumed and changed nothing). Requiring the space is
+           what the sequence IS, and it keeps `CSI Ps q` (a different, unimplemented spelling) out.
+           xterm's table: 0 (omitted) and 1 = blinking block, 2 = steady block, 3 = blinking bar, 4 = steady
+           bar, 5 = blinking underline, 6 = steady underline. Anything else is ignored, not guessed. */
+        if (t->ps.inter == ' ') {
+            int p = t->ps.par[0];
+            int style = 0, blink = 0;
+            switch (p) {
+            case 0: case 1: style = CUR_BLOCK;     blink = CURBLINK_BLINK;  break;
+            case 2:         style = CUR_BLOCK;     blink = CURBLINK_STEADY; break;
+            case 3: case 4: style = CUR_BAR;       blink = p == 3 ? CURBLINK_BLINK : CURBLINK_STEADY; break;
+            case 5: case 6: style = CUR_UNDERLINE; blink = p == 5 ? CURBLINK_BLINK : CURBLINK_STEADY; break;
+            default: break;
+            }
+            if (style) {
+                t->cur_style = style;
+                t->cur_blink = blink;
+                klog(L_DEBUG, "decscusr: the application asked for shape %d blink %d", style, blink);
+            } else {
+                klog(L_DEBUG, "decscusr: ESC[%d q ignored — not a shape Kai-Term knows", p);
+            }
+        }
+        break;
     default:
         break;   /* unimplemented CSI ignored */
     }
@@ -3547,7 +3574,7 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
             ps->state = PS_GROUND;
             switch (b) {
             case '[': ps->state = PS_CSI; ps->npar = 0;
-                      ps->priv = 0; ps->bang = 0; ps->gt = 0;
+                      ps->priv = 0; ps->bang = 0; ps->gt = 0; ps->inter = 0;
                       for (int k = 0; k < 32; k++) ps->par[k] = -1;  /* -1 = not seen yet */
                       break;
             case ']': ps->state = PS_OSC; ps->osc_len = 0; break;
@@ -3608,7 +3635,7 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
             if (b == '?') { ps->priv = 1; continue; }
             if (b == '!') { ps->bang = 1; continue; }
             if (b == '>') { ps->gt = 1; continue; }
-            if (b >= ' ' && b <= '/') { continue; }   /* intermediate bytes: ignored */
+            if (b >= ' ' && b <= '/') { ps->inter = b; continue; }   /* intermediate bytes: kept, see Parser.inter */
             if (b >= 0x40 && b <= 0x7e) {
                 for (int k = 0; k < 32; k++)
                     if (ps->par[k] < 0)

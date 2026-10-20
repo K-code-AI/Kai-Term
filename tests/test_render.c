@@ -1,17 +1,20 @@
-/* Kai-Term — unit tests for the renderer's pure colour decisions (src/render.c).
+/* Kai-Term — unit tests for the renderer's pure decisions (src/render.c).
  *
- * No display, no EGL, no GL context, no font: the only thing under test is render_chrome(), the one
- * function that turns the configured palette into the colours a frame's chrome is drawn with. It reads a
- * Render struct and nothing else, so a test can call it with a struct filled by hand. That seam exists for
- * one bug (ISSUES.md, s102): `cursor_color =` was defaulted, parsed, stored and asserted on by the config
- * tests, and reached no pixel, because the renderer took the colour from the CURSOR_COL macro. Every check
- * that read Config stayed green. So the checks here sit at the CONSUMER — the value that is about to
- * become a vertex colour.
+ * No display, no EGL, no GL context, no font: what is under test is the pair of functions in render.c that
+ * decide something without touching a context — render_chrome(), which turns the configured palette into
+ * the colours a frame's chrome is drawn with, and render_cursor(), which turns a shape request, a blink
+ * phase, a selection band and a cell size into what one cursor cell is painted as. Both read plain structs
+ * and nothing else, so a test can call them with a struct filled by hand. That seam exists for one bug
+ * (ISSUES.md, s102): `cursor_color =` was defaulted, parsed, stored and asserted on by the config tests,
+ * and reached no pixel, because the renderer took the colour from the CURSOR_COL macro. Every check that
+ * read Config stayed green. So the checks here sit at the CONSUMER — the value that is about to become a
+ * vertex colour, and the shape that is about to become a quad.
  *
  * What a headless test cannot reach, stated plainly: the call inside main() that hands Config's value to
- * render_init(). main() is in no linked test (the same limitation tests/cli_test.sh exists for), so that
- * wiring is pinned by the two source scans at the bottom — text checks, weaker than running it, and they
- * fail loudly if the renderer ever reads the macro again or the argument is dropped.
+ * render_init(), and the draw loop that turns these decisions into vertices. main() and render_draw() are
+ * in no linked test (the same limitation tests/cli_test.sh exists for), so that wiring is pinned by the
+ * source scans in group_source_wiring() — text checks, weaker than running it, and they fail loudly if the
+ * renderer ever reads the macro again or an argument is dropped.
  */
 #include "kai-term.h"
 
@@ -204,6 +207,106 @@ static int src_call_passes_arg(const char *path, const char *call, const char *a
     return found;
 }
 
+/* ---------- the cursor's shape: one pure decision, the whole truth table ----------
+   The other half of the s102 lesson. The SHAPE rule used to be implicit in the draw loop (the cursor was
+   always the cell's own background), and the draw loop is in no test binary — exactly where a colour rule
+   was uncheckable. render_cursor() is the same seam: no GL, no font, no Term, no allocation, so every
+   combination of (what the application asked for, is it visible, is a selection band on this cell, how big
+   is the cell, how wide did the user ask for) can be pinned here. What it decides matters because THREE
+   passes of a frame ask it the same question about the same cell and must agree — the comment inside
+   render_draw() ("must match pass 2 exactly") exists because a cursor that disagrees with the band erases
+   itself. */
+static void group_cursor_shape(void)
+{
+    CursorDraw d;
+    const int cw = 9, ch = 18;          /* a plausible cell at font_size 14 */
+
+    /* 1. The default is the bar the user asked for: a separate quad, not the cell's background. */
+    render_cursor(CUR_UNSET, 1, 0, cw, ch, 2, &d);
+    CHECK(d.quad == 1 && d.block == 0 && d.invert == 0 && d.tint == 0,
+          "no DECSCUSR seen: a separate quad, and NOT the cell's background");
+    CHECK(d.x == 0 && d.y == 0 && d.w == 2 && d.h == ch,
+          "a 2 px bar at the LEFT edge of the cell, the full height of it");
+    render_cursor(CUR_BAR, 1, 0, cw, ch, 2, &d);
+    CHECK(d.quad == 1 && d.x == 0 && d.y == 0 && d.w == 2 && d.h == ch,
+          "an application asking for a bar explicitly gets exactly the default");
+
+    /* 2. Not visible (DEC 25l, scrolled back, or the blink phase off) draws NOTHING, in every shape. */
+    const int styles[] = { CUR_UNSET, CUR_BLOCK, CUR_BAR, CUR_UNDERLINE };
+    for (unsigned i = 0; i < sizeof styles / sizeof styles[0]; i++) {
+        render_cursor(styles[i], 0, 0, cw, ch, 2, &d);
+        CHECK(d.block == 0 && d.quad == 0 && d.invert == 0 && d.tint == 0 &&
+              d.x == 0 && d.y == 0 && d.w == 0 && d.h == 0,
+              "an invisible cursor emits no block, no quad and no ink change, whatever the shape");
+    }
+
+    /* 3. The width clamp. Wider than a third of a cell is a block wearing a hat, and 0 px would be no
+       cursor at all — so the clamp has two ends and the lower one matters at a small font size, where a
+       cell can be narrower than 3 px and cell/3 would be 0. */
+    render_cursor(CUR_BAR, 1, 0, cw, ch, 40, &d);
+    CHECK(d.w == cw / 3 && d.h == ch, "a 40 px bar in a 9 px cell is cut to a third of the cell (3 px)");
+    render_cursor(CUR_BAR, 1, 0, cw, ch, 1, &d);
+    CHECK(d.w == 1, "a 1 px bar stays 1 px");
+    render_cursor(CUR_BAR, 1, 0, 2, ch, 2, &d);
+    CHECK(d.w == 1, "in a 2 px-wide cell the bar is 1 px — never 0, which would draw nothing");
+    render_cursor(CUR_BAR, 1, 0, 1, ch, 2, &d);
+    CHECK(d.w == 1, "and in a 1 px cell it is still 1 px, so the cursor cannot vanish");
+
+    /* 4. The underline DECSCUSR asks for: full cell width, at the bottom, as thick as the bar. */
+    render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, 2, &d);
+    CHECK(d.quad == 1 && d.x == 0 && d.w == cw && d.h == 2 && d.y == ch - 2,
+          "an underline is the full width of the cell, 2 px tall, on its bottom edge");
+    render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, 40, &d);
+    CHECK(d.h == ch / 3 && d.y == ch - ch / 3,
+          "a 40 px underline is cut to a third of the cell's HEIGHT (6 px), still on the bottom edge");
+    render_cursor(CUR_UNDERLINE, 1, 0, cw, 2, 2, &d);
+    CHECK(d.h == 1 && d.y == 1, "in a 2 px-tall cell the underline is 1 px — never 0");
+
+    /* 5. A block is today's behaviour, unchanged: it IS the cell's background (pass 1), so it steps aside
+       where a selection band is painted and the ink is tinted with the cursor colour instead. */
+    render_cursor(CUR_BLOCK, 1, 0, cw, ch, 2, &d);
+    CHECK(d.block == 1 && d.invert == 1 && d.tint == 0 && d.quad == 0 && d.w == 0,
+          "a block over no band: pass 1 paints the cell background and pass 3 inverts the ink");
+    render_cursor(CUR_BLOCK, 1, 1, cw, ch, 2, &d);
+    CHECK(d.block == 0 && d.invert == 0 && d.tint == 1 && d.quad == 0,
+          "a block under a band steps aside for it and tints the ink — the rule that must not change");
+
+    /* 6. A bar or an underline does NOT step aside: its quad is emitted in batch B AFTER the bands, so it
+       survives where a selection ends on the cursor cell. That is the whole reason it is a separate quad. */
+    render_cursor(CUR_BAR, 1, 1, cw, ch, 2, &d);
+    CHECK(d.quad == 1 && d.block == 0 && d.tint == 0 && d.invert == 0,
+          "a bar under a band still emits its quad and leaves the ink alone");
+    render_cursor(CUR_UNDERLINE, 1, 1, cw, ch, 2, &d);
+    CHECK(d.quad == 1 && d.block == 0 && d.tint == 0 && d.invert == 0,
+          "and so does an underline");
+
+    /* 7. The invariants, over every combination — the ones a frame depends on and that a hand-written
+       table of examples would miss.
+       (a) a cell is never painted as BOTH a block and a quad (the cursor would be drawn twice),
+       (b) invert only ever comes with block (inverting ink with nothing behind it is a blank cell),
+       (c) a VISIBLE cursor always does something: a block, a quad, or a tint of the ink — so the three
+           passes cannot conspire to erase it,
+       (d) the quad's rect is always inside the cell, at every cell size. */
+    const int cells[][2] = { { 1, 1 }, { 2, 2 }, { 3, 3 }, { 1, 18 }, { 20, 4 }, { 9, 18 }, { 40, 30 } };
+    for (unsigned s = 0; s < sizeof styles / sizeof styles[0]; s++)
+        for (int vis = 0; vis <= 1; vis++)
+            for (int band = 0; band <= 1; band++)
+                for (unsigned c2 = 0; c2 < sizeof cells / sizeof cells[0]; c2++) {
+                    int w_px = 2 + (int)c2;      /* every configured width from 2 to 8 */
+                    render_cursor(styles[s], vis, band, cells[c2][0], cells[c2][1], w_px, &d);
+                    CHECK(!(d.block && d.quad),
+                          "invariant: a cell is never both a block and a separate quad");
+                    CHECK(!d.invert || d.block,
+                          "invariant: ink is only inverted where a block was actually painted");
+                    CHECK(!vis || d.block || d.quad || d.tint,
+                          "invariant: a visible cursor always paints something in one of the three passes");
+                    CHECK(d.x >= 0 && d.y >= 0 && d.x + d.w <= cells[c2][0] &&
+                          d.y + d.h <= cells[c2][1],
+                          "invariant: the cursor's rect never leaves its own cell");
+                }
+}
+
+/* The wiring a headless test cannot execute is pinned by the source scans in the next group. */
 static void group_source_wiring(void)
 {
     /* The renderer must not draw the cursor from the macro any more. On the buggy src/render.c this count
@@ -228,6 +331,21 @@ static void group_source_wiring(void)
           "src/main.c passes conf.selection_color to render_init()");
     CHECK(src_call_passes_arg("src/main.c", "fm_paint(&", "conf.selection_color") == 1,
           "src/main.c passes conf.selection_color to fm_paint()");
+    /* The cursor's two numbers, same reason: a key that stops in Config is not implemented (s102). */
+    CHECK(src_call_passes_arg("src/main.c", "render_init(&", "conf.cursor_width") == 1,
+          "src/main.c passes conf.cursor_width to render_init()");
+    /* The blink phase reaches the renderer as a COPY of window state, not as a Term field: on the tree
+       before the blink existed this line is absent and the count is 0. The scan's second argument is any
+       code string, so this pins the assignment itself (main.c has no comment holding it). */
+    CHECK(src_call_passes_arg("src/main.c", "rend.cursor_on = W.cursor_on", "W.cursor_on") == 1,
+          "src/main.c copies the blink phase into Render.cursor_on every frame");
+    /* The three passes of render_draw() must ask the SAME question about the cursor cell, or a bar
+       painted in one pass and not the next erases itself (the "must match pass 2" comment). The scanner
+       skips comments, so 4 is the definition plus the three call sites — re-diff, do not copy. */
+    CHECK(src_word_count("src/render.c", "render_cursor") == 4,
+          "src/render.c calls render_cursor() from all three passes (definition + 3 call sites)");
+    CHECK(src_word_count("src/render.c", "cursor_on") == 3,
+          "and consults the blink phase in all three of them — re-diff, do not copy");
     CHECK(src_word_count("src/config.c", "CURSOR_COL") >= 1,
           "CURSOR_COL survives as the built-in DEFAULT in src/config.c");
 }
@@ -270,6 +388,7 @@ static void group_scanner_selfcheck(void)
 int main(void)
 {
     group_cursor_color();
+    group_cursor_shape();
     group_source_wiring();
     group_scanner_selfcheck();
     printf("%d checks, %d failures\n", checks, fails);

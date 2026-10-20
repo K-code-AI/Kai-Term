@@ -254,7 +254,8 @@ static void set_clear_color(Render *r)
 }
 
 int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
-                uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color)
+                uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color,
+                int cursor_width)
 {
     memset(r, 0, sizeof(*r));
     r->vw = w;
@@ -346,6 +347,7 @@ int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, flo
     r->fg = fg;   /* the tab bar's text colour (see Render.fg) */
     r->cursor_color = cursor_color;   /* the `cursor_color =` line (see Render.cursor_color) */
     r->selection_color = selection_color;   /* the `selection_color =` line (see Render.selection_color) */
+    r->cursor_width = cursor_width;   /* the `cursor_width =` line (see Render.cursor_width) */
     r->ecfg = malloc(sizeof(cfg));
     if (r->ecfg)
         memcpy(r->ecfg, &cfg, sizeof(cfg));
@@ -680,6 +682,58 @@ void render_chrome(const Render *r, Chrome *out)
     out->cursor      = r->cursor_color;
     out->cursor_off  = mix_c(r->cursor_color, r->bg, 55);
     out->border      = r->selection_color;
+}
+
+/* One place decides what a cursor cell LOOKS like. See the comment on CursorDraw in kai-term.h: the shape
+   rule lives here, next to render_chrome(), for the same reason the colours do — the draw loop is in no test
+   binary, so a rule written there cannot be checked (the dead `cursor_color =` bug, ISSUES.md s102).
+
+   The user asked for "a thin rectangle, the most classic blinking cursor", so the DEFAULT is a bar and there
+   is deliberately no `cursor_style =` key. An application can still ask for another shape with DECSCUSR
+   (`ESC[1 q` block, `ESC[3 q` bar, `ESC[5 q` underline — Term.cur_style), which is what vim, neovim and fish
+   do; CUR_UNSET means no application asked and the bar wins.
+
+   The clamp is the whole geometry: a bar wider than a third of the cell is a block wearing a hat, so
+   `cursor_width` is cut to cell/3 — and the floor of 1 matters because a cell can be narrower than 3 px at
+   a small font, where cell/3 would be 0 and a clamp of (1, 0) would draw nothing at all. */
+void render_cursor(int style, int visible, int band_on, int cell_w, int cell_h, int width_px,
+                   CursorDraw *o)
+{
+    o->block = o->quad = o->invert = o->tint = 0;
+    o->x = o->y = o->w = o->h = 0;
+    if (!visible)
+        return;                              /* DEC 25l, scrolled back, or the blink phase off */
+    if (style == CUR_UNSET)
+        style = CUR_BAR;
+
+    if (style == CUR_BLOCK) {
+        /* Today's behaviour, unchanged: the block is the cell's own background, so a selection band that
+           covers this cell paints over it — pass 1 must therefore step aside exactly where pass 2 paints
+           (the two must match, or a selection ending on an empty cursor cell erases the cursor without
+           replacing it), and the ink is tinted with the cursor colour instead of inverted. */
+        o->block  = band_on ? 0 : 1;
+        o->invert = band_on ? 0 : 1;
+        o->tint   = band_on ? 1 : 0;
+        return;
+    }
+
+    int w = width_px > 0 ? width_px : 1;
+    if (style == CUR_BAR) {
+        int cap = cell_w / 3;
+        if (cap < 1)
+            cap = 1;
+        if (w > cap)
+            w = cap;
+        o->x = 0; o->y = 0; o->w = w; o->h = cell_h;
+    } else {                                  /* CUR_UNDERLINE */
+        int cap = cell_h / 3;
+        if (cap < 1)
+            cap = 1;
+        if (w > cap)
+            w = cap;
+        o->x = 0; o->y = cell_h - w; o->w = cell_w; o->h = w;
+    }
+    o->quad = 1;                              /* its own quad, emitted after the bands */
 }
 
 /* Decode one UTF-8 sequence of a tab-bar label. A tab's title arrives through OSC 0/2, so a label is
@@ -1137,9 +1191,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
        live in ONE staging buffer: batch A is already in driver storage when batch B is built, so the
        split is just two ranges of the same records. */
 
-    /* Pass 1: cell backgrounds (always, so every pane is fully painted). An unselected block cursor
-       paints its block here; a selected cursor cell keeps its own background (the band in pass 2 marks
-       it). */
+    /* Pass 1: cell backgrounds (always, so every pane is fully painted). An unselected BLOCK cursor paints
+       its block here; a bar or an underline does not — it is its own quad in batch B (see render_cursor).
+       A selected cursor cell keeps its own background either way (the band in pass 2 marks it). */
     for (int p = 0; p < lay->npane; p++) {
         Term *t = pane_term(terms, lay->pane[p].tab);
         if (!t)
@@ -1147,6 +1201,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         PaneDraw pd;
         pane_prepare(r, t, &lay->pane[p], f, &pd);
         uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? chrome.cursor : chrome.cursor_off;
+        int phase = (lay->pane[p].tab == lay->active_tab) ? r->cursor_on : 1;
         for (int y = 0; y < pd.nrows; y++) {
             const Cell *row = grid_vprow(pd.g, y);
             for (int x = 0; x < pd.ncols; x++) {
@@ -1166,7 +1221,10 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                            erase the cursor without replacing it with a highlight */
                         hl_on = hw > 0.0f && term_cell_highlightable(t, x, y);
                     }
-                    if (!hl_on)
+                    CursorDraw cd;
+                    render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch,
+                                  r->cursor_width, &cd);
+                    if (cd.block)
                         cellbg = cur_col;
                 }
                 col2f(cellbg, bg);
@@ -1264,6 +1322,44 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
+    /* Pass 2b: the bar / underline cursor, its own quad, per pane. It sits here — after the selection bands
+       and before the glyphs — because there is no GL blending and batch B is one draw call in which the later
+       quad simply wins: over the bands, so a bar stays visible where a selection ends on the cursor cell, and
+       under the glyphs, so the character is never hidden behind its own cursor. A BLOCK cursor is not here;
+       it is the cell's own background from pass 1 (render_cursor() decides, and both passes ask it the same
+       question so they cannot disagree). */
+    for (int p = 0; p < lay->npane; p++) {
+        Term *t = pane_term(terms, lay->pane[p].tab);
+        if (!t)
+            continue;
+        PaneDraw pd;
+        pane_prepare(r, t, &lay->pane[p], f, &pd);
+        if (!t->show_cursor || pd.g->scroll_off != pd.g->live_off)
+            continue;
+        int x = t->cx, y = t->cy;
+        if (x < 0 || x >= pd.ncols || y < 0 || y >= pd.nrows)
+            continue;
+        int hl_on = 0;
+        if (pd.sel_on) {
+            float h0, hw;
+            sel_band_pixels(&pd.selspan, pd.g->cols, x, y, cw, &h0, &hw);
+            hl_on = hw > 0.0f && term_cell_highlightable(t, x, y);
+        }
+        int phase = (lay->pane[p].tab == lay->active_tab) ? r->cursor_on : 1;
+        CursorDraw cd;
+        render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch, r->cursor_width, &cd);
+        if (!cd.quad)
+            continue;
+        uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? chrome.cursor : chrome.cursor_off;
+        col2f(cur_col, bg);
+        bg[3] *= r->opacity;
+        float px = pd.gx + x * cw + (float)cd.x, py = (pd.nrows - 1 - y) * ch + pd.pad_gl + (float)cd.y;
+        emit_quad(&vp, px, py, (float)cd.w, (float)cd.h,
+                  du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f,
+                  white, bg, 0.0f, 0.0f, 0.0f);
+        nquads++;
+    }
+
     /* Pass 3: glyph quads (topmost), per pane. Continuation cells of a wide char are skipped (the wide
        glyph is drawn from its anchor cell). The glyph quad carries the cell's own background; the
        fragment shader picks the selection colour per-fragment where the glyph's pixel x falls inside
@@ -1301,11 +1397,18 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                                 x == t->cx && y == t->cy;
                 uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? chrome.cursor : chrome.cursor_off;
                 if (is_cursor) {
-                    uint32_t oldbg = cellbg;
-                    if (hl_on) {
-                        cellfg = cur_col;      /* selected cursor: tint glyph, band already drawn */
-                    } else {
-                        cellbg = cur_col;      /* unselected: glyph composites over the block */
+                    /* The same decision pass 1 and pass 2b made, so the three of them cannot disagree.
+                       A block inverts the ink (and tints it when a band covers the cell); a bar or an
+                       underline leaves the ink exactly as the cell's pen set it, because the bar is a
+                       separate quad and has nothing to invert. */
+                    int phase = (lay->pane[p].tab == lay->active_tab) ? r->cursor_on : 1;
+                    CursorDraw cd;
+                    render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch, r->cursor_width, &cd);
+                    if (cd.tint) {
+                        cellfg = cur_col;      /* selected block cursor: tint glyph, band already drawn */
+                    } else if (cd.invert) {
+                        uint32_t oldbg = cellbg;
+                        cellbg = cur_col;      /* unselected block: glyph composites over the block */
                         cellfg = oldbg;        /* invert ink under the block cursor */
                     }
                 }

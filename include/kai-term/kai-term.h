@@ -101,6 +101,30 @@ enum {
     MOUSE_SGR   = 1 << 2,   /* ?1006: use SGR (1006) encoding, else legacy X10 */
 };
 
+/* The cursor shape DECSCUSR (CSI Ps SP q) asks for, as stored in Term.cur_style. 0 means "the application
+   never asked", which is why it is 0 and not the block: term_init() memsets Term, so a fresh session must
+   land on Kai-Term's own default (a bar) rather than on an application's request. The mapping from the
+   sequence's parameter is in csi_dispatch(): 0/1 -> block, 2 -> block, 3/4 -> bar, 5/6 -> underline, and the
+   odd/even split decides the blink half (Term.cur_blink below). */
+enum {
+    CUR_UNSET    = 0,       /* no DECSCUSR seen: use the configured default */
+    CUR_BLOCK    = 1,
+    CUR_BAR      = 2,
+    CUR_UNDERLINE = 3,
+};
+
+/* Term.cur_blink: the blink DECSCUSR asked for. 0 = never asked, so `cursor_blink =` decides. The user's
+   setting is the CEILING, not a suggestion: `cursor_blink = 0` means this window never blinks whatever an
+   application asks for, and DECSCUSR can only make the cursor LESS flashy (`ESC[2 q` steady block, `ESC[4 q`
+   steady bar, `ESC[6 q` steady underline). That is a deliberate difference from xterm, which lets `ESC[1 q`
+   switch blinking back on: a user who turned the blink off asked not to have it, and vim sending a shape
+   sequence should not overrule that. blink_half_ms() in src/main.c is where the rule lives. */
+enum {
+    CURBLINK_UNSET = 0,
+    CURBLINK_BLINK = 1,
+    CURBLINK_STEADY = 2,
+};
+
 /* The button codes wl_pointer.button delivers are the Linux kernel's BTN_* values
    (linux/input-event-codes.h), and they are NOT in the order the terminal protocols number the buttons:
    BTN_LEFT 0x110, BTN_RIGHT 0x111, BTN_MIDDLE 0x112, while both the SGR (1006) and the legacy X10
@@ -221,6 +245,10 @@ typedef struct Parser {
     int priv;              /* CSI ? */
     int bang;              /* CSI ! */
     int gt;                /* CSI > (DA2 prefix) */
+    /* The last intermediate byte (0x20-0x2f) seen in this CSI. It used to be dropped on the floor, which
+       made `CSI Ps SP q` (DECSCUSR) indistinguishable from `CSI Ps q` — and DECSCUSR is exactly a sequence
+       whose MEANING is the space. Kept as one byte because every sequence in use here has at most one. */
+    int inter;
     int utf8_need, utf8_cp;
     char osc[512];
     int osc_len;
@@ -303,6 +331,15 @@ typedef struct Term {
        restored across the alternate screen the way xterm does, so a main-screen program that set it cannot
        leave an application-cursor mode behind for the next full-screen program. */
     int app_cursor;
+    /* DECSCUSR (CSI Ps SP q): the shape and the blink the APPLICATION asked for, per session, because vim,
+       neovim and fish all change them when they take the screen (insert mode vs normal mode) and expect the
+       next session on the same window to be unaffected. 0 in either field means "never asked" — term_init()
+       memsets Term, so 0 must be the neutral value, and a new tab therefore starts from Kai-Term's own
+       default (a bar) rather than from whatever the previous session's program requested. render_cursor()
+       (src/render.c) is the one place that turns these two ints plus the config into pixels, and it is a
+       pure function so tests/test_render.c can check it without a display. */
+    int cur_style;         /* CUR_UNSET / CUR_BLOCK / CUR_BAR / CUR_UNDERLINE */
+    int cur_blink;         /* CURBLINK_UNSET / CURBLINK_BLINK / CURBLINK_STEADY */
     int alt_screen;        /* 1 when the alternate screen buffer is active */
     Grid alt;              /* saved MAIN grid while alt_screen is active */
     int alt_saved_cx, alt_saved_cy;  /* main-screen cursor saved on ?1049h */
@@ -680,7 +717,7 @@ typedef struct {
 } FmKeys;
 
 /* ---------- config ---------- */
-/* The cap on "names the settings file set explicitly" (see Config.set_keys). 31 settings today; the count
+/* The cap on "names the settings file set explicitly" (see Config.set_keys). 35 settings today; the count
    of accepted names is pinned by tests/test_vt.c, so this cannot be quietly outgrown. */
 #define CONFIG_SET_KEYS_MAX 64
 
@@ -719,6 +756,18 @@ typedef struct Config {
        that uses the arrow keys for something other than moving a cursor reacts to a click (alsamixer
        would change the slider it is on). That is why it is a switch and not a law. */
     int  wheel_sends_keys, click_moves_cursor;
+    /* The cursor's shape is always the thin bar unless an application asks for another one with DECSCUSR
+       (there is deliberately no `cursor_style` key — the user asked for one look). These two say how that
+       cursor behaves:
+       cursor_blink = the half-period in ms the cursor is on, then off (1000 = one second each way, the
+       classic rhythm; 0 = never blink, and an application cannot switch the blink back on — see the
+       CURBLINK comment above). Blinking also stops while the window has no focus, which is both the
+       classic behaviour and the reason an idle unfocused window does not wake up twice a second.
+       cursor_width = how many pixels wide the bar is (and how tall the underline DECSCUSR can ask for is).
+       The renderer clamps it again to a third of a cell — wider than that is a block wearing a hat — and
+       never below 1 px, because a cell can be narrower than 3 px at a small font size. */
+    int  cursor_blink;
+    int  cursor_width;
     /* Kai-Term drives its own key repeat. repeat_delay = milliseconds a key must be
        held before it starts repeating (default 300; 0 = leave repeat to the compositor, which is the
        behaviour before client-side repeat existed and the escape hatch if the timings ever get in the
@@ -1516,6 +1565,16 @@ typedef struct Render {
     uint32_t selection_color;    /* the `selection_color =` line: the selection band (also the shader's
                                     u_sel uniform), the visible session's tab-bar item, and the focus
                                     border. Built-in default is the SEL_BG macro. */
+    int cursor_width;            /* the `cursor_width =` line: how many pixels wide the bar cursor is, and
+                                    how tall the underline is. Same lesson as cursor_color above — a key
+                                    that stops in Config is not implemented — so it reaches the renderer
+                                    here and render_cursor() clamps it to the cell (1..cell/3). */
+    /* The blink phase of THIS frame: main.c's cursor-blink timer flips W.cursor_on and calls redraw(), and
+       the frame copies it here. It is window state, never Term state — term_init() memsets Term for every
+       new tab, and a blink that lived in the model would survive a tab switch it has no business surviving.
+       Only the visible session's cursor blinks: render_draw() forces 1 for a pane that is drawn but not the
+       active one, which is the classic behaviour and keeps a dimmed cursor steady. */
+    int cursor_on;
     void *ecfg;                  /* EGLConfig */
     void *nwin;                  /* EGLNativeWindowType (wl_egl_window) */
     /* Texture uploads fail when the GPU is out of memory (this box runs a local LLM that holds most of
@@ -1580,8 +1639,31 @@ typedef struct Chrome {
 } Chrome;
 void render_chrome(const Render *r, Chrome *out);
 
+/* What ONE cursor cell is drawn as. The other half of the s102 lesson: the shape decision must live where a
+   test can reach it, not inside the draw loop (render_draw() is in no test binary, exactly like main.c).
+   Four outputs, because the three passes of a frame each ask a different question about the same cell, and
+   they MUST agree — the comment inside render_draw() ("must match pass 2 exactly") exists because a cursor
+   that disagrees with the selection band erases itself. Pure: no GL, no font, no Term, no allocation, so
+   tests/test_render.c checks the whole truth table with no display.
+
+   style    CUR_UNSET (no DECSCUSR seen — Kai-Term draws a bar) / CUR_BLOCK / CUR_BAR / CUR_UNDERLINE
+   visible  0 draws nothing at all: DEC 25l, a scrolled-back viewport, or the blink phase being off
+   band_on  a selection band is painted on this cell. A BLOCK steps aside for it (the band is the highlight
+            and the ink is tinted with the cursor colour instead) — that is today's rule and it stays. A BAR
+            does not step aside, because its quad is emitted in batch B AFTER the bands, so it survives.
+   invert   pass 3 swaps the ink with the cell's own background (a block over no band)
+   tint     pass 3 paints the ink IN the cursor colour (a block under a band)
+   x,y,w,h  the separate quad's rect in cell-local pixels, origin at the cell's top-left */
+typedef struct CursorDraw {
+    int block, quad, invert, tint;
+    int x, y, w, h;
+} CursorDraw;
+void render_cursor(int style, int visible, int band_on, int cell_w, int cell_h, int width_px,
+                   CursorDraw *out);
+
 int  render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
-                 uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color);
+                 uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color,
+                 int cursor_width);
 /* Draw one frame: the tab bar (if the layout says so), every pane's grid, and the file-manager band if
    the layout has one. Two vertex batches (backgrounds, then bands + glyphs + chrome) with one draw call
    per application picture between them — see the header comment of src/render.c for why the frame cannot

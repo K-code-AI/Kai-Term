@@ -90,6 +90,12 @@ typedef struct Wayland {
     int running;
     int fatal;                  /* the renderer gave up (no video memory): main() exits 1, not 0 */
     int is_fullscreen, is_maximized, is_activated;   /* xdg_toplevel configure states (debug only) */
+    /* The blink phase of the visible session's cursor: 1 = drawn this frame. Window state on purpose —
+       term_init() memsets Term for every new tab, so a phase stored in the model would survive a tab
+       switch, a zoom and a resize it has no business surviving, and DEC 25l would have to fight it.
+       Steady whenever the blink is not armed (see blink_update), which is what `cursor_blink = 0`, an
+       unfocused window and a DECSCUSR steady request all mean. */
+    int cursor_on;
     int32_t ptr_x, ptr_y;       /* last pointer position in surface coords (px) */
     int ptr_btn;                /* held button mapped to SGR index (0/1/2), or -1 */
     int selecting;              /* 1 while a left-button text selection drag is in progress */
@@ -534,6 +540,9 @@ static void redraw(void)
        all set. */
     if (g_fm.on && g_fm.dirty)
         fm_paint(&g_fm, conf.fg, conf.bg, conf.selection_color);
+    /* The blink phase of this frame. Copied, not read from W inside the renderer: the renderer takes its
+       window state through Render (opacity, colours) and never reaches into main.c's globals. */
+    rend.cursor_on = W.cursor_on;
     int drew = render_draw(&rend, &font, &g_layout, terms, &g_fm);
     if (drew < 0) {
         /* The renderer could not put the glyph atlas in GPU memory even after dropping every picture
@@ -2507,6 +2516,67 @@ static void paste_watch_disarm(void)
         ;
 }
 
+/* ---------- the cursor blink (the fourth timerfd: frame tfd, key repeat krfd, paste watchdog pwfd) ----------
+   A tick flips W.cursor_on and marks the frame dirty; the swap then happens on the NORMAL frame path, inside
+   redraw(). That is not tidiness — it is the frame-pacing rule of this file: never swap inside a Wayland
+   listener, and never arm a wl_surface_frame callback without attaching a buffer. A blink that drew by
+   itself would be a second path through the same buffers.
+
+   The half-period comes from `cursor_blink =` and the user's switch is the ceiling: `0` means this window
+   never blinks, whatever an application asks for. DECSCUSR can only make the cursor LESS flashy (`ESC[2 q`
+   steady block, `ESC[4 q` steady bar, `ESC[6 q` steady underline). Blinking is also gated on the window
+   having focus, which is both the classic behaviour and the reason an idle unfocused window does not wake
+   up twice a second forever. */
+static int cbfd = -1;
+static int cbfd_half;                 /* the half-period currently armed; 0 = disarmed */
+static Term *cbfd_term;               /* the session that half-period was decided for */
+
+static int blink_half_ms(void)
+{
+    if (conf.cursor_blink <= 0)
+        return 0;                     /* `cursor_blink = 0` — steady, and the app cannot override that */
+    if (!W.is_activated)
+        return 0;                     /* an unfocused window sits still */
+    Term *t = cur_term();
+    if (!t || !t->show_cursor)
+        return 0;                     /* DEC 25l: there is no cursor to blink */
+    if (t->cur_blink == CURBLINK_STEADY)
+        return 0;                     /* the application asked for a steady cursor */
+    return conf.cursor_blink;
+}
+
+/* Re-arm only when the wanted state CHANGED: this runs from the frame tick, and a timerfd_settime per frame
+   would be 60 syscalls a second for a decision that changes when a tab switches or an application asks.
+   "Changed" includes WHICH session is visible: a switch to another session that blinks at the same rate
+   leaves the number identical, and without the identity check the new session inherits the old one's phase
+   — so a switch that lands in the off half shows a window with no cursor at all until the next tick of the
+   old rhythm, up to a full half-period. Restarting the timer restarts the rhythm, which is what a focus
+   change does in the classic terminals too. (Reasoned from the code, not measured: the look of the blink is
+   one of the things owed to the user's eye.) */
+static void blink_update(void)
+{
+    if (cbfd < 0)
+        return;
+    Term *t = cur_term();
+    int half = blink_half_ms();
+    if (half == cbfd_half && t == cbfd_term)
+        return;
+    cbfd_half = half;
+    cbfd_term = t;
+    struct itimerspec its = { 0 };
+    if (half > 0) {
+        its.it_interval.tv_sec = half / 1000;
+        its.it_interval.tv_nsec = (long)(half % 1000) * 1000000L;
+        its.it_value = its.it_interval;
+        W.cursor_on = 1;              /* start a fresh blink on the visible side, not the hidden one */
+    } else if (!W.cursor_on) {
+        W.cursor_on = 1;              /* going steady: the cursor has to come back */
+        W.dirty = 1;
+    }
+    timerfd_settime(cbfd, 0, &its, NULL);
+    klog(L_DEBUG, "cursor blink: half-period %d ms (%s)", half, half > 0 ? "blinking" : "steady");
+}
+
 static void dd_data_offer(void *d, struct wl_data_device *dd, struct wl_data_offer *offer)
 {
     (void)d; (void)dd;
@@ -2826,7 +2896,7 @@ static int wayland_setup(int init_w, int init_h)
        config file, the parser and the struct for weeks and reached no pixel, because the renderer drew
        the cursor from the CURSOR_COL macro (see Render.cursor_color, and ISSUES.md). */
     if (render_init(&rend, W.display, W.egl_window, init_w, init_h, conf.opacity, conf.bg,
-                    conf.fg, conf.cursor_color, conf.selection_color) < 0) {
+                    conf.fg, conf.cursor_color, conf.selection_color, conf.cursor_width) < 0) {
         klog(L_ERROR, "render_init failed");
         return -1;
     }
@@ -3146,6 +3216,18 @@ int main(int argc, char **argv)
         klog(L_WARN, "key repeat disabled: timerfd_create: %s", strerror(errno));
     }
 
+    /* the cursor blink: armed by blink_update() from the frame tick, idle until then (a steady cursor
+       costs nothing). Same reason krfd is a timerfd: nothing else in the loop wakes on a schedule. */
+    cbfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    if (cbfd >= 0) {
+        ev = (struct epoll_event){ .events = EPOLLIN, .data.fd = cbfd };
+        epoll_ctl(ep, EPOLL_CTL_ADD, cbfd, &ev);
+    } else {
+        klog(L_WARN, "cursor blink disabled: timerfd_create: %s", strerror(errno));
+    }
+    W.cursor_on = 1;                  /* steady until blink_update() decides otherwise */
+    rend.cursor_on = 1;
+
     ev = (struct epoll_event){ .events = EPOLLIN, .data.fd = wfd };
     epoll_ctl(ep, EPOLL_CTL_ADD, wfd, &ev);
     ev = (struct epoll_event){ .events = EPOLLIN, .data.fd = tfd };
@@ -3299,6 +3381,10 @@ int main(int argc, char **argv)
             } else if (fd == tfd) {
                 uint64_t ticks;
                 (void)!read(tfd, &ticks, sizeof(ticks));
+                /* The blink decision is re-read here because this is the one place that runs on a
+                   schedule: a tab switch, a focus change, DEC 25l or an application's DECSCUSR can all
+                   change it, and blink_update() only touches the timer when the answer actually moved. */
+                blink_update();
                 /* A follow sequence whose shell never answers has no output to advance on, so the
                    deadline is checked here too. */
                 fm_cd_tick();
@@ -3400,6 +3486,14 @@ int main(int argc, char **argv)
             } else if (krfd >= 0 && fd == krfd) {
                 /* the hold outlasted repeat_delay: re-send the held key (see repeat_start) */
                 repeat_fire();
+            } else if (cbfd >= 0 && fd == cbfd) {
+                /* the half-period elapsed: flip the phase and let the normal frame path draw it. The tick
+                   never draws or swaps by itself — see the block at the definition of cbfd. */
+                uint64_t exp;
+                while (read(cbfd, &exp, sizeof(exp)) == (ssize_t)sizeof(exp))
+                    ;
+                W.cursor_on = !W.cursor_on;
+                W.dirty = 1;
             }
         }
     }
@@ -3433,6 +3527,8 @@ int main(int argc, char **argv)
         close(pwfd);
     if (krfd >= 0)
         close(krfd);
+    if (cbfd >= 0)
+        close(cbfd);
     close(ep);
     klog(L_INFO, "kai-term exiting%s", W.fatal ? " — renderer failure" : "");
     return W.fatal ? 1 : 0;
