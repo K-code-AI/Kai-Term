@@ -22,17 +22,20 @@ The four items this file was once holding for the user's eye were answered 2026-
 `background = 1c1c22`, bare hex, and `opacity = 1`), and the s98 clipboard-source paste fix, the file manager's
 preview-pane key scrolling and the 75 % band's look all work in their window.
 
-Re-measured 2026-10-19 (s103, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
-(`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **977 checks,
-0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **296 checks, 0 failures**; `./bin/test_render`
-**25 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 67 checks, 0 failures, 13 skipped` +
-those four); `make asan` exit 0 with the same counts and no sanitizer report. The windowed group of
-`tests/cli_test.sh` (**117 checks / 0 failures / 0 skipped**, last measured that way in s99) was skipped again —
-the user at the machine. That leaves only its own half uncovered: `main()`'s argv handling (`-c/--config`,
-`-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing /
-display / file-manager keys. The config search order and the settings-vs-binding file rules are covered headless in
-`tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. No `TODO`/`FIXME`/`XXX`
-and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
+Re-measured 2026-10-19 (s107, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
+(`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **1127
+checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **296 checks, 0 failures**;
+`./bin/test_render` **25 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks, 0
+failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no sanitizer report — it was
+RED (2 warnings + a 134-byte harness leak) for the two sessions before, which is what the s107 close-out fixed.
+The windowed group of `tests/cli_test.sh` (**117 checks / 0 failures / 0 skipped**, last measured that way in
+s99 — the 24 checks s107 added to the always-run part make that total stale) was skipped again — the user at the
+machine. What that leaves uncovered is its own half only: `main()`'s argv handling for the flags that OPEN a
+window (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch
+applies the multiplexing / display / file-manager keys. `--import-theme` is no longer in that list — it needs no
+display, so s107 pinned it headless. The config search order and the settings-vs-binding file rules are covered
+headless in `tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. No
+`TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
 what is verified and what is not is AGENT.md's "Current Status". This file carries only: what is broken, what was
@@ -49,6 +52,20 @@ The full investigation of each — the probes, the wrong theories, the measureme
 Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
 the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**`make asan` red on the theme importer — two warnings only the sanitizer build sees, and a harness leak
+(2026-10-19, s107).** No user symptom; the defects were in the build and in the suite, and they mattered because
+a red `make asan` blocks the "never commit red" rule and would have hidden the next real sanitizer finding. Two
+`-Wformat-truncation` warnings at `src/theme.c:651`/`:718` and LeakSanitizer's *"134 byte(s) leaked in 18
+allocation(s)"*. Cause in one line: `snprintf(v->name, sizeof v->name, "%s", val)` where `val` can be 1023 bytes
+into a 128-byte field — a warning that fires ONLY in the asan build, where `import_kv` is inlined and the
+compiler can bound the argument (the s103 "measure BOTH builds" class again) — plus an option-pinning block in
+`tests/test_vt.c` that mallocs the names it reads out of `usage()` and README and never frees them. Fix:
+`set_name()` in `src/theme.c`, one cap at `sizeof v->name - 1` that LOGS the cut, because the cut decides the
+file name an imported theme is written under; and free both name lists. Kept out by a `tests/test_vt.c` check
+asserting the exact 127-byte stem a 140-byte theme name produces (the name alternates `ab`, so an off-by-one in
+the cap changes the last character as well as the length) and a `tests/cli_test.sh` check that greps the log
+line. Verified: `make asan` exit 0, 0 warning lines, no sanitizer report.
 
 **A test check that fed the wrong bytes and stayed green — the `\x1bc` hex-escape trap (2026-10-19, s103).** No user
 report and no product symptom: the defect was in the suite, and it matters because it made a claim about behaviour
