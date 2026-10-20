@@ -23,7 +23,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-19, s110 — build, every suite and `make asan` all green)
+## Current Status (re-measured 2026-10-20, s112 — build, every suite and `make asan` all green)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -33,10 +33,11 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
 - **Suites** (`KAI_TERM_TEST_NO_WINDOW=1 make test`, exit 0): `CLI: 91 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **1133 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305
-  checks, 0 failures**, `./bin/test_render` **25 checks, 0 failures** (the renderer's pure colour decisions —
-  no display, no GL context). With a display `tests/cli_test.sh` reports **141 checks, 0 failures, 0 skipped**
-  (measured again in s109; the 50 window checks are the difference from the headless 91). What only its
+  `./bin/test_vt` **1163 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305
+  checks, 0 failures**, `./bin/test_render` **495 checks, 0 failures** (the renderer's pure decisions — its
+  colour choices AND the cursor's shape — no display, no GL context). With a display `tests/cli_test.sh` reports
+  **141 checks, 0 failures, 0 skipped** (last measured s109; the 50 window checks are the difference from the
+  headless 91 — step 2 added no command-line flag, so nothing in that group is new). What only its
   windowed group covers is `main()`'s own argv handling (`-c/--config`, `-b/--binds`, combined flags, `-d`
   beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys
   and the band's share. The config SEARCH order and the split-by-name rules are NOT exclusive to it —
@@ -52,7 +53,7 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   function that cuts at `sizeof v->name - 1` and LOGS the cut, because the cut decides the file name an
   imported theme lands under; the leak went by freeing the two name lists. Both fixes are pinned: the C check
   asserts the exact 127-byte stem, the CLI group greps the log line.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **33** setting names and the
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **35** setting names and the
   **24** binding names out of the two strcmp ladders in `src/config.c`, the **23** theme names out of
   `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in `src/main.c`, and compares
   each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's tables —
@@ -73,14 +74,17 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   are pushed (verified 2026-10-19: `git status -sb` shows no ahead/behind).
   Read the remote state with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written
   here. `git fetch` before push — the user commits on GitHub too. Never commit `bin/` or `build/`.
-- **Owed to the user's eye, not to a harness:** the look of a themed window, a live OSC colour repaint, and the
-  configured `cursor_color` — those three have never been confirmed in the user's window. (`--import-theme` and
-  the theme file itself HAVE been: the user confirmed the import works, 2026-10-19.) Recipe for the theme: put
+- **Owed to the user's eye, not to a harness:** the look of a themed window, a live OSC colour repaint, the
+  configured `cursor_color`, and the whole step-2 cursor — a bar that reads as a bar, the 1 s blink rhythm, the
+  blink stopping when the window loses focus, and vim/fish getting the shape they ask for. None of those four
+  have ever been confirmed in the user's window; every one of them has a check on the DECISION and none has a
+  check on the PIXEL. (`--import-theme` and the theme file itself HAVE been: the user confirmed the import
+  works, 2026-10-19.) Recipe for the theme: put
   their kitty theme at `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to
   `~/.config/kai-term/kai-term.conf`, then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that
   an application set it, not the file. Hand these to them; do not map a window to judge a look yourself.
 
-## Current Task — step 2, the cursor bar: **in progress (s111)**. Plan steps 3-7 are next
+## Current Task — step 2, the cursor bar: **DONE and green (s112)**. Plan step 3 is next
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -134,6 +138,8 @@ re-ask them, and do not re-propose what was dropped.
 - **`selection_color =` became a real key (DONE, `5c1f58d`)** — the theme prerequisite: `Config.selection_color`
   (default `SEL_BG`) -> `Render.selection_color` -> `render_chrome()` derives the band, the active bar item and
   the focus border from it, and `fm_paint()` takes a `sel` argument so the file manager's selected row matches.
+- **Step 2 — the bar cursor, its blink, and DECSCUSR (DONE, s112).** See its own section below for what is in
+  the tree and the rules that must not break. Settings names went 33 -> 35 with it.
 
 ### 1e. `--import-theme FILE` — DONE (built s105, taken green and committed s107)
 
@@ -175,27 +181,34 @@ and 67 new checks in `tests/test_vt.c` (1060 -> 1127) plus 24 in `tests/cli_test
   in those checks — see Key Decisions.
 - **Still owed:** nothing. The user confirmed `--import-theme` works in their own use (2026-10-19, s108).
 
-### 2. Cursor: a thin bar, classic blink
+### 2. Cursor: a thin bar, classic blink — DONE (built s111, taken green and committed s112)
 
-The user's words: "A thin rectangle, the most classic blinking cursor". Today the cursor **is** the cell's
-background quad, emitted in pass 1, and the later passes re-tint the glyph on the cursor cell; the
-unfocused-session colour is `mix_c(cursor_color, bg, 55)`.
+The user's words: "A thin rectangle, the most classic blinking cursor". What is in the tree:
+`Parser.inter` + `Term.cur_style`/`cur_blink` (DECSCUSR), the pure `render_cursor()` in `src/render.c` asked by
+all three passes of `render_draw()`, a new pass 2b emitting the bar/underline quad in **batch B between the
+selection bands and the glyphs**, the fourth timerfd `cbfd` with `blink_half_ms()`/`blink_update()` in
+`src/main.c`, and the keys `cursor_blink = 1000` / `cursor_width = 2`.
 
-- A bar/underline must be a **separate quad**, not the cell background. Emit it in **batch B, between the
-  selection bands and the glyphs** — batch B is one draw call where the later quad simply wins, so glyphs must
-  come after it or the bar hides the character. Keep the existing rule that the cursor is hidden exactly where a
-  band is painted (the comment in `render_draw()` pass 1/2 says they must match; a bar that forgets it
-  re-creates that bug).
-- Blink needs a **fourth timerfd** (there are three: frame `tfd`, key repeat `krfd`, paste watchdog `pwfd`). A
-  tick must set `W.dirty` and go through `redraw()` on the normal path — never swap inside a Wayland listener,
-  and never arm a `wl_surface_frame` callback without attaching a buffer (frame-pacing rules below). Blink phase
-  is window state (`W`), **not** `Term` state: `term_init()` memsets `Term`, and DEC 25l must still hide it.
-  Blink only while the window has focus — classic behaviour, and it stops a 2 Hz redraw on an idle unfocused
-  window.
-- Keys: `cursor_blink = 1000` ms half-period (the user's answer: "blink 1 sec, 0.5 sounds too fast"), `0` =
-  steady; `cursor_width = 2` px for the bar, clamped 1..cell_w/3. **No `cursor_style` key** — always a bar.
-  **Honour DECSCUSR** (`CSI <n> SP q`, 0 hits today) so vim/neovim/fish can still ask for block or underline;
-  the query plumbing already exists (`CSI c`, `CSI 6 n`).
+The rules a later change must not break, all of them checked:
+- A bar/underline is a **separate quad**, never the cell background, and it is emitted AFTER the bands and
+  BEFORE the glyphs: batch B is one draw call in which the later quad simply wins, so a bar after the glyphs
+  would hide the character and a bar before the bands would vanish under a selection. A BLOCK stays the cell's
+  own background from pass 1 — and it still steps aside exactly where a band is painted (the "must match pass 2"
+  comment), because a block that forgets it erases itself.
+- All three passes ask `render_cursor()` the SAME question with the same arguments, so they cannot disagree.
+  `term_cell_highlightable()` gates `hl_on` in passes 1 and 2b and not in pass 3; that is harmless and known,
+  because it returns 0 only for a never-written blank cell, which has no glyph to tint.
+- The blink is a timerfd whose tick only flips `W.cursor_on` and sets `W.dirty`; the swap happens on the normal
+  `redraw()` path. Never draw from a Wayland listener, never arm a `wl_surface_frame` callback without
+  attaching a buffer. Phase lives in `W`, never in `Term` (`term_init()` memsets `Term`; DEC 25l must still hide
+  the cursor; only the visible session's cursor blinks — an inactive pane's is steady and dimmed).
+- `conf.cursor_blink` is the CEILING: `0` never blinks whatever an application asks, DECSCUSR can only make the
+  cursor less flashy. Blinking is gated on `W.is_activated` and on `t->show_cursor`, and `blink_update()`
+  re-arms when the half-period OR the visible session changes (a tab switch restarts the rhythm).
+- `cursor_width` is clamped twice: 1..64 by the parser, and to `cell/3` (bar) / `cell_h/3` (underline) with a
+  floor of 1 px by `render_cursor()`, so the cursor can never be 0 px and never a block wearing a hat.
+- **No `cursor_style` key** — always a bar unless an application asks (the user's answer: "blink 1 sec, 0.5
+  sounds too fast" is why the default half-period is 1000 ms).
 
 ### 3. Double-click selects a word, triple-click a line (on by default)
 
@@ -786,20 +799,143 @@ look, bell flash) to the user.
   **Expected outcome:** a 2 px bar at the left edge of the cursor cell, full cell height, blinking with a 1 s
   half-period while the window is focused and steady while it is not; `cursor_blink = 0` gives a steady bar; an
   app that sends `ESC[1 q` gets a block back, `ESC[3 q` a blinking bar, `ESC[5 q` an underline.
+  **Steps 1 and 2 done, probe first as planned.** `.scratch/s111/decusrprobe.c` fed twelve forms before any
+  code change and every one of them was consumed and changed nothing (`cur_style`/`cur_blink` did not exist yet,
+  so the printed proof was cx/cy/modes/row0 all unchanged and `ESC[3 qXY` still landing `XY` at cx=4) — the
+  sequence was parsed and thrown away, exactly as the plan said. After the change the same probe prints
+  xterm's table exactly: `ESC[ q`/`0 q`/`1 q` -> block+blink, `2 q` -> block+steady, `3 q`/`4 q` -> bar +
+  blink/steady, `5 q`/`6 q` -> underline + blink/steady, and `9 q`, `ESC[?1 q` and `ESC[3q` (no space) all
+  ignored. The space is required on purpose: it is what the sequence IS, and it keeps `CSI Ps q` out.
+  Code: `Parser.inter` (the last intermediate byte, reset at `CSI`, was dropped on the floor before),
+  `Term.cur_style` / `Term.cur_blink` with the `CUR_*` / `CURBLINK_*` enums in the header, and the `case 'q':`
+  in `csi_dispatch()`'s non-private switch (the only other `case 'q'` in `src/vt.c` is the kitty-graphics APC
+  parser, untouched). `make -j8` 0 warning lines.
+
+- **2026-10-20, s112 — step 2 taken from a half-finished, non-building working tree to green.** The session
+  opened on an uncommitted s111 tree: DECSCUSR parsing in, the render decision and the blink timer written, the
+  two config keys missing — `make -j8` exit 2 with 3 error lines (`Config` has no member named `cursor_blink`
+  / `cursor_width`). Everything below is that session; the diff is in git, the rules that survived are in the
+  step-2 section above.
+  **Steps 3-5 then landed in the working tree (uncommitted, measured 2026-10-20):** `render_cursor()` — the pure
+  per-cell decision, `CursorDraw { block, quad, invert, tint, x,y,w,h }` in the header next to
+  `render_chrome()` — asked by all three passes of `render_draw()` (pass 1 backgrounds, a new pass 2b emitting
+  the bar/underline quad in batch B after the bands, pass 3 the ink), so the three cannot disagree; the
+  `Render.cursor_width` / `Render.cursor_on` fields with `render_init()` taking the width; and the fourth
+  timerfd (`cbfd`) with `blink_half_ms()` / `blink_update()` in `main.c` — armed from the frame tick only when
+  the wanted half-period CHANGED, gated on `W.is_activated`, `t->show_cursor` and a DECSCUSR steady request,
+  a tick flipping `W.cursor_on` + `W.dirty` and letting the normal `redraw()` path draw it.
+  **The tree does not build right now — measured, `make -j8` exit 2, 3 error lines:** `Config` has no member
+  named `cursor_blink` (`src/main.c:2535`, `:2544`) or `cursor_width` (`:2890`). That is step 6, and it is the
+  next action: `Config.cursor_blink` / `Config.cursor_width` in the header, `config_default()` (1000 / 2), the
+  `apply_setting` ladder (settings names 33 -> 35), a commented line for each in `config/kai-term.conf`, a
+  README row each — the s110 README gate fails if one is missing — then the template-parity, default and parse
+  checks. **Then step 7:** the `render_cursor` truth table in `tests/test_render.c`, the DECSCUSR checks in
+  `tests/test_vt.c`, an A/B of every new check against a tree that lacks the feature with the failure counts
+  reported, both builds measured for warnings, and the look handed to the user rather than judged from a
+  mapped window.
+  **Step 6 done (2026-10-20):** `Config.cursor_blink` / `.cursor_width` in `kai-term.h` (after
+  `click_moves_cursor`, each with the reason for its clamp), `config_default()` = **1000 / 2** (literal numbers,
+  the style `padding` and `repeat_delay` already use — no new macros), and the two `apply_setting` branches:
+  `cursor_blink` clamped **0..10000** (0 = steady), `cursor_width` clamped **1..64** here and to `cell/3` again
+  in `render_cursor()`. Settings names 33 -> **35**, so the count check in `tests/test_vt.c` and both documents
+  must follow; until they do the suite is expected to fail that check. **One contradiction inside the
+  uncommitted s111 code was resolved here rather than left to rot:** the `CURBLINK_*` header comment said an
+  application may override the user's blink "in BOTH directions", while `blink_half_ms()` treats
+  `conf.cursor_blink` as a CEILING (`0` = never blinks, whatever an app asks). The code's rule is the one kept
+  and the comment rewritten to say so — a deliberate difference from xterm, which lets `ESC[1 q` switch
+  blinking back on, because a user who set `cursor_blink = 0` asked not to have a blinking cursor. DECSCUSR can
+  still make the cursor LESS flashy in every case.
+  **Documents followed the parser in the same step:** two commented lines + values in `config/kai-term.conf`
+  (terminal-behaviour block, after `click_moves_cursor`; the `cursor_color` comment now points there for shape
+  and blink) and two rows in README's settings table, plus a README **Features** bullet — "A blinking bar
+  cursor" — because the look is now a user-visible feature and README's Features list is where a reader looks
+  first. `make -j8` after the config keys: exit 0, **0 warning lines**.
+  **Checks for the keys and for DECSCUSR added to `tests/test_vt.c`** (1133 -> **1163 checks, 0 failures**,
+  test build 0 warning lines): a cursor-config group (defaults 1000/2, both read from a file, both clamped at
+  each end — 9 checks + 1 template-parity check), the count check moved to **35 settings / 24 bindings**, and a
+  DECSCUSR group next to DECTCEM (xterm's whole table, `9 q`/`99 q`/`ESC[?1 q`/`ESC[1q` all ignored, the
+  sequence paints no glyph and moves no cursor, a second `Term` is unaffected, and the alt screen neither
+  wipes nor restores a request). `CONFIG_SET_KEYS_MAX`'s comment said "31 settings today" and is now 35.
+  **The probe paid for itself immediately.** `.scratch/s111/decusrprobe.c` is GONE — `.scratch/` was empty when
+  this session opened, so the s111 measurement above can no longer be re-run; `.scratch/s112/qprobe.c` is the
+  replacement (feeds the same forms, prints style/blink/cx/cy after each). It found three FAILs on the first
+  run and all three were **errors in my new checks, not in the code**: I wrote the `ESC[1q`-carries-no-intermediate
+  check against `ESC[5 q`, which is a *blinking* underline, and expected steady — so the two alt-screen checks
+  that followed failed from the same wrong state. The parser was right all along (`ESC[1q` changes nothing, and
+  there is exactly ONE CSI entry point in `term_parse`, so `inter` cannot leak). Fixed by feeding `ESC[6 q`
+  (steady underline) as the state that must survive, which moves BOTH fields if the space ever carries over.
+  **`render_cursor()` truth table added to `tests/test_render.c`** (25 -> **495 checks, 0 failures**, test
+  build 0 warning lines): the default bar and its rect, invisible-means-nothing in all four shapes, both ends
+  of the width clamp (40 px in a 9 px cell -> 3 px; a 1 px cell -> 1 px, never 0, which would draw no cursor
+  at all), the underline's rect and its `cell_h/3` clamp, the BLOCK rules kept exactly as they were (block +
+  invert over no band, tint + step-aside under a band), the NEW rule that a bar/underline does NOT step aside
+  for a band, and 448 invariant checks over every (shape × visible × band × 7 cell sizes × 7 widths): never
+  both a block and a quad, `invert` only with a block, a visible cursor always paints something in one of the
+  three passes, and the rect never leaves its cell. Four more source-wiring checks: `conf.cursor_width` reaches
+  `render_init()`, `rend.cursor_on = W.cursor_on` exists, and `src/render.c` mentions `render_cursor` 4×
+  (definition + the three passes) and `cursor_on` 3× — re-diff those two counts, they are text pins for wiring
+  no headless test can execute. The file's header comment now says what is really under test (it claimed
+  render_chrome was the only thing).
+  **A/Bs run, both in `.scratch/s112/`, both with the CURRENT header and CURRENT tests against code that lacks
+  the feature** (the header has to be current or the new checks would not compile — that is the honest shape of
+  this A/B, and it is what makes the vocabulary available to a tree that does not implement it):
+  - `.scratch/s112/ab_model/` — HEAD's `src/vt.c` + HEAD's `src/config.c` (both compile clean against the
+    current header, 0 warnings) linked with the new `tests/test_vt.c`: **1163 checks, 22 failures** — 16 in the
+    DECSCUSR group, 6 in the cursor-config group. The DECSCUSR checks that stay green there are the negative
+    ones ("a fresh session has never been asked", "it paints nothing", "a second session starts unasked"),
+    exactly the limit the s107 entry warns about for a feature A/B.
+  - `.scratch/s112/ab_shape/` — HEAD's `src/render.c` (its `render_init` signature had to be widened by hand in
+    the scratch copy, or gcc 15 refuses to compile it against the current header — noted because it is a trap
+    for the next A/B) plus `old_cursor.c`, the pre-step-2 rule written as the function the test calls (always a
+    block, steps aside for a band, shape/size/width not inputs at all): **495 checks, 12 failures**, and the 12
+    are precisely the bar/underline claims. The BLOCK checks and all 448 invariants stay green on the old rule
+    — they are safety invariants, not feature claims, so their A/B value is limited by design.
+  - **A limit worth recording:** an object-file A/B cannot exercise the checks that read SOURCE TEXT —
+    `cfg_names_of()`, `readme_table_names_of()` and `src_word_count()` all open the working tree's files, so
+    the 35-name count and the `render_cursor`-appears-4× pins passed in both A/B trees. Those pins were instead
+    verified the direct way, twice over: the count check went genuinely RED this session (1 failure) between
+    adding the parser branches and updating the documents, and `grep -c render_cursor` on HEAD's `src/render.c`
+    is 0.
+  **One defect in the uncommitted blink code found by reading, and fixed:** `blink_update()` compared only the
+  half-period, so switching to another session that blinks at the same rate kept the old phase and could show
+  a window with no cursor for up to a full half-period. `cbfd_term` (the session the arming was decided for)
+  joins the "did it change" test, so a tab switch restarts the rhythm on the visible side. While checking the
+  three passes I also confirmed a pre-existing asymmetry that is harmless and left alone: pass 1 and pass 2b
+  gate `hl_on` on `term_cell_highlightable()` and pass 3 does not, but that function returns 0 only for a
+  never-written blank cell (`ch == 0`), which has no glyph to tint — so the passes cannot disagree about
+  anything a pixel shows.
+  **Close-out, measured after the last edit, from `make clean`:** `make -j8 2>&1 | grep -ciE 'warning|error'` →
+  **0**, and the same for `make bin/test_vt bin/dbg bin/test_fm bin/test_render` → **0**.
+  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0: `CLI: 91 checks, 0 failures, 13 skipped`, `./bin/test_vt`
+  **1163/0**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305/0**, `./bin/test_render` **495/0**.
+  `make asan` exit 0, 0 warning lines, 0 lines matching `leaked|LeakSanitizer|AddressSanitizer`, same counts.
+  The two greps the status line claims were re-run and still return exactly what it says (the `mkdtemp`
+  template + one test's fill string; the three `tests/test_render.c` lines that WRITE a probe file).
+  `tests/cli_test.sh`'s windowed group was NOT run — no window is mapped while the user is at the machine, and
+  step 2 added no flag for it to cover. README, `config/kai-term.conf` and ISSUES.md's re-measured paragraph
+  were all updated with the new counts in the same session. **Owed next:** the user's eye on the cursor (the
+  recipe is in Next Steps 1), then plan step 3.
 
 ## Next Steps
 
-1. **Step 2, the cursor bar — IN PROGRESS, see the s111 entry above for the plan and the measured starting
-   point.** Everything that would have had to be decided is decided — a separate quad emitted in batch B under
-   the glyphs, a fourth timerfd for the blink, blink phase in `W` and never in `Term`, `cursor_blink = 1000` /
-   `cursor_width = 2`, DECSCUSR honoured, no `cursor_style` key. Probe first, A/B every new check, and hand the
-   look to the user instead of mapping a window.
+1. **Step 2, the cursor bar — BUILT, GREEN AND COMMITTED (s112); what is owed is the user's eye, not code.**
+   DECSCUSR parses (`Parser.inter`, `Term.cur_style`/`cur_blink`), the shape decision is the pure
+   `render_cursor()` asked by all three passes of `render_draw()`, the bar/underline quad is emitted in batch B
+   between the bands and the glyphs, the blink is the fourth timerfd (`cbfd`) with its phase in `W`, and the two
+   keys are `cursor_blink = 1000` / `cursor_width = 2` (no `cursor_style` key). A/Bs: 22 failures without the
+   model/config half, 12 without the shape half. **To hand to the user:** open Kai-Term and look — a 2 px bar at
+   the left edge of the cell, one second on / one second off while the window has focus, steady with
+   `cursor_blink = 0`; then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'` for a
+   steady one, and `vim`/`fish` should set their own shape as they always tried to. If the bar is too thin or too
+   thick at their font size, `cursor_width` is the knob; if the rhythm is wrong, `cursor_blink`.
 2. **Then steps 3-7 of the plan** (word/line click selection, confirm-quit, middle-click paste, visual bell,
    plain-click URLs). Each is measured and gated in "Current Task"; the decisions that would have blocked them
    are already made. Do not re-derive the measured facts.
-3. **Owed to the user's eye:** the look of a themed window, a live OSC repaint, and the configured
-   `cursor_color`. `--import-theme` is no longer on that list — the user confirmed it works (s108). Nothing
-   about the remaining three is a harness question.
+3. **Owed to the user's eye:** the look of a themed window, a live OSC repaint, the configured `cursor_color`,
+   and now the whole cursor of step 2 — that the bar reads as a bar, that the 1 s blink is the rhythm they
+   wanted, that it stops blinking when the window loses focus, and that vim/fish get the shape they ask for.
+   `--import-theme` is no longer on that list — the user confirmed it works (s108). Nothing about these is a
+   harness question; every one of them has a check on the decision and none has a check on the pixel.
 4. **The windowed group of `tests/cli_test.sh` ran in s108 (141/0/0) at the user's request and passed.** It
    maps ~15 real windows, so it is still a run to ask about, not one to do unprompted while the user is at the
    machine. Check `nvidia-smi` first: a refused atlas upload fails EVERY window check for one unrelated reason
