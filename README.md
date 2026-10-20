@@ -31,7 +31,8 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   honours application cursor keys (DECCKM), so the arrow keys work in programs that ask for them — `less`,
   `man` and `htop` answer only that form.
 - **Clear scrollback** — `clear` can remove both visible content and terminal history.
-- **Mouse support** — Application mouse reporting, text selection, and clipboard integration.
+- **Mouse support** — Application mouse reporting, text selection (drag, or a double click for a word and a
+  triple click for a line), and clipboard integration.
 - **Scrolling a program that owns its screen** — The mouse wheel scrolls `nano`, `less` and `man` even
   though they never asked for the mouse, by turning the wheel into cursor-key presses; a click moves the
   program's own cursor to the cell you clicked. See "The mouse wheel and a click inside a full-screen
@@ -437,6 +438,7 @@ the program.
 | `copy_on_release` | `0` | Copy to the clipboard when the selection drag is released |
 | `wheel_sends_keys` | `1` | Inside a full-screen program that never asked for the mouse (`nano`, `less`, `man`), the wheel sends cursor-key presses, which is what scrolls them (`0` leaves the wheel doing nothing there) |
 | `click_moves_cursor` | `1` | In that same state, a left click that does not drag walks the program's own cursor to the clicked cell (`0` means a click only ever selects text). A drag always selects, and `Shift` + click always selects |
+| `click_selects_word` | `1` | A second left click in the same cell selects the **word** under the pointer, a third the whole **line** (`0` leaves every click selecting one cell, extended by dragging). A word is everything up to the next space with punctuation at the END cut off, so double-clicking `file.txt,` selects `file.txt`; punctuation at the START stays, so `/etc/passwd` comes over whole. The line a triple click takes is the line the program wrote, so one that wrapped at the window edge is selected in every row it occupies. A word or line gesture never sends the program cursor keys, so it selects inside `nano` and `less` instead of walking their cursor twice |
 | `cursor_blink` | `1000` | Cursor blink half-period in ms: the bar is drawn for this long, then hidden for this long (`0` = steady). Your setting is the ceiling — a program can ask for a steady cursor with DECSCUSR but cannot switch the blink back on. Blinking also stops while the window has no focus (clamped to 0–10000) |
 | `cursor_width` | `2` | Pixels wide the bar cursor is — and how tall an underline is, when a program asks for one. Never wider than a third of a cell, so a large value cannot turn the bar back into a block (clamped to 1–64) |
 | `repeat_delay` | `300` | Milliseconds a key must be held before it starts repeating (`0` disables repeating) |
@@ -658,6 +660,8 @@ clipboard, from where any other application can paste it. Set
 behaviour). Text copied in another application pastes into Kai-Term with `Ctrl`+`Shift`+`V`.
 
 Selection works a whole character at a time: a highlighted range always covers complete glyphs, never half of one. Empty space past the end of a line is not highlighted, while spaces between characters are — the copied text is unchanged either way.
+
+A **double click** selects the word under the pointer and a **triple click** the whole line; `click_selects_word = 0` turns both off. Two clicks count as one gesture when the second press lands in the same cell within 500 ms — the same window the file manager's double-click-to-open uses, so the two gestures feel like one thing. What a word is follows the rule you would expect: the run of characters up to the next space, with punctuation stuck to the END cut off (`file.txt,` and `word"` give `file.txt` and `word`) and punctuation at the START kept (`/etc/passwd`, `(paren`). A wide character — a CJK glyph or an emoji — is never cut in half, and the line a triple click takes is the line as the program wrote it: a line that wrapped at the window edge is selected across every row it occupies, and a line the program ended with a newline stops there. Because a word or line gesture is a selection, it never synthesises the cursor-key presses of `click_moves_cursor` — double-clicking inside `nano` or `less` selects a word instead of walking their cursor two columns. One limit worth knowing: a word so long that the window itself broke it is selected up to the break on the row you clicked; the triple click is what takes a wrapped line whole.
 
 When an application enables bracketed paste, multiline clipboard content is sent as a single paste operation rather than being executed line by line.
 

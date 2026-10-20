@@ -23,9 +23,9 @@ The four items this file was once holding for the user's eye were answered 2026-
 preview-pane key scrolling and the 75 % band's look all work in their window. `--import-theme` was confirmed
 working by the user 2026-10-19 (s107's feature), so the theme import carries no open question either.
 
-Re-measured 2026-10-20 (s112, from `make clean`, on the tree that added the bar cursor): `make -j8` exit 0 with
-**0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
-**0 warning lines**; `./bin/test_vt` **1163 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+Re-measured 2026-10-20 (s114, from `make clean`, on the tree that added the double/triple click): `make -j8`
+exit 0 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit
+0 with **0 warning lines**; `./bin/test_vt` **1217 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
 `./bin/test_fm` **305 checks, 0 failures**; `./bin/test_render` **495 checks, 0 failures**;
 `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks, 0 failures, 13 skipped` + those four);
 `make asan` exit 0 with the same counts, 0 warning lines and no sanitizer report. The windowed group of
@@ -33,7 +33,7 @@ Re-measured 2026-10-20 (s112, from `make clean`, on the tree that added the bar 
 last time it ran was s109: **141 checks / 0 failures / 0 skipped** — the 50 window checks plus the 91 that
 always run. What only that group covers is `main()`'s argv handling for the flags that OPEN a window
 (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies
-the multiplexing / display / file-manager keys and the band's share. Step 2 added no command-line flag, so
+the multiplexing / display / file-manager keys and the band's share. Step 3 added no command-line flag, so
 nothing in that group is new. `--import-theme` is not in that list — it needs no display, so s107 pinned it
 headless. The config search order and the settings-vs-binding file rules are covered headless in
 `tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. No
@@ -332,6 +332,11 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   `copy_on_release = 1`) is what puts it on the clipboard. Usual cause of a "Kai-Term has its own
   clipboard" report: the copy was never offered. The clipboard is the ordinary Wayland selection
   (`wl_data_device`), shared with every client — verified in both directions.
+- **A double-click word stops at the window's margin.** `term_word_span()` walks one PHYSICAL row: a word
+  long enough that the window broke it is selected up to the break on the row clicked and from the start on
+  the next (`term_word_span(5,0) = 0..19`, `(5,1) = 0..7` at 20 cols, measured `.scratch/s114/wprobe2`). The
+  triple click is the gesture that takes a wrapped line whole, because `Grid.wrap` says where the breaks are.
+  Not a bug: the word run is per row by construction, and copying both halves is two gestures.
 - **Only `text/plain` is offered on copy** (one mime type requested on paste), and
   `wl_data_offer_accept()` is never called before `wl_data_offer_receive()`. niri tolerates both
   (`wl-copy` text reaches the PTY byte-for-byte), but a compositor that matches mime types strictly could

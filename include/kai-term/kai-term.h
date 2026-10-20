@@ -602,6 +602,23 @@ int  term_selection_cover(Term *t, int col, int row, double *a, double *b);
    vt.c for the exact rule). Lets the renderer skip empty space while term_selection_text() still
    copies it as a space. */
 int  term_cell_highlightable(Term *t, int col, int row);
+
+/* How long two presses of the same cell may be apart and still be ONE gesture (double click, triple
+   click). One constant for the terminal and for the file manager's browser, which has used 500 ms
+   since s63 — the same number the user already feels as "a double click". */
+#define CLICK_DCLICK_MS 500
+
+/* The word at (col,row) — the maximal run of non-space cells around it with TRAILING punctuation cut
+   off (leading punctuation stays). *out_c0..*out_c1 inclusive; a click on a blank yields the clicked
+   cell alone. A wide glyph is never split: the run always covers the anchor and its continuation. */
+int term_word_span(Term *t, int col, int row, int *out_c0, int *out_c1);
+/* The logical line of `row`: the physical rows a soft-wrapped line spans, joined by the grid's wrap
+   marks. *out_r0..*out_r1 inclusive (viewport rows). A hard break (the application's own newline)
+   ends it. */
+int term_line_span(Term *t, int row, int *out_r0, int *out_r1);
+/* Which click in a row this press is: 1 when it starts a new gesture, prev_count + 1 when the same
+   cell was pressed again within CLICK_DCLICK_MS. */
+int term_click_count(uint32_t time_ms, uint32_t prev_time_ms, int same_cell, int prev_count);
 int  term_selection_text(Term *t, char *out, size_t cap); /* copies text, returns length */
 void term_select_clear(Term *t);
 
@@ -756,6 +773,15 @@ typedef struct Config {
        that uses the arrow keys for something other than moving a cursor reacts to a click (alsamixer
        would change the slider it is on). That is why it is a switch and not a law. */
     int  wheel_sends_keys, click_moves_cursor;
+    /* 1 (default): a second left click in the same cell within CLICK_DCLICK_MS selects the WORD under the
+       pointer and a third selects the whole LOGICAL line (a soft-wrapped line is one line, so every row it
+       spans is taken). 0 = every click selects exactly what it selected before this existed: one cell, and
+       a drag to extend. What counts as a word is the user's rule — a run of non-space cells with TRAILING
+       punctuation cut off, leading punctuation kept — and it lives in term_word_span() (src/vt.c), where a
+       test can check it; a wide glyph is never cut in half. A word/line gesture also suppresses the
+       synthesised cursor-key presses of click_moves_cursor, so a double click inside nano selects instead
+       of walking the program's cursor twice. */
+    int  click_selects_word;
     /* The cursor's shape is always the thin bar unless an application asks for another one with DECSCUSR
        (there is deliberately no `cursor_style` key — the user asked for one look). These two say how that
        cursor behaves:

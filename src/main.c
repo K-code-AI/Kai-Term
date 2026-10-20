@@ -99,6 +99,16 @@ typedef struct Wayland {
     int32_t ptr_x, ptr_y;       /* last pointer position in surface coords (px) */
     int ptr_btn;                /* held button mapped to SGR index (0/1/2), or -1 */
     int selecting;              /* 1 while a left-button text selection drag is in progress */
+    /* The left-click gesture, for the double/triple click that selects a word / a whole line.
+       click_count is which press in a row this is (1 = a fresh single click), counted by
+       term_click_count() from the press time and whether the cell is the same one. click_word marks
+       the gesture as a word/line selection, which is what suppresses the synthesised cursor-key
+       presses on release: a double click inside nano must select a word, not walk its cursor twice.
+       The state is the WINDOW's, not the session's, because it is about the pointer and the clock. */
+    int click_count;
+    uint32_t click_ms;
+    int click_col, click_row;
+    int click_word;
     double scroll_accum;        /* pending scrollback scroll in lines (+ = up/history) */
     double wheel_accum;         /* the same carry, for a wheel gesture turned into application cursor
                                    keys — kept apart from scroll_accum so a session that leaves the
@@ -235,8 +245,8 @@ static uint64_t mono_ms(void)
    within this many milliseconds opens it, which is what a user means by "double-click to open". Wayland's
    button `time` is milliseconds on the same clock as the keyboard events, so a plain difference measures
    the gap; unsigned arithmetic makes a click after the 49-day wrap look like a long gap rather than a
-   double-click. */
-#define FM_DCLICK_MS 500
+   double-click. The window is CLICK_DCLICK_MS in kai-term.h — one number, because the terminal's
+   double-click-to-select-word (step 3) must feel like the same gesture, not a slightly different one. */
 static uint32_t fm_click_ms;
 static int fm_click_pos = -1;     /* view position of that click, -1 = no pending first click */
 static pthread_t fm_thr;
@@ -1603,7 +1613,7 @@ static void fm_pointer_select(int hit, int btn, uint32_t time)
         return;
     }
     int again = (btn == 0 && fm_click_pos >= 0 && pos == fm_click_pos &&
-                 time - fm_click_ms <= FM_DCLICK_MS);
+                 time - fm_click_ms <= CLICK_DCLICK_MS);
     fm_click_ms = time;
     fm_click_pos = pos;
     fm_select(&g_fm, pos);
@@ -2259,9 +2269,40 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         int col, row;
         sel_cell(&col, &row);
         if (pressed) {
+            /* Which click in a row is this? Same cell within CLICK_DCLICK_MS continues the gesture.
+               A second click selects the WORD under the pointer, a third the whole LOGICAL line (a
+               soft-wrapped line is one line, so a triple click takes every row it spans) — the user's
+               rule for what a word is lives in vt.c's term_word_span(), next to the grid it reads. */
+            int same = (col == W.click_col && row == W.click_row);
+            W.click_count = conf.click_selects_word
+                          ? term_click_count(time, W.click_ms, same, W.click_count)
+                          : 1;
+            W.click_ms = time;
+            W.click_col = col;
+            W.click_row = row;
+            W.click_word = 0;
             cur_term()->sel_active = 1;
-            sel_set_endpoints(col, row, col, row);   /* one whole cell under the pointer */
-            W.selecting = 1;
+            if (W.click_count == 2) {
+                int c0, c1;
+                if (term_word_span(cur_term(), col, row, &c0, &c1)) {
+                    sel_set_endpoints(c0, row, c1, row);
+                    W.click_word = 1;
+                    klog(L_DEBUG, "sel: double click at (%d,%d) selected the word cols %d-%d",
+                         col, row, c0, c1);
+                }
+            } else if (W.click_count >= 3) {
+                W.click_count = 3;        /* a fourth click stays a line selection, it does not grow */
+                int r0, r1;
+                if (term_line_span(cur_term(), row, &r0, &r1)) {
+                    sel_set_endpoints(0, r0, cur_term()->g.cols - 1, r1);
+                    W.click_word = 1;
+                    klog(L_DEBUG, "sel: triple click at (%d,%d) selected the logical line rows %d-%d",
+                         col, row, r0, r1);
+                }
+            } else {
+                sel_set_endpoints(col, row, col, row);   /* one whole cell under the pointer */
+            }
+            W.selecting = 1;              /* a drag from here extends whatever was selected */
             klog(L_DEBUG, "sel press cell=(%d,%d) frac=%d ptr=(%d,%d) cw=%d ch=%d rows=%d cols=%d",
                  col, row, cur_term()->sel_bf, W.ptr_x, W.ptr_y, font.cell_w, font.cell_h,
                  cur_term()->g.rows, cur_term()->g.cols);
@@ -2275,7 +2316,7 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                synthesis is keystrokes computed from the cursor position the model already tracks, so
                nothing here knows what nano is; see term_click_arrow_keys(). */
             int no_drag = (col == cur_term()->sel_ax && row == cur_term()->sel_ay);
-            if (no_drag && conf.click_moves_cursor && !ptr_shift_held() &&
+            if (no_drag && !W.click_word && conf.click_moves_cursor && !ptr_shift_held() &&
                 term_wants_key_mouse(cur_term())) {
                 char seq[3 * TERM_ARROW_MAX + 8];
                 int n = term_click_arrow_keys(cur_term(), col, row, seq, sizeof seq);

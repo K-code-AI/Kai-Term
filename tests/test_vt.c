@@ -712,6 +712,19 @@ static int names_diff(const char *what, const char *const *code, int nc,
     return bad;
 }
 
+/* What a gesture would actually COPY: take the span the model returned, put it through the same whole-cell
+   endpoints src/main.c's sel_set_endpoints() produces (left edge of the first endpoint, right edge of the
+   last), and read the text back. A span check alone pins numbers; this pins the outcome in the clipboard. */
+static int span_copy(int c0, int r0, int c1, int r1, char *out, size_t cap)
+{
+    T.sel_active = 1;
+    T.sel_ax = c0; T.sel_ay = r0; T.sel_af = 0;
+    T.sel_bx = c1; T.sel_by = r1; T.sel_bf = 1000;
+    int n = term_selection_text(&T, out, cap);
+    term_select_clear(&T);
+    return n;
+}
+
 int main(void)
 {
     term_init(&T, 10, 20, 100);
@@ -1809,6 +1822,204 @@ int main(void)
     n = term_selection_text(&T, sel, sizeof(sel));
     CHECK(n == 4 && !memcmp(sel, "\xe4\xb8\xadX", 4), "empty: the copied text stops at the last glyph");
 
+    /* --- what a double / triple click selects (plan step 3) ---------------------------------
+       main.c detects the gesture (it owns the pointer and the clock); WHAT that gesture selects is
+       model state, so it lives in vt.c where these checks can reach it with no display and no mouse.
+       Every number below was printed by .scratch/s114/wprobe{,2,3,4,5} first. Two things are easy to
+       guess backwards and both are pinned here: the DIRECTION Grid.wrap points (the mark sits on the
+       row that WAS broken by the margin and continues on the NEXT one) and the INDEX it is stored
+       under (a row SLOT, hence scroll_off + row — the same index row[] uses). Both are checked by
+       MUTATION, not by argument: .scratch/s114/mutate.sh flips each one and shows a check going red. */
+    term_destroy(&T);
+    term_init(&T, 10, 60, 100);
+    feed("\x1b[2J\x1b[H");
+    feed("file.txt, (paren \"quoted\" end. don\xe2\x80\x99t end\xe2\x80\x94 /etc/passwd a,b");
+    int w0, w1, wn;
+    char wtxt[128];
+    /* The user's rule, verbatim: "a word is everything no separated by a space, but we don't take the
+       trailing ',' or '.'" — and asked WHICH trailing marks, "any of it". Leading punctuation stays,
+       which is what makes a path come over whole. Each check asks for the span AND copies it through
+       the endpoints main.c sets, so it pins the outcome and not just the numbers. */
+    wn = term_word_span(&T, 0, 0, &w0, &w1);
+    CHECK(wn && w0 == 0 && w1 == 7, "word: `file.txt,` selects file.txt, not the comma");
+    CHECK(wn && span_copy(w0, 0, w1, 0, wtxt, sizeof wtxt) == 8 && !strcmp(wtxt, "file.txt"),
+          "word: and the copy really is `file.txt`");
+    CHECK(term_word_span(&T, 8, 0, &w0, &w1) && w0 == 0 && w1 == 7,
+          "word: a click ON the trailing comma still selects the word it sticks to");
+    CHECK(term_word_span(&T, 10, 0, &w0, &w1) && w0 == 10 && w1 == 15 &&
+          span_copy(w0, 0, w1, 0, wtxt, sizeof wtxt) == 6 && !strcmp(wtxt, "(paren"),
+          "word: leading punctuation stays part of the word");
+    CHECK(term_word_span(&T, 17, 0, &w0, &w1) && w0 == 17 && w1 == 23 &&
+          span_copy(w0, 0, w1, 0, wtxt, sizeof wtxt) == 7 && !strcmp(wtxt, "\"quoted"),
+          "word: the quote at the START is kept, the one at the END is cut");
+    CHECK(term_word_span(&T, 27, 0, &w0, &w1) && w0 == 26 && w1 == 28,
+          "word: `end.` selects end");
+    CHECK(term_word_span(&T, 32, 0, &w0, &w1) && w0 == 31 && w1 == 35 &&
+          span_copy(w0, 0, w1, 0, wtxt, sizeof wtxt) == 7 && !strcmp(wtxt, "don\xe2\x80\x99t"),
+          "word: an apostrophe INSIDE a word (U+2019) is not trailing punctuation");
+    CHECK(term_word_span(&T, 38, 0, &w0, &w1) && w0 == 37 && w1 == 39,
+          "word: a trailing em dash (U+2014) is cut like a comma is");
+    CHECK(term_word_span(&T, 43, 0, &w0, &w1) && w0 == 42 && w1 == 52 &&
+          span_copy(w0, 0, w1, 0, wtxt, sizeof wtxt) == 11 && !strcmp(wtxt, "/etc/passwd"),
+          "word: a whole path comes over, slashes and all");
+    CHECK(term_word_span(&T, 55, 0, &w0, &w1) && w0 == 54 && w1 == 56,
+          "word: a comma in the MIDDLE of a run is not trailing, so `a,b` stays whole");
+
+    /* Never strip a word down to nothing: a lone mark double-clicked is still a selection. */
+    feed("\x1b[2J\x1b[H");
+    feed(",");
+    CHECK(term_word_span(&T, 0, 0, &w0, &w1) && w0 == 0 && w1 == 0,
+          "word: a lone comma is never cut to an empty span");
+    feed("\x1b[2J\x1b[H");
+    feed("...");
+    CHECK(term_word_span(&T, 2, 0, &w0, &w1) && w0 == 0 && w1 == 0,
+          "word: `...` keeps one glyph — the cut stops before the word disappears");
+    feed("\x1b[2J\x1b[H");
+    feed("\xe3\x80\x82");                       /* U+3002 `。` alone: the pair IS the word */
+    CHECK(cellch(0, 0) == 0x3002 && (cellattr(0, 1) & ATTR_WIDE),
+          "word/wide: a lone full-width mark really is a wide pair here");
+    CHECK(term_word_span(&T, 0, 0, &w0, &w1) && w0 == 0 && w1 == 1 &&
+          term_word_span(&T, 1, 0, &w0, &w1) && w0 == 0 && w1 == 1,
+          "word/wide: cutting a lone full-width mark must not invert the span (c1 below c0)");
+
+    /* A wide glyph owns two cells; the run must cover the pair and the punctuation cut must never
+       drop an anchor while leaving its continuation (half a glyph outside the selection). */
+    term_destroy(&T);
+    term_init(&T, 10, 20, 100);
+    feed("\x1b[2J\x1b[H");
+    feed("\xe4\xbd\xa0\xe5\xa5\xbd \xe4\xbd\xa0\xe5\xa5\xbd\xe3\x80\x82 x");   /* 你好 你好。 x */
+    CHECK(cellch(0, 0) == 0x4F60 && (cellattr(0, 1) & ATTR_WIDE) && cellch(0, 1) == 0,
+          "word/wide: the setup really left an anchor plus a codepoint-less continuation");
+    CHECK(term_word_span(&T, 0, 0, &w0, &w1) && w0 == 0 && w1 == 3,
+          "word/wide: a click on the anchor takes both cells of the glyph");
+    CHECK(term_word_span(&T, 1, 0, &w0, &w1) && w0 == 0 && w1 == 3,
+          "word/wide: a click on the CONTINUATION takes the same span — a glyph is never cut in half");
+    CHECK(term_word_span(&T, 5, 0, &w0, &w1) && w0 == 5 && w1 == 8 &&
+          span_copy(w0, 0, w1, 0, wtxt, sizeof wtxt) == 6 && !strcmp(wtxt, "\xe4\xbd\xa0\xe5\xa5\xbd"),
+          "word/wide: the second word stops at the space, not mid-glyph");
+    CHECK(term_word_span(&T, 9, 0, &w0, &w1) && w0 == 5 && w1 == 8,
+          "word/wide: a full-width `.` (U+3002) is cut as a PAIR, leaving no orphan continuation");
+    feed("\x1b[2J\x1b[H");
+    feed("\xf0\x9f\x98\x80!");
+    CHECK(cellch(0, 0) == 0x1F600 && (cellattr(0, 1) & ATTR_WIDE),
+          "word/wide: the emoji really is wide here");
+    CHECK(term_word_span(&T, 1, 0, &w0, &w1) && w0 == 0 && w1 == 1 &&
+          span_copy(w0, 0, w1, 0, wtxt, sizeof wtxt) == 4 && !strcmp(wtxt, "\xf0\x9f\x98\x80"),
+          "word/wide: `emoji!` drops the bang and keeps the whole emoji");
+
+    /* Blanks and out-of-range cells: a click on nothing selects the cell under the pointer rather
+       than reporting a failure, because "the double click did nothing" reads as a broken terminal. */
+    term_destroy(&T);
+    term_init(&T, 10, 20, 100);
+    feed("\x1b[2J\x1b[H");
+    feed("hello world");
+    CHECK(term_word_span(&T, 5, 0, &w0, &w1) && w0 == 5 && w1 == 5,
+          "word: a click on the space between two words selects that one cell");
+    CHECK(term_word_span(&T, 15, 0, &w0, &w1) && w0 == 15 && w1 == 15,
+          "word: a click on never-written space selects that one cell");
+    CHECK(!term_word_span(&T, 20, 0, &w0, &w1) && !term_word_span(&T, -1, 0, &w0, &w1) &&
+          !term_word_span(&T, 0, 10, &w0, &w1) && !term_word_span(&T, 0, -1, &w0, &w1),
+          "word: a cell outside the grid answers 0 (and leaves the span at the click)");
+    CHECK(term_word_span(&T, 0, 0, NULL, &w1) == 0 && term_word_span(&T, 0, 0, &w0, NULL) == 0,
+          "word: a missing out-parameter is a refusal, not a write through NULL");
+
+    /* --- the LINE a triple click selects: the logical line, not the physical row ------------
+       `wrap[i]` marks the row that was BROKEN and continues on the next one. A line ending exactly at
+       the margin is the trap: the mark is not set until the character that crosses the margin is
+       written (measured, .scratch/s114/wprobe3), so a triple click must not reach into the blank row
+       below — and once that character DOES arrive, the row below is part of the line. */
+    term_destroy(&T);
+    term_init(&T, 10, 20, 100);
+    feed("\x1b[2J\x1b[H");
+    feed("0123456789abcdefghij0123456789abcdefghij");   /* 40 chars: two FULL rows, no newline */
+    int lr0, lr1;
+    CHECK(T.g.wrap[T.g.scroll_off + 0] == 1 && T.g.wrap[T.g.scroll_off + 1] == 0,
+          "line: the setup really left ONE wrap mark, on the row that was broken");
+    CHECK(term_line_span(&T, 0, &lr0, &lr1) && lr0 == 0 && lr1 == 1,
+          "line: a click on the first row of a wrapped line takes both rows");
+    CHECK(term_line_span(&T, 1, &lr0, &lr1) && lr0 == 0 && lr1 == 1,
+          "line: a click on the second row takes the same two rows");
+    CHECK(term_line_span(&T, 2, &lr0, &lr1) && lr0 == 2 && lr1 == 2,
+          "line: the blank row below is its own line — the mark does not reach it");
+    feed("X");           /* the char that crosses the margin: row 1 is now a broken row too */
+    CHECK(T.g.wrap[T.g.scroll_off + 1] == 1, "line: writing past the margin sets the next mark");
+    CHECK(term_line_span(&T, 1, &lr0, &lr1) && lr0 == 0 && lr1 == 2,
+          "line: and the row the line grew into is now part of it");
+    feed("\x1b[2J\x1b[H");
+    feed("abc\r\ndef\r\n");
+    CHECK(T.g.wrap[T.g.scroll_off + 0] == 0 && T.g.wrap[T.g.scroll_off + 1] == 0,
+          "line: a hard break leaves no mark at all");
+    CHECK(term_line_span(&T, 0, &lr0, &lr1) && lr0 == 0 && lr1 == 0,
+          "line: the application's own newline ENDS the line a triple click takes");
+    CHECK(term_line_span(&T, 1, &lr0, &lr1) && lr0 == 1 && lr1 == 1,
+          "line: the next row is a line of its own");
+    CHECK(!term_line_span(&T, 10, &lr0, &lr1) && !term_line_span(&T, -1, &lr0, &lr1),
+          "line: a row outside the grid answers 0");
+    CHECK(term_line_span(&T, 3, NULL, &lr1) == 0 && term_line_span(&T, 3, &lr0, NULL) == 0,
+          "line: a missing out-parameter is a refusal, not a write through NULL");
+
+    /* Scrolled back into history: the mark is indexed by SLOT, so a viewport row must be translated.
+       The wrapped pair sits at slots 1-2 while the viewport top is slot 2 — reading wrap[row] instead
+       of wrap[scroll_off + row] answers with the mark of a row that is not even on screen. */
+    term_destroy(&T);
+    term_init(&T, 4, 20, 100);
+    feed("aaa\r\n");
+    feed("0123456789abcdefghijKLMNOP\r\n");      /* slots 1 and 2: one logical line */
+    feed("bbb\r\nccc\r\nddd\r\n");               /* pushes the viewport down */
+    CHECK(T.g.scroll_off > 0, "line/scroll: the setup really did scroll the viewport off the top");
+    T.g.scroll_off = 1;                         /* viewport rows 0..3 = slots 1..4 */
+    CHECK(T.g.wrap[T.g.scroll_off + 0] == 1 && T.g.wrap[T.g.scroll_off + 1] == 0,
+          "line/scroll: the mark sits at slot scroll_off+row, where the code reads it");
+    CHECK(term_line_span(&T, 0, &lr0, &lr1) && lr0 == 0 && lr1 == 1,
+          "line/scroll: scrolled back, the wrapped pair is still ONE line");
+    CHECK(term_line_span(&T, 1, &lr0, &lr1) && lr0 == 0 && lr1 == 1,
+          "line/scroll: and from its second row too");
+    CHECK(term_line_span(&T, 2, &lr0, &lr1) && lr0 == 2 && lr1 == 2,
+          "line/scroll: the hard-broken row below it stays separate");
+    T.g.scroll_off = T.g.live_off;
+
+    /* --- how many clicks one gesture is (the rule main.c asks) ------------------------------
+       Kept in vt.c for the same reason mouse_sgr_button() and term_wants_key_mouse() are: the inputs
+       are the window's clock and the clicked cell, the ANSWER is a rule a test can pin. */
+    CHECK(CLICK_DCLICK_MS == 500,
+          "click: the terminal's window is the file manager's 500 ms — one gesture, one number");
+    CHECK(term_click_count(1000, 0, 0, 0) == 1, "click: a fresh press is click 1");
+    CHECK(term_click_count(1000, 900, 0, 2) == 1, "click: a different cell starts over, even mid-gesture");
+    CHECK(term_click_count(1000, 900, 1, 0) == 1, "click: no previous press to continue");
+    CHECK(term_click_count(1100, 1000, 1, 1) == 2, "click: the same cell 100 ms later is click 2");
+    CHECK(term_click_count(1000 + CLICK_DCLICK_MS, 1000, 1, 1) == 2,
+          "click: exactly the window still counts as one gesture (inclusive)");
+    CHECK(term_click_count(1001 + CLICK_DCLICK_MS, 1000, 1, 1) == 1,
+          "click: one ms past the window is a new single click");
+    CHECK(term_click_count(1200, 1000, 1, 2) == 3, "click: a third press in the same cell is click 3");
+    CHECK(term_click_count(50, 0xFFFFFFF0u, 1, 1) == 2,
+          "click: Wayland's 32-bit ms clock wrapping mid-gesture still reads as one gesture");
+    CHECK(term_click_count(0xFFFFFFF0u, 50, 1, 1) == 1,
+          "click: and a press 49 days later is not a double click");
+
+    /* --- the switch: click_selects_word is a real key, not a dead one -----------------------
+       main.c asks it before it asks the model anything; the model half has no opinion. Pinned here so
+       the key cannot go the way `cursor_color =` did — defaulted, parsed, stored, and read by nothing. */
+    {
+        Config cc;
+        config_default(&cc);
+        CHECK(cc.click_selects_word == 1, "config: click_selects_word defaults to on (the user asked)");
+        char path[] = "/tmp/kai-term-csw-XXXXXX";
+        int fd = mkstemp(path);
+        if (fd < 0) {
+            printf("SKIP: config: cannot create a settings file for click_selects_word\n");
+        } else {
+            FILE *f = fdopen(fd, "w");
+            fputs("click_selects_word = 0\n", f);
+            fclose(f);
+            Config c2;
+            config_default(&c2);
+            config_load(&c2, path);
+            CHECK(c2.click_selects_word == 0, "config: click_selects_word = 0 turns the gesture off");
+            unlink(path);
+        }
+    }
+
     /* --- emoji grapheme clusters + wide emoji (color emoji support) --- */
     term_destroy(&T);
     term_init(&T, 10, 20, 100);
@@ -2623,6 +2834,8 @@ int main(void)
                   "template: wheel_sends_keys matches");
             CHECK(t.click_moves_cursor == d.click_moves_cursor,
                   "template: click_moves_cursor matches");
+            CHECK(t.click_selects_word == d.click_selects_word,
+                  "template: click_selects_word matches (and the shipped line really is the built-in 1)");
             CHECK(t.cursor_blink == d.cursor_blink && t.cursor_width == d.cursor_width,
                   "template: cursor_blink/cursor_width match (and the shipped lines really are 1000/2)");
             CHECK(t.repeat_delay == d.repeat_delay && t.repeat_rate == d.repeat_rate,
@@ -2697,8 +2910,8 @@ int main(void)
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 35 && nb == 24,
-                  "template: the parser accepts 35 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 36 && nb == 24,
+                  "template: the parser accepts 36 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);

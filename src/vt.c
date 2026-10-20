@@ -1500,6 +1500,122 @@ int term_cell_highlightable(Term *t, int col, int row)
     return c->ch != 0;
 }
 
+/* ---------- what a double / triple click selects (the model's half of step 3) ----------
+   main.c detects the gesture (it owns the pointer and the clock); these answer "what would that
+   gesture select", in the model, where a test can check it without a display or a mouse. */
+
+/* Is this cell part of a word? The user's rule, verbatim: "a word is everything no separated by a
+   space". So the separators are exactly two: a never-written cell (ch == 0) and a real space
+   (U+0020). A wide-glyph cell — anchor OR continuation — is always part of a word, which is also what
+   keeps a CJK/emoji glyph from ever being split: the continuation belongs to the glyph in the previous
+   column, so the run simply covers both. */
+static int word_cell(const Cell *c)
+{
+    if (c->attr & ATTR_WIDE)
+        return 1;
+    return c->ch != 0 && c->ch != ' ';
+}
+
+/* Does this glyph stick to the end of a word instead of belonging to it? The user's rule: "we don't
+   take the trailing ',' or '.'", and asked which punctuation to strip, the answer was "any of it".
+   ASCII ispunct() covers everything an ASCII word can end with. The explicit list adds the marks a
+   terminal actually draws — curly quotes, en/em dashes, ellipsis, full-width CJK punctuation — because
+   they stick to a word exactly like a comma does. Anything NOT listed stays part of the word: this
+   project has no Unicode punctuation table, and guessing at the rest of Unicode would cut words that
+   should stay whole. A word that keeps a mark is a smaller mistake than a word cut in half. */
+static int trailing_punct(uint32_t ch)
+{
+    if (ch < 0x80)
+        return ispunct((int)ch) != 0;
+    switch (ch) {
+    case 0x2018: case 0x2019: case 0x201C: case 0x201D:   /* ‘ ’ “ ” */
+    case 0x2013: case 0x2014: case 0x2026:                /* en dash, em dash, ellipsis */
+    case 0x3001: case 0x3002:                             /* 、 。 */
+    case 0xFF01: case 0xFF0C: case 0xFF0E: case 0xFF1A:   /* ！ ， 。 ： */
+    case 0xFF1B: case 0xFF1F:                             /* ； ？ */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* The word at (col,row): the maximal run of word cells around the clicked cell, then the trailing
+   punctuation cut off it. Leading punctuation STAYS (the user's answer: "we don't take the trailing",
+   and a path like `/etc/passwd` or a `(paren` keeps its first character). Returns 0 only when
+   (col,row) is not a cell at all; a click on a blank returns the single clicked cell, because "the
+   double click did nothing" is worse than selecting the blank. */
+int term_word_span(Term *t, int col, int row, int *out_c0, int *out_c1)
+{
+    if (!out_c0 || !out_c1)
+        return 0;
+    *out_c0 = *out_c1 = col;
+    if (row < 0 || row >= t->g.rows || col < 0 || col >= t->g.cols)
+        return 0;
+    const Cell *rc = grid_vprow(&t->g, row);
+    if (!word_cell(&rc[col]))
+        return 1;                        /* a blank: the one cell under the pointer */
+    int a = col, b = col;
+    while (a > 0 && word_cell(&rc[a - 1]))
+        a--;
+    while (b < t->g.cols - 1 && word_cell(&rc[b + 1]))
+        b++;
+    /* Cut trailing punctuation a GLYPH at a time: a full-width mark is a wide pair, and dropping its
+     * anchor while leaving its continuation would put half a glyph outside the selection. Never strip
+     * the word down to nothing — a lone `,` double-clicked stays selected. */
+    while (b > a) {
+        int gstart = b;
+        if (rc[b].ch == 0 && (rc[b].attr & ATTR_WIDE) && b > a)
+            gstart = b - 1;              /* the pair's anchor holds the codepoint */
+        if (!trailing_punct(rc[gstart].ch))
+            break;
+        if (gstart <= a)
+            break;
+        b = gstart - 1;
+    }
+    *out_c0 = a;
+    *out_c1 = b;
+    return 1;
+}
+
+/* The logical line the clicked row belongs to: a soft-wrapped row is ONE line the application never
+   saw broken, so a triple click must take every physical row it spans. `wrap[i]` is the mark for the
+   line in row SLOT i (the same index row[] uses, hence scroll_off + r) and means "this row was broken
+   by the right margin and continues on the next" — measured with .scratch/s113/wrapprobe before this
+   was written, because getting the direction of that flag backwards would extend every triple click
+   one row in the wrong direction. A hard break (the application's own \n) leaves wrap == 0, so the
+   line stops there. */
+int term_line_span(Term *t, int row, int *out_r0, int *out_r1)
+{
+    if (!out_r0 || !out_r1)
+        return 0;
+    *out_r0 = *out_r1 = row;
+    if (row < 0 || row >= t->g.rows)
+        return 0;
+    int a = row, b = row;
+    while (a > 0 && t->g.wrap[t->g.scroll_off + a - 1])
+        a--;
+    while (b < t->g.rows - 1 && t->g.wrap[t->g.scroll_off + b])
+        b++;
+    *out_r0 = a;
+    *out_r1 = b;
+    return 1;
+}
+
+/* How many clicks in a row this press is: 1 for a fresh press, the previous count + 1 when the same
+   cell was pressed again within CLICK_DCLICK_MS. Kept out of main.c for the same reason the other
+   "what does this gesture mean" helpers live here (mouse_sgr_button, term_wants_key_mouse): the
+   window's clock and the cell are inputs, and the answer is a rule a test can pin. The subtraction is
+   unsigned, so a compositor clock that wraps (Wayland time is 32-bit ms, ~49 days) still compares
+   correctly — the same arithmetic src/main.c's file-manager double click already relies on. */
+int term_click_count(uint32_t time_ms, uint32_t prev_time_ms, int same_cell, int prev_count)
+{
+    if (!same_cell || prev_count <= 0)
+        return 1;
+    if ((uint32_t)(time_ms - prev_time_ms) > (uint32_t)CLICK_DCLICK_MS)
+        return 1;
+    return prev_count + 1;
+}
+
 /* Copy the selected text into out (NUL-terminated), returning its length. Each line has
    trailing spaces trimmed; lines are joined with '\n'. A glyph is copied when the span
    covers its cell (exactly the same rule as the highlight). */
