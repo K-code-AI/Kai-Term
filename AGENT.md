@@ -17,8 +17,9 @@ rendering, 2 glyph atlases (alpha8 mono, RGBA8 color emoji) plus one GL texture 
 (kitty graphics protocol), two vertex batches per frame with the pictures drawn between them. In-window
 multiplexing: N sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-19, s103 — build and every suite green, no open bug. s103 is mid-step-1
-(themes): `selection_color =` is now a real key, and a test-only defect was found and fixed. Dates in the older
+## Current Status (re-measured 2026-10-19, s104 — build and every suite green, no open bug. s104 is mid-step-1
+(themes): 1c (a `.theme` file, `theme =`, conf-beats-theme precedence) and 1d (OSC 4/10/11/104 behind
+`osc_colors =`) are built, checked, A/B'd, committed and pushed; 1e (`--import-theme`) is next. Dates in the older
 journal entries run ahead of the host clock (git log is the authority for order, not those dates)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
@@ -27,8 +28,9 @@ journal entries run ahead of the host clock (git log is the authority for order,
   warning (`hex escape sequence out of range`) that made one palette check feed the wrong bytes while still
   passing. The command worth copying is
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'` then `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites:** `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 67 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **977 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **296 checks,
+- **Suites:** `make test` exit 0 — `CLI: 117 checks, 0 failures, 0 skipped` (the windowed group ran: a display was
+  available; the same script with `KAI_TERM_TEST_NO_WINDOW=1` reports 67/0/13),
+  `./bin/test_vt` **1060 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **296 checks,
   0 failures**, `./bin/test_render` **25 checks, 0 failures** (the renderer's pure colour decisions, no display and
   no GL context; new in s102, extended in s103). `make asan` exit 0, same four counts, 0 sanitizer reports. With a
   display and spare VRAM,
@@ -37,7 +39,7 @@ journal entries run ahead of the host clock (git log is the authority for order,
   that a real launch applies the multiplexing / display / file-manager keys and the band's share of the window. The
   config SEARCH order and the split-by-name rules are NOT exclusive to it: `tests/test_vt.c` covers those headless
   (13 `cfgsearch` checks + the `config split` group). A no-window "0 failures" therefore leaves only the argv half
-  uncovered (last full windowed run measured in s99; s100-s103 skipped it — the user at the machine). **Re-diff
+  uncovered (the windowed group ran again in s104: 117/0/0; s100-s103 skipped it — the user at the machine). **Re-diff
   these numbers, do not copy them.**
 - **No open bug.** The one that was filed — `cursor_color =` parsed, was stored, was parse-tested and reached no
   pixel — is fixed and A/B'd (5 of the 15 new checks fail on the pre-fix renderer, 0 on this tree); ISSUES.md "Fixed"
@@ -59,25 +61,28 @@ journal entries run ahead of the host clock (git log is the authority for order,
   (a NUL byte never reaches the pty); s99 the config split (`kai-term.conf` / `kai-term.bind`, `-b/--binds`, the
   three-directory search) + the `#`-comment fix that had been eating every `#RRGGBB` colour + the template
   name-coverage check.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the 29 setting names and the 24
-  binding names out of the two strcmp ladders in `src/config.c` and compares them with `config/kai-term.conf` +
-  `config/kai-term.bind`; README's option table matches `usage()` by set difference (7 options). A name added to
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the 32 setting names and the 24
+  binding names out of the two strcmp ladders in `src/config.c`, plus the 23 theme names out of `src/theme.c`'s
+  `THEME_KEYS` table, and compares them with `config/kai-term.conf` + `config/kai-term.bind` +
+  `config/kai-term.theme`; README's option table matches `usage()` by set difference (7 options). A name added to
   the parser without a template line, a template line the parser does not know, and a deleted template line each
   fail a check. Do not hand-copy a name list into a test — derive it from the source.
 - **No probe or experiment left in the tree:** `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/
   tests/` -> empty; no `TODO`/`FIXME`/`XXX`.
 - **No `install` target**, and nothing copies `config/*` to `/etc/kai-term` — the Makefile has never had one and
   README tells the user to copy the templates themselves. Deliberate; adding one is the user's call.
-- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`, s90-s100 pushed. Read the remote state
+- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`; s90-s100 pushed, and s103's two
+  commits plus s104's theme/OSC commit pushed 2026-10-19 (`main` == `origin/main`, verified with `git status -sb`).
+  Read the remote state
   with `git status -sb` / `git log --oneline origin/main -1`, never from a hash written here. `git fetch` before
   push — the user commits on GitHub too. Never commit `bin/` or `build/`.
 - **The 4 reports that once lived in ISSUES.md "Open"** were unproven and were dropped 2026-10-17 (no fix was ever
   verified, so they are not in "Fixed" either). Recoverable with `git show d5afe4a:ISSUES.md`; if one recurs, file
   a new Open item with a reproduction.
 
-## Current Task (s103 — IN PROGRESS: step 1, themes. The tree arrived with an UNCOMMITTED half-recorded feature in
-it — `selection_color =` — and with two RED checks in `bin/test_render`; the first job was to finish, verify and
-commit that, because a theme cannot paint a highlight the code cannot configure. The s102 plan (steps 1-7, below)
+## Current Task (s104 — IN PROGRESS: step 1, themes. 1c (the `.theme` file, `theme =`, precedence) and 1d (OSC
+4/10/11/104 behind `osc_colors =`) are committed and pushed; **1e (`--import-theme FILE`) is the next step**, and the
+look verdict on a themed window is the user's. The s102 plan (steps 1-7, below)
 is still the plan: all eight questions were answered 2026-10-22 and the answers change four details (no
 `cursor_style` key, no primary-selection work, plain-click URLs, an interactive overwrite prompt). The facts in each
 block were measured against this tree.)
@@ -104,8 +109,10 @@ self-scan could not.
 
 Next: A/B the new checks against the pre-change tree (DONE — `test_render` 5 of 25, `test_fm` 1 of 296, `test_vt` 2
 of 974 fail there; 0 here; harness `.scratch/s103/ab_sel/`), then commit (DONE, `5c1f58d`). Then step 1 proper:
-`src/theme.c` (theme file, `theme =` key, precedence theme-then-conf), then `--import-theme`, then OSC 4/10/11/104
-behind `osc_colors =`.
+`src/theme.c` (theme file, `theme =` key, conf-beats-theme precedence) — **DONE 2026-10-19 (s104)**, then OSC
+4/10/11/104 behind `osc_colors =` — **DONE the same day (1d)**; 1c and 1d are one commit, `c84258a`, and the reason is
+in its message (one shared colour plumbing, one verified tree). Then `--import-theme` (**1e — next**). A Noctalia step
+was added and dropped the same day (see below) — the numbering is 1d then 1e.
 
 **Also found and fixed in this session (commit after `5c1f58d`):** the TEST build was not covered by the
 "0 warning lines" measurement, and it was carrying `hex escape sequence out of range` — `feed("\x1bc")` is ONE
@@ -211,9 +218,62 @@ Expected: 16 palette entries + `background` + `foreground` + `cursor` → `curso
 `selection_color` applied; `selection_foreground` and `cursor_text_color` reported as dropped (Kai-Term has no
 per-cell "text on this colour" concept — the glyph colour there is the cell's own fg).
 
-**Optional, cheap once the palette is runtime state:** OSC 4 (set an entry), OSC 10/11 (set/query fg/bg), OSC 104
-(reset). That is what lets `pywal`-style tools theme a live Kai-Term with no file at all. Ask the user before
-building it — it is a security-relevant capability (any program in the terminal can repaint the window).
+**Step 1d — DONE 2026-10-19 (s104): OSC 4 / 10 / 11 / 104, behind `osc_colors = 1`.** What shipped: OSC 4 sets a
+palette entry (the single and the `N;c;M;c` multi form both accepted); OSC 10/11 set the default ink/paper and
+answer `?` in the X11 16-bit form; OSC 104 puts the whole palette or only the named entries back. Colour arguments
+accept Kai-Term's own hex forms through `cfg_parse_color` (ONE colour syntax in the project — `src/theme.c` already
+shared it, and the s99 bug was exactly two readers disagreeing about a colour) plus X11 `rgb:RR/GG/BB` and
+`rgb:RRRR/GGGG/BBBB`; X11 NAMES are refused (a 700-entry table for something every tool can spell in hex).
+Measured first state (2026-10-19, `.scratch/s104/oscprobe.c`): **nothing was handled** — feeding `OSC 4;1;#ff0000`,
+`OSC 10;#00ff00`, `OSC 11;#0000ff` and `OSC 104` left `palette[1]` at `cc5555` and `pen.fg`, `pen.bg`,
+`term_default_fg()` and `term_default_bg()` all unchanged. `osc_end()` handled OSC 0/1/2 only.
+
+**The bug the probe caught before any check existed — the s102 class, in a new place.** The first version converted a
+16-bit X11 component with `(d + 0x80) >> 8` to "round" it. `0xffff + 0x80` is `0x1007f`, and `>> 8` gives **256**;
+`256 << 16` puts `0x01` in the GREEN byte, so `rgb:ffff/ffff/ffff` — the canonical X11 spelling of WHITE — painted
+`#010100`, near-black. Measured at `.scratch/s104/rgbround.c` before the fix, and it is the same defect as the 256-
+colour cube's `55 + 41 * level`: a computed colour overflowing its channel. Fix: one shift, and the arithmetic is
+written so a component provably cannot exceed a byte (two hex digits are at most `0xff`; `0xffff >> 8` is `0xff`),
+with a comment naming the wrong version. Mixed component widths are now refused too (the X11 rule).
+
+**The invariant this feature could have broken, and the check that keeps it out.** `Cell` stores a RESOLVED colour,
+not a palette index, so an OSC 11 that only moved `g_def_fg`/`g_def_bg` would repaint only FUTURE output — the screen
+in front of the user keeps the old paper and the terminal reads as half-themed. Sweeping fixes that, but it walks
+straight into s101: `cell_pristine()` decides "never written" by comparing a cell against the CURRENT defaults, so a
+sweep that skipped the blank cells would leave them at the old paper — still looking blank, no longer pristine — and
+`row_used()` would count trailing blanks as content, reflow would join lines it must not, and a selection band would
+appear over nothing. So `term_recolor_defaults()` (vt.c) is one dumb match-and-replace over the live grid, the parked
+MAIN grid, the pen and the prompt snapshot, and it is idempotent, which is what lets `mux_recolor_defaults()` sweep
+every session without excluding the one that already swept itself. A/B'd in both directions: pre-feature tree
+(`git show HEAD:src/vt.c`'s `osc_end`) → **20 of the 45 new checks fail**, 0 here (`.scratch/s104/ab_osc/`); a
+deliberately divergent sweep that skips blank cells → **2 fail**, including the wrap check that is the s101 gate
+(`.scratch/s104/ab_nosweep/`). The overflow is proven by the probe above (it printed `ff010100`).
+
+Also: `term_palette_builtin_entry()` is now the single source for a built-in colour (`term_palette_entry_reset()`
+needed one for `OSC 104;N`, and a second palette table is a copy that can drift), and `bin/test_fm` now links
+`config.o` because `vt.c` calls `cfg_parse_color` — still no Wayland/GL/font in that binary.
+
+**Dropped on the user's word 2026-10-19 — Noctalia / wallpaper-colour integration. Do not re-propose it.** They asked
+for it, I measured the whole mechanism, and then they withdrew it: "let's drop it, That wouldn't work on a system
+without kitty." Right call — the only parseable source was another application's config file
+(`~/.config/kitty/themes/noctalia.conf`), so the feature would have made Kai-Term depend on kitty being installed.
+Kept, because it cost measurements and answers a question a future session would otherwise re-ask: Noctalia themes
+applications by **writing their config files**, not by sending escape sequences (one wallpaper change rewrote
+`~/.config/kitty/themes/noctalia.conf`, `~/.config/starship.toml` and `~/.config/kitty/kitty.conf` inside 110 ms),
+and `~/.config/noctalia/colors.json` holds Material You tokens (`mPrimary`, `mSurface`, …), not an ANSI 16 — so it is
+the wrong source for a terminal. That is also why the starship prompt recolours and Kai-Term's chrome does not.
+**The OSC probe above is the reason a live wallpaper theme cannot be bolted on from outside either**: until step 1d
+exists, no external daemon can repaint Kai-Term at all. If OSC 4/10/11/104 (1d) ever ships, a wallpaper tool can
+theme a live Kai-Term with no file and no dependency on any other application — that is the shape worth having, and
+it is 1d's own acceptance case, not a separate feature.
+
+### 1e. `--import-theme FILE` — NOT STARTED
+
+The plan is already written and measured: the `kai-term --import-theme FILE` paragraph in step 1 above (the importer is
+a testable function in `src/theme.c`, never in `main()`; sniff the format from the first bytes — iTerm2 plist, JSON,
+alacritty, Konsole/XFCE4, Xresources, kitty — write `~/.config/kai-term/themes/<name>.theme`, log every dropped key,
+never guess) plus question 8's answer (ask before overwriting, interactively). What 1c already gives it: `src/theme.c`
+with its name table and `theme_find()`'s search, and `config/kai-term.theme` as the shape the output must have.
 
 ### 2. Cursor: a thin bar, classic blink
 
@@ -896,7 +956,55 @@ the visual verdicts (theme colours, cursor look, bell flash) to the user.
   **`test_vt` 977/0**, `dbg` MODEL OK, **`test_fm` 296/0**, **`test_render` 25/0**; `make asan` exit 0, same four
   counts, no sanitizer report.
 
+- **2026-10-19, s104 — step 1c (a `.theme` file) and step 1d (OSC 4/10/11/104), and a tree that arrived
+  uncommitted.** This session opened on a working tree where 1c was already built and green but neither committed nor
+  recorded — AGENT.md said "built and green, still uncommitted". So the first act was re-measurement, not trust:
+  `make clean && make -j8` exit 0 / **0 warning lines**, `make test` exit 0 — `CLI 117/0/0` (the windowed group ran, a
+  display was available), **`test_vt` 1060/0**, `dbg` MODEL OK, `test_fm` 296/0, `test_render` 25/0 —
+  `KAI_TERM_TEST_NO_WINDOW=1 make test-cli` 67/0/13, `make asan` exit 0 with the same four counts and no report.
+  **The two A/B harnesses the previous session left were re-run, not quoted:** `.scratch/s104/ab_osc/` (this tree with
+  the OSC colour block absent from `src/vt.c`) prints **1060 checks, 20 failures**; `.scratch/s104/ab_nosweep/` (a
+  sweep that skips cells holding no glyph) prints **2 failures** — the blank-cell check and the narrow-resize wrap
+  gate. This tree: 0.
+  **1c — `src/theme.c`, `theme =`, `config/kai-term.theme`.** A theme is colours only, in kai-term.conf's
+  `key = value` and in kitty's `key value`, so the user's own kitty theme loads unchanged (their "13th Floor" file is
+  an acceptance case: 20 of its 22 lines apply, `selection_foreground` and `cursor_text_color` are reported as
+  dropped). 23 names in one `THEME_KEYS` table, pinned in both directions against the shipped example by the same
+  derivation that pins the two config templates. Entries 16-255 are refused in a FILE (the cube and the ramp are
+  computed; a theme that could repaint them makes every 256-colour chart a lie) while OSC 4 may set them — that
+  difference is a decision with a check on each side. Precedence is conf-over-theme because the theme is applied once,
+  after `kai-term.conf` has been read in full, and only for names that file never mentioned (`Config.set_keys`, written
+  on `apply()`'s own path); both orders of the `background =` / `theme =` lines are checked.
+  **1d — OSC 4 / 10 / 11 / 104 behind `osc_colors = 1`.** Measured first state (`.scratch/s104/oscprobe.c`): nothing
+  was handled — `osc_end()` knew OSC 0/1/2 only. What the probe caught before any check existed: the first `rgb:`
+  converter used `(d + 0x80) >> 8` to "round" a 16-bit component; `0xffff + 0x80` is `0x1007f`, `>> 8` gives **256**,
+  and `256 << 16` puts `0x01` in the GREEN byte, so `rgb:ffff/ffff/ffff` — the canonical X11 spelling of WHITE —
+  painted `#010100`. That is the s102 cube overflow (`55 + 41 * level`) in a new place: a computed colour exceeding its
+  channel. Fix: one shift, arithmetic that provably cannot exceed a byte, mixed widths refused.
+  **The invariant this feature walks straight into is s101's.** A `Cell` stores a RESOLVED colour, not a palette
+  index, so an OSC 11 that only moves `g_def_fg`/`g_def_bg` repaints only FUTURE output — half-themed window. Sweeping
+  fixes that, but `cell_pristine()` decides "never written" by comparing against the CURRENT defaults, so a sweep that
+  skipped the blank cells leaves them looking blank yet no longer pristine: `row_used()` counts trailing blanks as
+  content, reflow joins lines it must not, a selection band appears over nothing. Hence one dumb match-and-replace
+  over the live grid, the parked MAIN grid, the pen and the prompt snapshot (an unswept snapshot makes
+  `prompt_cell_same()` report "the prompt changed" forever and the shell follow dies for the session), and it is
+  idempotent so `mux_recolor_defaults()` can sweep every session without excluding the one that raised the change.
+  **Why 1c and 1d are one commit (`c84258a`):** they share one colour plumbing — `cfg_parse_color` exported so theme
+  and OSC read colours the same way (the s99 bug was two readers disagreeing), the shared `config_strip_comment()`,
+  `Config.set_keys`, and the pinned settings-name count 30 -> 32 that both features move. Splitting them would have
+  meant inventing an intermediate tree that was never built, never measured and never green.
+  **What is owed: the user's eye.** Nothing about a themed window or a live OSC repaint has been looked at yet — that
+  verdict is theirs, as it was for the border and the cursor colour. Recipe for them: put their kitty theme at
+  `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to `~/.config/kai-term/kai-term.conf`, and
+  try `printf '\033]11;#082135\007'` (the paper changes, and `-d` logs that an application set it, not the file).
+
 ## Next Steps
+
+0. **s104 — steps 1c (theme file) and 1d (OSC 4/10/11/104) are DONE: code, checks, A/B, README, template, committed
+   `c84258a`, pushed.** One thing is owed: **the user's eye** on a themed window and on a live OSC repaint — recipe in
+   the s104 journal entry. Then **1e (`--import-theme FILE`)**, plan in "Current Task" step 1 and question 8. Do not
+   re-derive the theme format decisions, the conf-over-theme precedence or the OSC off switch: all three are the
+   user's answers (s102 questions 1, 2 and 7).
 
 0. **s102 — step 0 (the dead `cursor_color =`) is DONE: code, checks, A/B, ISSUES.md, README, template.** Two things
    are owed before anything else happens: (a) **put the eight questions in "Current Task" to the user** — step 1
@@ -1040,13 +1148,14 @@ Kai-Term/
 ├── ISSUES.md                    # open items (none) + Fixed + known limitations
 ├── README.md                    # features, deps, build, flags, the two config files, shortcuts, exit status
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
-├── config/kai-term.conf         # the shipped SETTINGS template: all 29 names at their built-in default
+├── config/kai-term.conf         # the shipped SETTINGS template: all 32 names at their built-in default
 ├── config/kai-term.bind         # the shipped KEY-BINDING template: all 24 names at their built-in default
+├── config/kai-term.theme        # the shipped THEME example: all 23 theme names at the built-in colours
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
-├── src/                         # config.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 973 checks, 0 failures (parser, grid, graphics, config, prompt machinery)
-├── tests/test_fm.c              # 293 checks: the file-manager model, previews, decoders, band geometry
-├── tests/test_render.c          # 15 checks: the renderer's pure colour decisions (no display, no GL call)
+├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
+├── tests/test_vt.c              # 1060 checks, 0 failures (parser, grid, graphics, config, themes, OSC colours, prompt machinery)
+├── tests/test_fm.c              # 296 checks: the file-manager model, previews, decoders, band geometry
+├── tests/test_render.c          # 25 checks: the renderer's pure colour decisions (no display, no GL call)
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # 117 checks driving the REAL bin/kai-term; ONE probe launch gates the
 │                                # window checks, KAI_TERM_TEST_NO_WINDOW=1 skips them entirely
@@ -1085,6 +1194,16 @@ Kai-Term/
   (or `-e COMMAND`); sets `TERM`/`COLORTERM`/`TERM_PROGRAM`; `pty_setsize`. With the integration on, `tab_spawn()`
   hands it the string `shellint_argv()` built (`/bin/sh -c` form: the per-session request file in the environment
   plus the shell's load flag) instead of the bare shell path.
+- `src/theme.c` — themes: a file of COLOURS only, in kai-term.conf's `key = value` syntax (and kitty's
+  `key value`, so an existing kitty theme loads unchanged). `theme_find()` resolves a name through the
+  `themes/` subdirectory of the same three config directories (or takes a path / `~`-path as given);
+  `theme_apply_file()` applies the 23 names in its own `THEME_KEYS` table — the four chrome colours into
+  `Config` and `color0`-`color15` into the process-wide palette — and skips any colour the settings file
+  set itself (`config_key_was_set`), which is what makes a `background =` line win above OR below the
+  `theme =` line. `selection_foreground`/`cursor_text_color` are recognised and reported as dropped, never
+  guessed at; entries 16-255 are refused because the cube and the ramp are computed. No Wayland/GL/term
+  dependency: the whole thing is testable headless, and tests/test_vt.c derives the accepted-name list from
+  this file's table exactly as it derives the config names from config.c's ladders.
 - `src/config.c` — the two config files (`kai-term.conf` settings, `kai-term.bind` bindings), one `key = value`
   line reader serving both, the search order (`config_find`: `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term`,
   `/etc/kai-term`, first REGULAR file wins, empty result = built-in defaults), defaults, clamping, the
@@ -1106,7 +1225,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 973 checks: parser (including a C0 byte inside a control sequence — executed, sequence
+- `tests/test_vt.c` — 1060 checks: parser (including a C0 byte inside a control sequence — executed, sequence
   still collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
   (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
   ordering), grid, selection, alt screen,
@@ -1543,7 +1662,7 @@ after `ptr_*` hit-tested bar then panes.
   up the system bindings. `kai-term.bind` is read AFTER `kai-term.conf`, so for a name both set the bind file
   wins. CLI flags are applied AFTER both files so they win and never write back.
 - The split is by NAME, not by which file is open: `apply_bind_key()` takes the 24 `key_*`/`fm_key_*` names,
-  `apply_setting()` the 29 others. A binding written in `kai-term.conf` is applied with a log line naming where
+  `apply_setting()` the 32 others. A binding written in `kai-term.conf` is applied with a log line naming where
   it belongs now (files written before the split must not lose bindings silently); a setting written in
   `kai-term.bind` is refused by name, never treated as an unknown key. `tests/test_vt.c` reads both name lists
   out of the strcmp ladders in `src/config.c` and compares them with `config/kai-term.conf` +
