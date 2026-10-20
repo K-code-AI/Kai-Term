@@ -682,6 +682,12 @@ void render_chrome(const Render *r, Chrome *out)
     out->cursor      = r->cursor_color;
     out->cursor_off  = mix_c(r->cursor_color, r->bg, 55);
     out->border      = r->selection_color;
+    /* The confirm-quit row: the highlight colour for the field, the default ink for the text. One value
+       (Config.selection_color) therefore owns every "this is the thing in this window" signal — the band,
+       the active tab item, the focus border and the question — which is the rule `selection_color =`
+       became the single key for. */
+    out->notice_bg   = r->selection_color;
+    out->notice_fg   = r->fg;
 }
 
 /* One place decides what a cursor cell LOOKS like. See the comment on CursorDraw in kai-term.h: the shape
@@ -1162,7 +1168,10 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
        dimmed too — so a side-by-side window still shows which session the keyboard talks to. */
 
     /* Staging space: at most 3 quads per grid cell (background + band + glyph), at most
-       (BAR_LABEL_MAX + 2) per bar item (label glyphs + background + separator), and 4 for the border. */
+       (BAR_LABEL_MAX + 2) per bar item (label glyphs + background + separator), NOTICE_MAX + 1 for the
+       confirm-quit row (one background plus at most one glyph per byte of its text — the row's text is cut
+       to NOTICE_MAX-1 bytes by layout_compute(), so the buffer it travels in bounds what can be emitted),
+       and 4 for the border. */
     int cells = 0;
     for (int p = 0; p < lay->npane; p++)
         cells += lay->pane[p].cols * lay->pane[p].rows;
@@ -1174,7 +1183,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     }
     /* +8: the focus border is 4 quads, and with the file manager on a pane border and a band border can
        both be in the same frame. */
-    int maxq = 3 * cells + 3 * fmcells + lay->nitem * (BAR_LABEL_MAX + 2) + 8;
+    int maxq = 3 * cells + 3 * fmcells + lay->nitem * (BAR_LABEL_MAX + 2)
+             + (lay->notice_on ? NOTICE_MAX + 1 : 0) + 8;
     float *vdata = ensure_vdata(r, maxq);
     float *vp = vdata;
     int nquads = 0;
@@ -1285,9 +1295,23 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
+    /* The confirm-quit question: one full-width field, in batch A (a background of its own, under the
+       pictures and under its own text). Its colour is the selection highlight for the same reason the
+       active tab item and the focus border use it — one configured colour owns every "this is the thing in
+       this window" signal — and it is derived in render_chrome(), not written here, so a configured
+       selection_color is checked where it becomes a vertex colour. */
+    if (lay->notice_on) {
+        col2f(chrome.notice_bg, bg);
+        bg[3] *= r->opacity;
+        emit_quad(&vp, (float)lay->notice_x, (float)r->vh - (float)lay->notice_y - (float)lay->notice_h,
+                  (float)lay->notice_w, (float)lay->notice_h, du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f,
+                  white, bg, 0.0f, 0.0f, 0.0f);
+        nquads++;
+    }
+
     /* Everything emitted so far is batch A: cell backgrounds, the block cursor, the bar item
-       backgrounds and separators. The pictures go on top of exactly these, and everything after this
-       point (bands, glyphs, labels, border) goes on top of the pictures. */
+       backgrounds and separators, and the question row's field. The pictures go on top of exactly these,
+       and everything after this point (bands, glyphs, labels, border) goes on top of the pictures. */
     int nq_bg = nquads;
 
     /* Pass 2: selection overlay bands (over the background, under the glyphs), per pane. Drawn for every
@@ -1488,6 +1512,33 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                           fg, bg, 1.0f, 0.0f, 0.0f);
                 nquads++;
             }
+        }
+    }
+
+    /* The question's text, with the same text font and the same per-column bound as a bar label. The row's
+       text was already cut to the row's columns by layout_compute(); this bound is what makes that
+       guarantee hold even if the font is wider than the layout assumed, exactly as it does for a label. */
+    if (lay->notice_on && lay->notice[0]) {
+        col2f(chrome.notice_fg, fg);
+        col2f(chrome.notice_bg, bg);
+        bg[3] *= r->opacity;
+        float npx0 = (float)lay->notice_x;
+        float ngl = (float)r->vh - (float)lay->notice_y - (float)lay->notice_h;
+        int col = 0;
+        for (const char *s = lay->notice; *s; col++) {
+            uint32_t cp = next_cp(&s);
+            if (npx0 + (float)(col + 1) * cw > (float)(lay->notice_x + lay->notice_w))
+                break;
+            Glyph *gl_ = font_glyph(f, cp);
+            if (!gl_ || gl_->w <= 0 || gl_->h <= 0)
+                continue;
+            float gw = (float)gl_->w * f->scale;
+            float gh = (float)gl_->h * f->scale;
+            float gx = npx0 + (float)col * cw + (float)gl_->bearing_x * f->scale;
+            float gy = ngl + ch - ascent + (float)gl_->bearing_y * f->scale - gh;
+            emit_quad(&vp, gx, gy, gw, gh, gl_->u0, gl_->v0, gl_->u1, gl_->v1,
+                      fg, bg, 1.0f, 0.0f, 0.0f);
+            nquads++;
         }
     }
 

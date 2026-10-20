@@ -27,7 +27,12 @@
      its height on top (browser left, preview right) and the terminal pane(s) below it. The sessions stay
      ordinary entries in pane[], only shorter, so every hit test, focus border and pointer -> cell mapping
      works whether the band is on or off. If the window cannot hold the band AND FM_TERM_MIN_ROWS of
-     terminal, the band is dropped for that frame — the terminal wins again. */
+     terminal, the band is dropped for that frame — the terminal wins again.
+   * The confirm-quit question (`notice_on`) is one row of chrome at the BOTTOM of the grid area and costs
+     the panes exactly one row, exactly as the bar costs one at the top. It is reserved BEFORE the
+     file-manager band is measured, so the band's PERCENT applies to what is left rather than to a grid area
+     the question has already eaten. If giving up the row would leave no room for one text row, the QUESTION
+     is dropped for that frame — the terminal wins over the chrome that asks about the terminal. */
 #include "kai-term.h"
 
 /* Cut a string to at most `max` UTF-8 codepoints, never in the middle of a multi-byte sequence. A tab's
@@ -49,6 +54,39 @@ static void clip_utf8(char *s, int max)
     }
 }
 
+/* Drop a trailing incomplete UTF-8 sequence. clip_utf8() only ever cuts at a codepoint edge, but a
+   BYTE-bounded copy (snprintf into a fixed buffer) can split one, and a dangling lead byte then reaches
+   the renderer as a codepoint of its own. This is what makes the "cut at a codepoint edge, never
+   mid-sequence" guarantee of a bar label or the notice row true after the byte bound as well as after the
+   column bound. Walks back at most 4 bytes — the longest sequence — because that is all a trailing
+   sequence can be. */
+static void trim_partial_utf8(char *s)
+{
+    size_t n = strlen(s);
+    if (!n)
+        return;
+    size_t i = n, lead_at = n;
+    int lead = -1;
+    while (i > 0 && n - i < 4) {
+        i--;
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80)
+            return;                 /* ends with ASCII: nothing to trim */
+        if (c >= 0xc0) {            /* a lead byte: is its sequence complete in this buffer? */
+            lead = c;
+            lead_at = i;
+            break;
+        }
+    }
+    if (lead < 0) {                 /* malformed input: trailing continuation bytes with no lead */
+        s[i] = 0;
+        return;
+    }
+    int want = lead >= 0xf0 ? 4 : (lead >= 0xe0 ? 3 : 2);
+    if ((int)(n - lead_at) < want)
+        s[lead_at] = 0;
+}
+
 /* "<n> <title>", with a '*' before the title when the session is hidden and has output the user has not
    seen yet. An unnamed session reads "shell" — every shell sets its own title (OSC 0/2) as soon as it
    prints one, so that is only the startup state. */
@@ -57,6 +95,7 @@ static void bar_label(char *out, int tab, int attention, const char *title, int 
     snprintf(out, BAR_LABEL_MAX, "%d %s%s", tab + 1, attention ? "*" : "",
              (title && title[0]) ? title : "shell");
     clip_utf8(out, maxcols > 1 ? maxcols : 1);
+    trim_partial_utf8(out);        /* the 40-byte buffer can cut a title mid-sequence (see above) */
 }
 
 void layout_compute(const LayoutReq *rq, Layout *out)
@@ -119,6 +158,39 @@ void layout_compute(const LayoutReq *rq, Layout *out)
             it->active = (it->tab == active) ? 1 : 0;
             bar_label(it->label, it->tab, it->attention, rq->tab[i].title, maxcols);
         }
+    }
+
+    /* ---- the confirm-quit question: one row of chrome at the bottom of the grid area ----
+       Reserved here, before the file-manager band and before the panes are measured, so that everything
+       below works on the grid area that is LEFT. It costs exactly ONE cell row and no gap: the question is
+       chrome the user reads once, and every extra pixel it takes is a row of the work being asked about.
+       (The bar costs a row AND a gap because its items need separating from each other; one full-width row
+       does not.) The remainder of the pane's rect stays at its bottom as usual, so a window whose height is
+       not a whole number of rows keeps its natural slack between the last text row and the question.
+       The row sits at the BOTTOM rather than the top because the question is about the work on screen: the
+       text the user is being asked to throw away stays visible above it.
+       The terminal wins over the question, exactly as it wins over the bar and over the band — a window too
+       short to give up the row closes without asking rather than showing half a terminal. That is a
+       decision, not a fallback: `notice_on` in the result says what was actually drawn, and main.c's gate
+       reads nothing from it (the question was already asked by then). */
+    int notice_on = rq->notice_on ? 1 : 0;
+    if (notice_on && grid_h - ch < ch)
+        notice_on = 0;
+    out->notice_on = notice_on;
+    if (notice_on) {
+        out->notice_x = grid_x;
+        out->notice_y = grid_y + grid_h - ch;      /* the last row of the UNSHRUNKEN grid area */
+        out->notice_w = grid_w;
+        out->notice_h = ch;
+        grid_h -= ch;
+        /* The text is cut HERE, to the columns this row really has, so the renderer draws exactly what the
+           geometry decided and a clipped question is a checked decision rather than something a draw loop
+           does with no check on it. NOTICE_MAX bounds the bytes, clip_utf8 bounds the codepoints and
+           trim_partial_utf8 undoes a byte bound that landed inside one. */
+        snprintf(out->notice, sizeof out->notice, "%s",
+                 (rq->notice_text && rq->notice_text[0]) ? rq->notice_text : "");
+        clip_utf8(out->notice, imax_(grid_w / cw, 1));
+        trim_partial_utf8(out->notice);
     }
 
     /* ---- the file-manager band, above the terminal pane(s) ----

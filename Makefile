@@ -47,10 +47,10 @@ build/%.o: src/%.c $(HDRS) | build
 $(BIN): $(OBJS) build/xdg-shell-protocol.o | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-bin/test_vt: tests/test_vt.c build/vt.o build/img.o build/mux.o build/layout.o build/config.o build/theme.o build/shellint.o | bin
+bin/test_vt: tests/test_vt.c build/vt.o build/img.o build/mux.o build/layout.o build/config.o build/theme.o build/shellint.o build/pty.o | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-bin/dbg: tests/dbg.c build/vt.o build/img.o build/mux.o build/layout.o build/config.o build/theme.o build/shellint.o | bin
+bin/dbg: tests/dbg.c build/vt.o build/img.o build/mux.o build/layout.o build/config.o build/theme.o build/shellint.o build/pty.o | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # The file manager model is testable on its own: fm.c needs only the image decoders (img.c) and
@@ -67,7 +67,12 @@ bin/test_fm: tests/test_fm.c build/fm.o build/vt.o build/img.o build/config.o bu
 # to LINK (fm.o font.o img.o vt.o shellint.o layout.o mux.o, and config.o because the test starts from a
 # real config_default()), but calls nothing that touches a context — that is the seam the dead
 # `cursor_color =` bug needed, see tests/test_render.c.
-bin/test_render: tests/test_render.c build/render.o build/fm.o build/font.o build/img.o build/vt.o build/shellint.o build/layout.o build/mux.o build/config.o build/theme.o $(HDRS) | bin
+# build/pty.o joined the list with confirm-quit: mux_running() asks pty_fg_busy() whether a session has a
+# foreground command, and that is the ONE place tcgetpgrp() is called. pty.c is pure libc (posix_openpt,
+# fork, ioctl) — no Wayland, no EGL, no font — and the headless suites never call it: a test hands mux_running()
+# a Tab whose pty.mfd is -1, which answers "idle" before any syscall. Linking it is cheaper than forking a
+# second copy of the busy-check that the shipped code does not use.
+bin/test_render: tests/test_render.c build/render.o build/fm.o build/font.o build/img.o build/vt.o build/shellint.o build/layout.o build/mux.o build/config.o build/theme.o build/pty.o $(HDRS) | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 test: bin/test_vt bin/dbg bin/test_fm bin/test_render test-cli
@@ -88,17 +93,17 @@ ASANFLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g
 # header they consume must be a prerequisite. bin/dbg_asan used to list only tests/dbg.c, which
 # left a stale binary on disk: an ASan leak kept being reported from an old src/vt.c that make
 # never rebuilt.
-bin/test_vt_asan: tests/test_vt.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c $(HDRS) | bin
-	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_vt.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c $(LDLIBS)
+bin/test_vt_asan: tests/test_vt.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c src/pty.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_vt.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c src/pty.c $(LDLIBS)
 
-bin/dbg_asan: tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c $(HDRS) | bin
-	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c $(LDLIBS)
+bin/dbg_asan: tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c src/pty.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c src/pty.c $(LDLIBS)
 
 bin/test_fm_asan: tests/test_fm.c src/fm.c src/vt.c src/img.c src/config.c src/shellint.c $(HDRS) | bin
 	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_fm.c src/fm.c src/vt.c src/img.c src/config.c src/shellint.c $(LDLIBS)
 
-bin/test_render_asan: tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c $(HDRS) | bin
-	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c $(LDLIBS)
+bin/test_render_asan: tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c src/pty.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c src/pty.c $(LDLIBS)
 
 asan: bin/test_vt_asan bin/dbg_asan bin/test_fm_asan bin/test_render_asan
 	./bin/test_vt_asan

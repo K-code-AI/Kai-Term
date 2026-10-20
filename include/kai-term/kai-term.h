@@ -702,6 +702,11 @@ enum {
     KB_KEY_F12       = 0xffc9,
 };
 
+/* confirm_quit config value. CONFIRM_RUNNING is the default: a close that would kill a running foreground
+   command asks first, and an idle session closes without a question. CONFIRM_ALWAYS asks at every close,
+   CONFIRM_NEVER quits exactly as earlier builds did. */
+enum { CONFIRM_NEVER = 0, CONFIRM_RUNNING = 1, CONFIRM_ALWAYS = 2 };
+
 typedef struct {
     uint32_t sym;    /* the key: a printable codepoint or one of KB_KEY_* */
     unsigned mods;   /* KB_* bits that must ALL be held (at least one: see keybind_parse) */
@@ -826,6 +831,10 @@ typedef struct Config {
     int  tab_bar;
     int  split_max;
     KeyBind key_toggle_layout;
+    /* confirm_quit: what a close does when something is still running — CONFIRM_NEVER / CONFIRM_RUNNING
+       (the default) / CONFIRM_ALWAYS. One gate covers closing the WINDOW and closing a TAB, because a tab
+       is where work is lost more often. The predicate is pty_fg_busy(); the question is confirm_message(). */
+    int  confirm_quit;
     /* ---- the in-window file manager (src/fm.c; its band is laid out by src/layout.c) ----
        fm_on: start with the file manager shown. Default off — a user who never presses the toggle sees
        exactly the terminal of earlier sessions, and closing the file manager returns to that state.
@@ -987,6 +996,18 @@ void pty_setsize(Pty *p, int rows, int cols);
    rows, and an application that already asked for the geometry must be told the new numbers. */
 void pty_set_cells(Pty *p, int cell_w, int cell_h);
 void pty_write(Pty *p, const void *buf, size_t len);
+/* Is something still RUNNING in this pty? The pure half is fg_busy(), so the decision can be checked
+   without a process: tcgetpgrp() on the pty MASTER gives its foreground process group, and Kai-Term never
+   calls tcsetpgrp, so the shell owns that value — idle at the prompt it IS the shell's pid, and a
+   foreground command moves it elsewhere. Measured against bash, zsh and fish in
+   .scratch/s117/fgprobe2 (which answers each shell's startup queries and proves the command ran, because
+   a probe that hosts a stalled shell measures nothing): idle fg==child, `sleep 6` and `sleep 6 | cat`
+   fg!=child in all three. Two cases the pure function exists for: a DEAD session (bash leaves
+   tcgetpgrp answering 0, which a naive `!= child` would call "running" — it must not, nothing is there to
+   protect), and a session with no pty at all (mfd < 0). A job the user backgrounded with `&` keeps the
+   shell in the foreground group, so it reads idle — measured, and documented as a limitation. */
+int fg_busy(pid_t fg, pid_t child);
+int pty_fg_busy(const Pty *p);
 
 /* ---------- multiplexing: several terminal sessions in one window (src/mux.c) ---------- */
 
@@ -1053,6 +1074,17 @@ int  mux_touch(Mux *m, int idx);
    window). One tab -> DEF_TITLE exactly, so a single-session user sees no change; several ->
    "Kai-Term [2/3]", with "!" appended when a hidden session has output the user has not looked at yet. */
 void mux_title(const Mux *m, char *out, size_t cap);
+/* How many of these sessions have something running that a close would kill, filling idx[] (tab indices,
+   at most `max`) with up to TAB_MAX of them. Returns 0 when every session is idle — the case where
+   `confirm_quit = running` lets the close through with no question. */
+int mux_running(const Mux *m, int *idx, int max);
+/* The one-row question the window shows before it throws that work away. `what` is CONFIRM_QUIT (the
+   window) or CONFIRM_CLOSE_TAB (one session); n/idx come from mux_running() for the multi-session case,
+   which has to say HOW MANY and WHICH, because "session 2 and 4 are still working" is the information a
+   yes/no answer cannot carry. Returns the bytes written (always NUL-terminated). Lives here, not in
+   main.c, so the wording is a checkable decision rather than a string nobody can test. */
+enum { CONFIRM_QUIT = 0, CONFIRM_CLOSE_TAB = 1 };
+int confirm_message(int what, int n, const int *idx, char *out, size_t cap);
 
 /* ---------- layout: where each session is drawn (src/layout.c) ----------
    Pure geometry, no Wayland/EGL/fd, so the whole tab-bar/split feature is unit-testable
@@ -1072,6 +1104,9 @@ enum { LAYOUT_TABS = 0, LAYOUT_SPLIT = 1 };
 enum { BAR_OFF = 0, BAR_AUTO = 1, BAR_ALWAYS = 2 };
 
 #define BAR_LABEL_MAX 40    /* bytes of label text per tab item (UTF-8, cut at a codepoint edge) */
+#define NOTICE_MAX   128    /* bytes of confirm-quit question (UTF-8, cut at a codepoint edge). Bigger
+                               than confirm_message()'s longest row so the row a user is shown is never
+                               cut by the buffer it travels in — only by the width of the window. */
 
 /* One session's box. x/y/w/h are window pixels (top-left origin, like the pointer events); cols/rows is
    what term_grid_geometry() says fits inside it, so the leftover pixels sit at the pane's right/bottom
@@ -1129,6 +1164,14 @@ typedef struct {
     int bar_x, bar_y, bar_w, bar_h;   /* the strip itself, window px */
     int nitem;
     BarItem item[TAB_MAX];
+    /* The confirm-quit question: one row of chrome, at the BOTTOM of the grid area, costing the panes one
+       row (see the notice rule in src/layout.c). `on` is 0 when the window is too short to give up that row
+       — the terminal wins, exactly as it wins over the bar and over the file-manager band. `notice` holds
+       the text ALREADY cut to the row's columns, so the clipping is a layout decision that tests/test_vt.c
+       can check rather than something the draw loop does with no check on it. */
+    int notice_on;
+    int notice_x, notice_y, notice_w, notice_h;
+    char notice[NOTICE_MAX];
     int npane;
     PaneGeom pane[TAB_MAX];
     FmGeom fm;         /* the file-manager band; pane[] is what is LEFT of the grid area after it */
@@ -1153,6 +1196,8 @@ typedef struct {
     int fm_on;         /* the file manager is shown */
     int fm_preview_on; /* its preview pane is shown too */
     int fm_size;       /* percent of the grid area's height the band asks for (clamped here) */
+    int notice_on;     /* the confirm-quit question is up (it costs one grid row — see Layout) */
+    const char *notice_text;   /* the row's text; NULL or empty with notice_on draws an empty row */
     TabInfo tab[TAB_MAX];
 } LayoutReq;
 
@@ -1699,6 +1744,12 @@ typedef struct Chrome {
     uint32_t cursor;                      /* the visible session's cursor */
     uint32_t cursor_off;                  /* a drawn-but-not-visible session: cursor mixed toward bg */
     uint32_t border;                      /* the focus border */
+    /* The confirm-quit row. It is chrome, so it takes the two colours the window already uses to mean
+       "this is the thing the user is being asked about": the selection highlight for the field and the
+       default ink for the text. They are named here rather than written inside render_draw() for the same
+       reason the rest of this struct is — a configured colour has to be checked where it becomes a vertex
+       colour, not where it is parsed. */
+    uint32_t notice_bg, notice_fg;
 } Chrome;
 void render_chrome(const Render *r, Chrome *out);
 

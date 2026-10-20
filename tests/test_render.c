@@ -136,6 +136,22 @@ static void group_cursor_color(void)
     CHECK(g5.sep == mix_ref(c.fg, c.bg, 65) && g5.item_off_bg == mix_ref(c.bg, c.fg, 10)
           && g5.item_off_fg == mix_ref(c.fg, c.bg, 45),
           "the bar's inactive colours are mixed from the configured fg/bg, not from the highlight");
+
+    /* 8. The confirm-quit row: the highlight for its field, the default ink for its text. It is chrome, so
+       the SAME configured colour owns every "this is the thing in this window" signal — the band, the active
+       bar item, the focus border and the question — and it is checked HERE, at the consumer, which is the
+       place the dead `cursor_color =` bug hid (parsed, stored, tested at the parser, read by nothing). */
+    CHECK(ch.notice_bg == SEL_BG && ch.notice_fg == c.fg,
+          "default config: the question row's field is SEL_BG and its text is the default ink");
+    CHECK(g5.notice_bg == 0xff220088u && g5.notice_fg == c.fg,
+          "selection_color = 220088: the question row's field is drawn with it too");
+    Config ink = c;
+    ink.fg = 0xff11ee22u;
+    render_from_config(&r, &ink);
+    Chrome g6;
+    render_chrome(&r, &g6);
+    CHECK(g6.notice_fg == 0xff11ee22u && g6.notice_bg == g5.notice_bg,
+          "a different ink changes the question's TEXT and not its field (compared with g5)");
 }
 
 /* ---------- the two source scans that cover what no headless test can run ---------- */
@@ -322,6 +338,41 @@ static void group_source_wiring(void)
     /* Not vacuous: the same scan finds a macro the renderer DOES still use. */
     CHECK(src_word_count("src/render.c", "BAR_LABEL_MAX") > 0,
           "the source scan really finds a macro in src/render.c (BAR_LABEL_MAX) — the zeros above mean something");
+    /* The question row's two colours: derived in render_chrome() and READ by the draw loop. Counts, not
+       existence — a field that is filled in but never consumed is exactly the dead `cursor_color =` shape,
+       and the draw loop is in no test binary. Measured on the tree that draws the row: notice_bg three
+       times (the derivation, the field, the text's background), notice_fg twice. */
+    CHECK(src_word_count("src/render.c", "notice_bg") == 3
+          && src_word_count("src/render.c", "notice_fg") == 2,
+          "src/render.c both derives AND consumes the question row's two colours (re-measure, do not copy)");
+    /* And that BOTH passes (the field and its text) are gated on the layout's own flag, plus the staging
+       budget that sizes the buffer they write into: three reads of notice_on. A token scan cannot see a
+       disabled branch, so without this a draw pass could be switched off (`if (0)`) and every count above
+       would still hold — measured, the mutant c_no_text_pass fails here and nowhere else. */
+    CHECK(src_word_count("src/render.c", "notice_on") == 3,
+          "src/render.c gates the field pass, the text pass and the staging budget on Layout.notice_on");
+
+    /* ---- confirm-quit: the main.c wiring (step 4, stage D) ----
+       The gate, the modal keys and the layout input live in main(), which is in no test binary, so the
+       DECISIONS are checked in src/pty.c, src/mux.c and src/layout.c and only the WIRING can be checked here.
+       Counts, not existence: a gate that is defined but never called is exactly the shape this feature would
+       have if stage D had been skipped, and a gate called from one close path but not the other is the shape
+       that loses work in the path nobody thought about. Counts measured on the tree that has the wiring —
+       re-measure, do not copy. What no count can say: the SIGCHLD path that closes a tab whose process has
+       ALREADY exited must stay ungated (there is nothing to protect), which is a reading of main.c, and the
+       row's look, which is the user's to confirm. */
+    CHECK(src_word_count("src/main.c", "confirm_gate_window") == 2,
+          "src/main.c defines the window gate AND calls it (toplevel_close)");
+    CHECK(src_word_count("src/main.c", "confirm_gate_tab") == 3,
+          "src/main.c gates BOTH user-initiated tab closes (the key binding and the bar's middle click)");
+    CHECK(src_word_count("src/main.c", "confirm_answer") == 3,
+          "src/main.c defines the answer and reaches it from the modal key handler");
+    CHECK(src_word_count("src/main.c", "confirm_clear") == 4,
+          "the question is taken down on both answers AND when the tab it asked about closes on its own");
+    CHECK(src_word_count("src/main.c", "notice_on") == 1 && src_word_count("src/main.c", "notice_text") == 1,
+          "src/main.c feeds the question row to the layout — without it the row is never drawn");
+    CHECK(src_word_count("src/main.c", "mux_running") == 2 && src_word_count("src/main.c", "pty_fg_busy") == 2,
+          "src/main.c asks the measured predicate rather than inventing its own busy test");
     /* The one link a headless test cannot execute: main() handing the configured value to the renderer and
        to the band's painter. The call string includes the '&' so a COMMENT that merely names the function
        (main.c has two) cannot start the scan. */

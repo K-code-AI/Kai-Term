@@ -89,6 +89,9 @@ void config_default(Config *c)
        sessions at a time — below that a pane is still wide enough to read. */
     c->tab_bar = BAR_AUTO;
     c->split_max = 4;
+    /* Ask before a close throws away work. `running` (the default) asks only when a session's pty has a
+       foreground command in it, so an idle window still closes instantly. */
+    c->confirm_quit = CONFIRM_RUNNING;
     keybind_parse("Ctrl+Shift+S", &c->key_toggle_layout);
     /* The in-window file manager. OFF by default: a user who never presses the toggle gets exactly the
        terminal of earlier sessions, and closing it again returns to that state. The band takes 75% of the
@@ -560,6 +563,27 @@ static void apply_setting(Config *c, const char *key, char *val)
         } else {
             klog(L_WARN, "config: tab_bar = '%s' is not a value (off, auto or always); keeping %s",
                  val, c->tab_bar == BAR_OFF ? "off" : (c->tab_bar == BAR_ALWAYS ? "always" : "auto"));
+        }
+    } else if (!strcmp(key, "confirm_quit")) {
+        /* What a close does when something is still running: `running` (default) asks only when a session
+           has a foreground command, `always` asks at every close of the window or of a tab, `never` quits
+           as earlier builds did. The predicate is pty_fg_busy() — tcgetpgrp on the pty master — so what
+           counts as "running" is measured, not guessed: a foreground command or a pipeline yes, a job
+           backgrounded with `&` no. */
+        if (!strcasecmp(val, "never") || !strcmp(val, "0") || !strcasecmp(val, "off") ||
+            !strcasecmp(val, "no") || !strcasecmp(val, "false")) {
+            c->confirm_quit = CONFIRM_NEVER;
+        } else if (!strcasecmp(val, "always") || !strcmp(val, "1") || !strcasecmp(val, "on") ||
+                   !strcasecmp(val, "yes") || !strcasecmp(val, "true")) {
+            c->confirm_quit = CONFIRM_ALWAYS;
+        } else if (!strcasecmp(val, "running") || !strcasecmp(val, "auto")) {
+            c->confirm_quit = CONFIRM_RUNNING;
+        } else {
+            klog(L_WARN, "config: confirm_quit = '%s' is not a value (running, always or never); "
+                         "keeping %s", val,
+                 c->confirm_quit == CONFIRM_NEVER ? "never"
+                                                  : (c->confirm_quit == CONFIRM_ALWAYS ? "always"
+                                                                                      : "running"));
         }
     } else if (!strcmp(key, "split_max")) {
         /* Sessions drawn side by side at most. More sessions than that are still open and still listed in

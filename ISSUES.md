@@ -405,6 +405,19 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   toggle, open/close) resizes EVERY session to the same cols x rows: every shell gets SIGWINCH and every
   session's scrollback re-wraps. That is what makes switching to a hidden session free, and why a toggle
   touches sessions you are not looking at.
+- **The confirm-quit question costs one text row too, and the grid wins if both do not fit** (2026-10-20,
+  s120). While `confirm_quit` is asking, one row at the BOTTOM of the window is chrome and every session is
+  one row shorter; answering gives the row back. A window too short to pay for it closes without asking.
+- **What `confirm_quit = running` counts is the terminal's foreground process group, measured** (bash, zsh and
+  fish checked in `.scratch/s117/fgprobe2`, and a hand-built process tree in `tests/test_vt.c`). A command and
+  a pipeline count; a job started with `&` does NOT, because the shell keeps the foreground group then — the
+  gate protects a foreground command, not a daemon. A session started with `-e COMMAND` also reads idle:
+  `pty_spawn()` runs it as `sh -c`, so the command owns the foreground group and `fg == child` (measured
+  2026-10-20, `.scratch/s121/espawn` — `sleep 30` and `sleep 30 | cat` both answer idle for the whole 900 ms);
+  `confirm_quit = always` is the setting for a `-e` window. A session whose shell has already exited does not count
+  either (bash leaves `tcgetpgrp` answering 0), so Kai-Term never asks whether to kill nothing. The state
+  converges in a second or two after a command starts, so "asked and nothing was running" is a possible `-d`
+  log line rather than a bug.
 
 **Graphics / images**
 

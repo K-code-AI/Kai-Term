@@ -65,6 +65,11 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   shell keeps the typed path (capture, erase, `cd`, re-type), and `shell_integration = 0` turns the script off
   entirely.
 - **Font zoom** — Increase or decrease the font size without resizing the window.
+- **Ask before quitting** — Closing a window or a session hangs up its shell, so anything still running in it
+  dies with it. By default Kai-Term asks first, but only when a session really has a command in the
+  foreground of it: an idle window still closes the moment you ask it to. The question is one row at the bottom
+  of the window, it names the sessions that are at risk, and `Enter`/`y` confirms while `Esc`/`n` cancels.
+  `confirm_quit = always` asks at every close, `confirm_quit = never` never asks.
 - **System clipboard** — Copy and paste use the standard Wayland clipboard, so text copied in Kai-Term
   pastes into other applications and text copied anywhere else pastes into Kai-Term.
 - **Configuration** — Two plain-text files: `kai-term.conf` for the settings and `kai-term.bind` for the
@@ -465,6 +470,7 @@ the program.
 | `max_tabs` | `8` | Sessions one window may hold (clamped to 1–64) |
 | `tab_bar` | `auto` | `off` never draws the tab bar, `auto` draws it from the second session on, `always` also with one session |
 | `split_max` | `4` | Sessions drawn side by side at most; more sessions stay open and stay listed in the bar |
+| `confirm_quit` | `running` | What closing asks you before it throws work away. Closing a window or a tab hangs up that shell, so anything still running in it dies with it. `running` asks only when a session has a command in its **foreground** (a pipeline counts; a job you started with `&` does not, because the shell keeps the foreground group then), so an idle window still closes instantly; `always` asks at every close of the window and of a tab; `never` closes straight away. When more than one session is at risk the question says how many and which tabs, and answering yes closes all of them |
 | `file_manager` | `0` | Show the file-manager band from startup instead of only when the shortcut is pressed |
 | `fm_size` | `75` | Percent of the window's text area the band asks for (clamped to 10–95, and shrunk further so the terminal keeps at least 3 rows; if even that does not fit, the band is dropped for that frame) |
 | `fm_preview` | `1` | Show the preview pane next to the browser (`v` toggles it at runtime; off means the browser is full width) |
@@ -747,6 +753,38 @@ arrows, `Home`, `End`, `Page_Up`, `Page_Down`, `Insert`, `Delete`, `BackSpace`, 
 `Space` and `F1`–`F12`; any other character stands for itself. A binding with no modifier is refused, so it
 cannot swallow ordinary typing, and `none` unbinds an action. `key_tab_prefix` is the modifier half of the
 `1`–`9` jump: with the default `Ctrl+Shift`, pressing `Ctrl+Shift+3` shows the third session.
+
+### Asking before a close throws work away
+
+Closing a window closes its pty and hangs up every shell in it, so a compiler, an editor with unsaved text or
+a running server dies with it. `confirm_quit` says when Kai-Term checks with you first:
+
+| value | what happens |
+|---|---|
+| `running` (default) | asks only when a session has a command in its **foreground**; an idle session closes at once |
+| `always` | asks at every close of the window and of a session, idle or not |
+| `never` | closes straight away, as earlier builds did |
+
+The question is one row of chrome at the bottom of the window, in the same highlight colour as a text
+selection, and it costs the terminal one row while it is up. It says what is about to happen, how many
+sessions are at risk and which of them — `3 sessions are still running (1, 2 and 4). Quit?` — and the whole
+keyboard belongs to it until you answer: `Enter` or `y` confirms, `Esc` or `n` cancels, every other key is
+ignored. Confirming a window close closes **every** session named, not just the visible one.
+
+What counts as "running" is measured, not guessed: Kai-Term reads the terminal's foreground process group.
+
+- A command at the prompt, and a pipeline, count — in bash, zsh and fish alike.
+- A job you started with `&` does **not**: the shell keeps the foreground group, so the gate protects a
+  foreground command rather than a background daemon.
+- A session started with `-e COMMAND` does not either. There the command *is* the session's shell process, so it
+  owns the foreground group and reads idle — measured with `sleep 30` and with `sleep 30 | cat`. If you run
+  `kai-term -e something` and want to be asked, set `confirm_quit = always`.
+- A session whose shell has already exited does not count either, so Kai-Term never asks whether to kill
+  nothing.
+- The state converges within a second or two of a command starting, so a window can be asked about when the
+  command had barely begun; the log (`kai-term -d`) prints the question and the answer either way.
+- A window too short to give up a row closes without asking: the terminal wins over the question, exactly as
+  it wins over the tab bar and the file-manager band.
 
 ## Documentation
 

@@ -229,6 +229,51 @@ ck "$rc" 0 "--force alone is accepted"
 ck "$(printf '%s\n' "$stdout_only" | sed -n '1p')" "usage: $BIN [OPTION]..." "--force alone does not change what runs"
 env_home=""; env_xdg=""
 
+# ---------------- the settings file, parsed before any window exists (headless) ----------------
+# main() loads the settings file BEFORE it connects to the compositor, so with WAYLAND_DISPLAY empty the
+# config's own log lines are still produced and the run then fails at wl_display_connect (exit 1). That is
+# the only way a setting's LOG line — the user's only evidence that a typo was noticed rather than silently
+# obeyed — can be checked without mapping a window on the user's desktop. It also pins that the SHIPPED
+# template parses clean: the C name-coverage checks prove every NAME in it is known, and only a real launch
+# proves every VALUE in it is accepted.
+run_noway() {
+    outf="$tmp/o"
+    : > "$outf"
+    mkdir -p "$tmp/home" "$tmp/noconfig"
+    HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/noconfig" WAYLAND_DISPLAY= \
+        $TMO "$BIN" "$@" > "$outf" 2>&1 < /dev/null
+    rc=$?
+    out=$(cat "$outf")
+}
+
+# The gate's own setting, and the warn-and-KEEP rule: a value that means nothing must leave the value
+# already set alone and say so. Silently quitting with no question and silently asking every time are both
+# wrong answers to a typo, and the second one is what gets the setting turned off.
+printf 'confirm_quit = never\nconfirm_quit = sometimes\n' > "$tmp/cqbad"
+run_noway -c "$tmp/cqbad" -d -e true
+ck "$rc" 1 "a run with no display still parses the config and then fails at the compositor"
+ck "$(printf '%s\n' "$out" | grep -c "confirm_quit = 'sometimes' is not a value")" 1 \
+   "a bad confirm_quit value is reported by name"
+ck "$(printf '%s\n' "$out" | grep -c 'keeping never')" 1 \
+   "and the value already set is kept — not the default, and not a silent guess"
+printf 'confirm_quit = always\n' > "$tmp/cqok"
+run_noway -c "$tmp/cqok" -d -e true
+ck "$(printf '%s\n' "$out" | grep -c 'is not a value')" 0 "confirm_quit = always is accepted"
+# Non-vacuity, and the reason it needs saying: grepping only for 'is not a value' also passes when the parser
+# does not know the key AT ALL (an unknown key logs a different line). A good value must leave confirm_quit
+# out of the log entirely.
+ck "$(printf '%s\n' "$out" | grep -c 'confirm_quit')" 0 \
+   "a good value leaves no confirm_quit line at all — so an UNKNOWN key cannot pass the check above"
+
+# The shipped template, launched as a real user would copy it. Every key known, every value accepted.
+run_noway -c config/kai-term.conf -d -e true
+ck "$(printf '%s\n' "$out" | grep -c 'config loaded from config/kai-term.conf')" 1 \
+   "the shipped template really is the file that was parsed"
+ck "$(printf '%s\n' "$out" | grep -c 'unknown key')" 0 \
+   "the shipped kai-term.conf template holds no key the parser rejects"
+ck "$(printf '%s\n' "$out" | grep -cE 'is not a value|not a number|not a colour|is not a value')" 0 \
+   "and no value in it the parser rejects (confirm_quit's own line included)"
+
 # ---------------- the config file flag ----------------
 printf 'app_id = cli-suite\nfont_size = 30\n' > "$tmp/conf"
 if [ "$have_display" = 1 ]; then

@@ -3,8 +3,13 @@
 
 #include <ctype.h>           /* the config-template name scan (same classes src/config.c uses) */
 #include <dirent.h>          /* rm_tree: the scratch trees the import group builds */
+#include <errno.h>           /* the confirm-quit pty group: what a refused tcgetpgrp answers */
+#include <fcntl.h>           /* posix_openpt / open on the slave, for the fake session */
+#include <signal.h>          /* the fake session's command is stopped, not left running */
 #include <stdlib.h>          /* malloc for the derived name lists */
+#include <sys/ioctl.h>       /* TIOCSCTTY: the fake session's child claims the terminal */
 #include <sys/stat.h>        /* the shell-integration directory: created, 0700, removed again */
+#include <sys/wait.h>        /* reaping the fake session, so the suite leaves no process behind */
 #include <unistd.h>          /* access() on a request file that must or must not exist */
 
 static Term T;
@@ -723,6 +728,154 @@ static int span_copy(int c0, int r0, int c1, int r1, char *out, size_t cap)
     int n = term_selection_text(&T, out, cap);
     term_select_clear(&T);
     return n;
+}
+
+/* ---------- confirm-quit: a pty with a hand-built process tree on it ---------------------------
+   `pty_fg_busy()` reads the terminal's FOREGROUND PROCESS GROUP, so pinning it needs a real pty with
+   real process groups in it — a struct full of made-up numbers would pin the arithmetic and nothing
+   else. No shell binary is involved: the "shell" is a fork that does what pty_spawn()'s child does
+   (open the slave, setsid, TIOCSCTTY) and then what an interactive shell does — take the foreground
+   group for itself, and on a byte from a pipe start a command in a group of its own and hand THAT group
+   the foreground. Every step is driven by a byte and every wait polls for the state it needs, so
+   nothing sleeps and hopes, and no user's shell history is touched (the s95 lesson). Measured first in
+   .scratch/s120/fgprobe3.c; the values the checks below assert are the ones it printed. */
+typedef struct {
+    Pty p;
+    int cfd;      /* control pipe, write end: 'r' start a command, 'x' close the session */
+} FakeSess;
+
+static int fake_sess_open(FakeSess *fs)
+{
+    memset(fs, 0, sizeof *fs);
+    fs->p.mfd = -1;
+    fs->cfd = -1;
+
+    /* The control pipe can outlive the session that reads it, and a write to a pipe with no reader
+       raises SIGPIPE, whose default action is to KILL the suite — which looks exactly like a crash in
+       the code under test. Ignored here because the harness owns these pipes; src/ never needs this,
+       because a pty master answers a dead slave with EIO rather than a signal. write() then reports
+       EPIPE, which the callers below treat as "the session already went away". */
+    signal(SIGPIPE, SIG_IGN);
+
+    int cf[2];
+    if (pipe(cf) < 0)
+        return -1;
+    fs->p.mfd = posix_openpt(O_RDWR | O_NOCTTY);
+    char *sn = (fs->p.mfd >= 0 && grantpt(fs->p.mfd) == 0 && unlockpt(fs->p.mfd) == 0)
+                 ? ptsname(fs->p.mfd) : NULL;
+    if (!sn) {
+        if (fs->p.mfd >= 0)
+            close(fs->p.mfd);
+        fs->p.mfd = -1;
+        close(cf[0]);
+        close(cf[1]);
+        return -1;
+    }
+    char slave[256];
+    snprintf(slave, sizeof slave, "%s", sn);
+    pty_setsize(&fs->p, 24, 80);
+
+    pid_t kid = fork();
+    if (kid < 0) {
+        close(cf[0]);
+        close(cf[1]);
+        close(fs->p.mfd);
+        fs->p.mfd = -1;
+        return -1;
+    }
+    if (kid == 0) {
+        int sfd = open(slave, O_RDWR);
+        if (sfd < 0)
+            _exit(127);
+        close(fs->p.mfd);
+        close(cf[1]);
+        setsid();
+        ioctl(sfd, TIOCSCTTY, 0);
+        dup2(sfd, STDIN_FILENO);
+        dup2(sfd, STDOUT_FILENO);
+        dup2(sfd, STDERR_FILENO);
+        if (sfd > STDERR_FILENO)
+            close(sfd);
+        char c;
+        tcsetpgrp(STDIN_FILENO, getpgrp());        /* a shell owns its prompt's group */
+        if (read(cf[0], &c, 1) == 1 && c == 'r') {
+            pid_t g = fork();
+            if (g == 0) {
+                setpgid(0, 0);                     /* the command gets a group of its own */
+                pause();
+                _exit(0);
+            }
+            setpgid(g, g);                         /* both sides, so there is no race */
+            tcsetpgrp(STDIN_FILENO, g);            /* the shell hands the terminal over */
+            if (read(cf[0], &c, 1) == 1)
+                kill(-g, SIGKILL);                 /* and hangs up its foreground job */
+        }
+        _exit(0);
+    }
+    close(cf[0]);
+    fs->p.child = kid;
+    fs->cfd = cf[1];
+    return 0;
+}
+
+/* Wait (bounded) for the fake shell to have claimed the terminal. It has not for the first few
+   milliseconds after the fork, and a pty whose foreground group nobody owns answers 0 — a real state,
+   not a setup failure, so the wait is what separates "not yet" from "measured". */
+static int fake_sess_wait_idle(const FakeSess *fs)
+{
+    for (int i = 0; i < 300; i++) {
+        if (tcgetpgrp(fs->p.mfd) == fs->p.child)
+            return 1;
+        usleep(10000);
+    }
+    return tcgetpgrp(fs->p.mfd) == fs->p.child;
+}
+
+/* ... and for a DIFFERENT, real group to own it. The `> 0` matters: nobody owns the group at first, so
+   "not the child" alone would already be true before any command was started. */
+static int fake_sess_wait_busy(const FakeSess *fs)
+{
+    for (int i = 0; i < 300; i++) {
+        pid_t fg = tcgetpgrp(fs->p.mfd);
+        if (fg > 0 && fg != fs->p.child)
+            return 1;
+        usleep(10000);
+    }
+    pid_t fg = tcgetpgrp(fs->p.mfd);
+    return fg > 0 && fg != fs->p.child;
+}
+
+/* Close a session the way main.c does — hang it up, reap it, drop the master — so the suite leaves no
+   process and no fd behind (LeakSanitizer reports the harness otherwise, the s107 lesson). */
+static void fake_sess_close(FakeSess *fs)
+{
+    if (fs->cfd >= 0) {
+        ssize_t w = write(fs->cfd, "x", 1);
+        (void)w;                 /* EPIPE here means the session already went away; the wait copes */
+        close(fs->cfd);
+        fs->cfd = -1;
+    }
+    if (fs->p.child > 0) {
+        int st = 0, reaped = 0;
+        for (int i = 0; i < 300 && !reaped; i++) {
+            pid_t g = waitpid(fs->p.child, &st, WNOHANG);
+            if (g == fs->p.child)
+                reaped = 1;
+            else if (g < 0 && errno == ECHILD)
+                reaped = 1;      /* already reaped elsewhere — there is nothing to wait for */
+            else
+                usleep(10000);
+        }
+        if (!reaped) {
+            kill(fs->p.child, SIGKILL);
+            waitpid(fs->p.child, &st, 0);
+        }
+        fs->p.child = 0;         /* never signal a pid we have already reaped */
+    }
+    if (fs->p.mfd >= 0) {
+        close(fs->p.mfd);
+        fs->p.mfd = -1;
+    }
 }
 
 int main(void)
@@ -2910,8 +3063,8 @@ int main(void)
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 36 && nb == 24,
-                  "template: the parser accepts 36 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 37 && nb == 24,
+                  "template: the parser accepts 37 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);
@@ -3100,6 +3253,227 @@ int main(void)
         mux_close(&MX, 0);
     }
 
+    /* --- confirm-quit: is something still running? (fg_busy / pty_fg_busy / mux_running) ------
+       Closing a window or a tab closes the pty master and hangs up the shell, so anything running in it
+       dies with no warning. The gate is `confirm_quit`, the predicate is the pure `fg_busy()` behind
+       `pty_fg_busy()` (the ONE tcgetpgrp call in the tree), and the count is `mux_running()`. The
+       measurements these rest on are `.scratch/s117/fgprobe2` (real bash/zsh/fish) and
+       `.scratch/s120/fgprobe3` (a hand-built process tree, which is what the pty checks below copy); do
+       not re-derive them, they exist so a later change cannot quietly lose them. */
+    {
+        CHECK(fg_busy(100, 100) == 0, "confirm: a session that owns its foreground group is idle");
+        CHECK(fg_busy(200, 100) == 1, "confirm: another foreground group means a command is running");
+        /* The two guards are measurements, not paranoia. A pty whose foreground group has died answers 0
+           (bash in s117, the fake session in s120), and a refused tcgetpgrp answers -1; a naive
+           `fg != child` calls BOTH "running", so the window would ask whether to kill nothing. */
+        CHECK(fg_busy(0, 100) == 0, "confirm: fg == 0 (the session died) is idle, not running");
+        CHECK(fg_busy(-1, 100) == 0, "confirm: a refused tcgetpgrp is idle, not running");
+        CHECK(fg_busy(200, 0) == 0, "confirm: a tab with no child has nothing running");
+        CHECK(fg_busy(200, -1) == 0, "confirm: a negative child is not a process to protect");
+        CHECK(fg_busy(0, 0) == 0, "confirm: nothing at all reads idle");
+        CHECK(fg_busy(1, 1) == 0, "confirm: pid 1 matches like any other pid (idle)");
+
+        /* pty_fg_busy() with nothing to ask about: idle, and for mfd < 0 without a syscall at all. A
+           number that is not an open terminal must never read as "busy" — that is the difference between
+           asking once per close and asking forever. */
+        Pty nop;
+        memset(&nop, 0, sizeof nop);
+        nop.mfd = -1;
+        nop.child = getpid();
+        CHECK(pty_fg_busy(&nop) == 0, "confirm: a session with no master fd is idle");
+        CHECK(pty_fg_busy(NULL) == 0, "confirm: no session at all is idle");
+        int junkfd = open("/dev/null", O_RDONLY);
+        if (junkfd >= 0) {
+            close(junkfd);                    /* a number that is no longer an fd at all */
+            nop.mfd = junkfd;
+            CHECK(pty_fg_busy(&nop) == 0, "confirm: a closed fd answers idle, not busy");
+            nop.mfd = -1;
+        }
+    }
+
+    /* The same decision against a REAL pty with real process groups on it. This is the half that a
+       struct full of made-up numbers cannot pin: it proves the predicate reads the same value a shell
+       sets, and that the dead-session guard fires on a real tty and not only on a written 0. */
+    {
+        FakeSess fs;
+        if (fake_sess_open(&fs) != 0) {
+            printf("SKIP confirm-quit pty checks: this host gave us no pty (%s)\n", strerror(errno));
+        } else {
+            CHECK(fake_sess_wait_idle(&fs),
+                  "confirm pty: the fake shell took the terminal's foreground group");
+            CHECK(pty_fg_busy(&fs.p) == 0,
+                  "confirm pty: a shell at its prompt is idle (fg == child, measured)");
+
+            ssize_t w = write(fs.cfd, "r", 1);      /* start a command in a group of its own */
+            CHECK(w == 1, "confirm pty: the control pipe reached the session");
+            CHECK(fake_sess_wait_busy(&fs),
+                  "confirm pty: the command took the foreground group");
+            CHECK(pty_fg_busy(&fs.p) == 1,
+                  "confirm pty: a command in its own group is running — this is what a close would kill");
+
+            /* The shell exits while its command is still there: the tty's foreground group goes to 0
+               (measured), so the gate says idle. Nothing is left to protect, and this is the case the
+               `fg <= 0` guard exists for — pinned against a real tty, not only against a written 0. */
+            w = write(fs.cfd, "x", 1);
+            (void)w;
+            int st = 0, reaped = 0;
+            for (int i = 0; i < 300 && !reaped; i++) {
+                pid_t g = waitpid(fs.p.child, &st, WNOHANG);
+                if (g == fs.p.child)
+                    reaped = 1;
+                else if (g < 0 && errno == ECHILD)
+                    reaped = 1;
+                else
+                    usleep(10000);
+            }
+            CHECK(reaped, "confirm pty: the session's shell exited when asked");
+            CHECK(tcgetpgrp(fs.p.mfd) == 0,
+                  "confirm pty: a dead session's tty answers fg == 0 (measured, not assumed)");
+            CHECK(pty_fg_busy(&fs.p) == 0,
+                  "confirm pty: a dead session is idle — the window must not ask to kill nothing");
+            if (reaped)
+                fs.p.child = 0;  /* reaped already: fake_sess_close must not wait for it twice */
+            fake_sess_close(&fs);
+            CHECK(pty_fg_busy(&fs.p) == 0, "confirm pty: a closed session is idle");
+        }
+    }
+
+    /* --- confirm-quit: which sessions are at risk (mux_running) -------------------------------
+       The message has to say HOW MANY and WHICH, because "session 2 and 4 are still working" is
+       information a yes/no answer cannot carry — so the index list is a decision, and it is 0-based on
+       purpose (the caller adds 1; a message that was off by one is worse than no message). */
+    {
+        Mux MX2;
+        int idx[8];
+        mux_init(&MX2, 8);
+        CHECK(mux_running(&MX2, idx, 8) == 0, "confirm mux: no sessions means nothing is running");
+        CHECK(mux_running(NULL, idx, 8) == 0, "confirm mux: no mux at all is not a running session");
+        for (int i = 0; i < 4; i++)
+            CHECK(mux_open(&MX2, 6, 20, 50) == i, "confirm mux: four tabs opened");
+        CHECK(mux_running(&MX2, idx, 8) == 0,
+              "confirm mux: a tab that has no pty yet is idle (mfd -1, no syscall)");
+        CHECK(mux_running(&MX2, NULL, 8) == 0, "confirm mux: a NULL index list is allowed");
+
+        FakeSess sv[3];
+        int opened = 0;
+        while (opened < 3 && fake_sess_open(&sv[opened]) == 0)
+            opened++;
+        if (opened < 3) {
+            printf("SKIP confirm mux busy-count checks: this host gave us %d pty session(s), need 3\n",
+                   opened);
+            for (int i = 0; i < opened; i++)
+                fake_sess_close(&sv[i]);
+        } else {
+            for (int i = 0; i < 3; i++)
+                CHECK(fake_sess_wait_idle(&sv[i]), "confirm mux: three shells own their prompts");
+            /* sv[0] stays idle; sv[1] and sv[2] get a command. Tabs: 0 busy, 1 idle, 2 no pty, 3 busy —
+               non-adjacent on purpose, so an index list built off-by-one cannot pass. */
+            ssize_t wr1 = write(sv[1].cfd, "r", 1);
+            ssize_t wr2 = write(sv[2].cfd, "r", 1);
+            CHECK(wr1 == 1 && wr2 == 1, "confirm mux: both commands were started");
+            CHECK(fake_sess_wait_busy(&sv[1]) && fake_sess_wait_busy(&sv[2]),
+                  "confirm mux: both commands hold their terminal");
+            MX2.tab[0].pty = sv[1].p;
+            MX2.tab[1].pty = sv[0].p;
+            MX2.tab[3].pty = sv[2].p;
+
+            int nrun = mux_running(&MX2, idx, 8);
+            CHECK(nrun == 2, "confirm mux: exactly the two sessions with a command count");
+            CHECK(nrun == 2 && idx[0] == 0 && idx[1] == 3,
+                  "confirm mux: the list names the tabs at risk, in tab order, 0-based");
+
+            nrun = mux_running(&MX2, idx, 1);
+            CHECK(nrun == 2 && idx[0] == 0,
+                  "confirm mux: max caps the LIST, not the COUNT (a caller with one slot still asks)");
+
+            nrun = mux_running(&MX2, NULL, 8);
+            CHECK(nrun == 2, "confirm mux: the count survives a NULL list — the message needs it");
+
+            /* Close one of the running sessions: the count must follow, because the gate reads live state
+               at close time and never a cached answer. */
+            fake_sess_close(&sv[1]);
+            MX2.tab[0].pty = sv[1].p;      /* mfd -1 now: a closed session owns nothing */
+            nrun = mux_running(&MX2, idx, 8);
+            CHECK(nrun == 1 && idx[0] == 3, "confirm mux: a session that ended drops out of the count");
+
+            for (int i = 0; i < 3; i++)
+                fake_sess_close(&sv[i]);
+            for (int i = 0; i < 4; i++)
+                MX2.tab[i].pty.mfd = -1;
+        }
+        for (int i = 0; i < 4; i++)
+            mux_close(&MX2, 0);
+        CHECK(mux_count(&MX2) == 0, "confirm mux: the tabs are gone, nothing was left behind");
+    }
+
+    /* --- confirm-quit: the exact row the window shows (confirm_message) -----------------------
+       The wording lives in mux.c so it is a checkable decision rather than a string inside main.c. The
+       strings below are copied from what the code writes (.scratch/s120/msgprobe), not from what the
+       sentence was meant to be: the one-based tab numbers, the "and" before the last number, and the
+       cap of four numbers are all things a reader cannot tell from the source at a glance. */
+    {
+        char msg[256];
+        int one[1] = { 2 };
+        int two[2] = { 1, 3 };
+        int many[7] = { 0, 1, 2, 3, 4, 5, 6 };
+        int r;
+
+        r = confirm_message(CONFIRM_QUIT, 0, NULL, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Quit Kai-Term?  [Enter] yes  [Esc] no"),
+              "confirm msg: an idle window asks plainly, with no invented reason");
+        CHECK(r == (int)strlen(msg), "confirm msg: the return is the bytes written");
+
+        r = confirm_message(CONFIRM_QUIT, 1, one, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Session 3 is still running. Quit Kai-Term?  [Enter] yes  [Esc] no"),
+              "confirm msg: one session names ITSELF, in the number the user counts (idx 2 -> 3)");
+        CHECK(r == (int)strlen(msg), "confirm msg: the one-session row's length is reported");
+
+        r = confirm_message(CONFIRM_QUIT, 2, two, msg, sizeof msg);
+        CHECK(!strcmp(msg, "2 sessions are still running (2 and 4). Quit?  [Enter] yes  [Esc] no"),
+              "confirm msg: two sessions say how many AND which");
+
+        r = confirm_message(CONFIRM_QUIT, 7, many, msg, sizeof msg);
+        CHECK(!strcmp(msg, "7 sessions are still running (1, 2, 3 and 4, ...). Quit?  [Enter] yes  [Esc] no"),
+              "confirm msg: a long list is cut at four numbers, and says it was cut");
+        CHECK(strlen(msg) <= 80,
+              "confirm msg: even seven sessions fit one row of an 80-column window");
+
+        r = confirm_message(CONFIRM_CLOSE_TAB, 0, NULL, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Close this session?  [Enter] yes  [Esc] no"),
+              "confirm msg: closing an idle tab still asks, because a tab is where work is lost");
+        r = confirm_message(CONFIRM_CLOSE_TAB, 1, one, msg, sizeof msg);
+        CHECK(!strcmp(msg, "A command is running here. Close it?  [Enter] yes  [Esc] no"),
+              "confirm msg: closing a tab with a command says why");
+        CHECK(strlen(msg) <= 80, "confirm msg: the tab row fits one row too");
+
+        /* A NULL index list is a caller that has the count but no list. It must not crash (this is a
+           public entry point in the header — the fm_preview_selection_text `cap == 0` lesson) and it must
+           keep the COUNT, which is the part a yes/no answer cannot carry. */
+        r = confirm_message(CONFIRM_QUIT, 1, NULL, msg, sizeof msg);
+        CHECK(!strcmp(msg, "Session 1 is still running. Quit Kai-Term?  [Enter] yes  [Esc] no"),
+              "confirm msg: one session with no list falls back to a number, not to a crash");
+        r = confirm_message(CONFIRM_QUIT, 3, NULL, msg, sizeof msg);
+        CHECK(!strcmp(msg, "3 sessions are still running. Quit?  [Enter] yes  [Esc] no"),
+              "confirm msg: no list keeps the count and drops the numbers");
+
+        /* A small cap: the caller gets what was WRITTEN, not what snprintf would have written, and the
+           row stays terminated — a row of chrome is drawn from this buffer. */
+        char tiny[10];
+        memset(tiny, 'Z', sizeof tiny);
+        r = confirm_message(CONFIRM_QUIT, 0, NULL, tiny, sizeof tiny);
+        CHECK(r == 9, "confirm msg: a small cap returns the bytes it wrote");
+        CHECK(tiny[9] == 0 && !memcmp(tiny, "Quit Kai-", 9),
+              "confirm msg: truncation keeps the head and terminates");
+
+        char canary[4] = { 1, 2, 3, 4 };
+        r = confirm_message(CONFIRM_QUIT, 2, two, canary, 0);
+        CHECK(r == 0, "confirm msg: cap 0 writes nothing and says so");
+        CHECK(canary[0] == 1 && canary[1] == 2 && canary[2] == 3 && canary[3] == 4,
+              "confirm msg: cap 0 does not touch the caller's buffer at all");
+        r = confirm_message(CONFIRM_QUIT, 2, two, NULL, 64);
+        CHECK(r == 0, "confirm msg: no buffer at all is refused, not crashed");
+    }
+
     /* --- config: the key-binding specs ("Ctrl+Shift+T") ----------------------------------------
        Every tab action is rebindable from the config file, so the spec parser is user-facing. The
        two rules that protect the user from themselves: a binding with NO modifier is refused (it
@@ -3252,6 +3626,67 @@ int main(void)
             config_load(&c, path);
             CHECK(c.tab_bar == BAR_AUTO, "config: an unknown tab_bar value keeps the current one");
             CHECK(c.split_max == TAB_MAX, "config: split_max clamps to TAB_MAX");
+            remove(path);
+        }
+    }
+
+    /* --- config: what a close asks about first (confirm_quit) ---------------------------------
+       The default has to be the one that changes nothing for a user who is never interrupted: an idle
+       window still closes instantly. A bad value keeps the CURRENT one rather than picking a side —
+       silently quitting with no question and silently asking every time are both wrong answers to a
+       typo, and the second one is annoying in a way that gets the setting turned off. */
+    {
+        Config c;
+        const char *path = "/tmp/kterm_test_config_confirm.conf";
+        config_default(&c);
+        CHECK(c.confirm_quit == CONFIRM_RUNNING,
+              "config: confirm_quit defaults to running (ask only when something is running)");
+        FILE *f = fopen(path, "w");
+        CHECK(f != NULL, "config: temp config file writable (confirm_quit)");
+        if (f) {
+            /* Every spelling is fed AFTER the opposite value, so the check proves the word CHANGED the
+               state. Fed into a config that already holds the expected answer, a word the parser does not
+               even know still passes — the `cfg_no_auto` mutant in .scratch/s120/mutate.py ran 0 failures
+               against the first version of this group and that is how it was found. */
+            static const char *yes[] = { "always", "1", "on", "yes", "true", "ALWAYS" };
+            static const char *no[]  = { "never", "0", "off", "no", "false", "NEVER" };
+            static const char *mid[] = { "running", "auto", "Running" };
+            for (size_t i = 0; i < sizeof yes / sizeof yes[0]; i++) {
+                f = fopen(path, "w");
+                fprintf(f, "confirm_quit = never\nconfirm_quit = %s\n", yes[i]);
+                fclose(f);
+                config_default(&c);
+                config_load(&c, path);
+                CHECK(c.confirm_quit == CONFIRM_ALWAYS,
+                      "config: confirm_quit = always (and its 1/on/yes/true spellings)");
+            }
+            for (size_t i = 0; i < sizeof no / sizeof no[0]; i++) {
+                f = fopen(path, "w");
+                fprintf(f, "confirm_quit = always\nconfirm_quit = %s\n", no[i]);
+                fclose(f);
+                config_default(&c);
+                config_load(&c, path);
+                CHECK(c.confirm_quit == CONFIRM_NEVER,
+                      "config: confirm_quit = never (and its 0/off/no/false spellings)");
+            }
+            for (size_t i = 0; i < sizeof mid / sizeof mid[0]; i++) {
+                f = fopen(path, "w");
+                fprintf(f, "confirm_quit = always\nconfirm_quit = %s\n", mid[i]);
+                fclose(f);
+                config_default(&c);
+                config_load(&c, path);
+                CHECK(c.confirm_quit == CONFIRM_RUNNING,
+                      "config: confirm_quit = running, and auto means the same thing");
+            }
+            /* warn-and-KEEP: the value already set must survive a value that means nothing. A parser that
+               falls back to the DEFAULT on a typo passes every other check in this file. */
+            f = fopen(path, "w");
+            fputs("confirm_quit = never\nconfirm_quit = sometimes\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.confirm_quit == CONFIRM_NEVER,
+                  "config: an unknown confirm_quit value keeps the value already set, not the default");
             remove(path);
         }
     }
@@ -3674,6 +4109,157 @@ int main(void)
         layout_grid_size(&L, &lcols, &lrows);
         CHECK(lcols == 80 && lrows == 30,
               "layout: with no padding and no gap the band round trip still holds");
+    }
+
+    /* ---------- layout: the confirm-quit question row (Layout.notice) ----------
+       The question is chrome, so it obeys the bar's rules: it costs the panes a row, it is dropped when the
+       window cannot pay, and its text is cut to the row's columns HERE rather than in a draw loop no test
+       reaches. Base geometry as in the group above: 936x1002 px, 8x17 cells, padding 8, gap 8, so the grid
+       area is 920 x 986 px = 115 x 58 whole cells. */
+    {
+        LayoutReq rq;
+        Layout L;
+        char q[NOTICE_MAX];
+        snprintf(q, sizeof q, "Session 3 is still running. Quit Kai-Term?  [Enter] yes  [Esc] no");
+
+        /* Off by default, and that is what keeps every layout check above honest: lreq() memsets the
+           request, exactly as main.c's layout_apply() does, so a window that is not asking for a question
+           gets the geometry it had before this input existed. */
+        lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        layout_compute(&rq, &L);
+        CHECK(!L.notice_on && L.notice[0] == 0 && L.notice_h == 0,
+              "notice layout: with notice_on off nothing is reserved and no text is kept");
+        int rows_off = L.pane[0].rows, h_off = L.pane[0].h;
+        CHECK(rows_off == 58 && h_off == 986, "notice layout: the base grid is 58 rows (measured, not assumed)");
+
+        rq.notice_on = 1; rq.notice_text = q;
+        layout_compute(&rq, &L);
+        CHECK(L.notice_on == 1, "notice layout: the row appears when it is asked for");
+        CHECK(L.notice_x == 8 && L.notice_w == 920 && L.notice_h == 17,
+              "notice layout: the row is the grid area's full width and one cell tall");
+        CHECK(L.notice_y == 8 + 986 - 17 && L.notice_y == 1002 - 8 - 17,
+              "notice layout: it sits at the BOTTOM of the grid area, inside the bottom margin");
+        CHECK(L.pane[0].y == 8 && L.pane[0].h == 986 - 17 && L.pane[0].rows == rows_off - 1,
+              "notice layout: the pane loses EXACTLY one row and keeps its top edge");
+        CHECK(L.pane[0].h == h_off - 17,
+              "notice layout: the cost is one cell HEIGHT — no gap, unlike the bar's row");
+        CHECK(L.pane[0].y + L.pane[0].h == L.notice_y,
+              "notice layout: the question row is flush under the pane, so no pixel is wasted");
+        CHECK(L.notice_y + L.notice_h <= 1002 - 8,
+              "notice layout: the row never leaves the window");
+        CHECK(!strcmp(L.notice, q), "notice layout: a question that fits the row is kept whole");
+        CHECK(layout_hit_pane(&L, 100, L.notice_y + 1) == -1,
+              "notice layout: the question row belongs to no pane — a click there hits nothing");
+
+        /* A question with nothing to say: the row is still drawn (the caller asked for it), it is just empty. */
+        rq.notice_text = NULL;
+        layout_compute(&rq, &L);
+        CHECK(L.notice_on == 1 && L.notice[0] == 0,
+              "notice layout: a NULL text gives an empty row, not a crash and not a dropped row");
+        rq.notice_text = q;
+
+        /* The bar and the question together: the bar still costs its row + gap at the top, the question its
+           row at the bottom, and the bottom edge is the same one either way. */
+        lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 2, 1, 4, BAR_AUTO);
+        rq.notice_on = 1; rq.notice_text = q;
+        layout_compute(&rq, &L);
+        CHECK(L.bar_on == 1 && L.notice_on == 1 && L.npane == 1,
+              "notice layout: the tab bar and the question coexist");
+        CHECK(L.notice_y == 1002 - 8 - 17 && L.bar_y == 8 && L.bar_h == 17,
+              "notice layout: the bar is at the top margin and the question at the bottom one");
+        CHECK(L.pane[0].y == 8 + 17 + 8 && L.pane[0].h == 961 - 17 && L.pane[0].rows == 55,
+              "notice layout: with the bar on, the grid area is what is left and the question costs one row of it");
+
+        /* Split view: every pane loses the same row, which is what keeps layout_grid_size() one size for
+           the whole window (a tab switch must never resize). */
+        lreq(&rq, LAYOUT_SPLIT, 936, 1002, 8, 17, 8, 8, 3, 1, 3, BAR_AUTO);
+        rq.notice_on = 1; rq.notice_text = q;
+        layout_compute(&rq, &L);
+        int lcols, lrows;
+        layout_grid_size(&L, &lcols, &lrows);
+        CHECK(L.npane == 3 && L.notice_on == 1 && lrows == 55,
+              "notice layout: split view gives every pane the same shortened grid");
+        int unequal = 0;
+        for (int i = 0; i < L.npane; i++)
+            if (L.pane[i].rows != lrows || L.pane[i].y + L.pane[i].h > L.notice_y)
+                unequal = 1;
+        CHECK(!unequal, "notice layout: no split pane is taller than what the question leaves");
+
+        /* The terminal wins over the question: a window too short to give up the row closes without asking
+           rather than showing half a terminal. 46 px window, padding 8 -> a 30 px grid area: one row (17 px)
+           for the terminal and nothing left for the question. */
+        lreq(&rq, LAYOUT_TABS, 936, 46, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.notice_on = 1; rq.notice_text = q;
+        layout_compute(&rq, &L);
+        CHECK(L.notice_on == 0 && L.notice[0] == 0,
+              "notice layout: a window too short for question AND one text row drops the QUESTION");
+        CHECK(L.pane[0].h == 30 && L.pane[0].rows == 1,
+              "notice layout: and the terminal keeps the row it was fighting for");
+        lreq(&rq, LAYOUT_TABS, 936, 63, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.notice_on = 1; rq.notice_text = q;
+        layout_compute(&rq, &L);
+        CHECK(L.notice_on == 1 && L.pane[0].rows == 1 && L.notice_y == 8 + 47 - 17,
+              "notice layout: one more row of window and the question fits beside the terminal's row");
+
+        /* With the file manager on, the band's PERCENT applies to the grid area the question has already
+           cost — otherwise the two chrome pieces would each measure themselves against the whole window and
+           the terminal would pay twice. */
+        lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
+        rq.fm_on = 1; rq.fm_preview_on = 1; rq.fm_size = 75;
+        rq.notice_on = 1; rq.notice_text = q;
+        layout_compute(&rq, &L);
+        CHECK(L.fm.on == 1 && L.fm.list_h == (986 - 17) * 75 / 100,
+              "notice layout: the band's percent is taken from the grid area LEFT by the question");
+        CHECK(L.fm.list_h < 986 * 75 / 100,
+              "notice layout: so the band shrinks rather than the terminal losing a second row");
+        CHECK(L.pane[0].y == 8 + L.fm.list_h + 8 && L.pane[0].h == (986 - 17) - L.fm.list_h - 8 &&
+              L.pane[0].rows == ((986 - 17) - L.fm.list_h - 8) / 17,
+              "notice layout: band, pane and question tile the grid area exactly");
+        CHECK(L.pane[0].y + L.pane[0].h <= L.notice_y &&
+              layout_hit_fm(&L, 100, L.notice_y + 1) == FM_HIT_NONE,
+              "notice layout: the question row is neither a pane nor the file manager");
+
+        /* The text is cut to the row's columns IN layout.c, so what the renderer draws is a checked
+           decision. 115 columns here, and NOTICE_MAX (128) bytes of buffer — the two bounds are different
+           numbers on purpose, and the byte bound must never split a UTF-8 sequence. */
+        char longq[400];
+        memset(longq, 'x', sizeof longq - 1);
+        longq[sizeof longq - 1] = 0;
+        rq.notice_text = longq;
+        layout_compute(&rq, &L);
+        CHECK(strlen(L.notice) == 115 && utf8_len(L.notice) == 115,
+              "notice layout: a question longer than the row is cut at the row's COLUMN count");
+        CHECK(strlen(L.notice) < NOTICE_MAX, "notice layout: the row's text never overflows its buffer");
+
+        char acc[300]; int o = 0;                 /* 100 x U+00E9 (2 bytes) = 200 bytes */
+        for (int i = 0; i < 100; i++) { acc[o++] = (char)0xc3; acc[o++] = (char)0xa9; }
+        acc[o] = 0;
+        rq.notice_text = acc;
+        layout_compute(&rq, &L);
+        CHECK(utf8_len(L.notice) == 63 && strlen(L.notice) == 126,
+              "notice layout: the byte bound cuts at a codepoint EDGE, never inside a 2-byte sequence");
+
+        char emo[300]; o = 0;                     /* 32 x a 4-byte emoji = 128 bytes */
+        for (int i = 0; i < 32; i++) {
+            emo[o++] = (char)0xf0; emo[o++] = (char)0x9f; emo[o++] = (char)0x99; emo[o++] = (char)0x82;
+        }
+        emo[o] = 0;
+        rq.notice_text = emo;
+        layout_compute(&rq, &L);
+        CHECK(utf8_len(L.notice) == 31 && strlen(L.notice) == 124,
+              "notice layout: the same for a 4-byte sequence — no dangling lead byte reaches the font");
+
+        /* The same byte-bound rule for a bar label, which has always had a 40-byte buffer in front of an
+           OSC title that may be UTF-8: the check the group above makes about codepoint edges now holds
+           after the byte bound too. */
+        lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_ALWAYS);
+        char title[64]; o = 0;
+        for (int i = 0; i < 20; i++) { title[o++] = (char)0xc3; title[o++] = (char)0xa9; }
+        title[o] = 0;
+        rq.tab[0].title = title;
+        layout_compute(&rq, &L);
+        CHECK(L.bar_on == 1 && utf8_len(L.item[0].label) == 20 && strlen(L.item[0].label) == 38,
+              "layout: a UTF-8 tab title is cut at a codepoint edge after the 40-byte buffer too");
     }
 
     /* ---------- the shell's input line: term_at_prompt() (src/vt.c) ----------

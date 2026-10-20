@@ -157,6 +157,15 @@ static int base_font_size;      /* configured size, restored by Ctrl+0 */
    picture. */
 static Layout g_layout;
 static int layout_mode = LAYOUT_TABS;   /* LAYOUT_TABS (one session fills the window) / LAYOUT_SPLIT */
+/* The confirm-quit question (step 4). `confirm_kind` is 0 when nothing is being asked, otherwise
+   CONFIRM_QUIT (the whole window) or CONFIRM_CLOSE_TAB (one session, whose index is `confirm_tab`). The
+   WORDING is built by confirm_message() in src/mux.c, where it is a checked decision; what lives here is the
+   state the gate sets, the answer it collects, and the fact that showing the row costs a grid row (it is
+   chrome, laid out by src/layout.c and drawn by src/render.c, so layout_apply() has to run to put it up and
+   to take it away). */
+static int  confirm_kind;
+static int  confirm_tab = -1;
+static char confirm_text[NOTICE_MAX];
 /* px between panes, and between the tab bar and the grid. Deliberately not a config key: Config.padding
    already sets the margin around everything, and a gap of 0 would let the focus border of one pane draw
    over its neighbour. */
@@ -404,6 +413,11 @@ static void layout_apply(void)
     rq.fm_on = g_fm.on;
     rq.fm_preview_on = g_fm.preview_on;
     rq.fm_size = conf.fm_size;
+    /* The question row, when one is up. It costs the panes one row (src/layout.c), which is the price of
+       drawing chrome in the grid area rather than over it: the terminal the user is being asked about stays
+       readable above the question. */
+    rq.notice_on = confirm_kind ? 1 : 0;
+    rq.notice_text = confirm_text;
     for (int i = 0; i < rq.ntab; i++) {
         rq.tab[i].tab = i;
         rq.tab[i].attention = mux.tab[i].attention;
@@ -770,6 +784,96 @@ static void tab_open(void)
     W.dirty = 1;
 }
 
+/* ---------------- confirm-quit: asking before a close throws work away ----------------
+   Closing a window or a tab closes that pty's master and hangs up its shell, so anything running in it dies
+   with no warning. `confirm_quit` says when to ask first, and the PREDICATE is measured, not guessed:
+   pty_fg_busy() reads the terminal's foreground process group (tcgetpgrp on the master), which is the shell's
+   own group while it sits at a prompt and a command's group while it runs one. Measured against bash, zsh and
+   fish in .scratch/s117/fgprobe2, and pinned against a hand-built process tree in tests/test_vt.c. A job the
+   user backgrounded with `&` keeps the shell in the foreground group, so it reads idle — the gate protects a
+   foreground command, not a daemon.
+   What lives HERE is only the gate, the state and the answer: the count is mux_running(), the wording is
+   confirm_message(), the geometry is layout_compute() and the pixels are render_draw() — all of them in files
+   the suites link, because main.c is in none of them. */
+
+/* Take the question down. layout_apply() runs because the row costs a grid row: without it the panes stay
+   one row short after the question is gone. */
+static void confirm_clear(void)
+{
+    if (!confirm_kind)
+        return;
+    confirm_kind = 0;
+    confirm_tab = -1;
+    confirm_text[0] = 0;
+    layout_apply();
+    W.dirty = 1;
+}
+
+/* Put the question up. The text comes from confirm_message(); for a WINDOW it is built from how many
+   sessions are at risk and WHICH ones ("session 2 and 4 are still working" is information a yes/no answer
+   cannot carry), for a TAB from that tab alone. Answering YES closes every session named, not just the
+   visible one — that is what the count in the sentence promises. */
+static void confirm_show(int what, int tabidx)
+{
+    int idx[TAB_MAX];
+    int n = 0;
+    if (what == CONFIRM_CLOSE_TAB) {
+        if (tabidx >= 0 && tabidx < mux_count(&mux) && pty_fg_busy(&mux.tab[tabidx].pty)) {
+            idx[0] = tabidx;
+            n = 1;
+        }
+    } else {
+        n = mux_running(&mux, idx, TAB_MAX);
+    }
+    confirm_kind = what;
+    confirm_tab = (what == CONFIRM_CLOSE_TAB) ? tabidx : -1;
+    confirm_message(what, n, n ? idx : NULL, confirm_text, sizeof confirm_text);
+    layout_apply();          /* the row costs a grid row, so every session's grid changes with it */
+    W.dirty = 1;
+    klog(L_INFO, "confirm: asking before %s (%d session(s) running): %s",
+         what == CONFIRM_CLOSE_TAB ? "closing a tab" : "quitting", n, confirm_text);
+}
+
+/* 1 = the question is now up and the caller must NOT close. `never` never asks; `running` (the default)
+   asks only when something is in a foreground group, which is what keeps an idle window closing instantly —
+   the behaviour every earlier build had; `always` asks at every close of the window and of a tab. A second
+   close request while a question is already up is ignored rather than stacked: the row on screen already is
+   the answer to it. */
+static int confirm_gate_window(void)
+{
+    if (confirm_kind) {
+        klog(L_DEBUG, "confirm: a close was requested while the question is up — ignored");
+        return 1;
+    }
+    if (conf.confirm_quit == CONFIRM_NEVER)
+        return 0;
+    int n = mux_running(&mux, NULL, 0);
+    if (conf.confirm_quit == CONFIRM_RUNNING && n == 0) {
+        klog(L_DEBUG, "confirm: nothing is running in any session — closing without asking");
+        return 0;
+    }
+    confirm_show(CONFIRM_QUIT, -1);
+    return 1;
+}
+
+static int confirm_gate_tab(int idx)
+{
+    if (confirm_kind) {
+        klog(L_DEBUG, "confirm: a tab close was requested while the question is up — ignored");
+        return 1;
+    }
+    if (idx < 0 || idx >= mux_count(&mux))
+        return 0;                       /* tab_close() logs the bounds case itself */
+    if (conf.confirm_quit == CONFIRM_NEVER)
+        return 0;
+    if (conf.confirm_quit == CONFIRM_RUNNING && !pty_fg_busy(&mux.tab[idx].pty)) {
+        klog(L_DEBUG, "confirm: session %d has nothing running — closing without asking", idx + 1);
+        return 0;
+    }
+    confirm_show(CONFIRM_CLOSE_TAB, idx);
+    return 1;
+}
+
 /* Close one session. The Pty is captured BEFORE mux_close(): the tab after it slides into this slot,
    and the one being closed owns the descriptor. Closing the master hangs up the shell; the explicit
    SIGHUP covers a shell that somehow survives that, and the SIGCHLD path reaps the child. */
@@ -784,6 +888,12 @@ static void tab_close(int idx)
        is not enough; the shift is what breaks the index. */
     if (fm_cd_tab >= 0 && idx <= fm_cd_tab)
         fm_cd_abort("a session closed");
+    /* A question about a TAB belongs to that index, and mux_close() shifts every later tab down. If the
+       session it asked about has already gone — it exited on its own while the row was up — answering YES
+       would close a DIFFERENT shell. Same rule as the follow above: this index must never name the wrong
+       session, so the question goes down with it. */
+    if (confirm_kind == CONFIRM_CLOSE_TAB && idx <= confirm_tab)
+        confirm_clear();
     Pty p = mux.tab[idx].pty;
     if (g_ep >= 0 && p.mfd >= 0)
         epoll_ctl(g_ep, EPOLL_CTL_DEL, p.mfd, NULL);
@@ -801,6 +911,29 @@ static void tab_close(int idx)
     layout_apply();      /* one bar item fewer, and the remaining panes get the whole width back */
     update_title();
     W.dirty = 1;
+}
+
+/* The answer. Both paths log what was decided, because "asked and nothing was running" is a real outcome
+   (the foreground group converges in seconds after a command starts) and a user who was asked for no visible
+   reason needs one line to point at. YES for a window means quitting the whole window, which is what the
+   sentence promised: every session named in it closes, not just the visible one. */
+static void confirm_answer(int yes)
+{
+    int what = confirm_kind, tab = confirm_tab;
+    if (!what)
+        return;
+    klog(L_INFO, "confirm: %s — %s", yes ? "YES" : "NO",
+         yes ? (what == CONFIRM_CLOSE_TAB ? "closing that session" : "quitting, every session with it")
+             : "nothing is closed");
+    if (what == CONFIRM_CLOSE_TAB) {
+        confirm_clear();
+        if (yes)
+            tab_close(tab);
+    } else {
+        confirm_clear();
+        if (yes)
+            W.running = 0;
+    }
 }
 
 /* Show another session. Only what is drawn and what the keyboard talks to changes: every shell keeps
@@ -1857,6 +1990,13 @@ static void toplevel_configure(void *d, struct xdg_toplevel *t, int32_t w, int32
 static void toplevel_close(void *d, struct xdg_toplevel *t)
 {
     (void)d; (void)t;
+    /* The window's close button is the close the user cannot undo, so it is the one the gate exists for.
+       Before this it set W.running = 0 straight away, and every session in the window lost whatever it was
+       running with no warning. */
+    if (confirm_gate_window())
+        return;
+    klog(L_INFO, "toplevel close: quitting without asking (confirm_quit = %s)",
+         conf.confirm_quit == CONFIRM_NEVER ? "never" : "running, nothing is running");
     W.running = 0;
 }
 static const struct xdg_toplevel_listener toplevel_listener = {
@@ -1920,8 +2060,28 @@ static int send_key(uint32_t key, uint32_t serial)
         kbmods |= KB_ALT;
     if (superm && (eff & superm))
         kbmods |= KB_SUPER;
+    /* The question is modal: matched before EVERY binding, the file manager's keys and the PTY paths, so
+       nothing else can act while the user is answering — no chord, no band key, no byte to the shell. It
+       sits here rather than at the top of send_key() only because it needs `base` and `kbmods` to say which
+       key it swallowed. Enter/y confirms, Esc/n cancels; returning 0 means a held key never repeats an
+       answer, and the key-repeat timer's re-sends are swallowed like any other key. */
+    if (confirm_kind) {
+        if (base == XKB_KEY_Return || base == XKB_KEY_KP_Enter ||
+            base == XKB_KEY_y || base == XKB_KEY_Y)
+            confirm_answer(1);
+        else if (base == XKB_KEY_Escape || base == XKB_KEY_n || base == XKB_KEY_N)
+            confirm_answer(0);
+        else
+            klog(L_DEBUG, "confirm: key swallowed — the question has the keyboard");
+        return 0;
+    }
     if (bind_match(&conf.key_new_tab, base, kbmods)) { tab_open(); return 0; }
-    if (bind_match(&conf.key_close_tab, base, kbmods)) { tab_close(mux_active(&mux)); return 0; }
+    if (bind_match(&conf.key_close_tab, base, kbmods)) {
+        int t = mux_active(&mux);
+        if (!confirm_gate_tab(t))
+            tab_close(t);
+        return 0;
+    }
     if (bind_match(&conf.key_next_tab, base, kbmods)) { tab_switch(mux_next(&mux)); return 0; }
     if (bind_match(&conf.key_prev_tab, base, kbmods)) { tab_switch(mux_prev(&mux)); return 0; }
     if (bind_match(&conf.key_toggle_layout, base, kbmods)) { layout_toggle(); return 0; }
@@ -2348,8 +2508,14 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         int tab = g_layout.item[bi].tab;
         W.selecting = 0;
         if (btn == 1) {                     /* BTN_MIDDLE closes the session it was clicked on */
-            klog(L_INFO, "bar: middle click closes session %d/%d", tab + 1, mux_count(&mux));
-            tab_close(tab);
+            /* Gated like the binding: a middle click is where work is lost most often, because it closes the
+               session under the pointer with one press. */
+            if (confirm_gate_tab(tab))
+                klog(L_INFO, "bar: middle click on session %d/%d asks first", tab + 1, mux_count(&mux));
+            else {
+                klog(L_INFO, "bar: middle click closes session %d/%d", tab + 1, mux_count(&mux));
+                tab_close(tab);
+            }
         } else if (btn == 0 && tab != mux_active(&mux)) {
             klog(L_DEBUG, "bar: click selects session %d/%d", tab + 1, mux_count(&mux));
             tab_switch(tab);

@@ -9,7 +9,12 @@
    The array is kept DENSE (tabs occupy 0..n-1) so "tab 3" means the same thing to the user, to
    mux_goto() and to main.c's fd -> tab lookup. Closing a tab therefore shifts the later ones down;
    the one hazard that creates is Term.ps.t, a pointer a Term keeps to itself, which mux_close()
-   re-arms for every moved tab (see the comment there). */
+   re-arms for every moved tab (see the comment there).
+
+   One exception to "no file descriptors": mux_running() asks pty_fg_busy() about each tab's pty. That is a
+   read-only query (tcgetpgrp), it owns nothing and cannot block — and putting it HERE is what makes the
+   confirm-quit decision testable headlessly: a test gives a Tab an mfd of -1 and gets "idle" without
+   owning a process. */
 #include "kai-term.h"
 
 void mux_init(Mux *m, int max_tabs)
@@ -159,4 +164,91 @@ void mux_title(const Mux *m, char *out, size_t cap)
         snprintf(out, cap, "%s [%d/%d] !%d", DEF_TITLE, m->active + 1, m->n, unread);
     else
         snprintf(out, cap, "%s [%d/%d]", DEF_TITLE, m->active + 1, m->n);
+}
+
+/* How many sessions have something running that a close would throw away. The indices are 0-based tab
+   indices — the CALLER adds 1, because "tab 3" is what the user counts and what mux_goto() takes, and a
+   message that got that off by one is worse than no message. */
+int mux_running(const Mux *m, int *idx, int max)
+{
+    if (!m)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < m->n; i++) {
+        if (!pty_fg_busy(&m->tab[i].pty))
+            continue;
+        if (idx && n < max)
+            idx[n] = i;
+        n++;
+    }
+    return n;
+}
+
+/* "2, 4 and 5" — which sessions are at risk. At most FOUR numbers: this is one row of a window, and
+   the count in front of the list already carries the size of the problem. Four is what still fits an
+   80-column window together with the question and the answer hint — the exact-text checks in
+   tests/test_vt.c are what pins that, not a guess. A NULL idx is tolerated because this is a public
+   entry point: a caller that has the count but no list still gets a correct sentence. */
+static void session_list(const int *idx, int n, char *out, size_t cap)
+{
+    if (cap == 0)
+        return;
+    out[0] = 0;
+    if (!idx || n <= 0)
+        return;
+    int shown = n > 4 ? 4 : n;
+    size_t o = 0;
+    for (int i = 0; i < shown; i++) {
+        const char *sep = i == 0 ? "" : (i + 1 == shown ? " and " : ", ");
+        int r = snprintf(out + o, o < cap ? cap - o : 0, "%s%d", sep, idx[i] + 1);
+        if (r < 0 || o + (size_t)r >= cap)
+            break;
+        o += (size_t)r;
+    }
+    if (n > shown) {
+        int r = snprintf(out + o, o < cap ? cap - o : 0, ", ...");
+        if (r > 0 && o + (size_t)r < cap)
+            o += (size_t)r;
+    }
+}
+
+/* The one-row question. Its WORDING lives here rather than in main.c for the same reason the fm model
+   does: main.c is in no test binary, so a string inside it is a claim, while a string built here is a
+   check. Every branch says the same three things: what is about to happen, what is still running (and
+   WHICH, when there is more than one session), and how to answer. The wording is short on purpose — the
+   longest form still fits an 80-column window, because a question whose answer hint was clipped off the
+   right edge is a question the user cannot read the end of. A NULL `idx` keeps the COUNT and drops the
+   list: the count is the part a yes/no answer cannot carry. */
+int confirm_message(int what, int n, const int *idx, char *out, size_t cap)
+{
+    if (!out || cap == 0)
+        return 0;
+    char list[64];
+    list[0] = 0;
+    int r;
+    if (what == CONFIRM_CLOSE_TAB) {
+        if (n <= 0)
+            r = snprintf(out, cap, "Close this session?  [Enter] yes  [Esc] no");
+        else
+            r = snprintf(out, cap, "A command is running here. Close it?  [Enter] yes  [Esc] no");
+    } else if (n <= 0) {
+        r = snprintf(out, cap, "Quit Kai-Term?  [Enter] yes  [Esc] no");
+    } else if (n == 1) {
+        r = snprintf(out, cap, "Session %d is still running. Quit Kai-Term?  [Enter] yes  [Esc] no",
+                     idx ? idx[0] + 1 : 1);
+    } else if (idx) {
+        session_list(idx, n, list, sizeof list);
+        r = snprintf(out, cap, "%d sessions are still running (%s). Quit?  [Enter] yes  [Esc] no",
+                     n, list);
+    } else {
+        r = snprintf(out, cap, "%d sessions are still running. Quit?  [Enter] yes  [Esc] no", n);
+    }
+    if (r < 0) {
+        out[0] = 0;
+        return 0;
+    }
+    /* snprintf reports what it WOULD have written; the caller gets what it DID write. */
+    if ((size_t)r >= cap)
+        r = (int)cap - 1;
+    return r;
 }

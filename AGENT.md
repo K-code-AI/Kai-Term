@@ -5,15 +5,13 @@ Read this + ISSUES.md before touching the project. User-facing docs: README.md. 
 Host/tool facts: `/home/kaida/Project/ENVIRONMENT.md` (outside the repo on purpose — not project documentation).
 
 Renamed 2026-10-16 (s59): `K-Term`/`k-term` -> `Kai-Term`/`kai-term` (dir, header, config path, app id). Old
-entries and git history keep the old spelling — they record what was really run. Pre-rename journal:
-`git show 1ab9dc8:AGENT.md`.
+entries and git history keep the old spelling — they record what was really run.
 
 **What this file is.** A journal plus the rules a change must not break — not a changelog. Per-session
-narrative collapses into era entries and the step-by-step detail (including every failed probe and wrong
-theory) goes to git history; that is the rule ISSUES.md has followed since s66, applied to this file in s63,
-s65, s87, s100 and s106 (1942 -> 1459 lines, 183,517 -> 137,411 bytes; the pre-cleanup text is in
-`.scratch/s106/AGENT.md.pre-cleanup`). What stays is what constrains a change: the status, the plan, the
-invariants, the diagnosis reference and the pitfalls. What goes is session narrative.
+narrative collapses into era entries and the step-by-step detail (every failed probe, wrong theory, source line
+number and superseded check count) goes to git history; that is the rule ISSUES.md has followed since s66,
+applied to this file in s63, s65, s87, s100, s106 and s119. What stays is what constrains a change: the status,
+the plan, the invariants, the diagnosis reference and the pitfalls. What goes is session narrative.
 Dates in older entries run ahead of the host clock — **git log is the authority for order, not those dates.**
 
 ## Project Overview
@@ -23,7 +21,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s117 — build, every suite and `make asan` all green)
+## Current Status (re-measured 2026-10-20, s121 — **GREEN; step 4 (confirm-quit) is in the tree through stage D, uncommitted**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -32,180 +30,171 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites** (`KAI_TERM_TEST_NO_WINDOW=1 make test`, exit 0): `CLI: 91 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **1217 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **384
-  checks, 0 failures**, `./bin/test_render` **495 checks, 0 failures** (the renderer's pure decisions — its
-  colour choices AND the cursor's shape — no display, no GL context). With a display `tests/cli_test.sh` reports
-  **141 checks, 0 failures, 0 skipped** (last measured s109; the 50 window checks are the difference from the
-  headless 91 — steps 2 and 3b added no command-line flag, so nothing in that group is new). What only its
-  windowed group covers is `main()`'s own argv handling (`-c/--config`, `-b/--binds`, combined flags, `-d`
-  beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys
-  and the band's share. The config SEARCH order and the split-by-name rules are NOT exclusive to it —
-  `tests/test_vt.c`'s `cfgsearch` group and `config split` group cover those headless — and neither is
-  `--import-theme`: the import path needs no display, so s107 pinned it in the part of the script that always
-  runs. **Re-diff these numbers, do not copy them.**
-- **`make asan` is GREEN — exit 0, 0 warning lines, no LeakSanitizer report** (s107). It was red when s106
-  closed, and both halves of the red came in with the uncommitted 1e work: two `-Wformat-truncation` warnings
-  in `src/theme.c` (`snprintf(v->name, sizeof v->name, "%s", val)` — a `val` of up to 1023 bytes into a
-  128-byte field, visible ONLY in the asan build where `import_kv` is inlined and the compiler can bound the
-  argument), and 134 bytes in 18 allocations leaked by the option-pinning harness, which mallocs the names it
-  reads out of `usage()` and README and never freed them. The warnings went by way of `set_name()` — one
-  function that cuts at `sizeof v->name - 1` and LOGS the cut, because the cut decides the file name an
-  imported theme lands under; the leak went by freeing the two name lists. Both fixes are pinned: the C check
-  asserts the exact 127-byte stem, the CLI group greps the log line.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **36** setting names and the
-  **24** binding names out of the two strcmp ladders in `src/config.c`, the **23** theme names out of
-  `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in `src/main.c`, and compares
-  each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's tables —
-  the option table by `readme_opts_of()`, README's **settings** and **binding** tables by
+- **Suites — green, all four stages of step 4 included.** Both builds clean (exit 0, 0 warning lines) and
+  `./bin/test_vt` reports **1320 checks, 0 failures** (stage A's `confirm` groups took 1217 -> 1291, stage B's
+  notice-row geometry took it to 1320). Everything else is green: `./bin/dbg` **MODEL OK (0 problems)**,
+  `./bin/test_fm` **384 checks, 0 failures**, `./bin/test_render` **506 checks, 0 failures** (the renderer's
+  pure decisions — its colour choices, the cursor's shape, the question row's two colours — plus the source
+  scans that cover `main.c`, which is in no test binary), `CLI: 99 checks, 0 failures, 13 skipped` (headless;
+  8 of them are the "the settings file is parsed before any window exists" group step 4 added, which is also
+  the first check that the SHIPPED template parses clean end to end, values included). `make asan` is green on
+  THIS tree (s121): all four asan binaries exit 0, 0 warning lines, no LeakSanitizer or UBSan report. The last
+  measurement with EVERYTHING green at a COMMITTED tree was s117 at `ab0809a`. With a display
+  `tests/cli_test.sh` reported **141 checks, 0 failures, 0 skipped** (s109; the 50 window checks are the
+  difference from the headless 91 of that day). Step 4 added no command-line flag and 8 headless checks, so a
+  display run today would be 149 — **that number is arithmetic, not a measurement**: re-measure it, do not copy
+  it. What only its windowed group covers is `main()`'s own argv handling (`-c/--config`, `-b/--binds`,
+  combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display /
+  file-manager keys and the band's share. The config SEARCH order and the split-by-name rules are NOT exclusive
+  to it — `tests/test_vt.c`'s `cfgsearch` and `config split` groups cover those headless — and neither is
+  `--import-theme`: the import path needs no display, so s107 pinned it in the part that always runs. **Re-diff
+  these numbers, do not copy them.**
+- **`make asan` is GREEN at `ab0809a` and again on the s121 tree — exit 0, 0 warning lines, no LeakSanitizer
+  report** (s107, re-run s121). It was red
+  when s106 closed, and both halves of the red came in with the uncommitted 1e work: two `-Wformat-truncation`
+  warnings in `src/theme.c` (visible ONLY in the asan build, where inlining lets the compiler bound the
+  argument — see Key Decisions), and 134 bytes in 18 allocations leaked by the option-pinning harness, which
+  mallocs the names it reads out of `usage()` and README (`usage_opts_of`, `readme_opts_of`) and never freed
+  them. The warnings went by way of `set_name()` — one function that cuts at `sizeof v->name - 1` and LOGS the
+  cut, because the cut decides the file name an imported theme lands under; the leak went by freeing the two
+  name lists. Both fixes are pinned: the C check asserts the exact 127-byte stem, the CLI group greps the log
+  line.
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **37** setting names (the
+  hard-coded `ns == 37` beside the derived one — bumped in s120 when `confirm_quit` got its template + README
+  rows), the **24** binding names out of the two strcmp ladders in `src/config.c`, the **23** theme names
+  out of `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in `src/main.c`, and
+  compares each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's
+  tables — the option table by `readme_opts_of()`, README's **settings** and **binding** tables by
   `readme_table_names_of()` + `names_diff()` (added s110: before it, deleting a settings row from README left
-  every check green, so that half of this sentence was a claim and not a check). A
-  name added to a parser without a template line, a template line no parser knows, and a deleted template line
-  each fail a check. Never hand-copy a name list into a test — derive it from the source.
+  every check green). A name added to a parser without a template line, a template line no parser knows, a
+  template line the parser does not know, and a bogus README row (a `made_up_key`) each fail a check. Never
+  hand-copy a name list into a test — derive it from the source.
 - **No leftover probe or experiment in the tree, and no `TODO`/`FIXME`/`XXX`.** `grep -rnE
   "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` returns only the three lines in
-  `tests/test_render.c` that WRITE a probe file — the token is split by string concatenation there on purpose, so
-  the scanner can never count its own source (see the s103 entry). `grep -rn "TODO\|FIXME\|XXX"` returns only
-  `mkdtemp`'s `kai-term-int-XXXXXX` template and one test's fill string. If that ever changes, re-word this line
-  rather than leave a claim that no longer matches the grep.
+  `tests/test_render.c` that WRITE a probe file — the token is split by string concatenation there on purpose,
+  so the scanner can never count its own source (s103). `grep -rn "TODO\|FIXME\|XXX"` returns only `mkdtemp`'s
+  `kai-term-int-XXXXXX` template and one test's fill string. If that ever changes, re-word this line rather
+  than leave a claim that no longer matches the grep.
 - **No `install` target**, and nothing copies `config/*` to `/etc/kai-term` — deliberate; README tells the user
   to copy the templates. Adding one is the user's call.
-- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. Step 3b (the preview pane's text
-  selection) is committed and pushed — but read that from git, never from here: `git status -sb` and
-  `git log --oneline origin/main -1`. `git fetch` before push — the user commits on GitHub too. Never commit
-  `bin/` or `build/` — and note
-  `.scratch/` is NOT in `.gitignore`, so it shows as untracked and must never be `git add`-ed wholesale.
+- **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. Step 3b is committed and pushed —
+  but read that from git, never from here: `git status -sb` and `git log --oneline origin/main -1`. `git fetch`
+  before push — the user commits on GitHub too. Never commit `bin/` or `build/` — and note `.scratch/` is NOT
+  in `.gitignore`, so it shows as untracked and must never be `git add`-ed wholesale.
 - **Owed to the user's eye, not to a harness:** the look of a themed window, a live OSC colour repaint, the
-  configured `cursor_color`, the whole step-2 cursor — a bar that reads as a bar, the 1 s blink rhythm, the
-  blink stopping when the window loses focus, and vim/fish getting the shape they ask for — and now **step 3b,
-  the preview pane's selection**: that a drag there highlights, that the band reads as the same highlight as
-  the terminal's, and that a double click picks the word they meant. None of those have ever been confirmed in
-  the user's window; every one of them has a check on the DECISION and none has a check on the PIXEL. (`--import-theme`,
-  the theme file and **step 3, the double/triple click** HAVE been confirmed by the user — the import
-  2026-10-19, the click gesture 2026-10-20, s114.) Step 3b's `main.c` half (the pointer mapping, the release
-  that ends a drag, the copy precedence) is in the file no test binary links, so it is the part the user's eye
-  actually settles. Recipe for the theme: put
-  their kitty theme at `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to
+  configured `cursor_color`, the whole step-2 cursor (a bar that reads as a bar, the 1 s blink rhythm, the blink
+  stopping when the window loses focus, vim/fish getting the shape they ask for), and **step 3b's preview
+  selection** (that a drag there highlights, that the band reads as the terminal's own highlight, that a double
+  click picks the word they meant, that `Ctrl`+`Shift`+`C` gives the file's own text with no leading indent, and
+  that scrolling or resizing drops the highlight). None of those has ever been confirmed in the user's window;
+  every one has a check on the DECISION and none has a check on the PIXEL. (`--import-theme`, the theme file and
+  **step 3, the double/triple click** HAVE been confirmed — the import 2026-10-19, the click gesture 2026-10-20,
+  s114.) Step 3b's `main.c` half (the pointer mapping, the release that ends a drag, the copy precedence) is in
+  the file no test binary links, so it is the part their eye actually settles. Recipe for the theme: put their
+  kitty theme at `~/.config/kai-term/themes/13th-floor.theme`, add `theme = 13th-floor` to
   `~/.config/kai-term/kai-term.conf`, then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that
   an application set it, not the file. Hand these to them; do not map a window to judge a look yourself.
+  **Step 4's question row is on that list too** (s121): every decision in it is checked, nothing about how it
+  reads has been seen. The recipe to hand over: run `sleep 30` at the prompt, then press the window's close
+  button — one row at the bottom of the window in the selection colour should say which session is at risk, the
+  terminal above it should still be readable, `Enter` should quit and `Esc` should leave everything running;
+  `Ctrl`+`Shift`+`W` and a middle click on a tab item should ask the same way, an idle session should close with
+  no question at all, `confirm_quit = always` should ask even then, `confirm_quit = never` should never ask, and
+  `-d` should log the question and the answer either way.
 
-## Current Task — step 3b is DONE and committed (s117). Next is plan step 4, confirm-quit
+## Current Task — step 4, confirm-quit: stages A-D all in the tree (green, uncommitted); commit + push + the user's eye to go
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
-URLs, an interactive theme-overwrite prompt. The answers are recorded under "Decisions already made" — do not
-re-ask them, and do not re-propose what was dropped.
+URLs, an interactive theme-overwrite prompt. The answers are under "Decisions already made" — do not re-ask
+them, and do not re-propose what was dropped.
 
 ### Where each step stands
 
-- **1a — palette is process-wide runtime state (DONE).** `g_palette[256]` in `src/vt.c` with `term_palette()` /
-  `term_set_palette_entry()` / `term_palette_reset()`, same pattern as `g_def_fg`/`g_def_bg`. It had to leave the
-  `Term` struct because `term_init()` memsets `Term`: a per-Term palette is refilled from the built-in base16 by
-  every new tab and every `ESC c`, so a theme in a file would have applied to the first session only. Only
-  entries **0-15** are themeable; the cube (16-231) and the ramp (232-255) stay computed. `ESC c`/RIS
-  deliberately do NOT wipe the palette — `term_palette_reset()` is reserved for OSC 104's meaning.
-- **1b — the 6x6x6 cube's top level wrapped to near-black (FIXED).** The formula was `55 + 41 * level`, so level
-  5 gave **260**, and `260 << 16` leaves `0x04` in the channel: 91 of 216 entries. Measured pre-fix: entry 196
-  (bright red in every chart) `ff040000`, 226 `ff050400`, 231 `ff050504` — `SGR 38;5;196` painted near-black, so
-  vim/neovim colorschemes, htop, bat, delta and pygments drew dark where they mean bright. Alpha stayed `0xff`
-  because the carry landed on a bit already set, which is why no check could ever have noticed. Fix: the six
-  levels are a table `{ 0, 95, 135, 175, 215, 255 }` — a table cannot overflow.
+Done work is listed here only to say it is done and where its rules live; the mechanism itself is in
+"Architecture & Invariants", and the session that built it is in git.
+
 - **Step 0 — the dead `cursor_color =` (FIXED).** `Render.cursor_color`, passed from `main.c`, derived in the
-  pure `render_chrome()`, checked at the consumer in `tests/test_render.c`. The lesson is in Key Decisions:
-  a key that is defaulted, parsed, stored and parse-tested but read by nothing leaves the whole suite green
-  while the feature is absent.
+  pure `render_chrome()`, checked at the consumer in `tests/test_render.c`. The lesson is in Key Decisions: a
+  key that is defaulted, parsed, stored and parse-tested but read by nothing leaves the whole suite green while
+  the feature is absent.
+- **1a — palette is process-wide runtime state (DONE).** `g_palette[256]` in `src/vt.c`, read through
+  `term_palette()`. Only entries **0-15** are themeable; the cube (16-231) and the ramp (232-255) stay
+  computed. The rule and why it left the `Term` struct are in Architecture & Invariants ("the palette is
+  process-wide").
+- **1b — the 6x6x6 cube's top level wrapped to near-black (FIXED).** The formula was `55 + 41 * level`, so level
+  5 gave **260**, and `260 << 16` leaves `0x04` in the channel: 91 of 216 entries painted near-black where they
+  mean bright (vim/neovim colorschemes, htop, bat, delta, pygments). Alpha stayed `0xff` because the carry
+  landed on a bit already set, which is why no check could ever have noticed. Fix: the six levels are a table
+  `{ 0, 95, 135, 175, 215, 255 }` — a table cannot overflow. The pitfall is in Key Decisions.
 - **1c — a `.theme` file, `theme =`, conf-beats-theme precedence (DONE, `c84258a`).** `src/theme.c`: 23 names in
   one `THEME_KEYS` table, `theme_find()` resolving through the `themes/` subdirectory of the same three config
   directories, `config/kai-term.theme` as the shipped example. A theme is COLOURS only, in kai-term.conf's
   `key = value` and in kitty's `key value`, so an existing kitty theme loads unchanged. Entries 16-255 are
-  refused in a FILE (the cube and ramp are computed) while OSC 4 may set them — a decision with a check on each
-  side. Precedence: the theme is applied once, after `kai-term.conf` has been read in full, and only for names
-  that file never mentioned (`Config.set_keys`, written on `apply()`'s path), so a `background =` line wins
-  above OR below the `theme =` line; both orders are checked.
-- **1d — OSC 4 / 10 / 11 / 104 behind `osc_colors = 1` (DONE, same commit).** OSC 4 sets a palette entry (single
-  and `N;c;M;c` multi form); OSC 10/11 set the default ink/paper and answer `?` in the X11 16-bit form; OSC 104
-  restores the whole palette or named entries. Before it, `osc_end()` knew OSC 0/1/2 only — nothing an application
-  could use to repaint anything. Colours go through the ONE parser `cfg_parse_color` plus X11
-  `rgb:RR/GG/BB` and `rgb:RRRR/GGGG/BBBB`; X11 NAMES are refused. `term_palette_builtin_entry()` is the single
-  source for a built-in colour (`term_palette_entry_reset()` needed one for `OSC 104;N`, and a second palette
-  table is a copy that can drift). `term_recolor_defaults()` (vt.c) is one dumb match-and-replace over the live
-  grid, the parked MAIN grid, the pen and the prompt snapshot — an unswept snapshot makes `prompt_cell_same()`
-  report "the prompt changed" forever and the shell follow dies for the session; it is idempotent,
-  which is what lets `mux_recolor_defaults()` sweep every session without excluding the one that raised the
-  change. Why it must sweep: a `Cell` stores a RESOLVED colour, so moving only `g_def_fg`/`g_def_bg` repaints
-  only FUTURE output (half-themed window) — and why it must NOT skip blanks: `cell_pristine()` decides "never
-  written" against the CURRENT defaults, so skipped blanks would look blank yet no longer be pristine,
-  `row_used()` would count trailing blanks as content, reflow would join lines it must not, and a selection band
-  would appear over nothing. Also found here: the first `rgb:` converter "rounded" a 16-bit component with
-  `(d + 0x80) >> 8`; `0xffff + 0x80` is `0x1007f`, `>> 8` gives **256**, and `256 << 16` puts `0x01` in the GREEN
-  byte, so `rgb:ffff/ffff/ffff` — the canonical X11 spelling of WHITE — painted `#010100`. Same defect class as
-  the cube. Fix: one shift, arithmetic that provably cannot exceed a byte, mixed widths refused.
+  refused in a FILE while OSC 4 may set them — a decision with a check on each side. The precedence rule (a
+  `background =` line wins above OR below the `theme =` line, both orders checked) is in "Decisions already
+  made" and in the Config invariants.
+- **1d — OSC 4 / 10 / 11 / 104 behind `osc_colors = 1` (DONE, same commit).** OSC 4 sets a palette entry
+  (single and `N;c;M;c` multi form); OSC 10/11 set the default ink/paper and answer `?` in the X11 16-bit form;
+  OSC 104 restores the whole palette or named entries. Before it, `osc_end()` knew OSC 0/1/2 only. Colours go
+  through the ONE parser `cfg_parse_color` plus X11 `rgb:RR/GG/BB` and `rgb:RRRR/GGGG/BBBB`; X11 NAMES are
+  refused. `term_palette_builtin_entry()` is the single source for a built-in colour (a second palette table is
+  a copy that can drift). `term_recolor_defaults()` (vt.c) is one dumb match-and-replace over the live grid, the
+  parked MAIN grid, the pen and the prompt snapshot, and `mux_recolor_defaults()` sweeps every session with it —
+  why it must sweep and why it must NOT skip blanks is in the one-value-owns-ink-and-paper and `cell_pristine()`
+  rules. Also found here: the first `rgb:` converter "rounded" a 16-bit component with `(d + 0x80) >> 8`;
+  `0xffff + 0x80` is `0x1007f`, `>> 8` gives **256**, and `256 << 16` puts `0x01` in the GREEN byte, so
+  `rgb:ffff/ffff/ffff` — the canonical X11 spelling of WHITE — painted `#010100`. Same defect class as the cube.
+  Fix: one shift, arithmetic that provably cannot exceed a byte, mixed widths refused.
 - **`selection_color =` became a real key (DONE, `5c1f58d`)** — the theme prerequisite: `Config.selection_color`
   (default `SEL_BG`) -> `Render.selection_color` -> `render_chrome()` derives the band, the active bar item and
   the focus border from it, and `fm_paint()` takes a `sel` argument so the file manager's selected row matches.
-- **Step 2 — the bar cursor, its blink, and DECSCUSR (DONE, s112).** See its own section below for what is in
-  the tree and the rules that must not break. Settings names went 33 -> 35 with it.
+- **1e — `--import-theme FILE` (DONE, built s105, green and committed s107, confirmed by the user s108).** The
+  importer lives in `src/theme.c` (~940 lines), not in `main()` — `main()` is in no linked test, so a flag whose
+  work is done there would be covered only by the CLI script (same reasoning as "Geometry lives in
+  `src/layout.c`"). What is in `main()` is the flag, the question and the report; it runs BEFORE `config_load`
+  so the settings file's log lines do not bury the import report, and it needs no display. API: `theme_sniff()`
+  (format from CONTENT, never the file name), `theme_parse_text()`, `ThemeVals` (a colour of 0 means "the file
+  did not name it", so an unset colour falls back to Kai-Term's default rather than to black),
+  `theme_write_file()` (writes the NATIVE format, so an imported theme is read afterwards by the same reader as
+  a hand-written one — that round trip is a check), `theme_dest_dir()` (first writable `themes/` of the config
+  search, never `/etc` — importing must not need root), `theme_name_of_path()`, `theme_import()` (0 written /
+  1 exists-and-not-granted / -1 refused). Formats: kai-term's own, kitty's, Xresources, alacritty.toml, Konsole
+  `.colorscheme` (modern sections and legacy `[Color Scheme]`), xfce4-terminal `terminalrc`, Windows Terminal /
+  VS Code JSON. **iTerm2 `.itermcolors` is recognised and REFUSED** — 0.0-1.0 floats in an XML plist, no iTerm2
+  on this machine to check a reader against, and a parser nobody can verify is worse than a refusal that says
+  what it looked for. Two rules the whole block obeys: **never guess a format** (nothing matched -> refuse and
+  list what was looked for) and **never guess a colour** (X11 names, alacritty's `CellForeground`, a JSON
+  `"background": "red"` are refused and logged, not approximated). Measured corpus, not assumed
+  (`.scratch/s105/importprobe.c` + `.scratch/s105/corpus/`, re-run s106) — the per-format set/dropped counts
+  every importer number was copied from live there.
+- **Step 2 — the bar cursor, its blink, and DECSCUSR (DONE, s112).** Settings names 33 -> 35. Rules below.
 - **Step 3 — double-click a word, triple-click a line (DONE, s114).** `term_word_span()` / `term_line_span()` /
   `term_click_count()` in vt.c, the gesture state in `W`, one shared `CLICK_DCLICK_MS`, and the key
-  `click_selects_word = 1` (settings names 35 -> 36). Its own section below holds the rules.
+  `click_selects_word = 1` (settings names 35 -> 36). Rules below.
 - **Step 3b — the same selection in the file manager's preview pane (DONE, s117).** `cell_row_word_span()` in
   vt.c (the shared row rule), the selection state and the six `fm_preview_*` selection functions in fm.c, the
-  gesture in `src/main.c`. No new config key. Its own section below holds the rules.
+  gesture in `src/main.c`. No new config key. Rules below.
+- **Step 4 — ask before quitting when something is still running (DONE in the tree, s120+s121; uncommitted).**
+  Its own section below holds the measured predicate, the rules each stage added and what is still owed.
 
-### 1e. `--import-theme FILE` — DONE (built s105, taken green and committed s107)
+### 2. Cursor: a thin bar, classic blink — DONE (s112)
 
-What is in the tree: the whole importer in `src/theme.c` (~940 lines), its API in `kai-term.h`, the flag in
-`main()` + `usage()`, README's two table rows and its "Importing a theme written for another program" block,
-and 67 new checks in `tests/test_vt.c` (1060 -> 1127) plus 24 in `tests/cli_test.sh` (67 -> 91).
-
-- **The importer lives in `src/theme.c`, not in `main()`** — `main()` is in no linked test, so a flag whose work
-  is done there would be covered only by the CLI script (same reasoning as "Geometry lives in `src/layout.c`").
-  What is in `main()` is the flag, the question, and the report. It runs BEFORE `config_load` so the settings
-  file's log lines do not bury the import report, and it needs no display.
-- **API:** `theme_sniff()` (format from CONTENT, never the file name), `theme_parse_text()`, `ThemeVals`
-  (a colour of 0 means "the file did not name it", so an unset colour falls back to Kai-Term's default rather
-  than to black), `theme_write_file()` (writes the NATIVE format, so an imported theme is read afterwards by the
-  same reader as a hand-written one — that round trip is a check), `theme_dest_dir()` (first writable `themes/`
-  of the config search, never `/etc` — importing must not need root), `theme_name_of_path()`, `theme_import()`
-  (returns 0 written / 1 exists-and-not-granted / -1 refused).
-- **Formats:** kai-term's own and kitty's (one reader, already there), Xresources, alacritty.toml, Konsole
-  `.colorscheme` (modern sections and legacy `[Color Scheme]`), xfce4-terminal `terminalrc`, Windows Terminal /
-  VS Code JSON. **iTerm2 `.itermcolors` is recognised and REFUSED** — 0.0-1.0 floats in an XML plist, no
-  iTerm2 on this machine to check a reader against, and a parser nobody can verify is worse than a refusal that
-  says what it looked for. Two rules the whole block obeys: **never guess a format** (nothing matched -> refuse
-  and list what was looked for) and **never guess a colour** (X11 names, alacritty's `CellForeground`, a JSON
-  `"background": "red"` are refused and logged, not approximated).
-- **Measured corpus, not assumed** (`.scratch/s105/importprobe.c` + `.scratch/s105/corpus/`, re-run s106):
-  kitty 20 set / 10 dropped; Xresources 19 / 3; alacritty 20 / 2; Konsole 19 / 2 (name `Breeze Dark`);
-  XFCE4 19 / 1; JSON 20 / 0 (name `Campbell`); iTerm2 rc=-1 refused; prose rc=-1 refused. End-to-end verified
-  with the real binary against a throwaway `HOME`: writes
-  `<config>/kai-term/themes/Breeze-Dark.theme`, prints the `theme = Breeze-Dark` line to enable it, re-running
-  asks `Overwrite? [y/N]` and with stdin closed refuses with "nothing written. Re-run with --force", `--force`
-  overwrites, and an unrecognised file is refused listing every marker it looked for.
-- **Closed in s107:** the red `make asan` (the two warnings via `set_name()`, the leak by freeing the harness's
-  two name lists), the A/B, and the CLI coverage of the flag. Both A/Bs were RUN, not reasoned about:
-  `.scratch/s107/ab_noimport/` — HEAD's `src/theme.c` plus the 1e API stubbed to "nothing recognised, nothing
-  parsed, nothing written" — runs the same 1127 checks and reports **44 failures**; `.scratch/s107/head_tree/`
-  — a HEAD build, so `--import-theme` is an unknown option — run through the NEW `tests/cli_test.sh` reports
-  **17 failures out of the 24 new checks**. The checks that pass in both trees are the negative ones (a tree
-  that refuses everything satisfies "a missing file exits 1"), which is a limit of a feature A/B, not a defect
-  in those checks — see Key Decisions.
-- **Still owed:** nothing. The user confirmed `--import-theme` works in their own use (2026-10-19, s108).
-
-### 2. Cursor: a thin bar, classic blink — DONE (built s111, taken green and committed s112)
-
-The user's words: "A thin rectangle, the most classic blinking cursor". What is in the tree:
-`Parser.inter` + `Term.cur_style`/`cur_blink` (DECSCUSR), the pure `render_cursor()` in `src/render.c` asked by
-all three passes of `render_draw()`, a new pass 2b emitting the bar/underline quad in **batch B between the
-selection bands and the glyphs**, the fourth timerfd `cbfd` with `blink_half_ms()`/`blink_update()` in
-`src/main.c`, and the keys `cursor_blink = 1000` / `cursor_width = 2`.
+The user's words: "A thin rectangle, the most classic blinking cursor". In the tree: `Parser.inter` (the last
+intermediate byte, reset at `CSI`, dropped on the floor before) + `Term.cur_style`/`cur_blink` with the `CUR_*`
+and `CURBLINK_*` enums (0 = the app never asked, which is the only safe encoding because `term_init()` memsets),
+the pure `render_cursor()` in `src/render.c` returning `CursorDraw { block, quad, invert, tint, x,y,w,h }` and
+asked by all three passes of `render_draw()`, `Render.cursor_width`/`Render.cursor_on` with `render_init()`
+taking the width, a new pass 2b emitting the bar/underline quad in **batch B between the selection bands and the
+glyphs**, the fourth timerfd `cbfd` with `blink_half_ms()`/`blink_update()` in `src/main.c`, and the keys
+`cursor_blink = 1000` / `cursor_width = 2`.
 
 The rules a later change must not break, all of them checked:
 - A bar/underline is a **separate quad**, never the cell background, and it is emitted AFTER the bands and
   BEFORE the glyphs: batch B is one draw call in which the later quad simply wins, so a bar after the glyphs
   would hide the character and a bar before the bands would vanish under a selection. A BLOCK stays the cell's
-  own background from pass 1 — and it still steps aside exactly where a band is painted (the "must match pass 2"
-  comment), because a block that forgets it erases itself.
+  own background from pass 1 — and it still steps aside exactly where a band is painted (the "must match pass
+  2" comment), because a block that forgets it erases itself. A bar/underline deliberately does NOT step aside.
 - All three passes ask `render_cursor()` the SAME question with the same arguments, so they cannot disagree.
   `term_cell_highlightable()` gates `hl_on` in passes 1 and 2b and not in pass 3; that is harmless and known,
   because it returns 0 only for a never-written blank cell, which has no glyph to tint.
@@ -214,20 +203,27 @@ The rules a later change must not break, all of them checked:
   attaching a buffer. Phase lives in `W`, never in `Term` (`term_init()` memsets `Term`; DEC 25l must still hide
   the cursor; only the visible session's cursor blinks — an inactive pane's is steady and dimmed).
 - `conf.cursor_blink` is the CEILING: `0` never blinks whatever an application asks, DECSCUSR can only make the
-  cursor less flashy. Blinking is gated on `W.is_activated` and on `t->show_cursor`, and `blink_update()`
-  re-arms when the half-period OR the visible session changes (a tab switch restarts the rhythm).
+  cursor less flashy. That is a deliberate difference from xterm, which lets `ESC[1 q` switch blinking back on —
+  a user who set `cursor_blink = 0` asked not to have a blinking cursor. Blinking is gated on `W.is_activated`
+  (already decoded from the xdg-toplevel states in `toplevel_configure()` — no new Wayland plumbing needed) and
+  on `t->show_cursor`, and `blink_update()` re-arms when the half-period OR the visible session changes:
+  `cbfd_term` records the session the arming was decided for, and without it a tab switch kept the old phase and
+  could show a window with no cursor for up to a full half-period.
 - `cursor_width` is clamped twice: 1..64 by the parser, and to `cell/3` (bar) / `cell_h/3` (underline) with a
   floor of 1 px by `render_cursor()`, so the cursor can never be 0 px and never a block wearing a hat.
 - **No `cursor_style` key** — always a bar unless an application asks (the user's answer: "blink 1 sec, 0.5
   sounds too fast" is why the default half-period is 1000 ms).
+- DECSCUSR's space is required on purpose: it is what the sequence IS, and it keeps `CSI Ps q` out. `ESC[1q`
+  changes nothing; `9 q`, `99 q`, `ESC[?1 q` are ignored. There is exactly ONE CSI entry point in `term_parse`,
+  so `Parser.inter` cannot leak between sequences. The only other `case 'q'` in `src/vt.c` is the kitty-graphics
+  APC parser — untouched.
 
-### 3. Double-click selects a word, triple-click a line — DONE (built s113, taken green and committed s114)
+### 3. Double-click selects a word, triple-click a line — DONE (s114)
 
 The user's rule, verbatim: "a word is everything no separated by a space, but we don't take the trailing ',' or
-'.'", and asked which trailing marks that covers, "any of it". What is in the tree: `term_word_span()`,
-`term_line_span()` and `term_click_count()` in `src/vt.c` (plus `CLICK_DCLICK_MS` in the header, replacing
-main.c's private `FM_DCLICK_MS`), the click state `W.click_count/click_ms/click_col/click_row/click_word` in
-`src/main.c`, and the key `click_selects_word = 1` (settings names 35 -> 36).
+'.'", and asked which trailing marks that covers, "any of it". In the tree: the three vt.c functions plus
+`CLICK_DCLICK_MS` in the header (replacing main.c's private `FM_DCLICK_MS` — one number for both gestures, so
+they feel like one gesture), and the click state `W.click_count/click_ms/click_col/click_row/click_word`.
 
 The rules a later change must not break, all of them checked:
 - **The separators are exactly two**: a never-written cell (`ch == 0`) and a real space. Any `ATTR_WIDE` cell —
@@ -246,36 +242,37 @@ The rules a later change must not break, all of them checked:
 - **A click on a blank selects the clicked cell**, and an out-of-range cell answers 0. "The double click did
   nothing" reads as a broken terminal; a one-cell highlight does not.
 - **`term_line_span()` reads `Grid.wrap` by SLOT index (`scroll_off + row`) and in one direction**: the mark
-  sits on the row that WAS broken and continues on the NEXT one. Both are pinned by mutation
-  (`.scratch/s114/mutate.sh`), because both are easy to write backwards and a backwards walk extends every
-  triple click one row the wrong way. `wrap[i]` is NOT set until the character that crosses the margin is
-  written, so a line ending exactly at the margin correctly stops above the blank row below.
+  sits on the row that WAS broken and continues on the NEXT one. Both are easy to write backwards and a
+  backwards walk extends every triple click one row the wrong way; both are pinned by mutation
+  (`.scratch/s114/mutate.sh`). `wrap[i]` is NOT set until the character that crosses the margin is written, so a
+  line ending exactly at the margin correctly stops above the blank row below.
 - **The gesture suppresses the synthesised cursor keys.** `W.click_word` is what stops `click_moves_cursor`
-  from walking nano's or less's cursor twice on release — the interaction the plan called out, and the one
-  part of step 3 that lives in main.c and so has no headless check. **Confirmed by the user in their own
-  window, 2026-10-20 (s114): "I checked and it worked."**
-- **One number for both gestures**: `CLICK_DCLICK_MS` (500 ms) is shared with the file manager's
-  double-click-to-open, so the terminal and the band do not feel like two different gestures. The comparison
-  is unsigned, so Wayland's 32-bit ms clock wrapping mid-gesture still reads as one gesture.
+  from walking nano's or less's cursor twice on release — the interaction the plan called out, and the one part
+  of step 3 that lives in main.c and so has no headless check. **Confirmed by the user in their own window,
+  2026-10-20 (s114): "I checked and it worked."**
+- The comparison in `term_click_count()` is unsigned, so Wayland's 32-bit ms clock wrapping mid-gesture still
+  reads as one gesture; the 500 ms window is inclusive at the boundary.
 - **A word the WINDOW broke is selected per row** (measured: `0..19` then `0..7` at 20 cols). Documented in
   README and in ISSUES.md "Known limitations" — the triple click is the gesture that takes a wrapped line.
+- The checks put a returned span through `span_copy()`, the same whole-cell endpoints `sel_set_endpoints()`
+  produces, so they pin what would land in the clipboard and not just two integers.
 
-### 3b. Text selection in the file manager's preview pane — DONE (built s115/s116, taken green and committed s117)
+### 3b. Text selection in the file manager's preview pane — DONE (s117)
 
 The user's words: "could we also do the same for the preview pane ? that and text selection. That would be
-useful." What is in the tree: `cell_row_word_span()` in `src/vt.c` — the row-level word rule lifted onto a
+useful." In the tree: `cell_row_word_span()` in `src/vt.c` — the row-level word rule lifted onto a
 `const Cell *row` + cols, with `term_word_span()` now a wrapper over it — the selection state in `FileMgr`
 (`pv_sel_on`, `pv_ax/pv_ay/pv_bx/pv_by`), `fm_preview_select()` / `_select_clear()` / `_selected()` /
-`_word_span()` / `_row_span()` / `_selection_text()` in `src/fm.c`, the band painted into the cells' own `bg`
-by `paint_preview()`, and the gesture in `src/main.c` (`pv_cell()`, the preview's own click pair, the drag flag
+`_word_span()` / `_row_span()` / `_selection_text()` in `src/fm.c`, the band painted into the cells' own `bg` by
+`paint_preview()`, and the gesture in `src/main.c` (`pv_cell()`, the preview's own click pair, the drag flag
 `W.pv_selecting`, the release that ends a drag, and a `selection_copy()` with one owner per copy). **No new
-config key** — `click_selects_word` is the one switch for the gesture, and a second knob for the same gesture
-in a second pane is something nobody would understand.
+config key** — `click_selects_word` is the one switch for the gesture, and a second knob for the same gesture in
+a second pane is something nobody would understand.
 
 The measured facts the design rests on (`.scratch/s115/pvprobe` and `selprobe{,2,3,4}` — do not re-derive):
 - `FmPane` is a **flat `Cell` array**, `cell[y*cols+x]`, with the same `ATTR_WIDE` anchor+continuation
-  convention a session grid uses, so a preview range is expressible in pane cells and the word rule can be
-  SHARED rather than copied.
+  convention a session grid uses (measured: `[0:U+4F60] [1:WIDE-CONT] [2:U+597D] [3:WIDE-CONT]`), so a preview
+  range is expressible in pane cells and the word rule can be SHARED rather than copied.
 - The head is rows `0 .. preview_head_rows()-1` (name, then path, then an error line when there is one); the
   body starts at the row `paint_preview_head()` leaves and its text starts at **column 2** — the two-column
   gutter is never written. The head rows are selectable text too, which is right: the file's name is text.
@@ -289,7 +286,7 @@ The measured facts the design rests on (`.scratch/s115/pvprobe` and `selprobe{,2
   makes it headless-checkable in `tests/test_fm.c`, which already inspects pane cells.
 
 The rules a later change must not break, all of them checked (the `pvsel` group in `tests/test_fm.c`; the
-non-vacuity harness is `.scratch/s116/mutate.py`, 13 kinds, every one caught — counts in the s117 entry):
+non-vacuity harness is `.scratch/s116/mutate.py`, 13 kinds, every one caught):
 - **One copy of the word rule.** `fm_preview_word_span()` calls vt.c's `cell_row_word_span()`. A second
   `trailing_punct()` in fm.c is exactly the drift the one-colour-parser rule exists to prevent, and the
   `word_rule_forked` mutant (6 failures) is what catches it. `punct_ascii_only` — the same mutant s114 ran
@@ -309,8 +306,8 @@ non-vacuity harness is `.scratch/s116/mutate.py`, 13 kinds, every one caught —
   is painted LAST so it sits over whatever the body wrote.
 - **Endpoints are clamped to the pane and normalised in READING order.** The clamp is not cosmetic: the
   `no_clamp` mutant walks the painter off the pane and dies of SIGSEGV. Normalising by COLUMN alone anchors a
-  drag that went down-and-left on the LATER row, after which `fm_preview_selected()` answers "nothing" for
-  every row — a drag that selected nothing at all, and the first two checks of that pair pass with that mutant.
+  drag that went down-and-left on the LATER row, after which `fm_preview_selected()` answers "nothing" for every
+  row — a drag that selected nothing at all, and the first two checks of that pair pass with that mutant.
 - **Invalidation is total:** a new preview, a `pv_scroll` that actually moved, and a pane resize each clear the
   range, because in every one of those cases the cells the endpoints name hold different text. A wheel gesture
   that moved nothing is not a scroll and keeps the selection. `fm_close()` clears it, and `main.c` drops its
@@ -318,37 +315,124 @@ non-vacuity harness is `.scratch/s116/mutate.py`, 13 kinds, every one caught —
 - **One selection at a time in the window.** A press in the preview clears the session's highlight and a press
   in a terminal pane clears the pane's, so `selection_copy()`'s precedence (preview first, then the session) is
   a fallback and never a guess — and its log line names the owner that served the bytes.
-- **The preview's click pair is kept apart from the LIST's.** That pair compares a view POSITION (a second click
-  on the same ENTRY opens it); this one compares a pane CELL. The two numbers are not comparable, and merging
-  them would let a click in one pane break the other's gesture. Only the LEFT button selects text — a right or
-  middle click in that pane still only moves the keyboard, exactly as before step 3b.
+- **The preview's click pair is kept apart from the LIST's.** `fm_click_pos` compares a view POSITION (a second
+  click on the same ENTRY opens it); `pv_cell()` compares a pane CELL. The two numbers are not comparable, and
+  merging them would let a click in one pane break the other's gesture. Only the LEFT button selects text — a
+  right or middle click in that pane still only moves the keyboard, exactly as before step 3b.
 - **A release ends the drag BEFORE every hit test** in `ptr_button()`: an early return in the bar, band or pane
   branch would leave a drag live, and the next motion event would keep extending a range under a pointer the
   user already let go of.
-- **`cap == 0` writes nothing at all** — not even one byte before the caller's buffer (the s117 entry has the
-  ASan finding and the check that pins it).
+- **`cap == 0` writes nothing at all** — not even one byte before the caller's buffer.
+  `fm_preview_selection_text()` guarded its first store with `if (cap) out[0] = 0;` but its terminating store is
+  `out[n < cap ? n : cap - 1] = 0;`, which for `cap == 0` is `out[-1]` — ASan: WRITE of size 1 one byte before
+  the caller's array. No caller in the tree passes 0, which is why the guard went in the function and not in the
+  callers: it is a public entry point in the header. Fix: `if (!cap) return 0;` before any write. `make asan`
+  cannot find this on its own — the suite never passes 0 — so the check pins it by putting the buffer at the
+  SECOND byte of a two-byte array (`pad + 1`), so `out[-1]` is `pad[0]` and the plain build sees the underflow.
+  The `cap_zero_unguarded` mutant fails exactly that one check. The same lesson applies to step 4's
+  `session_list()`.
+- **A row longer than the pane copies only what the pane holds.** A 130-character line in a 30-column pane gives
+  a row span of `2..29` and a copy of **28 bytes** — the preview CUTS and never scrolls sideways, so the tail is
+  in no cell to select. README and ISSUES say that, and the `pvsel` group pins the span and the exact byte count
+  so the sentence cannot drift back.
 
-What no headless check reaches is the `main.c` half — `pv_cell()`'s pointer mapping, the release that ends a
-drag, the copy precedence. It builds warning-free and it is the part the user's eye settles; the look of the
-band and the feel of the gesture in a real window are still owed by them, not by a harness.
+### 4. Ask before quitting when something is still running — stages A-D DONE (s120/s121, green, uncommitted)
 
-### 4. Ask before quitting when something is still running
+Today `toplevel_close()` sets `W.running = 0` immediately, closing the last tab does the same, and both close
+the pty master and `kill(child, SIGHUP)` — whatever was running dies with no warning.
 
-Today `toplevel_close()` sets `W.running = 0` immediately, closing the last tab does the same, and both close the
-pty master and `kill(child, SIGHUP)` — whatever was running dies with no warning.
+**The predicate is measured, not assumed** (`.scratch/s117/fgprobe2.c`; the first attempt, `fgprobe.c`, was
+wrong because it never answered the shell's startup queries and so hosted a stalled shell — see Key Decisions).
+`tcgetpgrp()` on the pty **master** returns its foreground process group, and Kai-Term never calls `tcsetpgrp`
+(0 hits in `src/`), so the shell owns that value:
+- idle at the prompt ⇒ `tcgetpgrp(mfd) == child`; `sleep 6` ⇒ `!= child`; `sleep 6 | cat` ⇒ `!= child` — in
+  bash, zsh **and** fish.
+- a job backgrounded with `&` ⇒ **idle** (the shell keeps the foreground group): the gate protects a
+  foreground command, not a daemon. Document it as a limitation.
+- a session started with `-e COMMAND` ⇒ **idle**, even for a pipeline. `pty_spawn()` runs it as `sh -c`, so the
+  command owns the foreground group and `fg == child` (re-measured s121, `.scratch/s121/espawn`: `sleep 30` and
+  `sleep 30 | cat` answer idle for the whole 900 ms, with `/proc/<child>/comm` proving the command is alive).
+  README and ISSUES say so; `confirm_quit = always` is the setting for a `-e` window.
+- after the shell exits, **bash's pty answers `tcgetpgrp` with 0**, so a naive `fg != child` calls a dead
+  session "running" and the window asks whether to kill nothing (zsh/fish left the old value, idle by luck).
+  Hence the pure `fg_busy(fg, child)`, which refuses `fg <= 0` and `child <= 0`, and `pty_fg_busy()`, which
+  refuses `mfd < 0`.
+- fish was slow to converge here (IDLE at +1.5 s after the command was typed, BUSY by +4.5 s); bash and zsh
+  read BUSY at +1.5 s. The state converges in seconds and the gate reads it at close time, so the lag is not a
+  correctness problem — but it is why "asked and nothing was running" is a possible log line.
 
-- How to know something is running: `tcgetpgrp(mfd)` on the pty **master** fd returns the pty's foreground
-  process group. Kai-Term never calls `tcsetpgrp` (measured: 0 hits in `src/`), so the shell owns that value and
-  it is trustworthy: idle at the prompt ⇒ `tcgetpgrp(mfd) == tb->pty.child`; a command running ⇒ it does not.
-  **Verify with a probe before writing the gate** (`.scratch/s102/fgprobe.c`: spawn a shell on a pty, read
-  `tcgetpgrp` idle, then with `sleep 30` running) — one syscall, and it is the whole feature's correctness.
-- New key: `confirm_quit = running|always|never`, default `running`. Same gate on **closing a tab**
-  (`key_close_tab`, and the bar's middle-click close), which is where work is lost more often.
-- The prompt is chrome, drawn in the grid with the tab bar's font/colours — one row, modal, keyboard-driven
-  (Enter/`y` confirms, Esc/`n` cancels); it must swallow keys without fighting the file-manager handover
-  (`FM_FOCUS_*`) or the key-repeat timer. Log the decision either way.
-- Multi-session case: if two sessions have something running, say how many and which, and confirm must apply to
-  all of them, not just the visible one.
+**Design:** the decision is pure and headless (`fg_busy`, `mux_running`, `confirm_message` in mux.c so the
+WORDING is a checkable decision), the syscall wrapper is `pty_fg_busy()` in pty.c, the key is
+`confirm_quit = running|always|never` (default `running`, accepting running/auto, always/1/on/yes/true,
+never/0/off/no/false, with a warn-and-keep line for anything else), and the question is one row of chrome laid
+out by layout.c and drawn by render.c with the tab bar's font and colours. Stages, each left green: (A) config +
+pure decisions + checks + docs, (B) the notice row's geometry, (C) the render pass, (D) main.c's gate and modal
+keys.
+
+**In the tree** (uncommitted; stages A, B, C and D all green as of s121): `CONFIRM_NEVER/RUNNING/ALWAYS`,
+`Config.confirm_quit`, `fg_busy()`, `pty_fg_busy()`, `mux_running()` (returns 0-based tab indices; the message
+adds 1), `confirm_message()` with `CONFIRM_QUIT`/`CONFIRM_CLOSE_TAB`, the config default and parser branch, the
+`confirm_quit = running` template block, the README settings row, `ns == 37`, and `build/pty.o` added to
+test_vt, dbg, test_render and their asan rules — `mux_running()` calls `pty_fg_busy()`, so without it
+`bin/test_vt` fails to LINK with `undefined reference to pty_fg_busy`; pty.c is pure libc and the suites never
+call it, because a test hands a Tab an `mfd` of -1, which answers idle before any syscall. The seam the header
+declares is implemented: `LayoutReq.notice_on`/`notice_text` feed `Layout.notice_on` + rect +
+`notice[NOTICE_MAX]`, and `Chrome.notice_bg`/`notice_fg` are derived in `render_chrome()` from `selection_color`
+and the default ink.
+
+**The checks that exist** (all in `tests/test_vt.c`, all non-vacuous — see the s120 journal entry for the A/B
+and the 19 mutants): the config group (default, every spelling of all three values fed AFTER the opposite value
+so a word the parser does not know cannot pass, and warn-and-KEEP), `fg_busy()` (idle, busy, `fg == 0`,
+`fg == -1`, `child <= 0`, `child == -1`, pid 1), `pty_fg_busy()` (no master fd, NULL, a closed fd), a REAL pty
+with a hand-built process tree (`.scratch/s120/fgprobe3.c` is what the harness copies: a fork that does what
+`pty_spawn()`'s child does, takes the foreground group for itself, then hands a command's own group the
+foreground on a byte from a control pipe — idle at the prompt, busy for the command, and after the "shell"
+exits `tcgetpgrp` answers **0** on a real tty, which is the dead-session guard pinned against a real terminal
+and not only against a written 0), `mux_running()` (0/1/many, non-adjacent tab indices, `max` caps the LIST and
+not the COUNT, a session that ended drops out), and `confirm_message()` (every branch's exact text, the
+one-based numbers, the four-number cap with `, ...`, a NULL index list keeping the count, a small `cap`
+returning what it WROTE and staying terminated, `cap == 0` and a NULL buffer touching nothing).
+
+**The rules stages B, C and D added, all of them checked:**
+- **The row costs ONE grid cell row and no gap** (the bar costs `ch + gap` because its ITEMS need separating; a
+  full-width row does not — costing the gap would take a SECOND row from a window whose height is a whole number
+  of rows: measured 986 px grid area, 17 px cell, 58 rows -> 57 with the row, 56 with row+gap). It is reserved
+  in `layout_compute()` BEFORE the file-manager band is measured, so the band's PERCENT applies to the grid area
+  that is LEFT (`b_band_sees_full_grid` fails 14 checks, most of them pre-existing fm geometry checks — that is
+  the point).
+- **The terminal wins over the question**, exactly as it wins over the bar and the band: a grid area that cannot
+  keep one row after paying gets `notice_on == 0` and the window closes without asking. That is a decision, and
+  `Layout.notice_on` says what was actually drawn.
+- **The row sits at the BOTTOM** so the work being asked about stays visible above it (`b_at_top` fails 7).
+- **The text is cut to the row's columns IN layout.c** (`clip_utf8`), so the clipping is a checked decision and
+  the renderer draws exactly what the geometry decided. `snprintf` into a fixed buffer can split a UTF-8
+  sequence, so `trim_partial_utf8()` undoes a byte bound that landed inside one — for the notice row AND for
+  every bar label whose OSC title is longer than `BAR_LABEL_MAX`, which is a claim the old "never
+  mid-sequence" check did not actually cover.
+- **The field is one quad at the end of batch A, its text in batch B** with the bar labels and the same
+  per-column bound; `maxq` grows by `NOTICE_MAX + 1` when the row is on (a staging budget that forgets a pass
+  is a buffer overrun waiting for a wide window). Colours come from `render_chrome()`, never a literal.
+- **Three close paths are gated, one deliberately is not:** `toplevel_close()`, the `key_close_tab` binding and
+  the bar's middle click. The SIGCHLD / closed-pty path that reaps a session whose process already exited must
+  NEVER ask — there is nothing left to protect. A second close request while a question is up is ignored, not
+  stacked.
+- **The question has the keyboard:** the modal block sits in `send_key()` before EVERY binding, the file
+  manager's keys and the PTY paths, so no chord, no band key and no byte reaches the shell while it is up.
+  `Enter`/`y` confirms, `Esc`/`n` cancels, anything else is swallowed and logged at debug level. Returning 0
+  means a held key never repeats an answer.
+- **A question about a TAB belongs to an index, and `mux_close()` shifts every later tab down.** If the session
+  it asked about closes on its own while the row is up, answering YES would close a DIFFERENT shell — so
+  `tab_close()` drops the question whenever it closes that index or an earlier one (the same rule the fm `cd`
+  follow already obeys).
+- **YES for a window closes every session named in the sentence**, not just the visible one — that is what the
+  count promises.
+
+**Not in the tree:** nothing that step 4 needs. What is left is the commit, the push, and the row's LOOK, which
+is the user's to confirm (recipe in "Current Status").
+
+**Exact next action, in order:** (1) commit step 4 as one commit (the feature, its checks, its docs — the README
+row and the template block are only true together with the gate) and push after `git fetch`; (2) hand the
+user the step-4 recipe and record their verdict; (3) then steps 5-7 of the s102 plan.
 
 ### 5. Middle-click paste (opt-in, off by default)
 
@@ -392,14 +476,15 @@ Answered by the user 2026-10-22 (the eight questions) and 2026-10-19 (the droppe
 
 - **Precedence:** `kai-term.conf` beats a theme; `kai-term.bind` is not in the chain at all (it holds bindings
   only, and a colour key there stays the error it already is). Consequence, already implemented: a theme cannot
-  be applied line-by-line while the settings file is read, because a `background =` line ABOVE the `theme =` line
-  must still beat it — the settings file records which keys it set explicitly and the theme fills only the rest.
+  be applied line-by-line while the settings file is read, because a `background =` line ABOVE the `theme =`
+  line must still beat it — the settings file records which keys it set explicitly and the theme fills only the
+  rest.
 - **OSC 4/10/11/104: yes**, with an off switch (`osc_colors = 1`) so "any program can repaint the window" can be
   turned off without a rebuild.
 - **Cursor a bar always (no `cursor_style` key, blink 1000 ms, DECSCUSR honoured) / word selection strips any
   trailing punctuation but keeps leading / middle-click pastes the CLIPBOARD and is off by default, so no
-  `wl_primary` work / visual bell on by default / URLs on a plain click with the gates above.** Each is spelled out
-  in its step (2, 3, 5, 6, 7) — these are the answers, not open questions.
+  `wl_primary` work / visual bell on by default / URLs on a plain click with the gates above.** Each is spelled
+  out in its step (2, 3, 5, 6, 7) — these are the answers, not open questions.
 - **`--import-theme`: ask, do not silently overwrite and do not silently refuse** —
   `Warning: a theme with the same name already exists. Overwrite? [y/N]`; with no stdin to answer from it
   refuses and says to re-run with `--force`.
@@ -436,39 +521,42 @@ look, bell flash) to the user.
 
 ## Progress Journal (era entries; root causes of fixed bugs: git history)
 
+One entry per era. What landed, and the durable lesson — the probe output, the wrong theories, the source line
+numbers and the intermediate check counts are in git.
+
 - **2026-10-12/14, s1-23 — scaffold, first build, first features.** vt.c grid -> rotation permutation (`row[]`
-  always valid); CSI params; event loop -> `prepare_read -> epoll_wait -> read_events`; EGL/FreeType init; render
-  fixes (vertex stride, MVP mapping, 6-vertex quads, atlas upload format, first-frame bootstrap). First 2 user
-  bugs: black window (font metrics in font units, not px); 10 s startup (unanswered DA1/CPR/DA2). Then HW
-  instancing, alt screen, SGR mouse, scrollback keyboard nav, zoom, selection + Wayland clipboard, wheel scroll
-  (seat v5), the `Grid.live_off` anchor (fixed the wheel direction and the auto-follow). Tree -> project template;
-  Makefile rewritten; `.gitignore` + stricter warnings.
-- **2026-10-14/15, s24-47 — selection precision, emoji, reflow, paste, key repeat, padding.** Sub-cell endpoints
-  and per-fragment highlight without GL blending; selection-vs-pointer causes (grid anchoring, `wl_fixed_to_int`);
-  fontconfig fallback faces with the source face stored per glyph (so `atlas_grow` re-renders from the right one);
-  3 back-to-front passes; COLOR emoji end to end (clusters in vt.c, ONE glyph id via HarfBuzz, FreeType color
-  bitmap, RGBA8 atlas, un-tinted, wide emoji = 2 cells, regional-indicator pairs, U+FE0F/U+20E3 presentation).
-  CSI 3 J so `clear` drops scrollback (`clear_scrollback` gate); shell start dir (`-w DIR` > config `working_dir`
-  > `$HOME`, tilde expansion, `stat` check). Bracketed paste (DEC 2004, `paste_wrap()` as tested reference,
-  buffered, <=4096 B chunks, 8 MiB cap, 400 ms idle watchdog); the latent `term_init`
+  always valid); CSI params; event loop -> `prepare_read -> epoll_wait -> read_events`; EGL/FreeType init;
+  render fixes (vertex stride, MVP mapping, 6-vertex quads, atlas upload format, first-frame bootstrap). First
+  2 user bugs: black window (font metrics in font units, not px); 10 s startup (unanswered DA1/CPR/DA2). Then
+  HW instancing, alt screen, SGR mouse, scrollback keyboard nav, zoom, selection + Wayland clipboard, wheel
+  scroll (seat v5), the `Grid.live_off` anchor (fixed the wheel direction and the auto-follow). Tree -> project
+  template; Makefile rewritten; `.gitignore` + stricter warnings.
+- **2026-10-14/15, s24-47 — selection precision, emoji, reflow, paste, key repeat, padding.** Sub-cell
+  endpoints and per-fragment highlight without GL blending; selection-vs-pointer causes (grid anchoring,
+  `wl_fixed_to_int`); fontconfig fallback faces with the source face stored per glyph (so `atlas_grow`
+  re-renders from the right one); 3 back-to-front passes; COLOR emoji end to end (clusters in vt.c, ONE glyph id
+  via HarfBuzz, FreeType color bitmap, RGBA8 atlas, un-tinted, wide emoji = 2 cells, regional-indicator pairs,
+  U+FE0F/U+20E3 presentation). CSI 3 J so `clear` drops scrollback (`clear_scrollback` gate); shell start dir
+  (`-w DIR` > config `working_dir` > `$HOME`, tilde expansion, `stat` check). Bracketed paste (DEC 2004,
+  `paste_wrap()`, buffered, <=4096 B chunks, 8 MiB cap, 400 ms idle watchdog); the latent `term_init`
   free-of-uninitialized-grid bug -> `GRID_VALID`. `app_id`; real window `opacity` (premultiplied source-over);
   selection endpoints snapped to whole cells; no band over never-written cells; **REFLOW** on width change
-  (`Grid.wrap` soft-wrap marks, `grid_reflow()`, `grid_resize_plain()` for the alt screen, cursor travels with its
-  logical cell, narrowing evicts oldest rows). CLIENT-SIDE KEY REPEAT (`krfd` timerfd, `send_key()`
-  repeatability, `repeat_delay`/`repeat_rate`); `copy_on_release` (default off); the draw/commit cycle rewritten
-  -> the 3 frame-pacing rules; the pre-existing segfault on heavy output in a grown window fixed by
+  (`Grid.wrap` soft-wrap marks, `grid_reflow()`, `grid_resize_plain()` for the alt screen, cursor travels with
+  its logical cell, narrowing evicts oldest rows). CLIENT-SIDE KEY REPEAT (`krfd` timerfd, `send_key()`
+  repeatability, `repeat_delay`/`repeat_rate`); `copy_on_release` (default off); the draw/commit cycle
+  rewritten -> the 3 frame-pacing rules; the pre-existing segfault on heavy output in a grown window fixed by
   `sb_limit() = min(scrollback_max, rcap - rows)` as the single bound.
 - **2026-10-15, s50-55 — repo hygiene and the CLI.** GitHub; dead code removed; `WARN` tightened; `.gitignore`
   replaced (it ignored neither `bin/` nor `build/`); config flag `-c` (was `-C`); one generic unknown-option
   message. `tests/cli_test.sh` + `make test-cli` (the real binary — `main()` is in no linked test); the zoom
   stale-prompt cause in `grid_resize_rows`; WINDOW PADDING (`padding` key + the single `term_grid_geometry()`
   deciding cols/rows AND origin), which exposed the `DEF_BG` clear-colour bug.
-- **2026-10-15/16, s56-58, s60-62** — MULTIPLEXING (`src/mux.c`: N `{Term, Pty}` per window, config-driven key
-  bindings) + TAB BAR + SIDE-BY-SIDE VIEW (`src/layout.c`: pure geometry). Three defects fixed: bar/pane click
+- **2026-10-15/16, s56-58, s60-62 — MULTIPLEXING + TAB BAR + SIDE-BY-SIDE VIEW.** `src/mux.c`: N `{Term, Pty}`
+  per window, config-driven key bindings. `src/layout.c`: pure geometry. Three defects fixed: bar/pane click
   logged a switch it never made (`tab_switch()` never called `mux_goto()`), `BTN_RIGHT`/`BTN_MIDDLE` swapped in
   the SGR mapping, `tab_bar = always` asked the compositor for `cell_w` instead of `cell_h` of extra height
   (startup grid 1 row short) -> arithmetic moved to `layout_initial_size()` so a check pins it.
-- **2026-10-16, s59** — RENAME `K-Term` -> `Kai-Term` (dir, header, binary, config path,
+- **2026-10-16, s59 — RENAME `K-Term` -> `Kai-Term`** (dir, header, binary, config path,
   `DEF_APP_ID`/`DEF_TITLE`, log prefix, `TERM_PROGRAM`, tests pinning those literals). 4 items OUTSIDE the repo
   were listed for the user (niri window rule, `/usr/local/bin/k-term`, `desktop-terminal` + its .desktop entry,
   GitHub repo name).
@@ -478,21 +566,21 @@ look, bell flash) to the user.
   gutted to verified current info only (673 -> 100 lines): filing rule = symptom + exact reproduction + what
   `./bin/kai-term -d` logs; not reproducible -> not filed. s67: the "56px emoji strike" fact was wrong IN THE
   DOCS, not in the code — it came from reading CBLC's `bitmapSize` (a BYTE count) as a pixel size; the installed
-  NotoColorEmoji strike is 136x128 and `color_px == 128`, so font.c was right. Rule from it: no git SHAs in
-  source comments — they age; state the mechanism inline.
+  NotoColorEmoji strike is 136x128 and `color_px == 128`, so font.c was right. Rule: **no git SHAs in source
+  comments — they age; state the mechanism inline.**
 - **2026-10-17/18, s68-s70 — image support (kitty graphics protocol), user-confirmed by eye.** Model/parser
   (`src/vt.c`): APC `ESC _ G` + DCS-discard states, control-block parser (`k=v` separated by `;` OR `,` — timg
   uses `,` the spec says `:`), chunk assembly (`m=1`/`m=0`), base64 + zlib + PNG (libpng simplified) + raw
-  f=24/32, premultiplied pixels held in the model, images anchored to ABSOLUTE document rows (`Grid.row_base`),
-  span math in vt.c (also what `a=T` moves the cursor past), byte budget + prune, `CSI 14 t`/`CSI 16 t` answers,
-  `ws_xpixel`/`ws_ypixel` in `TIOCSWINSZ`. Renderer: one GL texture per image keyed by `KImage.serial`, and the
-  frame split into TWO batches so text stays on top with no GL blending. Three defects found by writing the
-  README honestly and then running the example: the "timg auto-detects" claim was false (its list is hardcoded
-  to `TERM=xterm-kitty|xterm-ghostty`); Kai-Term's DA1 answer advertised sixel (`;4`), so `timg foo.png` sent DCS
-  the parser discarded — the picture vanished, worse than block characters; and a re-transmission to an existing
-  id stacked a second picture, so an animation left a trail. DA1 is now `ESC[?64;1;2;6;7;12;22c`, `CSI 5 n` is
-  answered `ESC[0n`, and a transmission to an existing id replaces that image. Rule: **a documented example is a
-  claim — run it before writing it.**
+  f=24/32, premultiplied pixels held in the model, images anchored to ABSOLUTE document rows
+  (`Grid.row_base`), span math in vt.c (also what `a=T` moves the cursor past), byte budget + prune,
+  `CSI 14 t`/`CSI 16 t` answers, `ws_xpixel`/`ws_ypixel` in `TIOCSWINSZ`. Renderer: one GL texture per image
+  keyed by `KImage.serial`, and the frame split into TWO batches so text stays on top with no GL blending. Three
+  defects found by writing the README honestly and then running the example: the "timg auto-detects" claim was
+  false (its list is hardcoded to `TERM=xterm-kitty|xterm-ghostty`); Kai-Term's DA1 answer advertised sixel
+  (`;4`), so `timg foo.png` sent DCS the parser discarded — the picture vanished, worse than block characters;
+  and a re-transmission to an existing id stacked a second picture, so an animation left a trail. DA1 is now
+  `ESC[?64;1;2;6;7;12;22c`, `CSI 5 n` is answered `ESC[0n`, and a transmission to an existing id replaces that
+  image. Rule: **a documented example is a claim — run it before writing it.**
 - **2026-10-18/19, s71-s74 — the integrated file manager.** `src/img.c` (every decoder in one place: PNG libpng,
   JPEG libjpeg, WebP libwebp, GIF decoded in-tree because giflib is absent; premultiplied RGBA8; `img_sniff()`
   on magic bytes, never a file name) — the kitty path and the previews share it. `src/fm.c` (model only, no
@@ -501,10 +589,9 @@ look, bell flash) to the user.
   newest-request slots + result pipe fd in epoll, key/mouse routing, focus handover, the `cd` follow), 20 config
   keys, `tests/test_fm.c`. Decoders verified by pixel-diffing against ffmpeg (PNG/JPEG/WebP/GIF byte-exact),
   which found a libjpeg `output_scanline` off-by-one (heap corruption) and a wrong GIF interlace mapping. Three
-  real product defects found ONLY by the live key-injection harness, because `main.c` is in no test binary:
-  `fm_keys()`'s two-state return let every one-shot band key also reach the shell (Return on a file typed its
-  path AND a newline); an out-parameter passed next to the call that fills it made every post-navigation listing
-  read `request 0` and get discarded; and `fm_send_cd()` fired on refresh, typing a command at the prompt.
+  real product defects found ONLY by the live key-injection harness, because `main.c` is in no test binary —
+  `fm_keys()`'s two-state return, an out-parameter passed next to the call that fills it, and `fm_send_cd()`
+  firing on refresh. Each is a pitfall in Key Decisions.
 - **2026-10-19, s75-s79 — the file manager's four reported fixes, and a core pty bug.** Added `Left`/`Right`
   bindings, `..` as a real first row, double-click to open, and the empty-prompt gate: the model remembers the
   cursor row as the shell last printed it (`prompt_row`/`prompt_cx`/`prompt_cy`) and `term_at_prompt()` =
@@ -512,71 +599,52 @@ look, bell flash) to the user.
   it — clearing made the follow dead for the rest of the session after every vim/less run. **`src/pty.c` was
   putting every child's terminal into raw mode** (`cfmakeraw()` on the master; a pty pair shares one termios),
   which broke Ctrl+C, Ctrl+D, echo and ONLCR for every program that does not set its own termios — measured A/B
-  live, then fixed by deleting the block.
+  live, then fixed by deleting the block. `src/pty.c` still does NOT touch termios.
 - **2026-10-19, s81 — a refused texture upload is a decision, not a log line.** 85 SIGSEGV core dumps from one
-  CLI-suite run on a GPU with no memory left: every `glTexImage2D` site printed its error and drew with a texture
-  that had no texels, faulting inside `libnvidia-eglcore`. Now the glyph atlas is retried once after dropping
-  every picture texture and then ends the run (`render_draw()` -> -1, exit 1); a refused color atlas falls back
-  to mono glyphs with a ~1 Hz retry; a refused picture/preview texture skips that picture. `tests/cli_test.sh`
-  now makes ONE probe launch and skips the window checks with the reason printed;
-  `KAI_TERM_TEST_NO_WINDOW=1` skips them all — a test that maps a window changes the user's desktop.
-- **2026-10-19, s82-s86 — the prompt follow: clear -> `cd` -> re-populate, idempotent, user-confirmed.** Design:
-  capture the line (`term_prompt_line()`), Ctrl+U, send the `cd` only once a burst is seen to CHANGE that row back
-  into the remembered prompt, then re-type with no CR — `IDLE/ERASING/CDING/RETYPING` plus a 2 s deadline, so
-  "runs a mangled command" is closed by construction. Two hazards only a real shell exposes: opening the band
-  resizes the grid and that destroyed the snapshot of a DIRTY line (a height-only resize now moves the snapshot
-  with its row instead of discarding it), and the end-of-burst rule closed the echo window on a STEADY state, so
-  a second navigation appended `cd '<dir>'` to the user's command — the window now needs a transition, and CDING
-  additionally waits 150 ms of silence (`FMCD_QUIET_MS`) because a burst boundary is not a prompt. fish's
-  autosuggestion ghost is followed via `term_prompt_line_typed()` / `term_prompt_line_is()`; the accepted cost is
-  a cursor parked mid-command: the whole-row proof fails, the sequence is dropped (a `cd` is never written in
-  front of the surviving half) and the captured text goes to the log. Proven headless against real fish through
-  the real pty (`.scratch/s86/follow2.c`).
+  CLI-suite run on a GPU with no memory left. The policy is now in Key Decisions. `tests/cli_test.sh` makes ONE
+  probe launch and skips the window checks with the reason printed; `KAI_TERM_TEST_NO_WINDOW=1` skips them all —
+  a test that maps a window changes the user's desktop.
+- **2026-10-19, s82-s86 — the prompt follow: clear -> `cd` -> re-populate, idempotent, user-confirmed.**
+  `IDLE/ERASING/CDING/RETYPING` plus a 2 s deadline, so "runs a mangled command" is closed by construction. Two
+  hazards only a real shell exposed, both now invariants: a height-only resize destroyed the snapshot of a DIRTY
+  line (it now moves the snapshot with its row instead of discarding it), and closing the echo window on a STEADY
+  state let a second navigation append `cd '<dir>'` to the user's command (the window now needs a transition,
+  and CDING additionally waits `FMCD_QUIET_MS` because a burst boundary is not a prompt). fish's autosuggestion
+  ghost is followed via `term_prompt_line_typed()` / `term_prompt_line_is()`; the accepted cost is a cursor
+  parked mid-command: the whole-row proof fails, the sequence is dropped (a `cd` is never written in front of
+  the surviving half) and the captured text goes to the log. Proven headless against real fish through the real
+  pty (`.scratch/s86/follow2.c`).
 - **2026-10-19/20, s88 — the band became a SHARE, and the preview's rows got one owner.** `fm_rows` is gone
   everywhere; `fm_size` (percent of the grid area, default 75, clamped 10-95 at parse time AND in layout.c)
-  decides the band: `band_h = grid_h * pct / 100` then clamped to the terminal's floor, and `layout_initial_size()`
-  solves the inverse `grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))` — the startup round trip is what proves
-  that arithmetic. The preview overlap was two hardcoded numbers, not a renderer problem: the header's size was a
+  decides it. The preview overlap was two hardcoded numbers, not a renderer problem: the header's size was a
   literal 3 in `paint_preview()` and `fm_image_fit()` independently, and the 8 metadata lines an image preview
-  carries were counted in neither, so lines from row 3 down were painted into the picture's box (glyphs are
-  emitted in the batch AFTER the picture). Now `preview_head_rows()` + `preview_meta_rows()` are the single owner,
-  called by both. Rule: **a check that passes on the buggy code pins nothing** — the first version (a small
-  centred 8x8 picture) passed against the old fm.c by luck; the case that actually overlaps is a picture whose
-  box starts at the top of the picture area, and the A/B found that.
+  carries were counted in neither, so lines from row 3 down were painted into the picture's box. Now
+  `preview_head_rows()` + `preview_meta_rows()` are the single owner, called by both. Rule: **a check that
+  passes on the buggy code pins nothing** — the first version (a small centred 8x8 picture) passed against the
+  old fm.c by luck; the A/B found the case that actually overlaps.
 - **2026-10-20, s89 — a BackSpace at an empty prompt had disabled the shell follow.** Measured (real shells):
-  bash and sh answer BackSpace at an empty prompt with a bell only, fish not at all — so no burst ever re-proved
-  the line empty and `term_at_prompt()` stayed "not empty" until Enter. Fix: `payload_cannot_insert()` — a payload
-  that cannot put a character on the line (cursor movement, deletion, Ctrl+L, a bare Escape) does not open the
-  echo window **when the line is already provably the bare prompt**. That turned a long-green check red: the
-  property had been held by accident, because every key Kai-Term sent set `input_pending`, which is what stopped
-  `prompt_snapshot()` re-taking the anchor at the moved cursor. Now `prompt_snapshot()` returns untouched when
-  `prompt_row_same_cells()` says the row is cell-for-cell the remembered prompt, so `prompt_cx`/`prompt_cy` mean
-  "where the cursor sits when the line is EMPTY" — pinned by `CSI G` checks. Do not write a prompt check leaning
-  on `CSI H` (it moves the cursor to another ROW) or on SS3 (`ESC O H` prints a literal `H` here).
-- **2026-10-20, s90-s92 — shell integration: the file manager asks the SHELL to `cd` instead of Kai-Term typing
-  it.** There is exactly one channel to the shell, so the control carries no data: the directory travels in a
-  per-session file and the sequence is ONE byte pair for every shell, `C-x C-]` (0x18 0x1d), chosen from a
-  measured table of what each candidate inserts when unbound and of the tty's own specials — `C-\` is inert and
-  unbound in both shells but `stty -a` reports `quit = ^\`, so it would SIGQUIT whatever owns the terminal.
-  Announce `ESC _ K ; kai-term ; integration ; <kind> ST`, confirm `ESC _ K ; kai-term ; cd ; <dir> ST`, 400 ms
-  then fall back to the typed machine. APC kind `K` is one more branch in `apc_end()` — no new parser state. s92
-  fixed the two defects the user reported from their own window: a shell they started at the prompt was not
-  integrated at all (the scripts now wrap a bare `fish`/`bash`/`zsh`, never over a name the user defined, never
-  when any argument is present, and re-announce after every command — `Term.shell_int_gen` + `Tab.int_gen` make
-  an announcement an EVENT that revives a dead integration, because the kind alone cannot: fish -> nested fish ->
-  fish announces three times with one kind), and the prompt kept naming the OLD directory (fish `commandline -f
-  repaint`, zsh `zle reset-prompt`; **bash cannot** — readline expands the prompt once per `readline()` call,
-  `C-l` leaves it stale and printing `${PS1@P}` over the line garbles it, both measured, so bash is documented
-  and nothing is pretended).
+  bash and sh answer BackSpace at an empty prompt with a bell only, fish not at all — so no burst ever
+  re-proved the line empty and `term_at_prompt()` stayed "not empty" until Enter. Fix: `payload_cannot_insert()`
+  (invariant 5 of the prompt rules). That turned a long-green check red, because the property had been held by
+  accident — see the "invariant held by accident" pitfall. Do not write a prompt check leaning on `CSI H` (it
+  moves the cursor to another ROW) or on SS3 (`ESC O H` prints a literal `H` here).
+- **2026-10-20, s90-s92 — shell integration: the file manager asks the SHELL to `cd` instead of Kai-Term
+  typing it.** One channel, so the control carries no data; the sequence is the measured byte pair `C-x C-]`,
+  announce/ack over the `K` APC kind (one more branch in `apc_end()` — no new parser state), 400 ms then fall
+  back to the typed machine. s92 fixed the two defects the user reported from their own window: a shell they
+  started at the prompt was not integrated at all, and the prompt kept naming the OLD directory. All the rules
+  are in the shell-integration invariants; the bash limitation (readline expands the prompt once per
+  `readline()` call — `C-l` leaves it stale and printing `${PS1@P}` over the line garbles it, both measured) is
+  documented and nothing is pretended.
 - **2026-10-20, s93-s94 — the cleanliness pass, and zsh becomes verifiable.** A stricter second-compiler pass
   (clang, `WARN` plus `-Wcast-qual -Wmissing-prototypes -Wstrict-prototypes -Wold-style-definition -Wundef
   -Wunused-macros -Wextra-semi`) found exactly three things in OUR code: `img_decode_gif` needed `static`,
   `klog` needed `__attribute__((format(printf, 2, 3)))` — verified both directions — and one `-Wcast-qual` at
-  zlib's non-const `next_in`, correct as written, which is why `-Wcast-qual` stays out of `WARN`. Also found: the
-  whole s90-s92 work had never been committed. s94: the user installed zsh and confirmed the integration for fish,
-  bash and zsh. Still unmeasured in zsh: what `C-x C-]` does in a zsh that has no binding. Grep found seven stale
-  "no zsh on this box" claims, four inside source comments and check MESSAGES — **a check message that misstates
-  the evidence is worse than no message, because the next agent trusts it.**
+  zlib's non-const `next_in`, correct as written, which is why `-Wcast-qual` stays out of `WARN`. Also found:
+  the whole s90-s92 work had never been committed. s94: the user installed zsh and confirmed the integration for
+  fish, bash and zsh. Still unmeasured in zsh: what `C-x C-]` does in a zsh that has no binding. Grep found
+  seven stale "no zsh on this box" claims, four inside source comments and check MESSAGES — **a check message
+  that misstates the evidence is worse than no message, because the next agent trusts it.**
 - **2026-10-20, s95 — the user changed a design decision, not a bug** ("it is not a bug, it was a design
   decision, But we are changing it"). Now `p` types the selected entry's quoted path at the prompt, `v` toggles
   the preview, and `Return`/double-click on a file do nothing. Measured BEFORE changing anything: the strict gate
@@ -594,687 +662,391 @@ look, bell flash) to the user.
   with the target column clamped to that row's last glyph + 1, 64/65 for programs that DID grab the mouse, and
   preview-pane scrolling. All of it in `src/vt.c`/`src/fm.c`, never in `main.c`.
 - **2026-10-21/22, s97-s98 — the stray `h`: two mechanisms, one ours.** s97 (ours): a C0 byte inside a CSI
-  sequence ENDED it — `ESC [ ? 2004 <TAB> h` left `bracketed_paste` at 0 and painted an `h`; `h` is the final
-  byte of every mode-ENABLING sequence, which is why the leaked character was an `h`. Fix: ONE file-local
-  `exec_c0()` shared by `PS_GROUND` and `PS_CSI` — the rule existed twice and the two copies disagreed. ESC is
-  the exception: it cancels the sequence, so the caller handles it. s98 (the source's): measured against the
-  user's live Firefox selection — ten advertised types ending `text/x-moz-url-priv`, which Firefox serves as
-  **UTF-16LE**, and `offer_offer()` overwrote the recorded type for every `text/*` name, so the LAST advertisement
-  won. Fixed in two places because two things were wrong: `clipboard_mime_rank()` (ask for the best type, never
-  the last) and `paste_repair()` (a NUL must never reach the pty; dense one-sided NULs or a BOM mean UTF-16,
-  anything else is NUL-stripped). Their own clues — "the source matters", "ctrl+v works but ctrl+shift+v does
-  not" — were the diagnosis. Also measured and NOT a bug: bracketed paste is off for ~20 ms (bash, zsh) to
-  ~200 ms (fish) after a shell starts, so a paste flushed in that window goes out raw.
+  sequence ENDED it — `ESC [ ? 2004 <TAB> h` left `bracketed_paste` at 0 and painted an `h`. Fix: ONE file-local
+  `exec_c0()` shared by `PS_GROUND` and `PS_CSI` — the rule existed twice and the two copies disagreed. The
+  parser rule is in Architecture & Invariants; the diagnosis recipe for a recurrence is in Next Steps. s98
+  (the source's): measured against the user's live Firefox selection — ten advertised types ending
+  `text/x-moz-url-priv`, which Firefox serves as **UTF-16LE**, and `offer_offer()` overwrote the recorded type
+  for every `text/*` name, so the LAST advertisement won. Fixed in two places because two things were wrong:
+  `clipboard_mime_rank()` and `paste_repair()`. Their own clues — "the source matters", "ctrl+v works but
+  ctrl+shift+v does not" — were the diagnosis. Also measured and NOT a bug: bracketed paste is off for ~20 ms
+  (bash, zsh) to ~200 ms (fish) after a shell starts, so a paste flushed in that window goes out raw.
 - **2026-10-22, s99 — the config split, and a config reader that had been throwing away every colour.**
-  `apply()` became `apply_bind_key()` (the 24 `key_*`/`fm_key_*` names) + `apply_setting()` (the others) under one
-  dispatcher, split by NAME and never by which file was open, so an older `kai-term.conf` with bindings in it
-  keeps working and a setting written in `kai-term.bind` is refused by name rather than treated as unknown.
-  `config_find(name)` = the first REGULAR file with that name in `$XDG_CONFIG_HOME/kai-term`,
-  `~/.config/kai-term`, `/etc/kai-term`, searched per FILE NAME; `-b/--binds` added; the bind file is read
-  second, so it wins. The `#` rule was "whitespace before it is enough" — exactly the shape of a colour value —
-  so `background = #1c1c22` became `background =`, and an empty value is legal, so nothing was even logged.
-  Measured against the user's own file: old `ff101014` (the built-in default), new `ff1c1c22` (what they wrote).
-  New durable check: the template name-coverage check, which reads the accepted names out of the two strcmp
-  ladders — A/B proved the hole was real (deleting `padding = 8` from the template: 0 failures on the old suite,
-  1 on the new). One harness bug cost 10 windowed checks: `run_env` used `env "$@"`, so `env` parsed the
-  binary's `-w` as its own `--split-string` and the command never ran.
+  `apply()` became `apply_bind_key()` (the 24 `key_*`/`fm_key_*` names) + `apply_setting()` (the others) under
+  one dispatcher, split by NAME and never by which file was open. `config_find(name)` = the first REGULAR file
+  with that name in `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term`, `/etc/kai-term`, searched per FILE NAME;
+  `-b/--binds` added; the bind file is read second, so it wins. The `#` rule was "whitespace before it is
+  enough" — exactly the shape of a colour value — so `background = #1c1c22` became `background =`, and an empty
+  value is legal, so nothing was even logged. Measured against the user's own file: old `ff101014` (the
+  built-in default), new `ff1c1c22` (what they wrote). New durable check: the template name-coverage check — A/B
+  proved the hole was real (deleting `padding = 8` from the template: 0 failures on the old suite, 1 on the new).
+  One harness bug cost 10 windowed checks: `run_env` used `env "$@"`, so `env` parsed the binary's `-w` as its
+  own `--split-string` and the command never ran.
 - **2026-10-22, s100-s101 — the visible border around the grid: one runtime value now owns the default ink and
   paper.** User-confirmed in their own window ("It's fixed, you can push"). Three background-ish numbers existed
-  and only two were in play: `Config.bg` (the `background =` line) -> `Render.bg` -> `set_clear_color()`, which
-  paints the `Config.padding` margin and the whole-cell remainder; and `DEF_BG` -> what `src/vt.c` put in every
-  blank, erased, scrolled-in and reflowed cell, which pass 1 paints as the grid's interior. So the frame was
-  `ff1c1c22` around `ff101014`; it "appeared recently" only because the s99 `#` fix made their `background =`
-  line take effect for the first time. Fix: file-scope `g_def_fg`/`g_def_bg` in `src/vt.c` with
-  `term_set_default_colors()` + `term_default_fg()`/`term_default_bg()`, and every `DEF_FG`/`DEF_BG` use in that
-  file became a read of them — including the `cell_pristine()` sentinel, on purpose: the paint colour and the
-  "never written" sentinel must be one variable, not two that can drift. `main.c` calls the setter once, after
-  the two config readers and before `mux_open()`/`render_init()`. Three patch-overs that existed only because of
-  the split were deleted rather than left behind: the `pen.bg/pen.fg = conf.*` assignments after `mux_open()` and
-  in `tab_open()`, and `paint_blank_cells()` with its three call sites — keeping them would have left a second
-  writer of the same value, and `paint_blank_cells` was not even faithful (it re-painted every `ch == 0` cell
-  from `Config.bg`, destroying a blank an application had erased with a colour of its own). `DEF_FG`/`DEF_BG` stay
-  as the built-in defaults; the constants stayed, the uses became the variable. Both directions A/B'd: the
-  end-to-end probe prints `match=1` on the new code and `match=0` against `git show HEAD:src/vt.c`; 7 of the 14
-  new checks fail on the reported state, and against a deliberately divergent variant (paint sites read `g_def_*`
-  but `cell_pristine()` still compares `DEF_BG`) 2 fail — the reflow cursor position and the narrow/wide round
-  trip, which is what shows the sentinel check pins something.
+  and only two were in play: `Config.bg` -> `Render.bg` -> `set_clear_color()` (which paints the
+  `Config.padding` margin and the whole-cell remainder), and `DEF_BG` -> what `src/vt.c` put in every blank,
+  erased, scrolled-in and reflowed cell. So the frame was `ff1c1c22` around `ff101014`; it "appeared recently"
+  only because the s99 `#` fix made their `background =` line take effect for the first time. The fix and its
+  rule are in Architecture & Invariants. Three patch-overs that existed only because of the split were deleted
+  rather than left behind: the `pen.bg/pen.fg = conf.*` assignments after `mux_open()` and in `tab_open()`, and
+  `paint_blank_cells()` with its three call sites — keeping them would have left a second writer of the same
+  value, and `paint_blank_cells` was not even faithful (it re-painted every `ch == 0` cell from `Config.bg`,
+  destroying a blank an application had erased with a colour of its own).
 - **2026-10-22, s102 — the feature survey, the dead `cursor_color`, and the plan.** Every candidate was grepped
   for first: `zwp_fractional_scale`/`wp_viewporter` 0, `wl_primary` 0, OSC 52 0, OSC 8 / URL detection 0,
-  DECSCUSR 0, `zwp_text_input` 0, `tcgetpgrp` 0, `BEL` = `case 0x07: break;`. Two of my claims were wrong and the
-  user corrected them with facts about their own machine (scaling, OSC 52) — lesson: **a missing-protocol grep
-  proves the code is absent, it does not prove the user is missing anything.** Found while reading the colour
-  paths: `cursor_color =` is dead config — defaulted, parsed, stored, read nowhere; every test naming it tests
-  *parsing*. Step 0 then landed as two commits: the behaviour-free seam (`render_chrome()`, verified by a probe
-  comparing all eight `Chrome` fields over 25 bg×fg pairs — 200 comparisons, 0 differ), then the fix
-  (`Render.cursor_color` + `tests/test_render.c`, 15 checks; A/B against the pre-fix renderer: 5 of 15 fail
-  there, 0 here). `bin/test_render` links `render.o` + what it needs to LINK but calls only the pure function, so
-  it needs no display and no GL context. Two of its checks are SOURCE SCANS, honestly: the one link that cannot be
-  executed headless is the `render_init()` call, because it lives in `main()`. Then 1a (the palette becomes
-  process-wide) and 1b (the cube fix) — see "Where each step stands".
+  DECSCUSR 0, `zwp_text_input` 0, `tcgetpgrp` 0, `BEL` = `case 0x07: break;`. Two of my claims were wrong and
+  the user corrected them with facts about their own machine (scaling, OSC 52) — lesson in Key Decisions. Found
+  while reading the colour paths: `cursor_color =` is dead config. Step 0 landed as two commits: the
+  behaviour-free seam (`render_chrome()`, verified by a probe comparing all eight `Chrome` fields over 25 bg×fg
+  pairs — 200 comparisons, 0 differ), then the fix. `bin/test_render` links `render.o` + what it needs to LINK
+  but calls only the pure function, so it needs no display and no GL context. Then 1a and 1b.
 - **2026-10-19, s103 — `selection_color =`, and two ways a check can lie.** The tree opened RED and
   half-recorded: `test_render` 23 checks / 2 failures. Root cause, measured: the probe tokens were named *inside
-  the `CHECK` calls that counted them*, and a `CHECK` line is code — so the scan of `tests/test_render.c` counted
-  its own arguments. **A self-scan cannot pin a token counter: the test is always part of the corpus.** Fix: the
-  checks scan a probe file the test writes, and every mention of a probe token in that source is split by string
-  concatenation so the scanner never sees the whole word; that also let the line-comment and multi-line-block
-  rules get pinned. Part 2: compiling the TEST binaries printed `hex escape sequence out of range` — in C a hex
-  escape takes every following hex digit, so `feed("\x1bc")` is ONE escape (0x1bc), and the palette group's "ESC
-  c / RIS does not wipe the palette" check had been feeding a single 0xbc byte: **RIS was never tested.** It
-  passed for an unrelated reason, which is why the s102 A/B could not see it. Fixed to `feed("\x1b" "c")` and
-  proven non-vacuous by MUTATION (inserting `term_palette_reset()` into the RIS handler makes it fail). New gate:
-  a `hex escape` group — `src_hexesc_count()` walks every C file, skips comments so prose ABOUT the trap is not
-  counted, and skips a match preceded by another backslash so a message quoting it is not counted either.
-- **2026-10-19, s104 — 1c (the `.theme` file) and 1d (OSC 4/10/11/104), one commit.** Why one commit
-  (`c84258a`): they share one colour plumbing — `cfg_parse_color` exported so theme and OSC read colours the same
-  way (the s99 bug was exactly two readers disagreeing), the shared `config_strip_comment()`, `Config.set_keys`,
-  and the pinned settings-name count 30 -> 32 that both features move. Splitting them would have meant inventing
-  an intermediate tree that was never built, never measured and never green. The two A/B harnesses the previous
-  session left were RE-RUN, not quoted: `ab_osc/` (the OSC block absent) prints 1060 checks / 20 failures;
-  `ab_nosweep/` (a sweep that skips cells holding no glyph) prints 2 failures — the blank-cell check and the
-  narrow-resize wrap gate. This tree: 0.
-- **2026-10-19, s105 — 1e `--import-theme` built, and left uncommitted.** See "Current Task / 1e": the importer,
-  the corpus probe it was written against, and the four things owed before it can be committed (asan red, no A/B,
-  no CLI coverage of the flag, the user's eye).
-- **2026-10-19, s107 — objective: take 1e from red to green and push it.** Re-measured the tree first rather
-  than trusting the numbers above: `make -j8` 0 warning lines, `make bin/test_vt bin/dbg bin/test_fm bin/test_render`
-  0 warning lines, `KAI_TERM_TEST_NO_WINDOW=1 make test` = CLI 67/0/13, test_vt 1125/0, MODEL OK, test_fm 296/0,
-  test_render 25/0 — and `make asan` **exit 2**, reproduced exactly as recorded (2 × `-Wformat-truncation` in
-  `src/theme.c`, LeakSanitizer 134 bytes in 18 allocations from `usage_opts_of`/`readme_opts_of`). Plan, in order:
-  (1) the two warnings — a name that does not fit is a decision, so make it one and log it; (2) free the names the
-  option-pinning harness mallocs; (3) re-measure `make asan` green; (4) the A/B of the 65 import checks against a
-  tree with the importer absent, reporting the failure count; (5) `tests/cli_test.sh` coverage of
-  `--import-theme`/`--force` (argv in `main()` has no other coverage, and the import path needs no display so it
-  runs headless); (6) re-measure every suite, update the docs, commit, `git fetch`, push. Nothing is committed
-  while red.
-  **Done, in that order.** `set_name()` in `src/theme.c` — one cap at `sizeof v->name - 1`, the cut logged —
-  replaced both `snprintf(v->name, sizeof v->name, "%s", val)` sites; the option-pinning block now frees both
-  malloc'd name lists. Re-measured after: `make clean && make -j8` 0 warning lines, the four test binaries 0
-  warning lines, `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 with CLI **91/0/13** (was 67/0/13 — 24 new checks
-  for `--import-theme`/`--force`, placed in the part of the script that runs with no display because the import
-  path needs none), `./bin/test_vt` **1127/0** (was 1125 — the 127-byte name cap), MODEL OK, test_fm 296/0,
-  test_render 25/0, and `make asan` **exit 0, 0 warning lines, no LeakSanitizer report**. Both A/B harnesses
-  are in `.scratch/s107/` and their numbers in "Current Task / 1e". README gained the import block, written
-  against real runs rather than against the code: the Konsole file landing as `Breeze-Dark.theme`, the
-  `Overwrite? [y/N]` question with stdin closed exiting 1 and leaving the file byte-identical, `y` overwriting,
-  and `background = red` refused per key while the rest of that file still imported. The windowed CLI group was
-  deliberately NOT run — the user is at the machine and it maps real windows.
-  1e is `8add0e5`, and it was verified **in a fresh worktree at that hash** (`git worktree add` + build + all
-  four suites + `make asan`, all green) rather than only in the working tree — the working tree also held the
-  s106 journal cleanup, and "green" has to mean the commit, not the directory. The journal and ISSUES.md follow
-  as a second commit, which is the only split that keeps every commit green: committing the importer as s105
-  left it would have committed a red `make asan`.
-  **Pushed** (`01f97a2..ebd62d9`, two commits; `main` level with `origin/main`). Session state at close: no
-  uncommitted work, no red target, nothing half-edited, and the A/B harnesses left in `.scratch/s107/`
-  (`ab_noimport/`, `head_tree/`) for re-running. Still owed from 1e: the windowed group of
-  `tests/cli_test.sh` (not run then — the user was at the machine; it ran in s108) and the user's eye on an
-  imported theme (confirmed working in s108, so 1e is fully closed). The next session opens on
-  plan step 2, the cursor bar: Current Task / 2 already holds the measured facts (a separate quad in batch B
-  under the glyphs, a fourth timerfd, blink phase in `W` and never in `Term`, `cursor_blink = 1000`,
-  `cursor_width = 2`, DECSCUSR honoured, no `cursor_style` key) — probe first, A/B every new check, hand the
-  look to the user.
-- **2026-10-19, s106 — this cleanup (docs only, no source touched).** 1942 -> 1459 lines, 183,517 -> 137,411
-  bytes (the 1942 side is verifiable: `git show 8add0e5:AGENT.md | wc -l` — the cleanup sat uncommitted while
-  1e was taken green, so the feature commit still carried the pre-cleanup text; the file landed as 1514 lines
-  in `ebd62d9`, because s107's own entries were added on top of the 1459). The s101-s105 step-by-step
-  narrative collapsed into the era entries above, and the "measured starting
-  point" and done-step plan blocks went to git history. Every mechanism name, measured number and pitfall was
-  checked to survive outside the deleted text before it was deleted (the check: build the post-deletion text and
-  grep it for each name — `exec_c0`, `clipboard_mime_rank`, `paste_repair`, `config_find`, `apply_bind_key`,
-  `term_wants_key_mouse`, `term_click_arrow_keys`, `ink_in_box`, `pv_scroll`, `shell_int_gen`, `prompt_cx`,
-  `C-x C-]`, `cell_pristine`, `g_palette`, `render_chrome`, `THEME_KEYS`, `term_recolor_defaults`, 64/65 — all
-  present). Re-measured the tree while doing it, which is how the red `make asan` was found. Pre-cleanup text:
+  the `CHECK` calls that counted them* — a self-scan that counted its own corpus. And compiling the TEST
+  binaries printed `hex escape sequence out of range`: `feed("\x1bc")` is ONE escape (0x1bc), so the palette
+  group's "ESC c / RIS does not wipe the palette" check had never sent a reset. Both are now durable gates and
+  pitfalls: the probe-file-scan rule, and the `hex escape` group (`src_hexesc_count()` walks every C file,
+  skipping comments so prose ABOUT the trap is not counted, and skipping a match preceded by another backslash
+  so a message quoting it is not counted either). The RIS check is proven non-vacuous by MUTATION (inserting
+  `term_palette_reset()` into the RIS handler makes it fail).
+- **2026-10-19, s104-s107 — 1c, 1d and 1e (`--import-theme`), and taking 1e green.** 1c+1d landed as one commit
+  (`c84258a`) because they share one colour plumbing — `cfg_parse_color` exported so theme and OSC read colours
+  the same way (the s99 bug was exactly two readers disagreeing), the shared `config_strip_comment()`,
+  `Config.set_keys`, and the pinned settings-name count both features move. Splitting them would have meant
+  inventing an intermediate tree that was never built, never measured and never green. 1e was built in s105 and
+  left uncommitted and RED; s107 took it green (the two warnings via `set_name()`, the leak by freeing the
+  harness's name lists, 24 new CLI checks placed in the part of the script that runs with no display because the
+  import path needs none, plus 67 in `tests/test_vt.c`). README's import block was written against real runs
+  rather than against the code: the `Overwrite? [y/N]` question with stdin closed exiting 1 and leaving the file
+  byte-identical, `y` overwriting, and `background = red` refused per key while the rest of that file still
+  imported. 1e is `8add0e5`, verified **in a fresh worktree at that hash** (`git worktree add` + build + all four
+  suites + `make asan`, all green) rather than only in the working tree — the working tree also held the s106
+  journal cleanup, and "green" has to mean the commit, not the directory. A/B harnesses in `.scratch/s107/`
+  (`ab_noimport/`, `head_tree/`, `ab_wheel/`, `ab_tpl2/`); their limits are in Key Decisions.
+- **2026-10-19, s106 — the previous cleanup (docs only, no source touched).** 1942 -> 1459 lines, 183,517 ->
+  137,411 bytes (the 1942 side is verifiable: `git show 8add0e5:AGENT.md | wc -l`). The s101-s105 step-by-step
+  narrative collapsed into era entries and the "measured starting point" blocks went to git history. Every
+  mechanism name, measured number and pitfall was checked to survive outside the deleted text before it was
+  deleted. Re-measured the tree while doing it, which is how the red `make asan` was found. Pre-cleanup text:
   `.scratch/s106/AGENT.md.pre-cleanup`.
-
-- **2026-10-19, s108 — the windowed group of `tests/cli_test.sh`, on the user's explicit go-ahead.** It has
-  not run since s104 (117/0/0) and the 24 checks s107 added make that total stale. Checked the machine first
-  rather than assuming: `WAYLAND_DISPLAY=wayland-1`, no `kai-term` of mine running, no new core dump, and
-  `nvidia-smi` showing **11680/12227 MiB used** — the local LLM holds 9632 MiB, which is the condition
-  AGENT.md's Next Steps item 4 warns about, because a refused atlas upload fails EVERY window check for one
-  unrelated reason after putting a dozen windows in front of the user. So ONE probe launch first, my own
-  (`./bin/kai-term -d -e true`): exit 0, no atlas/video-memory line in the log, and it reached `kai-term
-  exiting` — the atlases fit in the ~547 MiB free, so the windowed group can really run. Then the full suite
-  WITHOUT `KAI_TERM_TEST_NO_WINDOW=1`: ~15 real windows, argv in `main()` and the keys a real launch applies,
-  which is the only coverage those have anywhere. Expect the total to move from 117 to roughly 141 (117 + the
-  24 s107 added); re-diff, do not assume. Afterwards: put the measured number in AGENT.md and ISSUES.md in
-  place of the stale 117, and hand the user the result.
-  **Result: `CLI: 141 checks, 0 failures, 0 skipped`, exit 0** — exactly the predicted 117 + 24, and 0 skipped
-  is what shows the window checks ran rather than being gated off (the headless run reports the same script as
-  91 checks / 13 skipped, so the windowed group is 50 checks and has not moved since s104). Nothing was found:
-  `-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`, and a real launch applying the
-  multiplexing / display / file-manager keys and the band's share all still hold. The stale 117 is replaced by
-  141 in Current Status, in the Project Files tree, and in ISSUES.md. One correction to the rule this run
-  tested: Next Steps item 4 said to wait for `nvidia-smi` to show VRAM free, and that is too strict — the LLM
-  held 9632 of 12227 MiB and the atlases still fit. The probe launch, not the free-megabytes number, is the
-  gate.
-
-- **2026-10-19, s109 — the file manager must not take the keyboard from the pointer. Objective, mechanism, plan.**
-  The user's report: "When the file manager is open, hovering the mouse on it gives it the focus, same for the
-  preview pane. They should require a click to take the focus. we could make that a config too (Default: needs
-  a click to take focus)."
-  **The mechanism, found by reading every path that writes `g_fm.focus`** (there are six in `src/main.c`, and
-  grepping `hover` returns 0 hits — there is no hover code): the only one a moving pointer can reach is
-  `fm_wheel()`, which calls `fm_focus_set(hit == FM_HIT_LIST ? … )` on its **fifth line**, before `steps` is
-  even computed. `steps` is `W.frame_discrete` or `(int)W.frame_axis_val / cell_h`, and the function then
-  returns early when `steps == 0` — so a `wl_pointer.frame` that produced no whole-cell scroll (a trackpad
-  frame with a sub-cell delta, a gesture that moved less than one row, a frame arriving without axis data)
-  **moves the keyboard into whichever pane the pointer happens to be over and scrolls nothing**. That is
-  exactly "hovering gives it the focus", and it explains both halves of the report, because the same line
-  picks the pane from the pointer position. `ptr_motion` and `ptr_enter` touch no focus state at all, and
-  `render_draw()` draws the focus border from `fm->focus` only — nothing is pointer-driven on screen.
-  **Plan.** (1) The decision becomes a pure function in `src/fm.c`, `fm_wheel_focus(hit, steps,
-  focus_on_hover) -> FM_FOCUS_* or -1`, because `main.c` is in no test binary and a rule there is untestable
-  (the standing "geometry lives in layout.c" reasoning, applied to a pointer rule). (2) It returns -1 when
-  `steps == 0` in BOTH modes — a gesture that scrolled nothing must not move the keyboard, which is the bug
-  itself, independent of the new key. (3) New setting `fm_focus_on_hover`, default **0** = a click is
-  required, which is what the user asked for; `1` restores the old pointer-follows behaviour. (4) The click
-  path (`fm_pointer_select`) is untouched — it is the "click to take focus" half. (5) The wheel still walks
-  the listing / scrolls the preview body in both modes; only the keyboard handover is gated. (6) Plumbing:
-  `config_default`, the `apply_setting` ladder (settings-name count 32 -> 33), a line in
-  `config/kai-term.conf`, a README table row, the template-parity value check, a default check, a parse
-  check, and a truth table in `tests/test_fm.c` A/B'd against the pre-fix code. (7) No new `cli_test.sh`
-  check: the key changes no log line and no launch output, so the CLI script could only assert that the name
-  is accepted, which the parity check already does — the pointer interaction itself is for the user's eye.
-  **Done, and green.** `fm_wheel_focus()` in `src/fm.c` (declared in the header next to `fm_row_pos()`),
-  `fm_wheel()` in `main.c` now computes `steps` first and asks the function; the click path is untouched. The
-  function also refuses `FM_HIT_NONE` itself rather than trusting the caller's filter. Measured: `make clean
-  && make -j8` 0 warning lines, the four test binaries 0 warning lines, `KAI_TERM_TEST_NO_WINDOW=1 make test`
-  exit 0 with CLI 91/0/13, `./bin/test_vt` **1130/0** (was 1127: the default, the parse, and the template
-  value check), MODEL OK, `./bin/test_fm` **305/0** (was 296: the 9-check truth table), test_render 25/0,
-  `make asan` exit 0 with no report, and the windowed CLI group **141/0/0** again (probe first: the LLM still
-  holds ~9.6 GiB, the atlases still fit).
-  **A/B, run not assumed:** `.scratch/s107/ab_wheel/` replaces `fm_wheel_focus` with the old unconditional
-  rule (`return hit == FM_HIT_PREVIEW ? FM_FOCUS_PREVIEW : FM_FOCUS_LIST;`, ignoring `steps` and the key —
-  exactly what `main.c` did) and the same 305 checks report **7 failures**. The 2 that pass there are the
-  `fm_focus_on_hover = 1` opt-in checks, which *should* pass under the old rule — that is what the opt-in is.
-  Two more mutations in `.scratch/s107/ab_tpl/` prove the docs gate bites: commenting out the
-  `fm_focus_on_hover = 0` line in `config/kai-term.conf` -> 2 failures ("kai-term.conf does not list
-  fm_focus_on_hover"), and changing it to `1` so it disagrees with the built-in default -> 2 failures
-  ("template: fm_focus_on_hover matches"). README's two places that documented the old behaviour ("a click on
-  it, or the wheel over it, focuses it") were corrected — a stale sentence in the docs is a bug the user reads.
-  **Owed to the user's eye:** that hovering the band no longer moves the focus border, that a click still
-  does, and that the wheel still scrolls the listing and the preview body without taking the keyboard.
-
-- **2026-10-19, s110 — verify s109 and finish it. Objective, plan, and what the verification found.**
-  The user: "Hovering focus is now fixed, but not sure all the docs have been updated. Do the verification,
-  finish it." So: re-measure every number the s109 entries claim, re-run the A/Bs rather than trust their
-  recorded counts, and diff the three docs against the code by hand. Plan: (1) both builds + every suite +
-  `make asan`; (2) the marker greps and the derived name counts; (3) re-run `.scratch/s107/ab_wheel/` and
-  the two `ab_tpl` mutations; (4) hand-diff README's settings/binding tables against the parser's name lists;
-  (5) fix whatever the diff shows, A/B the fix, re-measure, commit.
-  **Measured, matches the docs:** `make clean && make -j8` exit 0 / 0 warning lines; the four test binaries
-  exit 0 / 0 warning lines; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 with CLI 91/0/13, test_vt 1130/0,
-  MODEL OK, test_fm 305/0, test_render 25/0; `make asan` exit 0, 0 warning lines, no LeakSanitizer report.
-  The marker greps still return only the three self-splitting lines in `tests/test_render.c` and only
-  `mkdtemp`'s template plus one test's fill string. Derived counts re-read out of the source: 33 settings,
-  24 bindings, 23 theme names, 9 options in `usage()` — all as claimed. `fm_focus_set`/`g_fm.focus` writes in
-  `src/main.c` re-counted: the wheel path is the only one a moving pointer can reach, and the click path
-  (`fm_pointer_select`, one call site, `ptr_button`) still takes the keyboard — the fix is where it should be.
-  **Two doc defects found, both real:**
-  (a) **The `ab_tpl` failure counts in this file and in ISSUES.md are wrong.** Re-run in a harness copy that
-  holds README.md (`.scratch/s107/ab_tpl2/`, baseline 1130/0): deleting the `fm_focus_on_hover = 0` line gives
-  **1** failure ("config/kai-term.conf does not list fm_focus_on_hover — the file says it holds every
-  default"), and setting it to `1` against the built-in `0` gives **1** failure ("template:
-  fm_focus_on_hover matches"). Not 2 and 2. The old harness `.scratch/s107/ab_tpl/` has no README.md, so its
-  second failure was `options: the option names were read out of README.md's table` — an artifact of the copy,
-  not of the mutation. The gate still bites; the numbers were inflated.
-  (b) **README's settings and binding tables were NOT pinned by any check**, which is what "not sure all the
-  docs have been updated" was right to suspect. Measured: deleting the `fm_focus_on_hover` row from README's
-  settings table leaves all 1130 checks green. The Current Status claim that the name lists are compared with
-  "README's tables" was true only for the command-line OPTION table (`readme_opts_of`); the settings and
-  binding tables were never read. (The hand-diff of the CURRENT README is clean — 33 rows matching the 33
-  parser names, 24 matching the 24 bindings — so nothing is missing today; what is missing is the check that
-  keeps it that way.) Fix: read both tables the way the templates are read and set-difference them in both
-  directions. README's theme table is deliberately NOT set-differenced: it collapses `color0` … `color15` into
-  one row, so a name-by-name diff would fail on purpose; those 23 names stay pinned through
-  `config/kai-term.theme`.
-  **Not re-run by me:** the windowed group of `tests/cli_test.sh` (the 141/0/0). It maps ~15 real windows and
-  AGENT.md's rule is to ask before that run, not to do it unprompted while the user is at the machine. The
-  number quoted is s109's, measured on this same uncommitted tree; a probe launch is the gate if it is re-run.
-  **Done.** (a) The two inflated counts are corrected here and in ISSUES.md, and the harness that produced them
-  is replaced by `.scratch/s107/ab_tpl2/` (a copy that DOES hold README.md, baseline 1130/0).
-  (b) `readme_table_names_of()` + `names_diff()` in `tests/test_vt.c` read README's settings and binding tables
-  the way `tpl_check_names()` reads the templates, and the template group set-differences each against the
-  parser's list in both directions. `test_vt` 1130 -> **1133** (the heading guard and the two tallies). README
-  itself needed no edit — its tables were already complete; what was missing was the check.
-  **A/B, run not assumed** (`.scratch/s110/ab_readme/`, baseline 1133/0): delete the `fm_focus_on_hover`
-  settings row -> **1 failure** ("README's settings table does not document `fm_focus_on_hover` — the parser
-  accepts it"); delete the `fm_key_path` binding row -> **1 failure**; add a `made_up_key` row -> **1 failure**
-  ("… documents `made_up_key`, which no parser accepts"); delete the whole settings table -> **1 failure** of
-  the heading guard; rename the heading away from `### Settings` -> **1 failure** of the same guard. Renaming
-  it to `### Settings file (…)` does NOT fail, on purpose: the match is on the heading's prefix, so re-wording
-  a section keeps the check alive. A/B of the corrected `ab_tpl` numbers is in (a) above; `ab_wheel` was
-  re-run unchanged and still reports 7 failures out of 305.
-  **Committed and pushed.** Two commits, split so each one's own claims are true at that commit: `2ebaf3b`
-  "File manager: the wheel no longer takes the keyboard — a click does" (the s109 feature; verified at that
-  tree: both builds 0 warning lines, `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 with test_vt **1130/0**,
-  test_fm 305/0, test_render 25/0, CLI 91/0/13) and `0435567` "Tests: README's settings and binding tables
-  pinned to the parser" (the new gate + the corrected counts; verified at that tree: test_vt **1133/0**).
-  `git fetch` first, then `git push`: `git status -sb` now reports `main...origin/main` with no ahead/behind,
-  and `git log --oneline origin/main -1` is the docs commit. A probe launch (`./bin/kai-term -d -e true`, one
-  window, exit 0, no atlas/video-memory line, reached `kai-term exiting`) re-confirmed a real launch on this
-  tree; the full windowed group was NOT re-run — it maps ~15 windows and the rule is to ask first.
-  **Owed to the user's eye, unchanged from s109:** that hovering the band no longer moves the focus border,
-  that a click still does, and that the wheel still scrolls the listing and the preview body without taking the
-  keyboard. Nothing about those three is a harness question.
-
-- **2026-10-19, s111 — step 2, the cursor bar. Objective, measured starting point, plan.**
-  The user's words (s102): "A thin rectangle, the most classic blinking cursor". Decided then and not to be
-  re-litigated: always a bar (NO `cursor_style` key), `cursor_blink = 1000` ms half-period with `0` = steady,
-  `cursor_width = 2` px clamped 1..cell_w/3, DECSCUSR honoured so vim/neovim/fish can still ask for block or
-  underline, blink phase in `W` and never in `Term`, blink only while the window has focus.
-  **Measured before writing anything** (read, not assumed): the cursor is today the cell's own background quad
-  in `render_draw()` pass 1 (`src/render.c:1157-1170`, `cellbg = cur_col`) and pass 3 re-tints the glyph under
-  it (`:1300-1310`, inverting the ink); the colour comes from `render_chrome()` (`chrome.cursor` /
-  `chrome.cursor_off`). DECSCUSR is collected but discarded: the CSI state skips intermediate bytes
-  (`src/vt.c:3611`) so `ESC [ 3 SP q` reaches `csi_dispatch()` with final byte `q` and param 3, and the only
-  `case 'q'` in the file is the kitty-graphics APC parser (`:2961`) — 0 hits in the CSI dispatch. Window focus
-  is already tracked: `W.is_activated` is decoded from the xdg-toplevel states in `toplevel_configure()`
-  (`src/main.c:1735`), so the "blink only when focused" gate needs no new Wayland plumbing. There are three
-  timerfds (`tfd` frame, `krfd` key repeat, `pwfd` paste watchdog) — the blink is the fourth.
-  **Plan.** (1) Probe the parser first: feed `ESC[0..6 q` and print what the model does today (expect: nothing
-  changes), so the check is written around a measured before/after. (2) `Term.cur_style` (0 = the app never
-  asked, 1 block, 2 bar, 3 underline) and `Term.cur_blink` (0 = not asked, 1 blinking, 2 steady), set by
-  `csi_dispatch`'s new `q` case; they live in `Term` because DECSCUSR is per-session, and `term_init()` memsets
-  so 0 = "not asked" is the only safe encoding. (3) The per-cell decision becomes ONE pure function in
-  `render.c` (the standing reason: `main.c` and the draw loop are in no test binary, and `test_render.c` already
-  proves `render_chrome()` is a working seam): given shape, blink phase, cell size and the configured width, it
-  answers three things — does pass 1 paint the block, does batch B emit a separate quad and at what rect, does
-  pass 3 invert the ink. A bar must NOT invert the ink and must NOT paint the cell background, or the glyph is
-  drawn over a block and the bar is invisible. (4) The bar/underline quad is emitted in **batch B, after the
-  selection bands and before the glyphs** — batch B is one draw call where the later quad wins, so glyphs after
-  it keep the character readable. The existing rule that the cursor is hidden exactly where a band is painted
-  must be obeyed by the new quad too (the comment at `:1164` says pass 1 and pass 2 must match; a bar that
-  forgets it re-creates that bug). (5) A fourth timerfd in `main.c`; a tick sets `W.dirty` and goes through
-  `redraw()` on the normal path — never swap inside a Wayland listener. Phase in `W`, DEC 25l still hides the
-  cursor, and the timer is only armed while `W.is_activated` and while some session wants a blinking cursor.
-  (6) Two config keys: `cursor_blink` (ms half-period, 0 = steady) and `cursor_width` (px) — `config_default`,
-  the `apply_setting` ladder (settings names 33 -> 35), a line in `config/kai-term.conf`, a README row each
-  (the s110 gate now FAILS if a README row is missing — that is the first use of the check added in s110), the
-  template-parity value check, a default check and a parse check. (7) A/B every new check against the code that
-  lacks it and report the failure counts; measure BOTH builds; hand the look to the user rather than mapping a
-  window.
-  **Expected outcome:** a 2 px bar at the left edge of the cursor cell, full cell height, blinking with a 1 s
-  half-period while the window is focused and steady while it is not; `cursor_blink = 0` gives a steady bar; an
-  app that sends `ESC[1 q` gets a block back, `ESC[3 q` a blinking bar, `ESC[5 q` an underline.
-  **Steps 1 and 2 done, probe first as planned.** `.scratch/s111/decusrprobe.c` fed twelve forms before any
-  code change and every one of them was consumed and changed nothing (`cur_style`/`cur_blink` did not exist yet,
-  so the printed proof was cx/cy/modes/row0 all unchanged and `ESC[3 qXY` still landing `XY` at cx=4) — the
-  sequence was parsed and thrown away, exactly as the plan said. After the change the same probe prints
-  xterm's table exactly: `ESC[ q`/`0 q`/`1 q` -> block+blink, `2 q` -> block+steady, `3 q`/`4 q` -> bar +
-  blink/steady, `5 q`/`6 q` -> underline + blink/steady, and `9 q`, `ESC[?1 q` and `ESC[3q` (no space) all
-  ignored. The space is required on purpose: it is what the sequence IS, and it keeps `CSI Ps q` out.
-  Code: `Parser.inter` (the last intermediate byte, reset at `CSI`, was dropped on the floor before),
-  `Term.cur_style` / `Term.cur_blink` with the `CUR_*` / `CURBLINK_*` enums in the header, and the `case 'q':`
-  in `csi_dispatch()`'s non-private switch (the only other `case 'q'` in `src/vt.c` is the kitty-graphics APC
-  parser, untouched). `make -j8` 0 warning lines.
-
-- **2026-10-20, s112 — step 2 taken from a half-finished, non-building working tree to green.** The session
-  opened on an uncommitted s111 tree: DECSCUSR parsing in, the render decision and the blink timer written, the
-  two config keys missing — `make -j8` exit 2 with 3 error lines (`Config` has no member named `cursor_blink`
-  / `cursor_width`). Everything below is that session; the diff is in git, the rules that survived are in the
-  step-2 section above.
-  **Steps 3-5 then landed in the working tree (uncommitted, measured 2026-10-20):** `render_cursor()` — the pure
-  per-cell decision, `CursorDraw { block, quad, invert, tint, x,y,w,h }` in the header next to
-  `render_chrome()` — asked by all three passes of `render_draw()` (pass 1 backgrounds, a new pass 2b emitting
-  the bar/underline quad in batch B after the bands, pass 3 the ink), so the three cannot disagree; the
-  `Render.cursor_width` / `Render.cursor_on` fields with `render_init()` taking the width; and the fourth
-  timerfd (`cbfd`) with `blink_half_ms()` / `blink_update()` in `main.c` — armed from the frame tick only when
-  the wanted half-period CHANGED, gated on `W.is_activated`, `t->show_cursor` and a DECSCUSR steady request,
-  a tick flipping `W.cursor_on` + `W.dirty` and letting the normal `redraw()` path draw it.
-  **The tree does not build right now — measured, `make -j8` exit 2, 3 error lines:** `Config` has no member
-  named `cursor_blink` (`src/main.c:2535`, `:2544`) or `cursor_width` (`:2890`). That is step 6, and it is the
-  next action: `Config.cursor_blink` / `Config.cursor_width` in the header, `config_default()` (1000 / 2), the
-  `apply_setting` ladder (settings names 33 -> 35), a commented line for each in `config/kai-term.conf`, a
-  README row each — the s110 README gate fails if one is missing — then the template-parity, default and parse
-  checks. **Then step 7:** the `render_cursor` truth table in `tests/test_render.c`, the DECSCUSR checks in
-  `tests/test_vt.c`, an A/B of every new check against a tree that lacks the feature with the failure counts
-  reported, both builds measured for warnings, and the look handed to the user rather than judged from a
-  mapped window.
-  **Step 6 done (2026-10-20):** `Config.cursor_blink` / `.cursor_width` in `kai-term.h` (after
-  `click_moves_cursor`, each with the reason for its clamp), `config_default()` = **1000 / 2** (literal numbers,
-  the style `padding` and `repeat_delay` already use — no new macros), and the two `apply_setting` branches:
-  `cursor_blink` clamped **0..10000** (0 = steady), `cursor_width` clamped **1..64** here and to `cell/3` again
-  in `render_cursor()`. Settings names 33 -> **35**, so the count check in `tests/test_vt.c` and both documents
-  must follow; until they do the suite is expected to fail that check. **One contradiction inside the
-  uncommitted s111 code was resolved here rather than left to rot:** the `CURBLINK_*` header comment said an
-  application may override the user's blink "in BOTH directions", while `blink_half_ms()` treats
-  `conf.cursor_blink` as a CEILING (`0` = never blinks, whatever an app asks). The code's rule is the one kept
-  and the comment rewritten to say so — a deliberate difference from xterm, which lets `ESC[1 q` switch
-  blinking back on, because a user who set `cursor_blink = 0` asked not to have a blinking cursor. DECSCUSR can
-  still make the cursor LESS flashy in every case.
-  **Documents followed the parser in the same step:** two commented lines + values in `config/kai-term.conf`
-  (terminal-behaviour block, after `click_moves_cursor`; the `cursor_color` comment now points there for shape
-  and blink) and two rows in README's settings table, plus a README **Features** bullet — "A blinking bar
-  cursor" — because the look is now a user-visible feature and README's Features list is where a reader looks
-  first. `make -j8` after the config keys: exit 0, **0 warning lines**.
-  **Checks for the keys and for DECSCUSR added to `tests/test_vt.c`** (1133 -> **1163 checks, 0 failures**,
-  test build 0 warning lines): a cursor-config group (defaults 1000/2, both read from a file, both clamped at
-  each end — 9 checks + 1 template-parity check), the count check moved to **35 settings / 24 bindings**, and a
-  DECSCUSR group next to DECTCEM (xterm's whole table, `9 q`/`99 q`/`ESC[?1 q`/`ESC[1q` all ignored, the
-  sequence paints no glyph and moves no cursor, a second `Term` is unaffected, and the alt screen neither
-  wipes nor restores a request). `CONFIG_SET_KEYS_MAX`'s comment said "31 settings today" and is now 35.
-  **The probe paid for itself immediately.** `.scratch/s111/decusrprobe.c` is GONE — `.scratch/` was empty when
-  this session opened, so the s111 measurement above can no longer be re-run; `.scratch/s112/qprobe.c` is the
-  replacement (feeds the same forms, prints style/blink/cx/cy after each). It found three FAILs on the first
-  run and all three were **errors in my new checks, not in the code**: I wrote the `ESC[1q`-carries-no-intermediate
-  check against `ESC[5 q`, which is a *blinking* underline, and expected steady — so the two alt-screen checks
-  that followed failed from the same wrong state. The parser was right all along (`ESC[1q` changes nothing, and
-  there is exactly ONE CSI entry point in `term_parse`, so `inter` cannot leak). Fixed by feeding `ESC[6 q`
-  (steady underline) as the state that must survive, which moves BOTH fields if the space ever carries over.
-  **`render_cursor()` truth table added to `tests/test_render.c`** (25 -> **495 checks, 0 failures**, test
-  build 0 warning lines): the default bar and its rect, invisible-means-nothing in all four shapes, both ends
-  of the width clamp (40 px in a 9 px cell -> 3 px; a 1 px cell -> 1 px, never 0, which would draw no cursor
-  at all), the underline's rect and its `cell_h/3` clamp, the BLOCK rules kept exactly as they were (block +
-  invert over no band, tint + step-aside under a band), the NEW rule that a bar/underline does NOT step aside
-  for a band, and 448 invariant checks over every (shape × visible × band × 7 cell sizes × 7 widths): never
-  both a block and a quad, `invert` only with a block, a visible cursor always paints something in one of the
-  three passes, and the rect never leaves its cell. Four more source-wiring checks: `conf.cursor_width` reaches
-  `render_init()`, `rend.cursor_on = W.cursor_on` exists, and `src/render.c` mentions `render_cursor` 4×
-  (definition + the three passes) and `cursor_on` 3× — re-diff those two counts, they are text pins for wiring
-  no headless test can execute. The file's header comment now says what is really under test (it claimed
-  render_chrome was the only thing).
-  **A/Bs run, both in `.scratch/s112/`, both with the CURRENT header and CURRENT tests against code that lacks
-  the feature** (the header has to be current or the new checks would not compile — that is the honest shape of
-  this A/B, and it is what makes the vocabulary available to a tree that does not implement it):
-  - `.scratch/s112/ab_model/` — HEAD's `src/vt.c` + HEAD's `src/config.c` (both compile clean against the
-    current header, 0 warnings) linked with the new `tests/test_vt.c`: **1163 checks, 22 failures** — 16 in the
-    DECSCUSR group, 6 in the cursor-config group. The DECSCUSR checks that stay green there are the negative
-    ones ("a fresh session has never been asked", "it paints nothing", "a second session starts unasked"),
-    exactly the limit the s107 entry warns about for a feature A/B.
-  - `.scratch/s112/ab_shape/` — HEAD's `src/render.c` (its `render_init` signature had to be widened by hand in
-    the scratch copy, or gcc 15 refuses to compile it against the current header — noted because it is a trap
-    for the next A/B) plus `old_cursor.c`, the pre-step-2 rule written as the function the test calls (always a
-    block, steps aside for a band, shape/size/width not inputs at all): **495 checks, 12 failures**, and the 12
-    are precisely the bar/underline claims. The BLOCK checks and all 448 invariants stay green on the old rule
-    — they are safety invariants, not feature claims, so their A/B value is limited by design.
-  - **A limit worth recording:** an object-file A/B cannot exercise the checks that read SOURCE TEXT —
-    `cfg_names_of()`, `readme_table_names_of()` and `src_word_count()` all open the working tree's files, so
-    the 35-name count and the `render_cursor`-appears-4× pins passed in both A/B trees. Those pins were instead
-    verified the direct way, twice over: the count check went genuinely RED this session (1 failure) between
-    adding the parser branches and updating the documents, and `grep -c render_cursor` on HEAD's `src/render.c`
-    is 0.
-  **One defect in the uncommitted blink code found by reading, and fixed:** `blink_update()` compared only the
-  half-period, so switching to another session that blinks at the same rate kept the old phase and could show
-  a window with no cursor for up to a full half-period. `cbfd_term` (the session the arming was decided for)
-  joins the "did it change" test, so a tab switch restarts the rhythm on the visible side. While checking the
-  three passes I also confirmed a pre-existing asymmetry that is harmless and left alone: pass 1 and pass 2b
-  gate `hl_on` on `term_cell_highlightable()` and pass 3 does not, but that function returns 0 only for a
-  never-written blank cell (`ch == 0`), which has no glyph to tint — so the passes cannot disagree about
-  anything a pixel shows.
-  **Close-out, measured after the last edit, from `make clean`:** `make -j8 2>&1 | grep -ciE 'warning|error'` →
-  **0**, and the same for `make bin/test_vt bin/dbg bin/test_fm bin/test_render` → **0**.
-  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0: `CLI: 91 checks, 0 failures, 13 skipped`, `./bin/test_vt`
-  **1163/0**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305/0**, `./bin/test_render` **495/0**.
-  `make asan` exit 0, 0 warning lines, 0 lines matching `leaked|LeakSanitizer|AddressSanitizer`, same counts.
-  The two greps the status line claims were re-run and still return exactly what it says (the `mkdtemp`
-  template + one test's fill string; the three `tests/test_render.c` lines that WRITE a probe file).
-  `tests/cli_test.sh`'s windowed group was NOT run — no window is mapped while the user is at the machine, and
-  step 2 added no flag for it to cover. README, `config/kai-term.conf` and ISSUES.md's re-measured paragraph
-  were all updated with the new counts in the same session. **Owed next:** the user's eye on the cursor (the
-  recipe is in Next Steps 1), then plan step 3.
-
-- **2026-10-20, s113 — step 3, double-click a word / triple-click a line. Objective, measured starting point,
-  plan.** The user's rule, verbatim: "a word is everything no separated by a space, but we don't take the
-  trailing ',' or '.'", and their answer to which punctuation to strip was "any of it". On by default, with a
-  `click_selects_word` switch.
-  **Probe first, as the plan requires.** `.scratch/s113/wrapprobe.c` printed the grid before any step-3 code
-  existed, for the two shapes the rules must not break: (a) a soft-wrapped line — `wrap[i] = 1` marks the row
-  that WAS broken and therefore continues on the NEXT row, and it is indexed by the row SLOT (`scroll_off + r`),
-  the same index `row[]` and `grid_vprow()` use, not by viewport row; getting that direction or that index
-  backwards would extend every triple click one row the wrong way, and a scrolled-back view would read the wrong
-  slots. (b) a wide glyph — the anchor cell holds the codepoint with `ATTR_WIDE`, the continuation cell has
-  `ch == 0` AND `ATTR_WIDE` (measured: `[0:U+4F60] [1:WIDE-CONT] [2:U+597D] [3:WIDE-CONT]`). The probe's emoji
-  case was mangled by a C hex escape (`"\x9F"` swallows the next digit) — the CJK case proves the same layout,
-  so it was left rather than fixed.
-  **Model half (src/vt.c, headless-testable):** `term_word_span()` (maximal run of word cells around the click,
-  then trailing punctuation cut a GLYPH at a time so a full-width mark is never split from its continuation,
-  never stripped below one glyph), `term_line_span()` (the logical line, walking the wrap marks up and down),
-  and `term_click_count()` (the timing rule, kept in vt.c beside `mouse_sgr_button`/`term_wants_key_mouse`
-  precisely so a test can pin it — main.c is in no test binary). `word_cell()` treats only a never-written cell
-  and U+0020 as separators, and any `ATTR_WIDE` cell as part of the word, which is what makes cutting a wide
-  glyph impossible by construction. `trailing_punct()` = ASCII `ispunct()` plus an explicit list of the marks a
-  terminal really draws (curly quotes, en/em dash, ellipsis, full-width CJK punctuation); everything else stays
-  part of the word, because guessing at the rest of Unicode with no table in this project would cut words that
-  should stay whole.
-  **Window half (src/main.c):** `W.click_count/click_ms/click_col/click_row/click_word`; the 2nd click selects
-  the word, the 3rd the logical line (a 4th stays a line, it does not grow), and `click_word` suppresses the
-  synthesised cursor-key presses on release — the interaction the plan called out, because a double click inside
-  nano would otherwise walk its cursor twice. `FM_DCLICK_MS` (main.c's file-manager constant) became
-  `CLICK_DCLICK_MS` in the header: one number for both gestures, so they feel like the same gesture.
-  **Key:** `click_selects_word = 1` (settings names 35 -> 36). **Not yet done:** the template line, the README
-  row, the checks (word/line/click-count in `tests/test_vt.c`, the config key, the count 35 -> 36), the A/B, and
-  a full re-measure. The tree is expected to FAIL the settings-count check until the documents and the count
-  follow the parser.
-
-- **2026-10-20, s114 — step 3 resumed: objective, measured starting point, plan.** Started by measuring, not by
-  reading the s113 entry: `make -j8` exit 0 with **0 warning lines**, the four test binaries build with **0
-  warning lines**, and `./bin/test_vt` reports **1163 checks, 2 failures** — both in the template group
-  (`the parser accepts 35 settings` and `README's settings table does not document click_selects_word`), which is
-  exactly the state s113 predicted. So the code half is in the tree and the documentation/check half is not.
-  **Objective:** take step 3 green and commit it. **Plan:** (1) README's settings row + a sentence in the
-  selection prose; (2) `tests/test_vt.c` — the count 35 -> 36, the template value check, and a new headless group
-  for `term_word_span` / `term_line_span` / `term_click_count` written around what `.scratch/s113/wrapprobe`
-  printed (wide-glyph layout, `wrap[]` direction and index); (3) re-measure both builds and every suite plus
-  `make asan`; (4) A/B the new checks against HEAD's `src/vt.c` + `src/main.c` and report the failure count;
-  (5) AGENT.md / README / ISSUES.md, commit, push. **Expected outcome:** settings names 36, every suite green,
-  and a new group that FAILS against HEAD (a check that has never failed pins nothing).
-  **Done so far:** README got the `click_selects_word` row in its settings table and a paragraph in the
-  selection prose (both are what the name-coverage check demands — it failed on the missing row before the
-  edit). `tests/test_vt.c`: the settings count 35 -> 36, the template value check for the new key, and a new
-  group of **52 checks** after the selection block — word span (plain, trailing punctuation cut, leading kept,
-  lone mark never cut to nothing, wide glyph never split, blanks and out-of-range, NULL out-params), line span
-  (soft wrap, the pending-wrap trap, hard break, scrolled-back slot index, out-of-range), `term_click_count`
-  (the 500 ms window inclusive at the boundary, different cell, the 32-bit clock wrap), and the config key
-  itself (default 1, `= 0` parsed). A file-scope helper `span_copy()` puts a returned span through the same
-  whole-cell endpoints `sel_set_endpoints()` produces, so the checks pin what would land in the clipboard and
-  not just two integers. Measured: `make bin/test_vt` 0 warning lines, **1215 checks, 0 failures** (was 1163).
-  Three of the new checks were red when first written and all three were the CHECK's fault, not the model's —
-  `don’t` is 7 bytes not 6, a 26-char line does not reach the margin so `wrap[1]` never gets set (the probe's
-  40-char line does), and `int r0, r1` at main()'s scope shadowed the emoji block's `r1` (-Wshadow, which is
-  why the warning count is measured, not assumed).
-  **Probe findings worth keeping:** `Grid.wrap[i]` is NOT set until the character that crosses the margin is
-  written, so a line ending exactly at the margin leaves the row below blank and `term_line_span` correctly
-  stops — no off-by-one to fix (`.scratch/s114/wprobe3`). A word that the window broke mid-word is selected
-  only up to the break on each row (`wprobe2`: `word at (5,0) = 0..19`, `(5,1) = 0..7`) — that is the current
-  behaviour and a limitation now stated in README and in ISSUES.md "Known limitations", not something step 3
-  claims to solve.
-  **Non-vacuity, both kinds, RUN not reasoned about.** (a) Feature A/B — `.scratch/s114/ab/`: HEAD's `src/vt.c`
-  with the three functions stubbed to the pre-step-3 answer (one cell, one row, always click 1), plus HEAD's
-  header with only the declarations and the `Config` field added, run against the NEW `tests/test_vt.c`:
-  **1217 checks, 27 failures**, and all 27 are the positive checks. The ones that stay green are the negative
-  ones — a stub that answers "one cell" satisfies "a click on a blank selects one cell" — which is the limit of a
-  feature A/B, not a defect in those checks (Key Decisions). (b) **Mutation** — `.scratch/s114/mutate.sh`, seven
-  wrong turns in the model half, each counted: wrap read by viewport row instead of slot -> 3 failures; wrap
-  walked in the wrong direction -> 5; the wide-pair step in the punctuation cut removed -> 2; `word_cell()`
-  ignoring `ATTR_WIDE` -> 6; ASCII-only punctuation -> 3; the never-strip-below-one-glyph guard removed -> 1;
-  the click window made exclusive (`>=`) -> 1; the same-cell test dropped -> 1. The last two each pinned exactly
-  one check — and the guard mutant pinned NOTHING until a check was added for it: a lone full-width `。` is a wide
-  pair, so removing that guard sends the span INVERTED (`c1 < c0`) and no existing check noticed. That check is
-  now in the group, which is **54 checks**.
-  **Final measurement, from `make clean`:** `make -j8` exit 0 / 0 warning lines; the four test binaries exit 0 /
-  0 warning lines; `./bin/test_vt` **1217 checks, 0 failures**; `./bin/dbg` MODEL OK (0 problems);
-  `./bin/test_fm` 305/0; `./bin/test_render` 495/0; `KAI_TERM_TEST_NO_WINDOW=1` CLI 91/0/13 skipped; `make asan`
-  exit 0, 0 warning lines, no LeakSanitizer report, same counts. The windowed CLI group was NOT run (no windows
-  while the user is at the machine) and step 3 added no command-line flag, so nothing in it is new.
-  **Then the user confirmed it in their own window** — "I checked and it worked" — which closes the only owed
-  verdict of step 3, including the `main.c` half no headless check reaches. **The same message opened step 3b:**
-  the preview pane should get text selection and the same word/line gesture. That is the current task (its plan
-  above); step 4, confirm-quit, waits behind it.
-- **s116 — step 3b resumed mid-task: the model half is in the tree, the pointer half is not.**
-  **Starting state, measured before touching anything:** `git status` shows `AGENT.md`,
-  `include/kai-term/kai-term.h`, `src/fm.c`, `src/vt.c` modified and uncommitted. `make clean && make -j8`
-  exit 0 / **0 warning lines**, the four test binaries exit 0 / **0 warning lines**, and every suite is green
-  at the s114 counts (test_vt 1217/0, dbg MODEL OK, test_fm 305/0, test_render 495/0, CLI 91/0/13 skipped).
-  So the previous session stopped *between* two halves with a green tree, not inside a broken edit — that is
-  the last verified state, and nothing has to be re-done.
-  **What the uncommitted diff already holds (read, not guessed):** `cell_row_word_span()` in vt.c — the
-  row-level word rule lifted onto `const Cell *row` + cols, with `term_word_span()` now a wrapper over it, so
-  the preview and a session share ONE punctuation rule (the plan's "do not fork it"); `FileMgr.pv_sel_on` +
-  `pv_ax/pv_ay/pv_bx/pv_by`; `fm_preview_select()`, `_select_clear()`, `_selected()`, `_word_span()`,
-  `_row_span()`, `_selection_text()`; invalidation wired into `fm_set_size()` (AFTER the realloc, where
-  `fm_preview_scroll_max()` can see the new pane — the s96 rule), `fm_install_preview()` and
-  `fm_preview_scroll()`; and the band painted into the cells' own `bg` by `paint_preview()`, skipping
-  never-written cells so it cannot float over the space past the end of a line.
-  **Objective:** the missing half — the gesture in `src/main.c` (press/drag/release in the preview pane, a
-  double click selects the word, a triple the row), the copy path (`selection_copy()` must have ONE owner per
-  copy, and its log line must report which owner served it), then headless checks in `tests/test_fm.c`, an
-  A/B against the code that lacks it, and README/ISSUES.md.
-  **Plan:** (1) probe the new model headlessly (`.scratch/s115/selprobe.c`) and print the pane cells, the
-  spans and the copied bytes, so every check is written around measured numbers; (2) `main.c`: a preview-pane
-  cell mapper next to `sel_cell()`, a click-count pair kept apart from the LIST's (it counts a CELL, not a
-  view position), a drag flag on `W`, release handled before every hit test so a drag that ends over the bar
-  or another pane cannot stay live; (3) `selection_copy()` prefers the preview's selection when the band has
-  one, per the plan's decision; (4) `tests/test_fm.c` group; (5) both builds + every suite + `make asan`;
-  (6) A/B against HEAD and report the failure count; (7) docs, commit, push.
-  **Expected outcome:** a drag in the preview pane highlights a range, `Ctrl+Shift+C` copies it, a double
-  click takes the word and a triple the row with the terminal's punctuation rule, and the list pane's
-  click-to-select / double-click-to-open, the keyboard handover and the wheel all keep winning where they
-  already win.
-  **Probe first (`.scratch/s115/selprobe.c`, run — not reasoned about).** Measured in a 30x12 preview pane:
-  `file.txt` ("hello world / second line") paints its body from **row 2, column 2**; a word span at (2,2) is
-  `2..6` ("hello"), at (8,2) `8..12` ("world"), and on the HEAD row (2,0) `1..8` ("file.txt") — the head is
-  selectable text too, which is right and worth pinning. A row span is `0..29` (the whole pane width) and the
-  copy trims the trailing blanks, so selecting (2,2)->(29,2) copies exactly `hello world`. A drag that runs
-  past the pane's bottom clamps (`(2,2)->(20,20)` stores `2,2 -> 20,11`). The band the painter writes stops at
-  the last real glyph (`y2:2-12` for a row-wide selection), so it never floats over the never-written space.
-  Wide glyphs: `你好` occupies cols 2-5 (anchor + continuation each), a word span covers `2..5`, and a copy
-  ending mid-pair still yields the whole glyph once. Punctuation: `two-three, four.` gives `6..14`
-  ("two-three") and `17..20` ("four") — the SAME rule as a session, because it is the same function.
-  Invalidation confirmed live: `pv_sel_on` goes 1 -> 0 on `fm_preview_scroll()`, on `fm_set_size()` and on a
-  new preview.
-  **The gesture half is now in `src/main.c`** (build exit 0, 0 warning lines): `pv_cell()` maps the pointer to
-  a preview-pane cell next to `sel_cell()` (same exactness argument, clamped so a drag that leaves the pane
-  extends to its edge); `fm_pointer_select()`'s `FM_HIT_PREVIEW` branch counts the click with
-  `term_click_count()` against the same `CLICK_DCLICK_MS` and `conf.click_selects_word`, and selects the cell,
-  the word or the row; `ptr_motion()` extends it from the remembered anchor; `ptr_button()` ends the drag on
-  release **before every hit test**, because an early return in the bar/band/pane branches would leave a drag
-  live under a pointer the user already let go of. `selection_copy()` now has one owner per copy (preview
-  first, then the session) and its log line names the owner. Two decisions taken here, both recorded for the
-  docs: (a) **one selection at a time in the window** — a press in the preview clears the session's highlight
-  and a press in a terminal pane clears the pane's, so the precedence order is a fallback and never a guess;
-  (b) the drag flag and the click pair are kept apart from the LIST pane's (`fm_click_pos` compares a view
-  POSITION, this compares a CELL — the two numbers are not comparable). `fm_close()` and a newly installed
-  preview clear both halves.
-  **Next:** the headless group in `tests/test_fm.c`, then both builds + every suite + `make asan`, then the
-  A/B against HEAD, then README/ISSUES.md, commit, push.
-- **s117 — step 3b taken green: the harness re-run rather than trusted, and one real defect found.**
-  **Starting state, measured:** the tree held the WHOLE feature uncommitted — `AGENT.md ISSUES.md README.md
-  include/kai-term/kai-term.h src/fm.c src/main.c src/vt.c tests/test_fm.c` modified — i.e. the s116 session
-  had gone past its own "Next:" line (the `tests/test_fm.c` group and the README/ISSUES wording were already
-  written) and stopped before any of it was verified or committed. So the first action was to re-measure, not
-  to write: `make clean && make -j8` exit 0 / **0 warning lines**, `make bin/test_vt bin/dbg bin/test_fm
-  bin/test_render` exit 0 / **0 warning lines**, and every suite green — `test_vt 1217/0`, `dbg MODEL OK`,
-  **`test_fm 380/0`** (the pvsel group is the 305 -> 380), `test_render 495/0`, `CLI 91/0/13 skipped`
-  (headless; no windows while the user is at the machine). `make asan` exit 0, **0 warning lines**, no
-  LeakSanitizer report, same counts.
-  **The non-vacuity harness exists and was RE-RUN, not quoted** — `.scratch/s116/mutate.py`, every kind caught.
-  Final counts at 384 checks: `feature-ab` (the six new functions stubbed back to "nothing selected", the band
-  removed, the three invalidation calls cut) **41 failures of 384**; `band_floats` 8; `word_rule_forked` 6 (fm.c
-  growing its own word rule instead of calling vt.c's — the drift the design exists to prevent);
-  `wide_copied_twice` 3, `row_span_gutter` 3; `copy_gutter` 2, `no_normalise` 2, `punct_ascii_only` 2 (the same
-  mutant s114 ran against a session, failing the PREVIEW's checks because the preview has no table of its own);
-  `scroll_keeps` 1, `resize_keeps` 1, `new_preview_keeps` 1, `cap_zero_unguarded` 1. `no_clamp` printed 1 FAIL
-  and then **died of SIGSEGV** — a finding in itself: without the clamp in `fm_preview_select()` the painter
-  walks off the pane, so that check is pinned by a crash, not by a count. As the s107 lesson says, the absence
-  A/B's survivors are the negative checks (a stub that selects nothing satisfies "nothing is selected before a
-  gesture") — those are pinned by the mutants above, not by the A/B.
-  **One real defect, found by reading the new code and then MEASURING it** (`.scratch/s116/capzero.c`, built
-  with ASan): `fm_preview_selection_text()` guarded its first store with `if (cap) out[0] = 0;` but its
-  terminating store is `out[n < cap ? n : cap - 1] = 0;`, which for `cap == 0` is `out[-1]` — ASan: WRITE of
-  size 1 one byte before the caller's array, `src/fm.c:1847`. No caller in the tree passes 0, which is why the
-  guard went in the function and not in the callers: it is a public entry point in the header. Fix: `if
-  (!cap) return 0;` before any write. `make asan` cannot find this on its own — the suite never passes 0 — so
-  the check that pins it is being added to `tests/test_fm.c`.
-  **The check landed** (`tests/test_fm.c`, pvsel group): the buffer is the SECOND byte of a two-byte array
-  (`pad + 1`), so `out[-1]` is `pad[0]` by pointer arithmetic and the plain (non-sanitizer) build sees the
-  underflow — `381 checks, 0 failures` in both `bin/test_fm` and `bin/test_fm_asan`, 0 warning lines. The
-  mutant that pins it is `cap_zero_unguarded` in `.scratch/s116/mutate.py` (the guard replaced by the original
-  `if (cap) out[0] = 0;`), and it fails exactly one check.
-  **A documentation claim the code does not support, found by probing it rather than reading it.** README and
-  ISSUES both said the preview's copy gives back "the whole line as the file holds it" when a line is longer
-  than the pane. `.scratch/s116/longline` (a 130-character line in a 30-column pane) says otherwise: the row
-  span is `2..29` and the copy is **28 bytes** — the pane CUTS the line and never scrolls sideways, so the tail
-  is in no cell to select. Both files now say what the row can actually reach, and the `pvsel` group gained a
-  `long.txt` (the alphabet five times) plus three checks pinning `2..29` and the exact 28-byte copy, so the
-  sentence cannot drift back. Two mistakes on the way, both already this file's lessons: the block was first
-  inserted in the MIDDLE of the group, where installing that preview silently replaced the preview the checks
-  BELOW it read (a check went red for a setup reason, not a model one), and the first build of it errored
-  (`n` undeclared) while the run immediately after printed `381 checks, 0 failures` from the STALE binary.
-  The count moved to **384** only once the build exited 0.
-  **Next:** re-run everything from `make clean` — both builds, every suite, `make asan`, the mutation harness —
-  then commit and push (`git fetch` first). Still owed to the user's eye: the look of the preview band and the
-  feel of the gesture in a real window.
-  **Final verification, all of it re-run from `make clean` after the last edit:** `make -j8` exit 0 / **0
-  warning lines**; `make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0 / **0 warning lines**;
-  `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 — `CLI: 91 checks, 0 failures, 13 skipped`, `test_vt 1217/0`,
-  `dbg MODEL OK`, **`test_fm 384/0`**, `test_render 495/0`; `make asan` exit 0, **0 warning lines**, no
-  LeakSanitizer report, same counts; the 13-kind mutation harness re-run at 384 checks, every kind caught (the
-  numbers above). The windowed CLI group was NOT run — no window is mapped while the user is at the machine, and
-  step 3b added no flag, so nothing in it is new. `grep -rnE "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE"` and
-  `grep -rn "TODO|FIXME|XXX"` over `src/ include/ tests/` still return only the documented lines.
-  **Close-out:** two commits, `ab0809a` (the feature: header, fm.c, main.c, vt.c, test_fm.c, README, ISSUES)
-  and this journal entry; pushed, and verified from git — `git status -sb` reports `## main...origin/main` with
-  nothing but the untracked `.scratch/`, and `git log --oneline origin/main -1` is this commit. Nothing is
-  uncommitted. **Next session opens on step 4, confirm-quit** (its plan is under "Current Task"); its first
-  action is the `tcgetpgrp` probe, not code.
+- **2026-10-19, s108 — the windowed group of `tests/cli_test.sh`, on the user's explicit go-ahead.** It had not
+  run since s104 and the 24 checks s107 added made the recorded total stale. Checked the machine first rather
+  than assuming: `WAYLAND_DISPLAY=wayland-1`, no `kai-term` of mine running, no new core dump, and `nvidia-smi`
+  showing **11680/12227 MiB used** — the local LLM holds 9632 MiB, the condition the old Next Steps item warned
+  about, because a refused atlas upload fails EVERY window check for one unrelated reason after putting a dozen
+  windows in front of the user. ONE probe launch first (`./bin/kai-term -d -e true`) showed the atlases fit in
+  the ~547 MiB free, so the group ran: **141 checks, 0 failures, 0 skipped**, exactly the predicted 117 + 24,
+  and 0 skipped is what shows the window checks ran rather than being gated off. Nothing was found. Correction
+  to the rule this run tested: waiting for `nvidia-smi` to show VRAM free is too strict — **the probe launch,
+  not the free-megabytes number, is the gate.**
+- **2026-10-19, s109-s110 — the file manager must not take the keyboard from the pointer, and README's tables
+  get pinned.** The user's report: "When the file manager is open, hovering the mouse on it gives it the focus,
+  same for the preview pane. They should require a click to take the focus." The mechanism and the rule are in
+  Architecture & Invariants (`fm_wheel_focus`). Two doc defects found while verifying: the `ab_tpl` failure
+  counts recorded in this file and in ISSUES.md were **inflated** (2 and 2, actually 1 and 1) because the old
+  harness had no README.md, so its second failure was the OPTION-table check — an artifact of the copy, not of
+  the mutation (replaced by `.scratch/s107/ab_tpl2/`); and **README's settings and binding tables were NOT
+  pinned by any check** — deleting the `fm_focus_on_hover` row left every check green, so the Current Status
+  claim that the name lists were compared with "README's tables" was true only for the command-line OPTION
+  table. (The hand-diff of the current README was clean, so nothing was missing today; what was missing is the
+  check that keeps it that way.) Fix: `readme_table_names_of()` + `names_diff()`. README's theme table is
+  deliberately NOT set-differenced: it collapses `color0` … `color15` into one row, so a name-by-name diff would
+  fail on purpose; those 23 names stay pinned through `config/kai-term.theme`. Renaming a heading to
+  `### Settings file (…)` does NOT fail, on purpose: the match is on the heading's prefix, so re-wording a
+  section keeps the check alive.
+- **2026-10-19/20, s111-s112 — step 2, the cursor bar.** Measured before writing anything: the cursor was the
+  cell's own background quad in pass 1 with pass 3 re-tinting the glyph under it, and DECSCUSR was collected but
+  discarded — the CSI state skipped intermediate bytes, so `ESC [ 3 SP q` reached `csi_dispatch()` with final
+  byte `q` and param 3, and the only `case 'q'` in the file was the kitty-graphics APC parser. Window focus was
+  already tracked, so the "blink only when focused" gate needed no new Wayland plumbing. The probe
+  (`.scratch/s111/decusrprobe.c`, replaced by `.scratch/s112/qprobe.c`) fed twelve forms BEFORE any code change
+  and every one was consumed and changed nothing; after the change the same probe prints xterm's table exactly.
+  s112 took the tree from half-finished and non-building to green. **One contradiction inside the uncommitted
+  s111 code was resolved rather than left to rot:** the `CURBLINK_*` header comment said an application may
+  override the user's blink "in BOTH directions" while `blink_half_ms()` treats `conf.cursor_blink` as a CEILING
+  — the code's rule was kept and the comment rewritten. The probe paid for itself immediately: it found three
+  FAILs on its first run and all three were **errors in the new checks, not in the code** (a check written
+  against `ESC[5 q`, a *blinking* underline, expecting steady). A/Bs in `.scratch/s112/` (`ab_model/`,
+  `ab_shape/`); the limits of an object-file A/B are recorded in Key Decisions.
+- **2026-10-20, s113-s114 — step 3, double-click a word / triple-click a line.** Probed first
+  (`.scratch/s113/wrapprobe.c`) for the two shapes the rules must not break — a soft-wrapped line (`wrap[i] = 1`
+  marks the row that WAS broken, indexed by the row SLOT, the same index `row[]` and `grid_vprow()` use, not by
+  viewport row) and a wide glyph (anchor holds the codepoint with `ATTR_WIDE`, continuation has `ch == 0` AND
+  `ATTR_WIDE`). The probe's emoji case was mangled by a C hex escape (`"\x9F"` swallows the next digit) — the
+  CJK case proves the same layout, so it was left rather than fixed. s114 resumed by measuring, not by reading
+  the s113 entry: `./bin/test_vt` reported 2 failures, both in the template group, exactly the state s113
+  predicted — so the code half was in the tree and the docs/check half was not. Probe findings worth keeping:
+  `Grid.wrap[i]` is NOT set until the character that crosses the margin is written, so a line ending exactly at
+  the margin leaves the row below blank and `term_line_span` correctly stops — no off-by-one to fix
+  (`.scratch/s114/wprobe3`); a word the window broke mid-word is selected only up to the break on each row
+  (`wprobe2`: `word at (5,0) = 0..19`, `(5,1) = 0..7`), a limitation now stated in README and ISSUES.md, not
+  something step 3 claims to solve. **Non-vacuity, both kinds, RUN not reasoned about** (`.scratch/s114/ab/` and
+  `.scratch/s114/mutate.sh`, seven mutants): the interesting result is that **the never-strip-below-one-glyph
+  guard mutant pinned NOTHING until a check was added for it** — a lone full-width `。` is a wide pair, so
+  removing that guard sends the span INVERTED (`c1 < c0`) and no existing check noticed. Three of the new checks
+  were red when first written and all three were the CHECK's fault, not the model's — `don’t` is 7 bytes not 6,
+  a 26-char line does not reach the margin so `wrap[1]` never gets set, and `int r0, r1` at main()'s scope
+  shadowed the emoji block's `r1` (-Wshadow, which is why the warning count is measured, not assumed). **Then
+  the user confirmed step 3 in their own window** — "I checked and it worked" — closing the only owed verdict,
+  including the `main.c` half no headless check reaches.
+- **2026-10-19/20, s115-s117 — step 3b, the preview pane's text selection.** Probed first
+  (`.scratch/s115/selprobe.c`, run not reasoned about): in a 30x12 pane the body starts at row 2 column 2, the
+  head row is selectable too, a row span is the whole pane width with trailing blanks trimmed, a drag past the
+  bottom clamps, the band stops at the last real glyph, wide glyphs and punctuation follow the session's rule
+  because it is the same function. s116 stopped *between* two halves with a green tree (the model half in, the
+  pointer half not), which is the state to resume from; s117 found the previous session had actually gone past
+  its own "Next:" line and stopped before anything was verified or committed, so the first action was to
+  re-measure, not to write. The harness was **RE-RUN, not quoted** (`.scratch/s116/mutate.py`, 13 kinds, every
+  one caught); `no_clamp` printed 1 FAIL and then **died of SIGSEGV** — a finding in itself, since without the
+  clamp the painter walks off the pane, so that check is pinned by a crash, not by a count. The `out[-1]`
+  defect, the README/ISSUES claim the code did not support, and the two setup mistakes on the way (a block
+  inserted in the MIDDLE of a group silently replacing the preview the checks below it read; a run printing
+  `381 checks, 0 failures` from a STALE binary after a build that had errored) are in step 3b's rules and Key
+  Decisions.
+- **2026-10-20, s118 — step 4 (confirm-quit) opened with the measurement the plan asked for, then built.** The
+  probe's first version reported fish IDLE with `sleep 6` "running" — the journal's own pitfall: a probe that
+  hosts a shell but never answers that shell's queries measures a STALLED shell (fish's first 83 bytes are
+  queries; the probe's own output count showed exactly 83 bytes at startup). `fgprobe2` answers them with the
+  strings `src/vt.c`'s `TERM_RESP` sites send and proves the command ran by looking for its OUTPUT — and the
+  needle matters: the shell echoes the typed line, so `echo DONE` proves nothing (the echo contains DONE);
+  `printf 'O%sK\n' 2` prints `O2K`, which the echo does not contain. The measured predicate, what is in the tree
+  and the exact next action are in "Current Task / 4". The session stopped mid-stage-A with the tree RED, and
+  nothing of step 4 is committed — `ab0809a` + `8ccc73d` (step 3b) are still the pushed state.
+- **2026-10-20, s120 — step 4 stage A finished: the tree back to green, then the checks step 4 owed.**
+  Objective: take the RED tree (`test_vt` 1217/3, all three from the docs-pinning group) back to green and finish
+  stage A of "Current Task / 4" — the docs half of `confirm_quit` plus the headless checks the pure decisions
+  still lacked. Planned steps, in the order "Current Task / 4" already named: (1) `confirm_quit = running` +
+  comment block in `config/kai-term.conf`, the README settings-table row, bump `ns == 36` to `37` in
+  `tests/test_vt.c`; (2) config-group checks for the three values and the warn-and-keep path, and a new group for
+  `fg_busy()` / `mux_running()` / `confirm_message()`; (3) an A/B with the busy answer stubbed to "never busy"
+  plus the mutation of the `fg <= 0` guard; (4) stages B/C/D (layout notice row, render pass, main.c gate and
+  modal keys); (5) README/ISSUES, both builds, every suite, `make asan`, commit, push.
+  Expected outcome after (1): 1217 checks, 0 failures with the settings-name count at 37 — nothing about the
+  parser changes, only the documents catch up to it.
+  DONE (1a): `confirm_quit = running` with its comment block went into `config/kai-term.conf` after `split_max`,
+  inside the "sessions (tabs) and layout" section — the same place the parser's branch sits in the ladder — and
+  the block names the three values, the `&` limitation measured in s117, and the fact that a multi-session
+  question says how many and which. Result: the file now lists 37 settings names; the template-parity check that
+  failed on "config/kai-term.conf does not list confirm_quit" has one fewer reason to fail.
+  DONE (1b): the README settings-table row went in after `split_max`, same order as the template. NOTE for the
+  next session: that row describes the FINISHED behaviour (the question, the multi-session list), and stages B/C/D
+  are not in the tree yet — so this state must not be committed on its own. The row exists now because the
+  name-coverage check demands template+README for every name the parser accepts; the feature is what makes the
+  sentence true, and it gets committed together with this row or not at all.
+  DONE (1c): `ns == 36` -> `ns == 37` in `tests/test_vt.c` (the hard-coded count beside the derived one). Result,
+  measured: `make bin/test_vt` 0 warning lines, `./bin/test_vt` **1217 checks, 0 failures** — the tree is GREEN
+  again, and the settings-name count is 37 in all three places (parser, template, README).
+  DONE (2a, probe before checks): `.scratch/s120/fgprobe3.c` — a pty with a HAND-BUILT process tree on it
+  (no shell binary, so no history is touched and no startup query needs answering): the child does what
+  `pty_spawn`'s child does (open the slave, `setsid`, `TIOCSCTTY`) and then what an interactive shell does
+  (`tcsetpgrp` its own group; on a byte from a pipe, fork a command into a group of its own and hand THAT
+  group the foreground). Every wait polls for the state it needs, so nothing sleeps and hopes. Measured:
+  fresh pty before anyone takes the group `fg = 0` -> idle; shell at the prompt `fg == child` -> idle;
+  command in its own group `fg != child` -> **busy**; shell exited with the command still alive `fg = 0` ->
+  idle (the dead-session case, reproduced without bash); `mfd = -1` -> idle with no syscall at all; a CLOSED
+  master answers `tcgetpgrp` = -1 EBADF, which `fg <= 0` also turns into idle. One NEW limitation found and
+  it is real: `pty_spawn(&q, "sleep 30", ...)` reads **idle** (`fg == child`), because `sh -c` runs its
+  command in its OWN process group — the predicate sees the foreground GROUP, so a command that never takes
+  a new group is invisible to it. An interactive shell always takes one for a foreground job, which is the
+  case that matters, but the sentence belongs in README/ISSUES next to the `&` limitation.
+  DONE (2b): writing the checks found a crash in `confirm_message()` before they could pin it — the
+  multi-session branch called `session_list(idx, ...)` with no `idx` guard, so `confirm_message(CONFIRM_QUIT,
+  3, NULL, ...)` dereferenced NULL. It is a public entry point in the header, so it is guarded there, not in
+  a caller (the step-3b `cap == 0` lesson, same class). While in it: the list is capped at FOUR numbers and
+  the wording shortened, because the s118 form ("A command is still running in this session. Close it
+  anyway?  [Enter] yes   [Esc] no") is 84 characters and would have been clipped by an 80-column window — a
+  question whose answer hint is cut off is worse than a shorter question. The longest form now fits 80, and
+  the exact-text checks are what pins that. Result: `make -j8` exit 0, 0 warning lines.
+  DONE (2c): the checks are in `tests/test_vt.c` — a `confirm_quit` config group (the three values and every
+  spelling, and warn-and-KEEP proved by setting `never` first and then feeding a value that means nothing, so a
+  parser that fell back to the default on a typo cannot pass), a pure `fg_busy()` group, a group against a REAL
+  pty with a hand-built process tree (the new `FakeSess` helpers: no shell binary, every wait polls for the state
+  it needs), a `mux_running()` group (busy tabs at 0 and 3, non-adjacent so an off-by-one list cannot pass; max
+  caps the list not the count; NULL list; a session that ended drops out), and a `confirm_message()` group with
+  every branch's exact text copied from `.scratch/s120/msgprobe` plus the cap/NULL cases. Result, measured:
+  `make bin/test_vt` 0 warning lines, `./bin/test_vt` **1291 checks, 0 failures** (was 1217/0 before the group;
+  +74). Two things the harness found on the way, both now in the code: (i) writing to the control pipe after the
+  session died raises **SIGPIPE, which killed the suite** — it looked exactly like a crash in the code under test,
+  so `fake_sess_open` ignores it (the harness owns those pipes; `src/` never needs it, a pty master answers a
+  dead slave with EIO); (ii) reaping the fake shell in one place and calling the close helper afterwards means a
+  second `waitpid` on a reaped pid, so the helper treats `ECHILD` as "already reaped" and the caller zeroes
+  `p.child` when it reaped it itself. Three `-Wshadow` warnings appeared on the first test build (`w1`, `n`,
+  `small` all exist at main()'s scope) — that is what measuring the warning lines is for.
+  DONE (2d, the A/B and the mutants, all RUN): `.scratch/s120/mutate.py`, 19 kinds. Feature A/B (`pty_fg_busy()`
+  stubbed to "never busy", the answer the tree gave before step 4): **6 failures** — the pty busy check and the
+  four mux count checks; the survivors are the idle-side checks ("no pty is idle", "a dead session is idle"),
+  which an always-idle tree satisfies by construction and which the mutants below pin instead. Mutants and what
+  each cost: `fg_no_guards` 6, `fg_no_child_guard` 2, `mux_max_caps_count` 1, `mux_idx_one_based` 3,
+  `mux_no_null_guard` **died of SIGSEGV** (a crash is a finding, not a counted check), `list_seven` 2,
+  `list_no_and` 2, `list_no_ellipsis` 1, `msg_zero_based` 1, `msg_no_list` 2, `msg_cap0_unguarded` 1,
+  `msg_null_idx_unguarded` 1, `cfg_no_auto` 1, `cfg_bad_resets` 1, `cfg_default_never` 1, `cfg_no_key` 13.
+  TWO SURVIVORS, said out loud rather than hidden: dropping `pty_fg_busy()`'s `mfd < 0` guard (tcgetpgrp(-1)
+  answers -1, which `fg_busy()` calls idle anyway — the guard is a syscall saved, not a behaviour) and dropping
+  `mux_running()`'s `n < max` bound (the suite's `idx[]` has room for every index, so writing past `max` is
+  invisible to these checks). `session_list()`'s own `!idx` guard is likewise unreachable through the public
+  entry point and is pinned by the comment only.
+  THE MUTATION THAT MATTERED: `cfg_no_auto` ran **0 failures** against the first version of the config group.
+  Each spelling was being fed into a config whose default already equalled the expected answer, so a word the
+  parser did not know still passed — the vacuity the harness exists to catch. Fixed by feeding every spelling
+  AFTER the opposite value, so the check proves the word CHANGED the state; the mutant then failed exactly 1.
+  Re-measured after the fix: `make bin/test_vt` 0 warning lines, `./bin/test_vt` **1291 checks, 0 failures**.
+  Measured starting point, re-run not copied: `make clean && make -j8` exit 0 / 0 warning lines; test build 0
+  warning lines; `test_vt` **1217 checks, 3 failures** (the three named at lines 2913, 2920, 2939), `dbg`
+  MODEL OK, `test_fm` 384/0, `test_render` 495/0. `git status -sb`: `main` even with `origin/main` at `8ccc73d`,
+  modified `AGENT.md Makefile include/kai-term/kai-term.h src/config.c src/mux.c src/pty.c` — the s118 work is
+  still uncommitted, as that entry said.
+  DONE (3, stage B — the notice row's geometry, `src/layout.c`): `layout_compute()` now takes
+  `rq->notice_on`/`rq->notice_text` and reserves ONE cell row at the BOTTOM of the grid area, before the
+  file-manager band and before the panes are measured, so the band's PERCENT applies to what is left. Two
+  decisions were made here rather than copied from the bar: the row costs **`ch` and no gap** (the bar costs
+  `ch + gap` because its ITEMS need separating; one full-width row does not, and costing the gap would have
+  taken a SECOND row from a window whose height is a whole number of rows — measured: 986 px grid area, 17 px
+  cell, 58 rows -> 57 with the row, 56 with row+gap), and the terminal wins over the question, so a window
+  whose grid area cannot keep one row after paying gets `notice_on == 0` and closes without asking. The text
+  is cut to the row's columns IN layout.c (`clip_utf8`), which is what makes the clipping checkable.
+  Found while writing it: `snprintf` into a fixed buffer can split a UTF-8 sequence, and `clip_utf8` only
+  ever cuts at an edge, so a byte-bound cut left a dangling lead byte — for the notice row AND, as it turned
+  out, for every bar label whose OSC title is longer than `BAR_LABEL_MAX` (a claim the existing
+  "never mid-sequence" check did not actually cover). Fixed with one `trim_partial_utf8()` in layout.c applied
+  to both, with checks on both sides. 29 new checks (1291 -> **1320, 0 failures**), and every one of them
+  non-vacuous: the stage-B feature A/B (`layout_compute` ignoring `notice_on`, i.e. the tree before this
+  stage) fails **21**, and the nine mutants fail — `b_no_reserve` 12, `b_cost_gap` 6, `b_at_top` 7,
+  `b_no_short_guard` 2, `b_no_clip` 1, `b_cols_from_window` 1, `b_no_trim_notice` 2, `b_no_trim_label` 1,
+  `b_band_sees_full_grid` 14 (that one breaks the pre-existing fm checks too, which is the point: measuring
+  the band against the grid area the question has not paid for moves EVERYTHING below it). Existing geometry
+  checks were re-run, not assumed: all still pass, because `LayoutReq` is memset in both `lreq()` and
+  `layout_apply()`, so `notice_on` is 0 for every request that does not ask for it.
+  DONE (4, stage C — the row is drawn, `src/render.c`): one full-width field quad at the end of batch A (next
+  to the bar items, so the pictures go over it and its text goes over them), its text in batch B with the same
+  text font and the same per-column bound a bar label uses, and the staging budget (`maxq`) grown by
+  `NOTICE_MAX + 1` when the row is on — a budget that forgets a pass is a buffer overrun waiting for a wide
+  window. Colours come from `render_chrome()` (`notice_bg` = the selection highlight, `notice_fg` = the default
+  ink), which is where a configured colour is checkable. What is checkable headlessly is the COLOUR decision
+  (`tests/test_render.c`, 3 checks) and the draw loop by source scan (2 checks: the two colour tokens are both
+  derived and consumed, and `notice_on` is read three times — the field pass, the text pass, the budget);
+  the row's LOOK is owed to the user's eye like every other pixel. 5 new checks (495 -> **500, 0 failures**),
+  and the harness for them is `.scratch/s120/mutate_render.py`, which taught something worth keeping: a source
+  scan reads a file BY PATH, so running the mutant binary from the project root scans the UNMUTATED
+  `src/render.c` and the first two mutants passed for the wrong reason. Fixed by building AND running in a
+  staging tree (`mut_render/<name>/src/` holds the patched file and the files the scans read). Measured after
+  that fix: `c_chrome_no_derive` 4, `c_field_hard_colour` 1, `c_no_text_pass` 1, feature A/B (the whole row
+  never drawn) 5 — no survivors.
+- **2026-10-20, s119 — this cleanup (docs only, no source touched).** Pre-cleanup text:
+  `.scratch/s119/AGENT.md.pre-cleanup` — **2272 lines / 219,649 bytes**, against **1746 lines / 165,832 bytes**
+  here (`wc -l -c` on both; the committed side is `git show 8ccc73d:AGENT.md | wc -l` = 2179, the working tree
+  holding the s118 entry on top). What went: the s107-s117 session narratives, and the per-session "objective /
+  plan / expected outcome / measured starting point" blocks that git already holds — the Progress Journal fell
+  839 -> 306 lines. What did NOT go, deliberately: the invariants, the pitfalls, the diagnosis reference and the
+  step-rule sections, which are this file's stated purpose; those grew slightly as step-4 detail was consolidated
+  into "Current Task". Superseded check counts, source line numbers and per-session A/B blow-by-blow were
+  dropped as git's job. Every rule a change must not break, every measured number a check rests on, every
+  pitfall, every mechanism name and every `.scratch/` path a harness lives at was checked to survive outside the
+  deleted text before it was deleted (the check: build the post-deletion text and grep it for each name). The
+  stale counts in "Project Files & Facts" were re-measured and corrected: the settings template and README's
+  settings table hold **36** names each, the parser accepts **37** (`confirm_quit` is the gap — that is the RED),
+  and `usage()` has **9** long options. Re-measured the tree while doing it: both builds exit 0 with 0 warning
+  lines, `test_vt` 1217/3, `dbg` MODEL OK, `test_fm` 384/0, `test_render` 495/0, headless CLI 91/0/13.
+- **2026-10-20, s121 — step 4 stages B/C/D: what the last session left, and what it still owed.** Objective:
+  the journal's last word was "stage A DONE, B/C/D to go", but the working tree says otherwise — `src/layout.c`,
+  `src/render.c` and `src/main.c` are all modified and the s120 entry ends after stage C. So the first job is to
+  find the last VERIFIED state rather than trust either the status line or the file list. Planned steps: (1)
+  read the diff of every modified file and say what stage each one is; (2) re-measure the whole tree (both
+  builds, every suite, `make asan`, the headless CLI group) and report the numbers, not the ones on this page;
+  (3) A/B what s120 never A/B'd — stage D's six wiring checks — against the real pre-stage-D `main.c` (`git show
+  HEAD:src/main.c`) and against a mutant that stops using the shared predicate, plus the seven headless config
+  checks in `tests/cli_test.sh` against a `config.c` with no `confirm_quit` branch; (4) fix anything the A/B
+  shows to be vacuous; (5) correct the stale status/task/next-steps text; (6) commit step 4 as one commit and
+  push. Expected outcome: a green tree, a step-4 feature whose every headless decision has a check that has
+  actually failed against the code that lacks it, and a journal that says what is really in the tree.
+  Known-unfinished when this entry was written: nothing in the feature itself is missing from the tree; what is
+  missing is the verification record, and the look of the row is owed to the user's eye like every other pixel.
+  DONE (1, the state read from the tree rather than from the page): stages B, C **and D** are all in the tree —
+  `src/layout.c` 13:39, `src/render.c` 13:46, `src/main.c` 13:54 (the gate, the modal keys, `confirm_answer`,
+  `confirm_clear`), `tests/test_render.c` 13:55 (six `src/main.c` wiring scans), `tests/cli_test.sh` 13:58 (the
+  headless config group), README 13:59, ISSUES 14:00. The s120 entry simply stopped after stage C, so the
+  journal was a whole stage behind the tree while its "Current Task" text still listed B/C/D as to-do.
+  DONE (2, re-measured, not copied): `make clean && make -j8` exit 0 / **0** warning lines; the four test
+  binaries exit 0 / **0** warning lines; `./bin/test_vt` **1320 checks, 0 failures**; `./bin/dbg` **MODEL OK (0
+  problems)**; `./bin/test_fm` **384, 0**; `./bin/test_render` **506, 0**; `KAI_TERM_TEST_NO_WINDOW=1
+  tests/cli_test.sh` **99 checks, 0 failures, 13 skipped** (no window was mapped — the display is the user's);
+  `make asan` exit 0 / **0** warning lines and all four asan binaries exit 0 with no LeakSanitizer or UBSan
+  report.
+  DONE (3, the A/B stage D never had): `.scratch/s121/ab_stage_d.py` builds AND runs in a staging tree, because
+  the six wiring checks are source scans and a scan reads `src/main.c` BY PATH (the s120 lesson). `d_head_main`
+  — `src/main.c` exactly as committed at HEAD, the real tree before stage D rather than a hand-made patch —
+  fails **6 of 6** wiring checks. `d_predicate_local` — stage D present but main.c invents its own
+  `tcgetpgrp` test and its own count instead of `pty_fg_busy()`/`mux_running()` — fails exactly **1**, the
+  shared-predicate count; nothing else in the suite can see a second busy-test starting to drift. The stage-D
+  mutants sitting in `.scratch/s120/mutate_render.py` were also RUN at last: `d_no_window_gate` 1,
+  `d_bar_ungated` 1, `d_key_ungated` 1, `d_no_layout_input` 1, `d_modal_gone` 1, `d_feature_ab_no_stage_d` 4 —
+  no survivors.
+  DONE (4, the CLI A/B, and the two things it found): `.scratch/s121/ab_cli.sh` builds a WHOLE kai-term from a
+  patched copy of the tree (the suite reads `config/kai-term.conf` relative to its cwd, so a mutant binary run
+  from the project root would be checked against the unmutated template — everything is staged). `cfg_no_key`
+  (no `confirm_quit` branch in `apply_setting()` at all) fails **4** of the new checks; `cfg_keeps_always` (the
+  bad-value path resets to the default instead of keeping the value already set) fails exactly **1**, the
+  warn-and-KEEP check. FINDING 1: "`confirm_quit = always` is accepted" grepped for the ABSENCE of `is not a
+  value`, which a parser that has never heard of the setting also satisfies — the check was vacuous in exactly
+  the direction that matters. Fixed by adding the check that a good value leaves no `confirm_quit` line in the
+  log at all (measured: it does), which `cfg_no_key` then fails: 98 -> **99** checks. FINDING 2, about the
+  harness itself: the `cfg_keeps_always` patch died of a Python `IndentationError` inside the heredoc, `make`
+  succeeded on the UNPATCHED copy and the suite printed **"0 failures" for a mutant that never existed**. The
+  harness now refuses to report a result unless the patch is verifiably in the source it built.
+  DONE (4b, one measured limitation the docs still owed): `.scratch/s121/espawn` spawns `-e` commands on a real
+  pty through `pty_spawn()` itself and prints `tcgetpgrp` beside `p.child` with `/proc/<child>/comm` proving the
+  command is alive: `sleep 30` and `sleep 30 | cat` are both **idle for the whole 900 ms**, because `sh -c` puts
+  the command in the child's OWN foreground group (`fg == child`). So `confirm_quit = running` never asks about a
+  `-e` window — the s120 entry had noted this and README/ISSUES never got the sentence. Both now say it, and
+  point at `confirm_quit = always` as the setting for that case.
+  DONE (5): the stale status text corrected — "Current Status" (the s121 numbers, asan green on this tree,
+  step 4's row added to the owed-to-the-eye list with its recipe), "Current Task / 4" (stages A-D done, the
+  rules B/C/D added, the next action now commit+push+verdict), "Where each step stands", and Next Steps 1.
+  NOT DONE: the commit and the push, and the row's look, which only the user can confirm.
 
 ## Next Steps
 
-1. **Step 2, the cursor bar — BUILT, GREEN AND COMMITTED (s112); what is owed is the user's eye, not code.**
-   DECSCUSR parses (`Parser.inter`, `Term.cur_style`/`cur_blink`), the shape decision is the pure
-   `render_cursor()` asked by all three passes of `render_draw()`, the bar/underline quad is emitted in batch B
-   between the bands and the glyphs, the blink is the fourth timerfd (`cbfd`) with its phase in `W`, and the two
-   keys are `cursor_blink = 1000` / `cursor_width = 2` (no `cursor_style` key). A/Bs: 22 failures without the
-   model/config half, 12 without the shape half. **To hand to the user:** open Kai-Term and look — a 2 px bar at
-   the left edge of the cell, one second on / one second off while the window has focus, steady with
-   `cursor_blink = 0`; then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'` for a
-   steady one, and `vim`/`fish` should set their own shape as they always tried to. If the bar is too thin or too
-   thick at their font size, `cursor_width` is the knob; if the rhythm is wrong, `cursor_blink`.
-2. **Step 3b, the preview pane's text selection — BUILT, GREEN AND COMMITTED (s117); what is owed is the
-   user's eye.** What is in the tree and the rules it must not break are in that step's own section. **To hand
-   to the user:** open the band (`Ctrl+Shift+F` by default), select a text file, then drag in the preview pane —
-   the band should be the same colour as a terminal selection; `Ctrl`+`Shift`+`C` should paste exactly the
-   file's own text (no leading indent, a long line as one line); a double click should take the word and a
-   triple click the row; scrolling or resizing the pane should drop the highlight. **Next up: step 4,
-   confirm-quit**, then steps 5-7 of the s102 plan (middle-click paste, visual bell, plain-click URLs). Each is
-   measured and gated in "Current Task"; the decisions that would have blocked them are already made. Do not
-   re-derive the measured facts.
-3. **Owed to the user's eye:** the look of a themed window, a live OSC repaint, the configured `cursor_color`,
-   the whole cursor of step 2 — that the bar reads as a bar, that the 1 s blink is the rhythm they wanted, that
-   it stops blinking when the window loses focus, and that vim/fish get the shape they ask for — and **step 3b,
-   the preview pane's selection**: that a drag there highlights, that the band reads as the same highlight as
-   the terminal's, that a double click picks the word they meant, and that `Ctrl`+`Shift`+`C` gives the file's
-   own text. No longer on that list: `--import-theme` (confirmed s108) and **step 3, the double/triple click —
-   confirmed by the user in their own window on 2026-10-20**. Nothing about the rest is a harness question;
-   every one of them has a check on the decision and none has a check on the pixel.
-4. **The windowed group of `tests/cli_test.sh` ran in s108 (141/0/0) at the user's request and passed.** It
+1. **Now: step 4, confirm-quit — stages A-D are in the tree and green (s121); it is NOT committed yet.** Read
+   the state from git (`git status -sb`), not from this page. What is left in order: commit the whole of step 4
+   as one commit (feature + checks + docs — the README row and the template block are only true together with
+   the gate), `git fetch` then push, then hand the user the step-4 recipe in "Current Status" and record their
+   verdict. Do NOT re-derive the foreground-group facts, re-write stage A's checks or re-do stages B/C/D — the
+   s120 and s121 entries record the A/B and the mutants each was measured against (`test_vt` 1320/0,
+   `test_render` 506/0, headless CLI 99/0/13, asan clean). **Then steps 5-7 of the s102 plan**
+   (middle-click paste, visual bell, plain-click URLs). Each is measured and gated in "Current Task"; the
+   decisions that would have blocked them are already made.
+2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look
+   (a 2 px bar at the left edge of the cell, one second on / one second off while the window has focus, steady
+   with `cursor_blink = 0`), then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'`
+   for a steady one, and `vim`/`fish` should set their own shape as they always tried to; if the bar is too thin
+   or too thick at their font size, `cursor_width` is the knob, and `cursor_blink` is the knob for the rhythm.
+   For step 3b, open the band (`Ctrl+Shift+F`), select a text file, drag in the preview pane — the band should be
+   the same colour as a terminal selection, `Ctrl`+`Shift`+`C` should paste exactly the file's own text with no
+   leading indent, a double click should take the word and a triple the row, and scrolling or resizing the pane
+   should drop the highlight. Nothing about these is a harness question.
+3. **The windowed group of `tests/cli_test.sh` ran in s108 (141/0/0) at the user's request and passed.** It
    maps ~15 real windows, so it is still a run to ask about, not one to do unprompted while the user is at the
    machine. Check `nvidia-smi` first: a refused atlas upload fails EVERY window check for one unrelated reason
    after putting a dozen windows in front of the user. Measured s108: the LLM held 9632 MiB of 12227 and the
    atlases still fit in ~547 MiB free, so "the LLM is running" is NOT by itself a reason to skip — one probe
    launch (`-d -e true`, one window) decides, and that is what the script's own gate does.
-5. **Closed — diagnosis recipe only, nothing owed.** Each of these is built, green and confirmed by the user in
-   their own window; if a report ever arrives, start from the `-d` line named, not from the shader.
-   - Config split: `-d` logs `config loaded from <path>` / `bindings loaded from <path>`; a line in the wrong
-     file logs `is a key binding — those live in kai-term.bind now` or `is not a key binding — kai-term.bind
-     holds bindings only`. Their own `~/.config/kai-term/` holds only `kai-term.conf` and there is no
-     `/etc/kai-term`, so their bindings are the built-ins — a `kai-term.bind` they never wrote is valid, not a
-     bug.
-   - File-manager band (`fm: opened on …`, `fm: listing <dir> (request N)`, `fm: dropping stale …`,
-     `fm: keyboard -> …`), the `p` path key (`fm: typed the selected path at the prompt: <path>`; a refusal logs
-     `fm: not typing the path — the input line is not one I can describe`; the keys are config: `fm_key_path`,
-     `fm_key_preview`, `fm_key_open`), the prompt follow (type a partial command, open the band, navigate TWICE —
-     each must end with `fm: the prompt now holds the browser's directory and what you had typed`, and the text
-     must appear once, not `text cd <dir>`; then diagnose headless with `.scratch/s86/follow2.c` against the
-     prompt predicates before touching the model).
-   - Mouse in full-screen programs (`mouse: the wheel became N cursor key press(es) for the application`; if the
-     wheel scrolls nothing check `term_wants_key_mouse()`'s two conditions first — `alt_screen` and no
-     `MOUSE_PRESS`/`MOUSE_DRAG` grabbed, so a program that asked for the mouse is deliberately excluded; both
-     halves are config: `wheel_sends_keys`, `click_moves_cursor`).
-   - Shell integration (`fm: shell integration (<kind>) asked to cd into <dir>` then `fm: the shell's integration
-     changed directory to <dir> — the line was not touched`; `no integration ack` means the reader was not an
-     integrated shell — expected for `env bash`, `sudo bash`, `/usr/bin/bash`; in **bash** a stale prompt string
-     is expected behaviour, not a bug).
+4. **Closed — diagnosis recipe only, nothing owed.** Each of these is built, green and confirmed by the user in
+   their own window; if a report ever arrives, start from the `-d` line named (all of them are listed under
+   "Debugging this project"), not from the shader.
+   - Config split: a line in the wrong file logs `is a key binding — those live in kai-term.bind now` or `is not
+     a key binding — kai-term.bind holds bindings only`. Their own `~/.config/kai-term/` holds only
+     `kai-term.conf` and there is no `/etc/kai-term`, so their bindings are the built-ins — a `kai-term.bind`
+     they never wrote is valid, not a bug.
+   - The `p` path key: a refusal logs `fm: not typing the path — the input line is not one I can describe`; the
+     keys are config (`fm_key_path`, `fm_key_preview`, `fm_key_open`). The prompt follow: type a partial
+     command, open the band, navigate TWICE — each must end with `fm: the prompt now holds the browser's
+     directory and what you had typed`, and the text must appear once, not `text cd <dir>`; then diagnose
+     headless with `.scratch/s86/follow2.c` against the prompt predicates before touching the model.
+   - Mouse in full-screen programs: if the wheel scrolls nothing check `term_wants_key_mouse()`'s two conditions
+     first — `alt_screen` and no `MOUSE_PRESS`/`MOUSE_DRAG` grabbed, so a program that asked for the mouse is
+     deliberately excluded; both halves are config (`wheel_sends_keys`, `click_moves_cursor`).
+   - Shell integration: `no integration ack` means the reader was not an integrated shell — expected for
+     `env bash`, `sudo bash`, `/usr/bin/bash`; in **bash** a stale prompt string is expected behaviour, not a bug.
    - Images: `-p k` IS the supported way to show a picture ("The goal was image support, Not auto-detection by
      timg"). Do NOT re-add the graphics bits (4/16/18) to the DA1 answer or invent a `TERM` value — advertising
      sixel without implementing it makes the picture vanish entirely. Sixel/iTerm2 would be a NEW feature, only
@@ -1284,8 +1056,8 @@ look, bell flash) to the user.
      interprets the escape inside it (`printf 'AA\e[?2004hBB' | wl-copy`, paste at a fresh bash prompt — with the
      delimiters the line reads `AA^[[?2004hBB`, inert; without them `AA2004hBB`). The checks are the `C0 inside
      CSI` group in `tests/test_vt.c`, and `grid_has_glyph()` is what proves a sequence was consumed rather than
-     printed).
-6. **Housekeeping, none a bug:**
+     printed.
+5. **Housekeeping, none a bug:**
    - ASan build of the `kai-term` binary itself as a Makefile target (only tests have one) — it is the only thing
      that would exercise `fm_shutdown()` and the heap-grown `paste_buf` under LeakSanitizer.
    - The file manager's input routing lives in `main.c`, which is in no test binary, so it is covered only by the
@@ -1312,24 +1084,37 @@ look, bell flash) to the user.
    - A `tests/` check running `fish -n` / `bash -n` / `zsh -n` over the generated shell scripts would catch a
      script no shell can parse, but it makes the suite depend on external shells unless it skips when one is
      missing.
-7. **Scratch:** throwaway probes live in `/home/kaida/Project/.scratch/` (outside the project). **What the user's
-   "don't touch .scratch for now" means, settled with them 2026-10-20: do not DELETE or prune anything there;
-   writing new files and editing existing ones is fine and expected** — that is where harnesses belong, and an
-   agent that refuses to write there ends up putting throwaway work in `/tmp`, where it cannot be found again.
-   Deleting is still the user's call. Harnesses worth keeping: `s70/timg_gate.c` (end-to-end image),
-   `s74/inj_keys.sh` (the file-manager input-routing gate — the only coverage `make test` does not have),
-   `s86/follow2.c` (the prompt follow over a real pty), `s89/follow3` + `s89/bstoprobe` (the echo-window
-   transition), `s90b/intgate.c` (the shell-integration gate — re-diff it against `main.c` before trusting it),
-   `s103/ab_ris`, `s103/ab_hex` (the mutation harnesses behind the hex-escape gate), `s104/ab_osc`,
-   `s104/ab_nosweep` (the OSC sweep gates), `s105/importprobe.c` + `s105/corpus/` (the eight-format import
-   corpus every importer number was copied from), `s107/ab_noimport/` (HEAD's `src/theme.c` with the 1e API
-   stubbed out — the importer's A/B, 44 failures), `s107/head_tree/` (a full HEAD build, what the new CLI
-   checks were A/B'd against), `s115/pvprobe` + `s115/selprobe{,2,3,4}` (the preview pane's own cell grid — every
-   number in the `pvsel` group was printed by one of them before the check was written) and `s116/mutate.py` +
-   `s116/capzero.c` (the step-3b non-vacuity harness: the feature A/B plus 12 mutants, and the ASan probe that
-   found the `out[-1]` write). One fact to keep in mind: this file cites those paths and a
-   fresh clone cannot run them — so anything that is a real regression gate belongs in `tests/` eventually.
-8. **Git:** keep committing verified work; `git fetch` before pushing.
+6. **Scratch:** throwaway probes live in `/home/kaida/Project/.scratch/` (outside the project) and, since s112,
+   in the repo's own untracked `.scratch/`. **What the user's "don't touch .scratch for now" means, settled with
+   them 2026-10-20: do not DELETE or prune anything there; writing new files and editing existing ones is fine
+   and expected** — that is where harnesses belong, and an agent that refuses to write there ends up putting
+   throwaway work in `/tmp`, where it cannot be found again. Deleting is still the user's call. Harnesses worth
+   keeping: `s70/timg_gate.c` (end-to-end image), `s74/inj_keys.sh` (the file-manager input-routing gate — the
+   only coverage `make test` does not have) and `s74/argorder.c`, `s82/promptprobe.c`, `s86/follow2.c` (the
+   prompt follow over a real pty), `s89/follow3` + `s89/bstoprobe` + `s89/leftprobe{,_old}`, `s90b/intgate.c`
+   (the shell-integration gate — re-diff it against `main.c` before trusting it), `s97/csiC0.c` +
+   `s97/fishdiag` + `s97/fishtime`, `s102/cube.c`, `s103/ab_ris` + `s103/ab_hex` (the mutation harnesses behind
+   the hex-escape gate), `s104/ab_osc` + `s104/ab_nosweep` (the OSC sweep gates), `s105/importprobe.c` +
+   `s105/corpus/` (the eight-format import corpus every importer number was copied from), `s107/ab_noimport/` +
+   `s107/head_tree/` (the importer's A/B and what the new CLI checks were A/B'd against), `s107/ab_wheel/` +
+   `s107/ab_tpl2/` (the wheel-focus rule and the template/README gate), `s112/qprobe.c` (DECSCUSR forms) +
+   `s112/ab_model/` + `s112/ab_shape/` (which needs `old_cursor.c`, the pre-step-2 rule written as the function
+   the test calls), `s113/wrapprobe.c` + `s114/wprobe2` + `s114/wprobe3` + `s114/ab/` + `s114/mutate.sh` (step
+   3's grid layout, its A/B and its seven mutants), `s115/pvprobe` + `s115/selprobe{,2,3,4}` (the preview pane's
+   own cell grid — every number in the `pvsel` group was printed by one of them before the check was written),
+   `s116/mutate.py` + `s116/capzero.c` + `s116/longline` (the step-3b non-vacuity harness: the feature A/B plus
+   12 mutants, the ASan probe that found the `out[-1]` write, and the 130-character line), and
+   `s117/fgprobe2.c` (spawn a real shell on a pty, ANSWER its startup queries, prove a command ran by its own
+   output, and print `tcgetpgrp` beside that evidence — the gate every confirm-quit decision rests on;
+   `s117/fgprobe.c` is the version that got it wrong, kept to show why), `s120/fgprobe3.c` + `s120/msgprobe.c` +
+   `s120/mutate.py` + `s120/mutate_render.py` (the hand-built process tree on a real pty, the exact wording the
+   checks copy, and the 19 stage-A mutants plus the stage-B/C/D mutants — the `d_*` ones were only RUN in s121),
+   and `s121/ab_stage_d.py` + `s121/ab_cli.sh` (stage D's wiring A/B against `git show HEAD:src/main.c`, and the
+   whole-tree A/B for the headless config checks — the one that caught a mutant that never got built). One fact
+   to keep in mind: this file
+   cites those paths and a fresh clone cannot run them — so anything that is a real regression gate belongs in
+   `tests/` eventually.
+7. **Git:** keep committing verified work; `git fetch` before pushing.
 
 ## Project Files & Facts
 
@@ -1341,27 +1126,31 @@ Kai-Term/
 ├── ISSUES.md                    # open items + Fixed + known limitations
 ├── README.md                    # features, deps, build, flags, the config files, shortcuts, exit status
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
-├── config/kai-term.conf         # the shipped SETTINGS template: all 32 names at their built-in default
+├── config/kai-term.conf         # the shipped SETTINGS template: every default the parser accepts
 ├── config/kai-term.bind         # the shipped KEY-BINDING template: all 24 names at their built-in default
 ├── config/kai-term.theme        # the shipped THEME example: all 23 theme names at the built-in colours
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 1217 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt machinery, click selection
+├── tests/test_vt.c              # 1320 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt
+│                                # machinery, click selection, confirm-quit (predicate, count, wording, notice geometry)
 ├── tests/test_fm.c              # 384 checks: the file-manager model, previews, decoders, band geometry, pointer rules, the preview pane's text selection
-├── tests/test_render.c          # 495 checks: the renderer's pure decisions — colour choices and cursor shape
+├── tests/test_render.c          # 506 checks: the renderer's pure decisions — colour choices, cursor shape, the question
+│                                # row's two colours — plus the source scans that cover main.c's confirm-quit wiring
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
-├── tests/cli_test.sh            # drives the REAL bin/kai-term: 141 checks / 0 skipped with a display,
-│                                # 91 checks / 13 skipped with none (the 13 are the window groups).
+├── tests/cli_test.sh            # drives the REAL bin/kai-term: 99 checks / 13 skipped headless (the 13 are the window
+│                                # groups; a display run was last measured at 141 in s109 — step 4 added 8 headless checks)
 │                                # ONE probe launch gates the window checks; KAI_TERM_TEST_NO_WINDOW=1 skips them
 ├── bin/                         # kai-term, test_vt, dbg, test_fm, test_render (+ *_asan)  [generated, git-ignored]
 └── build/                       # *.o + generated/xdg-shell-*                [generated, git-ignored]
 ```
 
+What each file OWNS (the rules that bind them are in "Architecture & Invariants"; do not duplicate them here):
+
 - `src/vt.c` — unit-tested core: VT/ANSI/UTF-8 parser (incl. the APC/DCS states the kitty graphics protocol
   needs), grid model, the image list (decode + placement + lifetime), selection text extraction, alt screen,
-  `term_grid_geometry()`, evdev -> SGR button mapping (`mouse_sgr_button`), the process-wide palette and default
-  ink/paper, the OSC colour handlers. No Wayland/GL dependency — the decoded PIXELS live here, so the whole
-  protocol is testable headless.
+  `term_grid_geometry()`, evdev -> SGR button mapping (`mouse_sgr_button`, `mouse_wheel_button`), the
+  process-wide palette and default ink/paper, the OSC colour handlers, the word/line click spans. No Wayland/GL
+  dependency — the decoded PIXELS live here, so the whole protocol is testable headless.
 - `src/img.c` — every image decoder in one place: PNG (libpng), JPEG (libjpeg), WebP (libwebp) and GIF (own LZW
   decoder, because giflib is not installed here), all returning premultiplied RGBA8, plus `img_sniff()` (magic
   bytes, never a file name) and `img_premultiply()`. Shared by the kitty graphics path in vt.c and the file
@@ -1371,111 +1160,103 @@ Kai-Term/
   filter, caps), navigation state, preview building (directory listing / image / text with syntax highlighting /
   metadata) and painting the two panes into `Cell` grids the existing renderer draws unchanged. Also
   `fm_image_fit()` (the preview box in cells AND in px, aspect kept in pixels, never upscaled, centred) — the
-  renderer only draws the box it is given, which is what makes the box testable. The two functions that touch
-  nothing but malloc and the filesystem (`fm_scan_build`, `fm_preview_build`) are the only ones main.c's worker
-  thread may call.
+  renderer only draws the box it is given, which is what makes the box testable.
 - `src/main.c` — all Wayland shell/input/clipboard/epoll logic: xkb keyboard, client-side key repeat, session
-  shortcuts, pointer (bar clicks, pane focus, selection, mouse reporting, wheel), `layout_apply()`, frame-paced
-  redraw, one epoll loop over every session's pty fd, SIGCHLD reaping by pid, CLI flags, data-device clipboard.
-  Look here for pointer, keyboard, resize, frame pacing. **In no linked test binary.**
-- `src/render.c` — EGL (platform Wayland) + GL 2.x: 2 glyph atlases + one GL texture per visible image, 1 shader,
-  3 back-to-front passes emitted into ONE staging buffer but drawn as TWO batches (backgrounds, then bands +
-  glyphs + chrome) with one draw per picture between them; instanced or expanded. Draws what `src/layout.c` says,
-  owns no geometry. `render_chrome()` is the pure colour decision a test can call with no display.
+  shortcuts, pointer (bar clicks, pane focus, selection, mouse reporting, wheel — `ptr_button`, `ptr_motion`,
+  `ptr_enter`), `layout_apply()`, frame-paced redraw, one epoll loop over every session's pty fd, SIGCHLD
+  reaping by pid, CLI flags, data-device clipboard, the blink timer. Look here for pointer, keyboard, resize,
+  frame pacing. **In no linked test binary.**
+- `src/render.c` — EGL (platform Wayland) + GL 2.x: 2 glyph atlases + one GL texture per visible image, 1
+  shader, 3 back-to-front passes emitted into ONE staging buffer but drawn as TWO batches with one draw per
+  picture between them; instanced or expanded. Draws what `src/layout.c` says, owns no geometry.
+  `render_chrome()` (colour) and `render_cursor()` (shape) are the pure decisions a test can call with no display.
 - `src/font.c` — fontconfig pattern -> FreeType face; alpha8 glyph atlas (shelf packer + hash by codepoint);
   fontconfig fallback faces; HarfBuzz-shaped color emoji (`font_color_glyph`) + RGBA8 color atlas;
   `font_resize()` re-rasterizes at a new pixel size.
 - `src/pty.c` — `posix_openpt`/`grantpt`/`unlockpt`; child: `setsid` + `TIOCSCTTY` + `chdir` + exec `$SHELL` (or
   `-e COMMAND`); sets `TERM`/`COLORTERM`/`TERM_PROGRAM`; `pty_setsize`. With integration on, `tab_spawn()` hands
-  it the string `shellint_argv()` built (the per-session request file in the environment plus the shell's load
-  flag) instead of the bare shell path. It does NOT touch termios — see the s75-s79 entry.
+  it the string `shellint_argv()` built instead of the bare shell path. It does NOT touch termios — see the
+  s75-s79 entry. Also the one tcgetpgrp call site: `pty_fg_busy()` (the wrapper) over the pure `fg_busy()` (the
+  decision). No Wayland/EGL/font, so it links into the headless suites — see the Makefile comment.
 - `src/theme.c` — themes: a file of COLOURS only, in kai-term.conf's `key = value` syntax (and kitty's
-  `key value`, so an existing kitty theme loads unchanged). `theme_find()` resolves a name through the `themes/`
-  subdirectory of the same three config directories (or takes a path / `~`-path as given);
-  `theme_apply_file()` applies the 23 names in its `THEME_KEYS` table — the four chrome colours into `Config` and
-  `color0`-`color15` into the process-wide palette — and skips any colour the settings file set itself
-  (`config_key_was_set`), which is what makes a `background =` line win above OR below the `theme =` line.
-  `selection_foreground`/`cursor_text_color` are recognised and reported as dropped, never guessed at; entries
-  16-255 are refused because the cube and the ramp are computed. Also the `--import-theme` importer
-  (`theme_sniff`, `theme_parse_text`, `ThemeVals`, `theme_write_file`, `theme_dest_dir`, `theme_name_of_path`,
-  `theme_import`). No Wayland/GL/Term dependency: all of it is testable headless, and `tests/test_vt.c` derives
-  the accepted-name list from this file's table exactly as it derives the config names from config.c's ladders.
-- `src/config.c` — the two config files (`kai-term.conf` settings, `kai-term.bind` bindings), one `key = value`
-  line reader serving both, the search order (`config_find`: `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term`,
-  `/etc/kai-term`, first REGULAR file wins, empty result = built-in defaults), defaults, clamping, the
-  name-routing dispatcher `apply()` (`apply_bind_key` then `apply_setting`), the `#` comment rule
-  (`config_strip_comment`), `cfg_parse_color` (the ONE colour parser, shared with theme.c and the OSC handlers),
-  and the key-binding spec parser (`keybind_parse`/`keymods_parse`).
-- `src/mux.c` — sessions of one window: dense `Tab` array (`{Term, Pty, attention, cd_req, int_dead, int_gen}`),
-  active index, open/close/goto/next/prev, `max_tabs`, unread-output flag, `mux_title()`,
-  `mux_recolor_defaults()`. No Wayland/EGL/fd/fork — that is what makes it unit-testable. The three integration
-  fields live in `Tab` because `mux_close()` shifts the array: a side array indexed by tab number would hand a
-  closing session's request path to its successor.
+  `key value`). `theme_find()`, `theme_apply_file()`, and the `--import-theme` importer (`theme_sniff`,
+  `theme_parse_text`, `ThemeVals`, `theme_write_file`, `theme_dest_dir`, `theme_name_of_path`, `theme_import`).
+  No Wayland/GL/Term dependency: all of it is testable headless, and `tests/test_vt.c` derives the accepted-name
+  list from this file's `THEME_KEYS` table exactly as it derives the config names from config.c's ladders.
+- `src/config.c` — the two config files, one `key = value` line reader serving both, the search order
+  (`config_find`), defaults, clamping, the name-routing dispatcher `apply()` (`apply_bind_key` then
+  `apply_setting`), the `#` comment rule (`config_strip_comment`), `cfg_parse_color` (the ONE colour parser,
+  shared with theme.c and the OSC handlers), and the key-binding spec parser
+  (`keybind_parse`/`keymods_parse`).
+- `src/mux.c` — sessions of one window: dense `Tab` array, active index, open/close/goto/next/prev, `max_tabs`,
+  unread-output flag, `mux_title()`, `mux_recolor_defaults()`, and (step 4, in progress) `mux_running()` +
+  `confirm_message()`. No Wayland/EGL/fork and no fd it owns — one read-only exception, `pty_fg_busy()`'s
+  tcgetpgrp, which cannot block and answers "idle" for an `mfd` of -1, so the confirm-quit decision stays
+  unit-testable.
 - `src/layout.c` — pure geometry: in window px + cell px + padding + gap + mode + session list; out bar strip,
   `BarItem[]` rects + labels, `PaneGeom[]` rects (each with cols/rows), the file-manager band (`FmGeom`: browser
   rect + preview rect + their cols/rows) and `layout_hit_fm()`, `layout_grid_size()`, `layout_initial_size()`.
-- `src/shellint.c` — the shell integration, deliberately dumb and testable: the three shell scripts (fish, bash,
-  zsh) as string constants, the private per-instance directory (`mkdtemp`, 0700, removed at exit), one
-  `cd-request.<id>` file per session (temp + `rename()`), the ONE control sequence and the measurements that
-  chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
-  losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
-  the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 1217 checks: parser (a C0 byte inside a control sequence — executed, sequence still
-  collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
-  (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
-  ordering), grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J, bracketed paste, `term_init`
-  guard, reflow, `term_grid_geometry`, zoom/alt-screen row-shrink, `mouse_sgr_button`/`mouse_wheel_button` (the
-  SGR order and the 64/65 wheel codes), DECCKM (`app_cursor` set/cleared by `ESC[?1h`/`ESC[?1l`, saved and
-  restored across the alternate screen, `term_arrow_seq()` answering SS3 or CSI), the mouse-as-keystrokes
-  helpers (`term_wants_key_mouse`, `term_wheel_arrow_keys`, `term_click_arrow_keys` — the alt-screen/no-mouse
-  gate, the vertical-then-horizontal order, the end-of-line column clamp, the buffer bounds), the graphics path
+- `src/shellint.c` — the shell integration, deliberately dumb and testable: the three shell scripts as string
+  constants, the private per-instance directory, one `cd-request.<id>` file per session, the ONE control
+  sequence and the measurements that chose it, and the command line `tab_spawn()` hands `pty_spawn()`. Nothing
+  here talks to the shell except through those files and the pty; the protocol's other half is `kai_apc()` in
+  `src/vt.c` and the state machine in `src/main.c`.
+- `tests/test_vt.c` — 1320 checks. Groups: parser (C0 inside a control sequence; a CSI sequence split across two
+  bursts), clipboard text policy (`paste_repair`, `clipboard_mime_rank`), grid, selection, alt screen,
+  `live_off`, emoji clusters, CSI 3 J, bracketed paste, `term_init` guard, reflow, `term_grid_geometry`,
+  zoom/alt-screen row-shrink, `mouse_sgr_button`/`mouse_wheel_button` (the SGR order and the 64/65 wheel codes),
+  DECCKM (`app_cursor`, `term_arrow_seq()` answering SS3 or CSI), the mouse-as-keystrokes helpers
+  (`term_wants_key_mouse`, `term_wheel_arrow_keys`, `term_click_arrow_keys`), the graphics path
   (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll anchoring/id replacement/DA1-DA2-DSR
   answers), mux, keybind/keymods parsing, config keys and template name-coverage (the two config ladders, the
-  theme table, and `usage()` vs README's option table, and since s110 README's own settings and binding tables
-  diffed against the parser in both directions), the `hex escape` gate, `layout_compute` /
-  `layout_grid_size` / `layout_initial_size` (the tab bar, the panes and the band's SHARE: `fm_size` percent,
-  both clamps, the terminal's floor, the share surviving a resize and a zoom, three startup round trips), the
+  theme table, `usage()` vs README's option table, and README's own settings and binding tables diffed against
+  the parser in both directions), the `hex escape` gate, `layout_compute`/`layout_grid_size`/
+  `layout_initial_size` (the tab bar, the panes and the band's SHARE, three startup round trips), the
   palette/cube/OSC-colour groups, the theme file and precedence, the theme importer (sniff, per-format mapping,
-  dropped keys, the native round trip), the click-selection group (`term_word_span` — trailing punctuation cut a
-  glyph at a time, leading kept, a wide pair never split or inverted; `term_line_span` — the logical line through
-  the `wrap` marks, by slot index, including scrolled back; `term_click_count` — the 500 ms window and the 32-bit
-  clock wrap; and the `click_selects_word` key itself), the shell-integration scripts as they land on disk (each
-  binds exactly what `shellint_seq()` returns, fish repaints, bash does NOT pretend to), and the prompt machinery
-  the follow is built from
-  (`term_at_prompt()` / `term_prompt_line()` / `term_prompt_line_typed()` / `term_prompt_line_is()`, the echo
-  window and its transition rule, the clear -> `cd` -> re-populate sequence as the model sees it). `main.c`
-  itself is in no test binary — that machine is covered by `.scratch/s86/follow2.c` and the live harness. Two
-  invariants with dedicated checkers: the `row[]` permutation (also `tests/dbg.c`) and the startup-size round
-  trip.
+  dropped keys, the native round trip), the click-selection group (`term_word_span`, `term_line_span`,
+  `term_click_count`, the `click_selects_word` key), the confirm-quit groups (`fg_busy` and its guards,
+  `pty_fg_busy` against a REAL pty with a hand-built process tree, `mux_running`'s count and index list,
+  `confirm_message`'s exact wording per branch plus its cap/NULL cases, the `confirm_quit` key and every
+  spelling of its three values, and the notice row's geometry — one row given up at the bottom, the too-short
+  window that drops the row, the clip at the row's columns, the band measured against the reduced grid area),
+  the shell-integration scripts as they land on disk, and the
+  prompt machinery the follow is built from (`term_at_prompt()`, `term_prompt_line()`,
+  `term_prompt_line_typed()`, `term_prompt_line_is()`, the echo window and its transition rule, the clear ->
+  `cd` -> re-populate sequence as the model sees it). `main.c` itself is in no test binary — that machine is
+  covered by `.scratch/s86/follow2.c` and the live harness. Two invariants with dedicated checkers: the `row[]`
+  permutation (also `tests/dbg.c`) and the startup-size round trip.
 - `tests/test_fm.c` — 384 checks against a real temporary directory tree (dirs, a dotfile, a dangling symlink, a
   FIFO, an unreadable dir, four image formats, a binary file): scan + sort + caps + truncation, the hidden filter
-  and `fm_set_hidden`, selection and scrolling (`fm_row_pos`, `ensure_visible`), navigation, the request-id rule
-  (a stale answer is dropped), every preview kind and its error path, the highlighter reaching the cells, the
-  pane painters, `fm_image_fit`, the preview's row budget (no painted glyph may sit inside the box the picture is
-  drawn into — `ink_in_box()`), the preview pane's own scroll (`pv_scroll` / `fm_preview_scroll` /
-  `fm_preview_scroll_max`: the painter obeys it for text and for a directory listing, both ends clamp, a new
-  preview starts at the top, a pane with no body has nothing to scroll, and a resize pulls the scroll back inside
-  what the NEW pane can show), the selection colour reaching `fm_paint()`, the band's rects inside
-  `layout_compute()`, and the wheel-over-the-band keyboard rule (`fm_wheel_focus`: a gesture that scrolled
-  nothing never moves the keyboard, the default needs a CLICK to focus a pane, and `fm_focus_on_hover = 1`
-  restores the older pointer-decides behaviour), and the **`pvsel` group** — a text selection inside the preview
-  pane (step 3b): the press/drag range, the reading-order normalisation, the clamping, the word and row spans
-  read back as the TEXT they cover, the wide-glyph rules (span, band and copy), the band read straight out of
-  the pane cells cell-for-cell (`band_mismatches()`), the copy's buffer bounds including `cap == 0`, the
-  invalidation on scroll / resize / a new preview, a directory preview's entry list being selectable too, and
-  what a row wider than the pane can copy (28 cells of a 130-character line).
-- `tests/test_render.c` — 495 checks, the only coverage of the renderer's decisions that needs no display (its
-  colour choices AND the cursor's shape, `render_cursor()`'s truth table):
-  it links `render.o` (plus `fm.o font.o img.o vt.o shellint.o layout.o mux.o config.o`, which is what
-  `render.o` needs to LINK) and calls only `render_chrome()`, which reads a `Render` struct and nothing else —
-  never `render_init()`, never a GL call. Covers: the configured `cursor_color` is what an active pane's cursor
-  is drawn with, an inactive session's cursor is that colour mixed with the configured background, the built-in
-  default still yields `CURSOR_COL`, two different values change both, a different background moves the dimmed
-  colour but not the active one, window opacity never reaches these values, and the selection band / active bar
-  item / focus border follow `Config.selection_color`. The last checks are SOURCE SCANS of `src/render.c`,
-  `src/main.c` and `src/fm.c` — the honest way to cover the `render_init()` call, which lives in `main()` and so
-  is in no linked test; every scan reads a probe file the test writes, never this file (a self-scan counts its own
-  `CHECK` lines).
+  and `fm_set_hidden`, selection and scrolling (`fm_row_pos`, `ensure_visible`), navigation, the request-id rule,
+  every preview kind and its error path, the highlighter reaching the cells, the pane painters, `fm_image_fit`,
+  the preview's row budget (`ink_in_box()`), the preview pane's own scroll (`pv_scroll` / `fm_preview_scroll` /
+  `fm_preview_scroll_max`), the selection colour reaching `fm_paint()`, the band's rects inside
+  `layout_compute()`, the wheel-over-the-band keyboard rule (`fm_wheel_focus`), and the **`pvsel` group** (step
+  3b): the press/drag range, the reading-order normalisation, the clamping, the word and row spans read back as
+  the TEXT they cover, the wide-glyph rules, the band read straight out of the pane cells cell-for-cell
+  (`band_mismatches()`), the copy's buffer bounds including `cap == 0`, the invalidation on scroll / resize / a
+  new preview, a directory preview's entry list being selectable too, and what a row wider than the pane can
+  copy (28 cells of a 130-character line).
+- `tests/test_render.c` — 506 checks, the only coverage of the renderer's decisions that needs no display. It
+  links `render.o` (plus `fm.o font.o img.o vt.o shellint.o layout.o mux.o config.o`, which is what `render.o`
+  needs to LINK) and calls only the pure functions — never `render_init()`, never a GL call. Colour: the
+  configured `cursor_color` is what an active pane's cursor is drawn with, an inactive session's cursor is that
+  colour mixed with the configured background, the built-in default still yields `CURSOR_COL`, two different
+  values change both, a different background moves the dimmed colour but not the active one, window opacity
+  never reaches these values, and the selection band / active bar item / focus border follow
+  `Config.selection_color`. Shape: `render_cursor()`'s truth table — the default bar and its rect,
+  invisible-means-nothing in all four shapes, both ends of the width clamp (40 px in a 9 px cell -> 3 px; a 1 px
+  cell -> 1 px, never 0, which would draw no cursor at all), the underline's rect and its `cell_h/3` clamp, the
+  BLOCK rules kept exactly as they were, the NEW rule that a bar/underline does NOT step aside for a band, and
+  448 invariant checks over every (shape × visible × band × 7 cell sizes × 7 widths): never both a block and a
+  quad, `invert` only with a block, a visible cursor always paints something in one of the three passes, and the
+  rect never leaves its cell. The last checks of both kinds are SOURCE SCANS of `src/render.c`, `src/main.c` and
+  `src/fm.c` — the honest way to cover the `render_init()` call, which lives in `main()` and so is in no linked
+  test; every scan reads a probe file the test writes, never this file (a self-scan counts its own `CHECK`
+  lines). The wiring pins (`conf.cursor_width` reaches `render_init()`, `rend.cursor_on = W.cursor_on` exists,
+  `render_cursor` appears 4× in `src/render.c`, `cursor_on` 3×, and the six confirm-quit counts in `src/main.c`:
+  the window gate 2×, the tab gate 3×, the answer 3×, `confirm_clear` 4×, the row handed to the layout 1+1×, the
+  shared predicate 2+2×) are text counts — re-diff them, they are not executed.
 - `Makefile` — pkg-config-driven; `-Iinclude/kai-term -Ibuild/generated`; output dirs via order-only
   prerequisites so they never force rebuilds; generates xdg-shell bindings with `wayland-scanner`.
 
@@ -1496,8 +1277,9 @@ Kai-Term/
 - **Known limitations a newcomer must not "fix" by accident:** narrowing can evict OLDEST scrollback rows; the
   alternate screen is deliberately NOT re-wrapped; a taller window keeps less scrollback than configured (`rcap`
   fixed at startup); the window title is Kai-Term's own text, not the app's OSC title; UTF-16 with no BOM and no
-  NULs at all is undetectable; bash's prompt string stays stale after an integrated `cd`. Full list: ISSUES.md
-  "Known limitations".
+  NULs at all is undetectable; bash's prompt string stays stale after an integrated `cd`; a word the window
+  broke mid-word is selected per row; a preview row longer than the pane copies only what the pane holds; a job
+  backgrounded with `&` reads idle to confirm-quit. Full list: ISSUES.md "Known limitations".
 
 ## Architecture & Invariants
 
@@ -1512,9 +1294,10 @@ hit-tested bar then panes.
 **Event loop (main.c).**
 
 - epoll over: `wl_display` fd; one pty master fd per session (`tab_for_fd()` maps back; pty EOF closes that
-  session, not the program); the 8 ms timerfd (`FRAME_INTERVAL_NS`); `signalfd(SIGCHLD)` (SIGCHLD blocked so only
-  signalfd reads it; reap `waitpid(-1,…,WNOHANG)`, match pids via `tab_for_child()`, then zero `pty.child`); the
-  paste idle timerfd; the key-repeat timerfd; the clipboard paste pipe read end joins transiently.
+  session, not the program); the 8 ms frame timerfd (`tfd`, `FRAME_INTERVAL_NS`); `signalfd(SIGCHLD)` (SIGCHLD
+  blocked so only signalfd reads it; reap `waitpid(-1,…,WNOHANG)`, match pids via `tab_for_child()`, then zero
+  `pty.child`); the paste idle timerfd (`pwfd`); the key-repeat timerfd (`krfd`); the blink timerfd (`cbfd`);
+  the clipboard paste pipe read end joins transiently.
 - **Finish the wayland read before handling ANY other descriptor** (`read_events`/`cancel_read`, then
   `dispatch_pending`): `eglSwapBuffers` waits for a `wl_buffer.release`; while a `wl_display_prepare_read()` is
   outstanding that release can never be read -> swap blocks forever -> the terminal looks dead. `read_events()`
@@ -1574,15 +1357,16 @@ hit-tested bar then panes.
 **Parser (vt.c).**
 
 - **A C0 control byte inside a control sequence is EXECUTED and the sequence KEEPS collecting** (DEC VT500 and
-  xterm both do this). ESC is the one exception: it CANCELS the sequence and starts a new escape, so it is handled
-  by the caller and never reaches the shared executor. ONE file-local `exec_c0()` is what both `PS_GROUND` and
-  `PS_CSI` call — the rule used to exist in two copies that disagreed (CSI's copy was `state = PS_GROUND; i--;`,
-  which ENDED the sequence), and that is why the states drifted. Ending a sequence at a control byte does two
-  damages at once: the mode the sequence was setting is silently never applied, and the sequence's remaining bytes
-  are painted as text. Because every mode-ENABLING sequence ends in `h` (`?2004h`, `?1049h`, `?25h`, `?1h`), the
-  painted character is an `h` — a stray `h` on the user's line is the visible half of an invisible mode bug.
-  Pinned by 14 checks, which also pin the OPPOSITE case: a CSI sequence split across two pty reads with NO control
-  byte in it must stay open and finish in the second burst. Do not "simplify" either one.
+  xterm both do this). ESC is the one exception: it CANCELS the sequence and starts a new escape, so it is
+  handled by the caller and never reaches the shared executor. ONE file-local `exec_c0()` is what both
+  `PS_GROUND` and `PS_CSI` call — the rule used to exist in two copies that disagreed (CSI's copy was
+  `state = PS_GROUND; i--;`, which ENDED the sequence), and that is why the states drifted. Ending a sequence at
+  a control byte does two damages at once: the mode the sequence was setting is silently never applied, and the
+  sequence's remaining bytes are painted as text. Because every mode-ENABLING sequence ends in `h` (`?2004h`,
+  `?1049h`, `?25h`, `?1h`), the painted character is an `h` — a stray `h` on the user's line is the visible half
+  of an invisible mode bug. Pinned by 14 checks, which also pin the OPPOSITE case: a CSI sequence split across
+  two pty reads with NO control byte in it must stay open and finish in the second burst. Do not "simplify"
+  either one.
 - **A sequence is only complete when its final byte arrives; a burst boundary never ends one.** `term_parse()`
   re-enters with `ps->state` intact, and that is the whole mechanism — a probe or a fix that treats the end of a
   read as the end of a sequence invents a bug.
@@ -1592,20 +1376,20 @@ hit-tested bar then panes.
 - **A NUL byte must never reach the pty.** `paste_flush()` runs `paste_repair()` on the buffered clipboard block
   before writing any of it. A source may serve UTF-16 under a UTF-8 label (Firefox does, under
   `text/x-moz-url-priv`), and UTF-16 written verbatim into a bracketed paste is what the user saw as a stray `h`:
-  bash's bracketed reader stops at the first NUL, zsh inserts every byte and paints each NUL as `^@`. Repair only
-  when the block actually contains a NUL — a block with none is copied through byte-for-byte, unchanged.
+  bash's bracketed reader stops at the first NUL, zsh inserts every byte and paints each NUL as `^@`. Repair
+  only when the block actually contains a NUL — a block with none is copied through byte-for-byte, unchanged.
 - **Which mime type to ask for is a preference, not an enumeration accident.** `clipboard_mime_rank()` decides;
   `offer_offer()` keeps the highest rank seen. The old rule overwrote the recorded type for every `text/*` name,
-  so the LAST type the source advertised won — with Firefox that is `text/x-moz-url-priv`, which is UTF-16. Never
-  "fix" this back to last-wins or first-wins: both are at the source's mercy.
+  so the LAST type the source advertised won — with Firefox that is `text/x-moz-url-priv`, which is UTF-16.
+  Never "fix" this back to last-wins or first-wins: both are at the source's mercy.
 - **UTF-16 is decoded only when the evidence is unambiguous** — a BOM, or NULs that are dense (`nuls*2 >= len`)
-  and one-sided. Sparse NULs are stripped, not decoded: guessing on ambiguous input turns good text into garbage,
-  which is worse than removing the NUL. UTF-16 with no BOM and no NULs at all is undetectable and is a documented
-  limitation, not a bug to chase.
+  and one-sided. Sparse NULs are stripped, not decoded: guessing on ambiguous input turns good text into
+  garbage, which is worse than removing the NUL. UTF-16 with no BOM and no NULs at all is undetectable and is a
+  documented limitation, not a bug to chase.
 - **`Ctrl`+`Shift`+`V` is Kai-Term's paste; plain `Ctrl`+`V` is the shell's.** Only the first is intercepted
   (`send_key()` gates on `shift_held`). The shell's path reads the clipboard itself and drops NUL bytes, so the
-  two can differ from the same clipboard — when a user reports "one works and the other doesn't", that difference
-  is the diagnosis, not a second bug.
+  two can differ from the same clipboard — when a user reports "one works and the other doesn't", that
+  difference is the diagnosis, not a second bug.
 - **When a paste arrives wrong, measure the SOURCE before the parser:** `wl-paste -l` for the advertised types
   and `wl-paste --type <name> | od -c` for the bytes served under each. That single command pair settles in
   seconds what cost two wrong theories here.
@@ -1618,9 +1402,9 @@ hit-tested bar then panes.
 - Anchor invariant: `0 <= scroll_off <= live_off <= sb_limit = min(scrollback_max, rcap - rows)` and
   `live_off + rows <= rcap`. `live_off` is `scroll_off` showing the newest output; user navigation moves
   `scroll_off` below it; `snap_to_live()` restores it before parsing so new output lands at the live bottom.
-- `cy` is a LIVE-view coordinate (the parser addresses `row[live_off + cy]`) -> `term_resize` re-anchors `cy` with
-  `live_off`. The cursor is drawn only when `scroll_off == live_off`. Whole-viewport scrolls snap `scroll_off`
-  back to `live_off` first.
+- `cy` is a LIVE-view coordinate (the parser addresses `row[live_off + cy]`) -> `term_resize` re-anchors `cy`
+  with `live_off`. The cursor is drawn only when `scroll_off == live_off`. Whole-viewport scrolls snap
+  `scroll_off` back to `live_off` first.
 - `Grid.valid == GRID_VALID` between init and destroy — a plain 0/1 flag is not enough because uninitialized
   stack memory is routinely non-zero (stack garbage measured `32511`).
 - Alt screen: `Term.g` stays the ACTIVE grid, the main grid is parked in `Term.alt` (alt has scrollback 0);
@@ -1639,8 +1423,8 @@ hit-tested bar then panes.
   evicting oldest rows once `rcap` exist, and commits by installing new buffers (permutation kept). The eviction
   step must run for EVERY produced row, blank rows included, or `kept` can exceed `rcap` and the commit drops
   buffers instead of installing them (a leak). Those 3 traps each cost a real bug. `grid_resize_plain()` is the
-  no-reflow variant for the ALTERNATE screen (a full-screen app repaints itself; re-wrapping would scramble it) —
-  the parked main grid is still reflowed.
+  no-reflow variant for the ALTERNATE screen (a full-screen app repaints itself; re-wrapping would scramble it)
+  — the parked main grid is still reflowed.
 - **Images are anchored to an ABSOLUTE document row** (`Grid.row_base` + the row the cursor was on), never to a
   viewport row or a row pointer: a viewport row is invalidated by every scroll and a pointer by every reflow.
   `row_base` moves only when rows are evicted at the top or the window slides over its scrollback, so
@@ -1651,24 +1435,24 @@ hit-tested bar then panes.
 **File manager band (fm.c + layout.c + render.c + main.c).**
 
 - The band is geometry, model and drawing in the same three places as everything else: `layout_compute()` splits
-  the grid area VERTICALLY first (a band taking `fm_size` PERCENT of its height on top, terminal pane(s) below at
-  `pane_y = grid_y + band_h + gap`), then splits the band horizontally (browser | preview). Sessions stay
+  the grid area VERTICALLY first (a band taking `fm_size` PERCENT of its height on top, terminal pane(s) below
+  at `pane_y = grid_y + band_h + gap`), then splits the band horizontally (browser | preview). Sessions stay
   ordinary `pane[]` entries, only shorter — that is what keeps `layout_hit_pane`, `layout_pane_of_tab`,
-  `layout_grid_size()`, the focus border and `W.gx/W.gy` working with the band on AND off. `layout_hit_fm()` must
-  be checked BEFORE `layout_hit_pane()`.
-- The band is clamped, never trusted: `band_h = grid_h * pct / 100` (a `long long` multiply, so a 4K window cannot
-  overflow) is reduced so the shell keeps `FM_TERM_MIN_ROWS` rows, and dropped entirely when even that leaves
-  fewer than `FM_ROWS_MIN`. Clamped in layout.c, not config.c, so no caller can ask for a 1-row band — the tab
-  bar's "the terminal wins" rule again. It is a SHARE and not a row count on purpose: the band then survives a
-  resize or a zoom with the proportion the user asked for. `layout_initial_size()` is its inverse
+  `layout_grid_size()`, the focus border and `W.gx/W.gy` working with the band on AND off. `layout_hit_fm()`
+  must be checked BEFORE `layout_hit_pane()`.
+- The band is clamped, never trusted: `band_h = grid_h * pct / 100` (a `long long` multiply, so a 4K window
+  cannot overflow) is reduced so the shell keeps `FM_TERM_MIN_ROWS` rows, and dropped entirely when even that
+  leaves fewer than `FM_ROWS_MIN`. Clamped in layout.c, not config.c, so no caller can ask for a 1-row band —
+  the tab bar's "the terminal wins" rule again. It is a SHARE and not a row count on purpose: the band then
+  survives a resize or a zoom with the proportion the user asked for. `layout_initial_size()` is its inverse
   (`grid_h = ceil((rows*ch + gap) * 100 / (100 - pct))`) and the round-trip checks in `tests/test_vt.c` are what
   prove that arithmetic.
 - **The preview pane's rows have ONE owner.** `preview_head_rows()` (2, +1 when the preview has an error line)
   and `preview_meta_rows()` (image previews only: `min(nmeta, prev.rows - head - 1)`, so the picture always keeps
   a row) are called by `paint_preview()` AND by `fm_image_fit()`; the picture box starts at `head + meta_rows`.
   Glyphs are emitted in the batch AFTER the picture, so any disagreement between the two about which rows text
-  owns paints metadata across the image — that was the bug, and `ink_in_box()` in `tests/test_fm.c` keeps it from
-  coming back.
+  owns paints metadata across the image — that was the bug, and `ink_in_box()` in `tests/test_fm.c` keeps it
+  from coming back.
 - The two panes are `FmPane` = a flat `Cell` array + cols/rows, walked exactly like a session grid, so the
   renderer needs no new drawing path: "a grid with no cursor and no selection". Glyphs go through the same
   `emit_cell_glyph()` as a session (a file name can hold any codepoint, so the emoji/wide rules must be shared,
@@ -1687,59 +1471,64 @@ hit-tested bar then panes.
   browser (measured live, s74).
 - **The band has THREE focus states, and the keyboard routing differs between them for exactly four keys.**
   `FM_FOCUS_TERM` / `FM_FOCUS_LIST` / `FM_FOCUS_PREVIEW`; a CLICK on the preview pane gives it the keyboard.
-  While the PREVIEW owns it, the band's `fm_key_pageup`/`pagedown`/`home`/`end`
-  bindings scroll the previewed TEXT (`fm_preview_page`/`fm_preview_top`/`fm_preview_bottom` in fm.c, routed in
-  `fm_keys()` in main.c) instead of moving the listing; `fm_key_up`/`down` deliberately keep moving the listing,
-  because changing WHICH entry is previewed is the one thing the preview cannot do for itself. One page is
-  `fm_preview_page_rows()` — the body rows the pane shows at once — because a Page key must move by exactly what
-  the user can see; all three go through `fm_preview_scroll()`, so the clamp has one owner and a preview with no
-  body (a picture, plain metadata) simply does not move. Same four bindings, no second set of names to keep in
-  sync in `kai-term.bind`.
+  While the PREVIEW owns it, the band's `fm_key_pageup`/`pagedown`/`home`/`end` bindings scroll the previewed
+  TEXT (`fm_preview_page`/`fm_preview_top`/`fm_preview_bottom` in fm.c, routed in `fm_keys()` in main.c) instead
+  of moving the listing; `fm_key_up`/`down` deliberately keep moving the listing, because changing WHICH entry is
+  previewed is the one thing the preview cannot do for itself. One page is `fm_preview_page_rows()` — the body
+  rows the pane shows at once — because a Page key must move by exactly what the user can see; all three go
+  through `fm_preview_scroll()`, so the clamp has one owner and a preview with no body (a picture, plain
+  metadata) simply does not move. Same four bindings, no second set of names to keep in sync in
+  `kai-term.bind`.
 - **The pointer's POSITION never takes the keyboard — a click does** (`fm_focus_on_hover = 0`, the default).
   A scroll gesture over the band scrolls (it walks the listing, or scrolls the preview body) and leaves the
   keyboard where it was; `fm_focus_on_hover = 1` opts back into the pane under the pointer owning it. The rule
   is `fm_wheel_focus(hit, steps, on_hover)` in `src/fm.c`, not an `if` in `main.c`, for the standing reason
-  that main.c is in no test binary. What it replaced is the shape worth remembering: `fm_wheel()` called
-  `fm_focus_set()` on its fifth line, BEFORE computing `steps`, and returned early when `steps == 0` — so a
-  `wl_pointer.frame` that produced no whole-cell scroll moved the keyboard and did nothing else, which a user
-  can only describe as "hovering steals the focus". **A state change placed before the guard that decides
-  whether the event counts is a bug even when every later check is correct.** There is no hover handler in this
-  project and there should not be one: every `hover` hit in `src/` is a comment naming this bug, and
-  `render_draw()` draws the focus border from `fm->focus` alone — nothing on screen follows the pointer.
+  that main.c is in no test binary; it also refuses `FM_HIT_NONE` itself rather than trusting the caller's
+  filter, and returns -1 when `steps == 0` in BOTH modes. `steps` is `W.frame_discrete` or
+  `(int)W.frame_axis_val / cell_h`. What it replaced is the shape worth remembering: `fm_wheel()` called
+  `fm_focus_set(hit == FM_HIT_LIST ? … )` on its fifth line, BEFORE computing `steps`, and returned early when
+  `steps == 0` — so a `wl_pointer.frame` that produced no whole-cell scroll (a trackpad frame with a sub-cell
+  delta, a gesture under one row, a frame arriving without axis data) moved the keyboard into whichever pane the
+  pointer happened to be over and did nothing else, which a user can only describe as "hovering steals the
+  focus". **A state change placed before the guard that decides whether the event counts is a bug even when
+  every later check is correct.** There is no hover handler in this project and there should not be one:
+  `ptr_motion` and `ptr_enter` touch no focus state at all, every `hover` hit in `src/` is a comment naming this
+  bug, and `render_draw()` draws the focus border from `fm->focus` alone — nothing on screen follows the pointer.
 - `fm_send_cd()` is the only place the feature writes to the shell, never to a session on the alternate screen,
   and only when the directory actually changed (`fm_last_cd`, cleared by `tab_switch()`).
-- **The prompt invariant (what the follow may never violate).** Kai-Term cannot see where a prompt ENDS — the tty
-  echo arrives as ordinary output — so the model remembers the whole cursor row as the shell last printed it
+- **The prompt invariant (what the follow may never violate).** Kai-Term cannot see where a prompt ENDS — the
+  tty echo arrives as ordinary output — so the model remembers the whole cursor row as the shell last printed it
   (`prompt_row`/`prompt_cx`/`prompt_cy`) and treats "does that row still match, cell for cell" as the only
   evidence available. Five rules, each with a check in `tests/test_vt.c`:
-  1. **The `cd` is written only from ERASING/CDING behind `term_at_prompt()`** — i.e. only once the row is proven
-     to be the bare remembered prompt. "Runs a mangled command" is closed by construction, not by trusting a key
-     binding, so no capture rule may ever gate the write.
+  1. **The `cd` is written only from ERASING/CDING behind `term_at_prompt()`** — i.e. only once the row is
+     proven to be the bare remembered prompt. "Runs a mangled command" is closed by construction, not by
+     trusting a key binding, so no capture rule may ever gate the write.
   2. **A steady state is not evidence.** The echo window closes only when the row CHANGED into the remembered
      prompt between the start and the end of one burst (`prompt_matched_before` in `term_parse()`). A burst that
      leaves the row exactly as it was — fish repainting OSC 7 / OSC 0 / DECSET after Kai-Term re-typed the user's
-     text — must not close it, or the next burst re-takes the snapshot over Kai-Term's own echo and a line holding
-     text starts answering "empty".
+     text — must not close it, or the next burst re-takes the snapshot over Kai-Term's own echo and a line
+     holding text starts answering "empty".
   3. **A burst boundary is not a prompt.** CDING additionally waits for the session to go quiet
-     (`FMCD_QUIET_MS` 150, advanced from the frame timer) before believing the new prompt is drawn: fish answers a
-     `cd` with the echo, a continuation row and prompt chrome in separate bursts, each of which re-takes the
+     (`FMCD_QUIET_MS` 150, advanced from the frame timer) before believing the new prompt is drawn: fish answers
+     a `cd` with the echo, a continuation row and prompt chrome in separate bursts, each of which re-takes the
      snapshot.
   4. **The snapshot's cursor anchor means "where the cursor sits when the line is EMPTY".** `prompt_cx`/
      `prompt_cy` are the column `term_at_prompt()` insists on AND the column `term_prompt_line()` measures typed
      text from, so `prompt_snapshot()` must not re-take them when the row is cell-for-cell the remembered prompt
      and only the cursor moved. `prompt_row_same_cells()` is that test and also the row half of
      `prompt_row_matches()` — one comparison, two callers.
-  5. **Opening the echo window has to mean something.** `term_note_input()` opens it for any payload that can put
-     a character on the line (text, Tab, Up/Down, Ctrl+R/S/T/V/Y/_, Insert, PageUp/PageDown, F-keys, an unknown or
-     truncated sequence) and — only when the line is already provably the bare prompt — not for one that cannot
-     (cursor movement, deletion, Ctrl+L, a bare Escape). The row comparison still re-checks everything on every
-     call, so a key that really moves the cursor or rewrites the row still makes `term_at_prompt()` answer "no".
+  5. **Opening the echo window has to mean something.** `term_note_input()` opens it for any payload that can
+     put a character on the line (text, Tab, Up/Down, Ctrl+R/S/T/V/Y/_, Insert, PageUp/PageDown, F-keys, an
+     unknown or truncated sequence) and — only when the line is already provably the bare prompt — not for one
+     that cannot (cursor movement, deletion, Ctrl+L, a bare Escape: `payload_cannot_insert()`). The row
+     comparison still re-checks everything on every call, so a key that really moves the cursor or rewrites the
+     row still makes `term_at_prompt()` answer "no".
   The three description predicates must not be confused: `term_at_prompt()` = "safe to WRITE here"; strict
   `term_prompt_line()` = "I can describe this line and nothing survives an erase"; `term_prompt_line_typed()` /
-  `term_prompt_line_is()` = "ignore the shell's ghost text right of the cursor", legal only for the capture (which
-  is followed by the proof) and for confirming Kai-Term's own typing. `input_pending` is deliberately NOT consulted
-  by the description predicates — the row comparison is the evidence, and Kai-Term's own typed path sets that flag
-  while leaving a perfectly describable line behind.
+  `term_prompt_line_is()` = "ignore the shell's ghost text right of the cursor", legal only for the capture
+  (which is followed by the proof) and for confirming Kai-Term's own typing. `input_pending` is deliberately NOT
+  consulted by the description predicates — the row comparison is the evidence, and Kai-Term's own typed path
+  sets that flag while leaving a perfectly describable line behind.
 
 **Shell integration (shellint.c + the `K` APC channel in vt.c + main.c).**
 
@@ -1748,21 +1537,21 @@ hit-tested bar then panes.
   line. So the sequence carries NO data and the directory travels in a per-session file (`cd-request.<id>`,
   written as a temp + `rename()`d so the shell can never read a half path). A stray sequence can therefore never
   run a path, and no path can ever be smuggled into a sequence.
-- **The fast path is used only after THIS session's shell announced itself** (`ESC _ K ; kai-term ; integration ;
-  <kind> ST`, dispatched by `kai_apc()` — one more branch on the APC kind byte, no new parser state), and a
+- **The fast path is used only after THIS session's shell announced itself** (`ESC _ K ; kai-term ; integration
+  ; <kind> ST`, dispatched by `kai_apc()` — one more branch on the APC kind byte, no new parser state), and a
   navigation is believed only by the matching ack (`ESC _ K ; kai-term ; cd ; <dir> ST`). No ack inside
   `FM_INT_ACK_MS` (400 ms) -> `fm_int_failed()`: mark `Tab.int_dead`, log, and run the typed machine for that
   navigation. The ack is cleared (`term_shell_cd_ack_clear()`) before every request — one slot answers one
   request, or a navigation back to an old directory is "confirmed" by an ack nobody owed it.
 - **The sequence is one measured byte pair for every shell: `C-x C-]` (0x18 0x1d).** Four requirements, each
-  measured (s91): parses as ONE key in the shell's reader (fish ignores literal byte sequences it cannot parse as a
-  key), inert in EVERY supported shell when unbound (that is what bounds the damage when a nested shell is the one
-  reading), unbound by default (Kai-Term steals nothing), and free of the tty's own special characters. The last
-  one is the trap: `C-\` (0x1c) is inert and unbound in both shells but `stty -a` reports `quit = ^\`, so it would
-  SIGQUIT whatever owns the terminal whenever the shell is not reading. Check `stty -a` before adding a byte;
-  `0x18`/`0x1d` are clean (`swtch = <undef>`).
-- **The integration write never opens the echo window.** `term_note_input()` is for bytes whose echo may appear on
-  the line; these are consumed by the line editor, so the write goes through `pty_write()` alone. Opening the
+  measured (s91): parses as ONE key in the shell's reader (fish ignores literal byte sequences it cannot parse
+  as a key), inert in EVERY supported shell when unbound (that is what bounds the damage when a nested shell is
+  the one reading), unbound by default (Kai-Term steals nothing), and free of the tty's own special characters.
+  The last one is the trap: `C-\` (0x1c) is inert and unbound in both shells but `stty -a` reports `quit = ^\`,
+  so it would SIGQUIT whatever owns the terminal whenever the shell is not reading. Check `stty -a` before
+  adding a byte; `0x18`/`0x1d` are clean (`swtch = <undef>`).
+- **The integration write never opens the echo window.** `term_note_input()` is for bytes whose echo may appear
+  on the line; these are consumed by the line editor, so the write goes through `pty_write()` alone. Opening the
   window would make `term_at_prompt()` answer "not empty" for no reason and hold the typed fallback shut behind
   the s89 whitelist. The ack, not the echo, is the evidence for this path.
 - **Per-session state lives in `Tab` (`cd_req`, `int_dead`, `int_gen`), not in an array indexed by tab number.**
@@ -1770,12 +1559,12 @@ hit-tested bar then panes.
   sessions the same request file — one shell then cds into a directory the other asked for. `g_int_seq` numbers
   the files and never repeats within a run, which is why `shellint_cleanup()` SCANS the directory for
   `cd-request*` instead of enumerating `0..TAB_MAX-1`.
-- **The scripts must not replace the user's configuration:** fish gets `-C "source …"` (evaluated after the user's
-  config), bash gets `--rcfile <ours>` which sources `~/.bashrc` first, zsh gets `ZDOTDIR=<ours>` with a `.zshrc`
-  that sources the user's real one first (`KAI_TERM_REAL_ZDOTDIR` remembers where that was). `-e COMMAND` is never
-  wrapped — that command line is what the user asked to run. The private directory is `mkdtemp` under
-  `$XDG_RUNTIME_DIR` else `/tmp`, `chmod 0700`, refused if the name contains a `'` (the command line quotes with
-  `'`), and removed at exit.
+- **The scripts must not replace the user's configuration:** fish gets `-C "source …"` (evaluated after the
+  user's config), bash gets `--rcfile <ours>` which sources `~/.bashrc` first, zsh gets `ZDOTDIR=<ours>` with a
+  `.zshrc` that sources the user's real one first (`KAI_TERM_REAL_ZDOTDIR` remembers where that was). `-e
+  COMMAND` is never wrapped — that command line is what the user asked to run. The private directory is `mkdtemp`
+  under `$XDG_RUNTIME_DIR` else `/tmp`, `chmod 0700`, refused if the name contains a `'` (the command line
+  quotes with `'`), and removed at exit.
 - **`ESC c` (RIS) memsets `Term`, and the announcement must survive it** — the script announces once, at shell
   startup, so losing it would silently drop the feature for the rest of the session. The prompt snapshot is
   deliberately NOT preserved (a reset really does invalidate it).
@@ -1783,21 +1572,22 @@ hit-tested bar then panes.
   announcement and `Tab.int_gen` is the value main.c last saw; when they differ, `fm_int_try()` clears
   `Tab.int_dead` (and logs it). Without the counter the first shell that failed to answer — a plain `env bash`
   started inside an integrated fish — would keep that session on the typed path for the rest of the run. The kind
-  cannot express this (fish -> a nested fish -> back to fish announces three times with one kind), which is why it
-  is a counter and not a flag.
-- **The scripts wrap a bare `fish`/`bash`/`zsh` and re-announce after every command.** That is what makes a shell
-  the user starts at the prompt integrated too, and what feeds the counter above: fish `fish_postexec`, bash
-  `PROMPT_COMMAND` (PREPENDED, string AND array form handled, guarded by a NON-exported variable so a nested bash
-  still installs its own), zsh `precmd_functions+=`. Three limits, all deliberate: only a command with NO
-  arguments is wrapped, a name the user already defined as a function or alias is never replaced, and the wrapper
-  re-announces its own kind when the nested shell exits. A heartbeat was checked not to leak into a command
-  substitution before it shipped.
+  cannot express this (fish -> a nested fish -> back to fish announces three times with one kind), which is why
+  it is a counter and not a flag.
+- **The scripts wrap a bare `fish`/`bash`/`zsh` and re-announce after every command.** That is what makes a
+  shell the user starts at the prompt integrated too, and what feeds the counter above: fish `fish_postexec`,
+  bash `PROMPT_COMMAND` (PREPENDED, string AND array form handled, guarded by a NON-exported variable so a
+  nested bash still installs its own), zsh `precmd_functions+=`. Three limits, all deliberate: only a command
+  with NO arguments is wrapped, a name the user already defined as a function or alias is never replaced, and
+  the wrapper re-announces its own kind when the nested shell exits. A heartbeat was checked not to leak into a
+  command substitution before it shipped.
 - **The prompt is repainted only where the shell can be asked to.** fish: `commandline -f repaint` at the end of
   the handler (measured to re-expand the prompt with the typed text byte-identical). zsh: `zle reset-prompt`
-  (verified in zsh 5.9 since s94 — the gate's zsh run repaints and answers in 54 ms; what has never been measured
-  in zsh is the inert-when-unbound case). bash: NOTHING is attempted, because readline expands the prompt once per
-  `readline()` call — `C-l` leaves the old directory and printing `${PS1@P}` over the line garbles it (both
-  measured). Do not "fix" bash by pressing Enter for the user or by writing over the prompt line.
+  (verified in zsh 5.9 since s94 — the gate's zsh run repaints and answers in 54 ms; what has never been
+  measured in zsh is the inert-when-unbound case). bash: NOTHING is attempted, because readline expands the
+  prompt once per `readline()` call — `C-l` leaves the old directory and printing `${PS1@P}` over the line
+  garbles it (both measured). Do not "fix" bash by pressing Enter for the user or by writing over the prompt
+  line.
 
 **Geometry: one helper decides a grid's size AND its origin.**
 
@@ -1814,30 +1604,30 @@ hit-tested bar then panes.
 **Rendering.**
 
 - 2 glyph atlas textures (alpha8 mono, RGBA8 color emoji), each uploaded only when dirty, AFTER the emit passes
-  and BEFORE the draw — glyph lookups run inside pass 3, so uploading at the top of `render_draw` shows every new
-  glyph one frame late (and a first emoji as a black box). Application pictures are the other kind of texture: one
-  per image the model shows, keyed by `KImage.serial` (unique per session, never reused, so a recycled pointer
-  cannot hand back a stale texture), re-uploaded when `version` changes, and deleted after any frame in which no
-  visible image claimed it (`ImgTex.seen` stamped with `Render.img_frame`) — the GPU never holds more than what is
-  on screen.
+  and BEFORE the draw — glyph lookups run inside pass 3, so uploading at the top of `render_draw` shows every
+  new glyph one frame late (and a first emoji as a black box). Application pictures are the other kind of
+  texture: one per image the model shows, keyed by `KImage.serial` (unique per session, never reused, so a
+  recycled pointer cannot hand back a stale texture), re-uploaded when `version` changes, and deleted after any
+  frame in which no visible image claimed it (`ImgTex.seen` stamped with `Render.img_frame`) — the GPU never
+  holds more than what is on screen.
 - One shader; `a_glyph` selects the path: 0 background quad, 1 mono glyph (tinted by `v_fg`), 2 color emoji
   (premultiplied, not tinted), 3 an application picture (the same premultiplied composite against the picture's
   own texture; vt.c premultiplies every decoded pixel, so still no GL blending).
-- Pass order back to front: all cell backgrounds, then selection bands, then glyph quads — a WIDE glyph quad spans
-  into the next cell and the neighbour's background must not be emitted after it. Continuation cells
+- Pass order back to front: all cell backgrounds, then selection bands, then glyph quads — a WIDE glyph quad
+  spans into the next cell and the neighbour's background must not be emitted after it. Continuation cells
   (`ATTR_WIDE`) are skipped in pass 3.
-- **A frame is TWO draw batches, not one call**, because a picture must be over the cell backgrounds and under the
-  text and blending is never enabled: batch A = pass 1 + bar backgrounds (range `[0,nq_bg)` of the staging
+- **A frame is TWO draw batches, not one call**, because a picture must be over the cell backgrounds and under
+  the text and blending is never enabled: batch A = pass 1 + bar backgrounds (range `[0,nq_bg)` of the staging
   buffer), then one draw per visible picture, then batch B = bands + glyphs + labels + focus border. Both ranges
-  live in ONE staging buffer (records are fixed-size, so a batch is just a range); `glClear` runs ONCE per frame —
-  clearing between batches would erase batch A. `setup_draw_state()` is re-applied before each batch because an
-  atlas texture can be created between them.
+  live in ONE staging buffer (records are fixed-size, so a batch is just a range); `glClear` runs ONCE per frame
+  — clearing between batches would erase batch A. `setup_draw_state()` is re-applied before each batch because
+  an atlas texture can be created between them.
 - Instanced path when both `GL_ARB_draw_instanced` and `GL_ARB_instanced_arrays` are advertised; otherwise the
   same 19-float records are expanded to 21 floats per vertex and drawn with `glDrawArrays`.
-- No GL blending is ever enabled: the fragment shader composites `premul + bg*(1-a)` and a Wayland EGL ARGB buffer
-  is PREMULTIPLIED, so writing raw colour with partial alpha reads washed out; `max(a, bg.a)` is wrong too (it
-  painted the glyph's bounding box opaque). `Config.opacity` must be clamped with `fclamp_`, never `iclamp_` (an
-  int clamp turns 0.5 into 0).
+- No GL blending is ever enabled: the fragment shader composites `premul + bg*(1-a)` and a Wayland EGL ARGB
+  buffer is PREMULTIPLIED, so writing raw colour with partial alpha reads washed out; `max(a, bg.a)` is wrong
+  too (it painted the glyph's bounding box opaque). `Config.opacity` must be clamped with `fclamp_`, never
+  `iclamp_` (an int clamp turns 0.5 into 0).
 - Color emoji: `putch` folds ZWJ, variation selectors, skin tones, keycap, tag chars and the second regional
   indicator into the ANCHOR cell's `extra[]` (`CLUSTER_MAX` 8) so a `Cell` stays copyable by value;
   `font_color_glyph()` hands the whole sequence to `hb_shape`, which collapses it to one glyph id (anything else
@@ -1853,9 +1643,9 @@ hit-tested bar then panes.
 - A drag only ever produces CELL edges: `sel_cell()` maps the pointer to a cell; `sel_set_endpoints()` gives the
   earlier cell its LEFT edge and the later one its RIGHT edge; direction is recomputed on every motion event, so
   dragging left past the anchor SWAPS the pair.
-- Pass 2 skips a cell that was never written (`ch == 0`) so a drag past the end of a line stops at the last glyph,
-  while real spaces and `ATTR_WIDE` continuation cells keep their band; pass 1's cursor block uses the SAME
-  predicate.
+- Pass 2 skips a cell that was never written (`ch == 0`) so a drag past the end of a line stops at the last
+  glyph, while real spaces and `ATTR_WIDE` continuation cells keep their band; pass 1's cursor block uses the
+  SAME predicate.
 - Band edges stay ABSOLUTE buffer pixels — correct across panes because panes never overlap in x.
 
 **Config.**
@@ -1865,48 +1655,50 @@ hit-tested bar then panes.
   file with that name wins and the rest are never opened, and nothing found anywhere leaves `config_find()`'s
   `out` empty, which is how the callers know to keep the built-in defaults. The search is per FILE NAME, not per
   directory: a `kai-term.conf` in `~/.config` and no `kai-term.bind` there still picks up the system bindings.
-  `kai-term.bind` is read AFTER `kai-term.conf`, so for a name both set the bind file wins. CLI flags are applied
-  AFTER both files so they win and never write back.
+  `kai-term.bind` is read AFTER `kai-term.conf`, so for a name both set the bind file wins. CLI flags are
+  applied AFTER both files so they win and never write back.
 - The split is by NAME, not by which file is open: `apply_bind_key()` takes the 24 `key_*`/`fm_key_*` names,
-  `apply_setting()` the 32 others. A binding written in `kai-term.conf` is applied with a log line naming where it
+  `apply_setting()` the others. A binding written in `kai-term.conf` is applied with a log line naming where it
   belongs now (files written before the split must not lose bindings silently); a setting written in
-  `kai-term.bind` is refused by name, never treated as an unknown key. `tests/test_vt.c` reads both name lists out
-  of the strcmp ladders in `src/config.c` and compares them with `config/kai-term.conf` + `config/kai-term.bind`
-  AND with README's tables — a name added to the parser without a template line, a template line the parser does
-  not know, and a deleted template line each fail a check.
-- `#` starts a comment when ONLY whitespace precedes it, or when whitespace precedes AND follows it. The old rule
-  (whitespace before is enough) was a bug: it cut `background = #1c1c22` at the `#`, and an empty value is legal,
-  so a documented colour line set nothing and logged nothing. `working_dir = /home/me/my#project` keeps its value;
-  `value # note` is stripped. Unknown keys log and are ignored; a missing file is not an error. Colours accept
-  `#RRGGBB`, `0xRRGGBB`, bare `RRGGBB` and `AARRGGBB` (`cfg_parse_color` skips an optional `#`/`0x`, reads hex,
-  and adds `0xff000000` when 6 digits or fewer were given) — ONE colour parser for the config file, the theme
-  file and the OSC handlers. Ranges are clamped at parse time.
+  `kai-term.bind` is refused by name, never treated as an unknown key. `tests/test_vt.c` reads both name lists
+  out of the strcmp ladders in `src/config.c` and compares them with `config/kai-term.conf` +
+  `config/kai-term.bind` AND with README's tables — a name added to a parser without a template line, a
+  template line the parser does not know, and a deleted template line each fail a check.
+- `#` starts a comment when ONLY whitespace precedes it, or when whitespace precedes AND follows it. The old
+  rule (whitespace before is enough) was a bug: it cut `background = #1c1c22` at the `#`, and an empty value is
+  legal, so a documented colour line set nothing and logged nothing. `working_dir = /home/me/my#project` keeps
+  its value; `value # note` is stripped. Unknown keys log and are ignored; a missing file is not an error.
+  Colours accept `#RRGGBB`, `0xRRGGBB`, bare `RRGGBB` and `AARRGGBB` (`cfg_parse_color` skips an optional
+  `#`/`0x`, reads hex, and adds `0xff000000` when 6 digits or fewer were given) — ONE colour parser for the
+  config file, the theme file and the OSC handlers. Ranges are clamped at parse time.
 - **One value owns the default ink and paper.** `Config.fg`/`Config.bg` reach the grid through
   `term_set_default_colors()` (file-scope `g_def_fg`/`g_def_bg` in `src/vt.c`, read by `term_default_fg()` /
-  `term_default_bg()`), called from `main.c` after the config readers and before the first `term_init()`. That one
-  variable is BOTH the colour every blank/erased/scrolled-in/reflowed cell is painted with AND the
+  `term_default_bg()`), called from `main.c` after the config readers and before the first `term_init()`. That
+  one variable is BOTH the colour every blank/erased/scrolled-in/reflowed cell is painted with AND the
   `cell_pristine()` sentinel meaning "never written" — they must stay one value, or reflow's `row_used()` counts
   trailing blanks as content and selection bands appear over nothing. `DEF_FG`/`DEF_BG` are only the built-in
   defaults `config_default()` starts from; nothing in `src/vt.c` may read them again. And nothing may paint a
   background from a different source: `glClear` uses `Config.bg`, pass 1 uses the cell's `bg`, so a third value
   anywhere draws a visible frame around the grid (s101). `palette[0]` is deliberately NOT the configured
-  background — `SGR 40` / `48;5;0` stay black, as every other terminal does it; README says so, because it is the
-  next thing a user will report.
+  background — `SGR 40` / `48;5;0` stay black, as every other terminal does it; README says so, because it is
+  the next thing a user will report.
 - **The palette is process-wide, never `Term` state.** `g_palette[256]` in `src/vt.c`, read through
-  `term_palette()`; `term_init()` and `ESC c` must NOT refill it, because they run for every new tab and would
+  `term_palette()` and written through `term_set_palette_entry()` / `term_palette_reset()`; `term_init()` and
+  `ESC c` must NOT refill it, because they run for every new tab and would
   throw the user's theme away (`term_palette_reset()` exists for OSC 104 only). Two consequences to remember: a
   `Cell` stores a RESOLVED colour, so changing an entry repaints nothing already on screen (a theme file is
-  therefore applied before the first session is created, and an OSC colour change sweeps the grid — see 1d), and
-  entries 16-255 are computed, so a theme that writes them is fighting the cube — the theme layer accepts 0-15
-  only.
+  therefore applied before the first session is created, and an OSC colour change sweeps the grid), and entries
+  16-255 are computed, so a theme that writes them is fighting the cube — the theme layer accepts 0-15 only.
 - Defaults live in `config_default()` AND the `DEF_*` macros AND the files in `config/` — change one and the
   checks fail, which is the point. Do not hand-copy a name list into a test: derive it from the source.
+  `CONFIG_SET_KEYS_MAX` (64) caps how many explicitly-set names `Config.set_keys` records; exceeding it logs and
+  drops the record, which would silently let a theme override a key the file did set.
 
 ## Debugging this project
 
 - `./bin/kai-term -d` (log level 3) prints: the font chosen + `color emoji: <path> (<n>px strike)`; the GL
-  version + instancing state; `shell starts in <dir>`; `grid resized to CxR (window WxH px, cell wxh, padding P,
-  unused ux x uy px, tab i/n, tab view|side-by-side view, N panes)`; one
+  version + instancing state; `shell starts in <dir>`; `grid resized to CxR (window WxH px, cell wxh, padding
+  P, unused ux x uy px, tab i/n, tab view|side-by-side view, N panes)`; one
   `layout: tab view|side-by-side view, N pane(s), tab bar on|off, grid CxR per session` line per LAYOUT SHAPE
   change (client-side evidence for any bar/pane report; what `tests/cli_test.sh` greps for); session lifecycle
   (`mux: session 1/N started`, `tab i/n opened (pid P, pty fd F, grid CxR)`, `tab i/n visible`,
@@ -1929,11 +1721,11 @@ hit-tested bar then panes.
   `graphics: dropped image N (W x H px) to stay within the budget`, `graphics: deleted N image(s)`,
   `graphics: unsupported payload (f=..., n bytes)`, `graphics: APC payload over ... bytes, discarded`,
   `graphics: file transmission (t=x) is not supported`. `./bin/kai-term -d -e 'timg -p k FILE.png; sleep 4'`
-  exercises the whole chain and prints those lines. For the model alone, `.scratch/s70/timg_gate.c` runs the real
-  timg in a PTY with Kai-Term's winsize, feeds its bytes through `term_parse()` and writes back the answers the
-  model queues — no window. The file-manager preview is counted separately and named — the line ends
-  ` + the file-manager preview` when one is drawn, because it has its own texture (`Render.fm_tex`) and is not in
-  the `M` count. `fm preview glTexImage2D failed: 0x... (WxH)` names a GL problem with it.
+  exercises the whole chain and prints those lines. For the model alone, `.scratch/s70/timg_gate.c` runs the
+  real timg in a PTY with Kai-Term's winsize, feeds its bytes through `term_parse()` and writes back the answers
+  the model queues — no window. The file-manager preview is counted separately and named — the line ends
+  ` + the file-manager preview` when one is drawn, because it has its own texture (`Render.fm_tex`) and is not
+  in the `M` count. `fm preview glTexImage2D failed: 0x... (WxH)` names a GL problem with it.
 - **File manager.** `fm: opened on <dir>` / `fm: closed — the terminal is the whole window again`; a request
   `fm: listing <dir> (request N)` and its rejection `fm: dropping stale listing of <dir> (request X, newest Y)`
   (that pair is how you see the request-id rule working, and how a broken id shows up — s74's argument-order bug
@@ -1943,49 +1735,50 @@ hit-tested bar then panes.
   `fm: typed the selected path at the prompt: <path>`; the shell follow `fm: told the shell to follow: cd <dir>`
   (absent = the directory did not change, or the session is on the alternate screen, or `fm_follow = 0`); the
   clear -> `cd` -> re-populate sequence logs its steps — `fm: clearing the shell's input line to follow the
-  browser into <dir>`, that `told the shell to follow` line, `fm: re-typing what was on the line: <text>`, and the
-  completion `fm: the prompt now holds the browser's directory and what you had typed`. Anywhere it stops instead:
-  `fm: dropped the follow while <erasing|cd|re-typing> (<why>)`, and when the captured text never made it back that
-  line adds `— the shell's line does NOT hold what you had typed; it was: <text>` (the only way to recover it, so
-  quote it in full in a report). A refusal to write at all is `fm: not telling the shell to follow — its input line
-  is not one I can describe` or `fm: not typing the path — …`; a navigation arriving mid-sequence logs
-  `fm: the follow already in flight now targets <dir>`; a failed read `fm: cannot open <dir>: <reason>`;
-  `fm: worker started (result fd N)` — absent means the band was never opened, so no thread and no descriptor
-  exist. The band's size is visible in the ordinary `grid resized to CxR …` line: with the band on at the default
-  `fm_size = 75`, `R` is roughly a quarter of what it is with the band off (grid area 58 rows -> terminal 14
-  rows), and `layout: … grid CxR per session` is what `tests/cli_test.sh` compares between a band-off and a
-  band-on run.
+  browser into <dir>`, that `told the shell to follow` line, `fm: re-typing what was on the line: <text>`, and
+  the completion `fm: the prompt now holds the browser's directory and what you had typed`. Anywhere it stops
+  instead: `fm: dropped the follow while <erasing|cd|re-typing> (<why>)`, and when the captured text never made
+  it back that line adds `— the shell's line does NOT hold what you had typed; it was: <text>` (the only way to
+  recover it, so quote it in full in a report). A refusal to write at all is `fm: not telling the shell to follow
+  — its input line is not one I can describe` or `fm: not typing the path — …`; a navigation arriving
+  mid-sequence logs `fm: the follow already in flight now targets <dir>`; a failed read
+  `fm: cannot open <dir>: <reason>`; `fm: worker started (result fd N)` — absent means the band was never
+  opened, so no thread and no descriptor exist. The band's size is visible in the ordinary `grid resized to CxR
+  …` line: with the band on at the default `fm_size = 75`, `R` is roughly a quarter of what it is with the band
+  off (grid area 58 rows -> terminal 14 rows), and `layout: … grid CxR per session` is what `tests/cli_test.sh`
+  compares between a band-off and a band-on run.
 - `./bin/dbg` — scripted scroll/resize/reflow/zoom stages; each prints `scroll_off/live_off/rows/rcap/used` plus
   one 2-character token per slot (`v` viewport / `s` scrollback, then the row's first cell), and asserts `row[]`
   is a NULL-free, duplicate-free permutation.
-- `tests/cli_test.sh` drives the real binary — `main()` is in no linked test, so it is the only honest coverage of
-  argv and of what a real launch does with the config it loads. (The config SEARCH order itself is not exclusive
-  to it — the `cfgsearch` group in `tests/test_vt.c` covers that headless.) It makes ONE probe launch
+- `tests/cli_test.sh` drives the real binary — `main()` is in no linked test, so it is the only honest coverage
+  of argv and of what a real launch does with the config it loads. (The config SEARCH order itself is not
+  exclusive to it — the `cfgsearch` group in `tests/test_vt.c` covers that headless.) It makes ONE probe launch
   (`-d -e true`) first: if that cannot draw, every window-opening check is skipped with the probe's reason
   printed. `KAI_TERM_TEST_NO_WINDOW=1` skips them without mapping any window — use it unless the window path is
   what is under test.
 - Headless harness: link `src/vt.c` + `src/config.c` (+ `src/theme.c`, `mux.c`, `layout.c`) into a throwaway
-  program in `/home/kaida/Project/.scratch/` to exercise logic Wayland input events cannot reach. That is how the
-  cube, the OSC colours, the sweep and the import corpus were all measured.
+  program in `/home/kaida/Project/.scratch/` to exercise logic Wayland input events cannot reach. That is how
+  the cube, the OSC colours, the sweep and the import corpus were all measured.
 
 ## Key Decisions & Pitfalls
 
 - **"The parser knows this key" is never evidence that the key does anything.** `cursor_color =` was defaulted
   (`src/config.c`), parsed and stored in `Config`, and no line of code anywhere read it — `src/render.c` drew the
   cursor from the `CURSOR_COL` macro and `render_init()` was handed only `bg`/`fg`. Every test naming it asserted
-  on the PARSED value, and the template parity check compares parsed values field by field, so the whole suite was
-  green while the feature was absent. A config key is only implemented at its far end: trace the value from
-  `apply_setting()` to the pixel that reads it (the s101 border bug was the same shape — a configured colour that
-  reached `glClear` but not the cells). **When adding a key, write the check at the consumer, not at the parser.**
+  on the PARSED value, and the template parity check compares parsed values field by field, so the whole suite
+  was green while the feature was absent. A config key is only implemented at its far end: trace the value from
+  `apply_setting()` to the pixel that reads it (the s101 border bug was the same shape — a configured colour
+  that reached `glClear` but not the cells). **When adding a key, write the check at the consumer, not at the
+  parser.**
 - **A check that passes on the buggy code pins nothing.** `ink_in_box()` — "no glyph may sit inside the box the
-  picture is drawn into" — passed against the pre-fix `src/fm.c` when written around a small centred 8x8 preview:
-  that picture happened to land below the metadata. The overlap needs a picture whose box starts at the TOP of the
-  picture area, and only the A/B — the new test file against `git show HEAD:src/fm.c` — showed that. When a check
-  is written to pin a bug, run it against the code that had the bug and report the failure count (s88: 8 failures
-  there, 0 here).
+  picture is drawn into" — passed against the pre-fix `src/fm.c` when written around a small centred 8x8
+  preview: that picture happened to land below the metadata. The overlap needs a picture whose box starts at the
+  TOP of the picture area, and only the A/B — the new test file against `git show HEAD:src/fm.c` — showed that.
+  When a check is written to pin a bug, run it against the code that had the bug and report the failure count
+  (s88: 8 failures there, 0 here).
 - **A computed constant is a claim — print it before you pin it or write prose about it.** The 256-colour cube's
-  level formula `55 + 41 * level` looks plausible, is wrong at level 5 (260), and the shift hides the overflow in a
-  way that leaves alpha looking perfect: 91 of 216 entries were near-black and no check had ever asserted on a
+  level formula `55 + 41 * level` looks plausible, is wrong at level 5 (260), and the shift hides the overflow in
+  a way that leaves alpha looking perfect: 91 of 216 entries were near-black and no check had ever asserted on a
   cube value, so the suite was green for the whole life of the project. The probe took one minute
   (`.scratch/s102/cube.c`), found the bug, and stopped me from writing five checks around values I had assumed.
   Same shape as the OSC `rgb:` converter that "rounded" `0xffff` to 256 and painted white as `#010100`.
@@ -1994,40 +1787,40 @@ hit-tested bar then panes.
   is reading something else. Derive the stride from the layout (36 / 6 / 1), and confirm the check fails on the
   broken code — a check that never fails is decoration.
 - **A self-scan cannot pin a token counter: the test is always part of the corpus.** The `test_render` scanner
-  counted its own `CHECK` lines because the probe tokens were named inside the calls that counted them (3 hits for
-  a "code" token: declaration, `(void)` cast, CHECK argument). Fix: the test writes a probe file it controls and
-  scans that, and every mention of a probe token in its own source is split by string concatenation.
+  counted its own `CHECK` lines because the probe tokens were named inside the calls that counted them (3 hits
+  for a "code" token: declaration, `(void)` cast, CHECK argument). Fix: the test writes a probe file it controls
+  and scans that, and every mention of a probe token in its own source is split by string concatenation.
 - **In C a hex escape takes every following hex digit — `"\x1bc"` is ONE byte-sized escape (0x1bc), not ESC +
-  `c`.** The palette check named "ESC c / RIS does not wipe the palette" had never sent a reset; it passed for an
-  unrelated reason. Write `"\x1b" "c"`. The durable gate is the `hex escape` group in `tests/test_vt.c`
+  `c`.** The palette check named "ESC c / RIS does not wipe the palette" had never sent a reset; it passed for
+  an unrelated reason. Write `"\x1b" "c"`. The durable gate is the `hex escape` group in `tests/test_vt.c`
   (`src_hexesc_count()` over every C file, skipping comments and quoted mentions), and its non-vacuity is pinned
   by mutation, not by argument.
 - **Measure BOTH builds.** `make -j8` builds only `src/`; the test binaries are a separate build, and the
-  `\x1bc` warning lived there unnoticed while the "0 warning lines" claim covered only `src`. The same class again
-  in s105: two `-Wformat-truncation` warnings in `src/theme.c` that appear ONLY in the asan build, where the
-  inlining lets the compiler bound the argument.
+  `\x1bc` warning lived there unnoticed while the "0 warning lines" claim covered only `src`. The same class
+  again in s105: two `-Wformat-truncation` warnings in `src/theme.c` that appear ONLY in the asan build, where
+  the inlining lets the compiler bound the argument.
 - **A guard that reads a field the change has not applied yet is a no-op that looks exactly like a guard.**
   `fm_set_size()` clamped `pv_scroll` to `fm_preview_scroll_max(fm)` on the line where it stored the REQUESTED
   pane size — but `fm_preview_scroll_max()` measures `fm->prev.rows`, the pane that actually EXISTS (the same
-  field the painter reads), and the `realloc` that changes it runs 20 lines later. So the clamp measured the size
-  the pane used to have and could never change anything; every check written as "scroll, resize, assert it is
-  inside the new range" still passed, because the range it compared against was the old one. Moved after the
-  allocation. Two traps made it easy to miss: (a) the natural test — shrink the pane, expect the scroll to shrink
-  — is the direction where the range GROWS, so it pins nothing in either version; the clamp only bites when the
-  pane GROWS. (b) The next check, `fm_preview_scroll(5)` expecting 5, was red for an unrelated reason: the
-  previous check had left `pv_scroll` at its maximum. When a clamp/validate call takes a max from a getter, ask
-  what state that getter reads and whether the change has landed in it yet (s96).
+  field the painter reads), and the `realloc` that changes it runs 20 lines later. So the clamp measured the
+  size the pane used to have and could never change anything; every check written as "scroll, resize, assert it
+  is inside the new range" still passed, because the range it compared against was the old one. Moved after the
+  allocation. Two traps made it easy to miss: (a) the natural test — shrink the pane, expect the scroll to
+  shrink — is the direction where the range GROWS, so it pins nothing in either version; the clamp only bites
+  when the pane GROWS. (b) The next check, `fm_preview_scroll(5)` expecting 5, was red for an unrelated reason:
+  the previous check had left `pv_scroll` at its maximum. When a clamp/validate call takes a max from a getter,
+  ask what state that getter reads and whether the change has landed in it yet (s96).
 - **`eglSwapBuffers` blocks, and a blocked swap looks like a dead terminal.** It waits until the driver gets a
   buffer back and only the compositor releases buffers, so a client whose surface is not being rendered stalls
   inside swap: no keyboard, no PTY reads, no redraw (measured `wchan = futex_do_wait`; `eglSwapInterval(0)`
   changes nothing on this NVIDIA driver). The rule is about wayland READ — the earlier "never swap inside a
-  listener" wording was BACKWARDS and caused a regression. Answering EVERY configure with a swap is also wrong (it
-  spammed `eglSwapBuffers failed: 0x3003` every frame).
+  listener" wording was BACKWARDS and caused a regression. Answering EVERY configure with a swap is also wrong
+  (it spammed `eglSwapBuffers failed: 0x3003` every frame).
 - **Geometry lives in `src/layout.c`, not main.c.** main.c is in no test binary, so arithmetic there is
   untestable, and N panes need N origins, which one global offset cannot express. The round trip
   `layout_initial_size()` -> `layout_compute()` -> `layout_grid_size()` is what proves startup height is right —
   it caught a `cell_w`/`cell_h` typo (s62). Same reasoning put `mouse_sgr_button()` in vt.c, the mouse-as-keys
-  helpers in vt.c, and the theme importer in theme.c.
+  helpers in vt.c, the theme importer in theme.c, `fm_wheel_focus()` in fm.c, and `confirm_message()` in mux.c.
 - **The evdev button order is not protocol order.** `BTN_LEFT` 0x110, `BTN_RIGHT` 0x111, `BTN_MIDDLE` 0x112, but
   SGR numbers them 0 left, 1 middle, 2 right. A switch written in kernel order silently swaps RIGHT and MIDDLE —
   in the bar's middle-click-close AND in every SGR report to vim/htop.
@@ -2036,8 +1829,8 @@ hit-tested bar then panes.
   it. Log what the OWNER of the state REPORTS (`mux_active()`).
 - **A log line that counts two different things as one number lies the same way.**
   `graphics: N image(s) drawn, M texture(s) held` began counting the file-manager preview in `N` while `M` still
-  counted only the application-picture texture cache, so a preview alone logged `1 image(s) drawn, 0 texture(s)
-  held`. Count each thing with the counter that owns it (s74).
+  counted only the application-picture texture cache, so a preview alone logged `1 image(s) drawn, 0
+  texture(s) held`. Count each thing with the counter that owns it (s74).
 - **`Term` is not a place for settings.** `ESC c`/RIS calls `term_init()`, which memsets the whole `Term`, so
   process-wide settings are file-scope values with a setter (`kai_term_loglevel`, `g_clear_scrollback`,
   `g_def_fg`/`g_def_bg`, `g_palette`) applied from config in main.c. `bracketed_paste` is deliberately opposite:
@@ -2047,22 +1840,22 @@ hit-tested bar then panes.
   default) a mouse drag does NOT call `set_selection`; only `Ctrl`+`Shift`+`C` does — that is what reads like
   "Kai-Term keeps a private clipboard".
 - **A sanitizer target with an incomplete prerequisite list produces confident, wrong results.** `bin/dbg_asan`
-  once kept running a stale binary and reported a 312-byte leak the current source did not have. When a sanitizer
-  finding contradicts the tests, check the binary's mtime against the sources first.
+  once kept running a stale binary and reported a 312-byte leak the current source did not have. When a
+  sanitizer finding contradicts the tests, check the binary's mtime against the sources first.
 - **A `(void)x;` line does not mean `x` is unused.** `(void)def1;` in `csi_dispatch` read like a leftover, but
   `def1` is used by `CSI J`, `CSI K` and `CSI 6 n`. Grep for uses, then let the compiler confirm.
 - **Never pass an out-parameter and the call that fills it as arguments of the same call.**
   `fm_nav(fm_go_sel(&g_fm, &seq), seq, "open")` compiles clean under the whole `WARN` set and is broken: C
-  evaluates arguments in an unspecified order and gcc reads the caller's `seq = 0` BEFORE `fm_go_sel()` writes it.
-  Measured live (s74): every listing issued after a navigation carried request id 0, so `fm_install_scan()`
+  evaluates arguments in an unspecified order and gcc reads the caller's `seq = 0` BEFORE `fm_go_sel()` writes
+  it. Measured live (s74): every listing issued after a navigation carried request id 0, so `fm_install_scan()`
   discarded all of them and the browser kept showing the directory the user had left. Fill the out-param in its
   own statement. Reproduce with `.scratch/s74/argorder.c` (three lines).
 - **One int return value cannot mean "not handled" and "handled, do not repeat" at the same time.**
   `send_key()`'s return says only "is this repeatable", and falling off the function is what sends the key to the
-  PTY. `if (fm_keys(...)) return 0;` therefore delivered every one-shot file-manager key to the shell too: Return
-  on a file typed its path AND a newline (the shell would have run it), BackSpace went to the parent AND deleted a
-  character at the prompt. Three states (-1 / 0 / 1) fixed it. Symptom to look for: the action happens AND its key
-  appears in the terminal.
+  PTY. `if (fm_keys(...)) return 0;` therefore delivered every one-shot file-manager key to the shell too:
+  Return on a file typed its path AND a newline (the shell would have run it), BackSpace went to the parent AND
+  deleted a character at the prompt. Three states (-1 / 0 / 1) fixed it. Symptom to look for: the action happens
+  AND its key appears in the terminal.
 - **A refused texture upload is a decision, not a log line.** Every `glTexImage2D` site used to print its error
   and draw with the texture anyway; on the NVIDIA driver a draw that samples a texture with no storage faults
   inside `libnvidia-eglcore` (SIGSEGV at 0x4 in `draw_quads`, 85 core dumps in one suite run). The rule now: the
@@ -2070,87 +1863,102 @@ hit-tested bar then panes.
   exits 1), the color atlas is worth downgrading to mono glyphs, a picture is worth skipping. Retrying an upload
   is fine; drawing the result is not.
 - **A steady-state condition is not evidence of an event.** `else if (prompt_row_matches(t))
-  t->input_pending = 0;` read as "the shell put the prompt back, so the line is empty" — but it was also true for
-  a burst that had changed NOTHING, e.g. fish repainting only OSC 7 / OSC 0 / DECSET after Kai-Term had re-typed
-  the user's text. The echo window closed over bytes that had not been echoed yet, every later burst re-took the
-  prompt snapshot (including the one carrying the echo of Kai-Term's own typing), and a row holding `Some text`
-  began answering `term_at_prompt()` as EMPTY — so the next file-manager navigation appended `cd '<dir>'` to the
-  command and the shell ran it (user report). Snapshot the condition at the START of the burst and act only on the
-  transition. Same class as "a log line that prints its own argument can lie": a predicate that is true before and
-  after an event cannot report that event.
-- **A burst boundary is not a semantic boundary.** Advancing a "wait for the shell's next prompt" state at the end
-  of any pty read looks reasonable and is wrong: fish answers a `cd` with the command echo, then a continuation
-  row, then prompt chrome, then the prompt — four separate reads, and the model re-takes the prompt snapshot at
-  the end of each. Where the evidence is "the application has FINISHED printing", wait for silence
+  t->input_pending = 0;` read as "the shell put the prompt back, so the line is empty" — but it was also true
+  for a burst that had changed NOTHING, e.g. fish repainting only OSC 7 / OSC 0 / DECSET after Kai-Term had
+  re-typed the user's text. The echo window closed over bytes that had not been echoed yet, every later burst
+  re-took the prompt snapshot (including the one carrying the echo of Kai-Term's own typing), and a row holding
+  `Some text` began answering `term_at_prompt()` as EMPTY — so the next file-manager navigation appended
+  `cd '<dir>'` to the command and the shell ran it (user report). Snapshot the condition at the START of the
+  burst and act only on the transition. Same class as "a log line that prints its own argument can lie": a
+  predicate that is true before and after an event cannot report that event.
+- **A burst boundary is not a semantic boundary.** Advancing a "wait for the shell's next prompt" state at the
+  end of any pty read looks reasonable and is wrong: fish answers a `cd` with the command echo, then a
+  continuation row, then prompt chrome, then the prompt — four separate reads, and the model re-takes the prompt
+  snapshot at the end of each. Where the evidence is "the application has FINISHED printing", wait for silence
   (`FMCD_QUIET_MS`, driven from the frame timer) — no further burst is coming to trigger it.
 - **An invariant held by accident is invisible until something else changes.** "A cursor moved off the prompt
   column means the line is not empty" was true for months because EVERY key Kai-Term sent set `input_pending`,
-  and that is what stopped `prompt_snapshot()` from re-taking the anchor at the moved cursor. Making movement keys
-  stop opening the echo window (the s89 BackSpace fix) turned the pinned check red and would otherwise have made a
-  cursor sitting INSIDE the prompt text answer "safe to write here". When a change flips a check that has been
-  green for ages, find the mechanism that was really holding the property — `.scratch/s89/leftprobe{,_old}` prints
-  `at/pending/cx/cy/prompt_cx/prompt_cy` per step and shows it in one run — and state it explicitly instead of
-  restoring the accident.
+  and that is what stopped `prompt_snapshot()` from re-taking the anchor at the moved cursor. Making movement
+  keys stop opening the echo window (the s89 BackSpace fix) turned the pinned check red and would otherwise have
+  made a cursor sitting INSIDE the prompt text answer "safe to write here". When a change flips a check that has
+  been green for ages, find the mechanism that was really holding the property —
+  `.scratch/s89/leftprobe{,_old}` prints `at/pending/cx/cy/prompt_cx/prompt_cy` per step and shows it in one run
+  — and state it explicitly instead of restoring the accident.
 - **A red check can mean the test's setup is unrepresentative, not that the model is wrong.**
   `tests/test_vt.c` looked like "the prompt snapshot breaks after a scroll" and would have invited a change to
   correct snapshot logic. `.scratch/s82/promptprobe.c` replayed the sequence and printed the state at each step:
   the test wrote the whole line with `feed()` (application output), and `term_parse()` re-takes the snapshot at
-  the end of every such burst, so the typed text legitimately was `""`. The realistic sequence (`feed("p ")` then
-  `type(...)`) passes at the same scroll position. Print the state before editing the logic a check exercises.
+  the end of every such burst, so the typed text legitimately was `""`. The realistic sequence (`feed("p ")`
+  then `type(...)`) passes at the same scroll position. Print the state before editing the logic a check
+  exercises.
 - **Never write a check around an escape sequence without measuring what THIS parser does with it.** Assumed
-  "Home"/"End", got three realities: `CSI H` moves the cursor to another ROW (not a Home key), `ESC O H` prints a
-  literal `H` (SS3 is not implemented here), `ESC [ 1 ~` is ignored, and `CSI G` is the one that moves within the
-  row. Same class of mistake in the probe itself: `"\\e[H"` in C sends a backslash and an `e`, which read for two
-  minutes like a parser bug.
+  "Home"/"End", got three realities: `CSI H` moves the cursor to another ROW (not a Home key), `ESC O H` prints
+  a literal `H` (SS3 is not implemented here), `ESC [ 1 ~` is ignored, and `CSI G` is the one that moves within
+  the row. Same class of mistake in the probe itself: `"\\e[H"` in C sends a backslash and an `e`, which read
+  for two minutes like a parser bug.
 - **Never hand-count a length into `term_parse()` — use `strlen()`.** `.scratch/s97/csiC0.c` wrote
-  `term_parse(&T, "\e[?2004", 8)`: that literal is **7** bytes, so the hand-counted 8 fed the NUL terminator as an
-  extra byte. The probe then reported a perfectly good case as broken — a CSI sequence split across two pty reads
-  came back as "mode not applied, an `h` painted". `strlen()` showed that case was never broken. The check
+  `term_parse(&T, "\e[?2004", 8)`: that literal is **7** bytes, so the hand-counted 8 fed the NUL terminator as
+  an extra byte. The probe then reported a perfectly good case as broken — a CSI sequence split across two pty
+  reads came back as "mode not applied, an `h` painted". `strlen()` showed that case was never broken. The check
   invented the bug; the A/B against the real code is what caught it.
 - **A harness that counts bytes by hand sends whatever follows the literal in memory.** `input_write(t, p,
-  "PS1='%~> '\n", 13)` on an 11-byte literal also wrote the NUL and the next byte of `.rodata` — which happened to
-  be the `S` of the following string literal, so the zsh prompt appeared to hold `SSome text` and the terminal
-  looked like it was duplicating a keystroke. It was the probe. Always `strlen()` (or `sizeof(x)-1`) for a
-  literal, and when a harness reports a character nobody typed, suspect the harness first (s94).
+  "PS1='%~> '\n", 13)` on an 11-byte literal also wrote the NUL and the next byte of `.rodata` — which happened
+  to be the `S` of the following string literal, so the zsh prompt appeared to hold `SSome text` and the
+  terminal looked like it was duplicating a keystroke. It was the probe. Always `strlen()` (or `sizeof(x)-1`)
+  for a literal, and when a harness reports a character nobody typed, suspect the harness first (s94).
 - **A harness that types into the user's real shell history pollutes its own later runs.** The s95 path gate ran
-  real fish/bash/zsh in a pty, so its commands landed in `~/.config/fish/fish_history` and `~/.bash_history`. Two
-  separate false greens followed: a later run's autosuggestion ghost was a command an EARLIER run had typed, and
-  in ghost mode Enter printed the expected output because fish's own suggestion completed the command. Run shells
-  with their history redirected (`fish --private`, `HISTFILE=/tmp/...`) and make the needle something no history
-  can already contain (a pid in the file name). When a check passes on the code you expect it to fail, suspect the
-  check before you believe the result.
-- **A probe that hosts a shell must answer that shell's queries, or it is measuring a shell that never started.**
-  A section of `.scratch/s97/hprobe2` reported "fish: bracketed paste NEVER within 3 s". `.scratch/s97/fishdiag`
-  shows why that was the probe: fish's first 83 bytes are terminal QUERIES (`CSI ? u`, `CSI > 0 q`, `OSC 11 ; ?`,
-  `DCS + q …`, `CSI 0 c`) and fish paints nothing until they are answered or time out. `.scratch/s97/fishtime`
-  drains the response queue the way `src/main.c` does and measures 200 ms. Any headless measurement of shell
-  STARTUP behaviour that never writes back to the pty is measuring a stalled shell, not a slow one.
+  real fish/bash/zsh in a pty, so its commands landed in `~/.config/fish/fish_history` and `~/.bash_history`.
+  Two separate false greens followed: a later run's autosuggestion ghost was a command an EARLIER run had
+  typed, and in ghost mode Enter printed the expected output because fish's own suggestion completed the
+  command. Run shells with their history redirected (`fish --private`, `HISTFILE=/tmp/...`) and make the needle
+  something no history can already contain (a pid in the file name). When a check passes on the code you expect
+  it to fail, suspect the check before you believe the result.
+- **A probe that hosts a shell must answer that shell's queries, or it is measuring a shell that never
+  started.** A section of `.scratch/s97/hprobe2` reported "fish: bracketed paste NEVER within 3 s".
+  `.scratch/s97/fishdiag` shows why that was the probe: fish's first 83 bytes are terminal QUERIES (`CSI ? u`,
+  `CSI > 0 q`, `OSC 11 ; ?`, `DCS + q …`, `CSI 0 c`) and fish paints nothing until they are answered or time
+  out. `.scratch/s97/fishtime` drains the response queue the way `src/main.c` does and measures 200 ms. Any
+  headless measurement of shell STARTUP behaviour that never writes back to the pty is measuring a stalled
+  shell, not a slow one. The same trap caught the s118 confirm-quit probe — see `s117/fgprobe.c` vs
+  `s117/fgprobe2.c`.
 - **When a bug is in what someone ELSE hands you, measure that someone before theorising about your own code.**
-  The stray-`h` report got two confident wrong explanations (a leaked parser byte, then an escape sequence in the
-  pasted text) before one command pair settled it: `wl-paste -l` and `wl-paste --type <name> | od -c`. Both wrong
-  theories were internally consistent and neither had been tested against the actual clipboard. The user's own
-  clues — "the source matters", "ctrl+v works but ctrl+shift+v does not" — pointed straight at it; a report that
-  distinguishes two paths is telling you which path to instrument. Related: the s97 C0-inside-CSI fix was a real
-  bug found while chasing this one, so "I found and fixed something" is not evidence that the reported bug is
-  explained. Confirm the reported symptom is reproduced, then confirm it is gone.
+  The stray-`h` report got two confident wrong explanations (a leaked parser byte, then an escape sequence in
+  the pasted text) before one command pair settled it: `wl-paste -l` and `wl-paste --type <name> | od -c`. Both
+  wrong theories were internally consistent and neither had been tested against the actual clipboard. The user's
+  own clues — "the source matters", "ctrl+v works but ctrl+shift+v does not" — pointed straight at it; a report
+  that distinguishes two paths is telling you which path to instrument. Related: the s97 C0-inside-CSI fix was
+  a real bug found while chasing this one, so "I found and fixed something" is not evidence that the reported
+  bug is explained. Confirm the reported symptom is reproduced, then confirm it is gone.
 - **A feature A/B cannot pin a negative check, and the failure count is only meaningful if you say which
-   checks it counts.** Stubbing `--import-theme` out (nothing recognised, nothing parsed, nothing written) made
-   44 of the 1127 checks fail — but 17 of the import group's 60 passed, because "a missing file is refused", "a
-   file with no colour is refused" and "there is no destination without HOME" are all satisfied by a tree that
-   refuses everything. That is not a defect in those checks: they are pinned by MUTATION (make the refusal
-   accept the file) and by the positive checks beside them, not by an absence A/B. Report both numbers and name
-   the kind, or the next session reads "44 failures" as "all of them matter".
+  checks it counts.** Stubbing `--import-theme` out (nothing recognised, nothing parsed, nothing written) made
+  44 of the 1127 checks fail — but 17 of the import group's 60 passed, because "a missing file is refused", "a
+  file with no colour is refused" and "there is no destination without HOME" are all satisfied by a tree that
+  refuses everything. Same shape in step 3 (a stub answering "one cell" satisfies "a click on a blank selects
+  one cell") and in step 3b (a stub selecting nothing satisfies "nothing is selected before a gesture"). That is
+  not a defect in those checks: they are pinned by MUTATION (make the refusal accept the file) and by the
+  positive checks beside them, not by an absence A/B. Report both numbers and name the kind, or the next session
+  reads "44 failures" as "all of them matter".
+- **An object-file A/B cannot exercise the checks that read SOURCE TEXT.** `cfg_names_of()`,
+  `readme_table_names_of()` and `src_word_count()` all open the working tree's files, so the settings-name count
+  and the `render_cursor`-appears-4× pins passed in BOTH trees of the s112 A/B. Verify those the direct way
+  instead: the count check went genuinely RED between adding the parser branches and updating the documents, and
+  `grep -c render_cursor` on HEAD's `src/render.c` is 0. Also note the A/B has to use the CURRENT header or the
+  new checks would not compile — which is the honest shape of it, and what makes the vocabulary available to a
+  tree that does not implement it.
+- **Safety invariants have limited A/B value by design.** All 448 `render_cursor()` invariants and its BLOCK
+  rules stayed green against the pre-step-2 rule, because they pin "never both a block and a quad", not "a bar
+  is drawn". The 12 failures were precisely the bar/underline claims. Say which kind a count covers.
 - **A silent truncation is a decision someone already made for you.** `snprintf(v->name, sizeof v->name, "%s",
-   val)` is memory-safe and cut a 236-byte theme name into a 128-byte field without a word — and the compiler
-   only said so in the asan build, where inlining let it bound `val`. Writing the cap as one function that
-   copies `sizeof field - 1` and logs the cut removes the warning AND makes the behaviour something the tests
-   can assert on (the CLI group greps the log line; the C check asserts the exact 127-byte stem, with an
-   alternating `ab` name so an off-by-one changes the last character too). Same shape as every other "the value
-   was quietly changed" bug here: make the change visible at the place it happens.
-- **A harness that mallocs must free, or LeakSanitizer reports YOUR test as the leak.** The option-pinning
-   block read 9 names out of `usage()` and 9 out of README and never freed them: 134 bytes in 18 allocations
-   that looked like a shipped-code leak and would have hidden a real one. The suite already had the pattern
-   (`free((char *)set_names[i])`); the new block just did not copy it.
+  val)` is memory-safe and cut a 236-byte theme name into a 128-byte field without a word — and the compiler
+  only said so in the asan build, where inlining let it bound `val`. Writing the cap as one function that copies
+  `sizeof field - 1` and logs the cut removes the warning AND makes the behaviour something the tests can assert
+  on (the CLI group greps the log line; the C check asserts the exact 127-byte stem, with an alternating `ab`
+  name so an off-by-one changes the last character too). Same shape as every other "the value was quietly
+  changed" bug here: make the change visible at the place it happens.
+- **A harness that mallocs must free, or LeakSanitizer reports YOUR test as the leak.** The option-pinning block
+  read 9 names out of `usage()` and 9 out of README and never freed them: 134 bytes in 18 allocations that
+  looked like a shipped-code leak and would have hidden a real one. The suite already had the pattern
+  (`free((char *)set_names[i])`); the new block just did not copy it.
 - **A failed build leaves the previous binary in place, and it will happily pass.** `make -j8` errored on a C
   mistake, the very next command ran `./bin/test_vt` and it printed `859 checks, 0 failures` — for code that had
   never been rebuilt. Check the build exit status (and that the check count actually moved) before believing any
@@ -2158,22 +1966,22 @@ hit-tested bar then panes.
 - **A test that maps a window is a change to the user's desktop.** `tests/cli_test.sh` ran the real binary 15
   times per `make test`, and one session looped it 25 more times to sample a failure — that is what filled the
   user's screen and `coredumpctl`. One probe launch decides whether the window checks run; the rest are skipped
-  with the reason printed, and `KAI_TERM_TEST_NO_WINDOW=1` skips them all. Never loop launches to count failures:
-  diagnose the first one (and see ENVIRONMENT.md "Launching real windows in a test").
+  with the reason printed, and `KAI_TERM_TEST_NO_WINDOW=1` skips them all. Never loop launches to count
+  failures: diagnose the first one (and see ENVIRONMENT.md "Launching real windows in a test").
 - **Never run the live key-injection or window-mapping harnesses while the user is at the machine, and never
   assume a red screen came from your own test.** The user was disturbed mid-session. Measured after the fact
   rather than guessed: no `bin/kai-term` of mine was alive, no `.scratch/inject` process, no new core dump, and
   the CLI suite had mapped 0 windows — what actually happened was `noctalia` (the lock screen) SIGSEGVing and
   niri restarting the session, a recurring host fault. Default to headless coverage (`.scratch/s86/follow2.c`
   drives the real machine over the real pty with no window at all) and hand the in-window check to the user.
-- **`pkill -f <name>` matches the shell that runs it.** `pkill -f clipowner` killed the whole command line, output
-  and all. Use `pkill -x <name>`, or put the sequence in a script file.
-- **A background job spawned with `&` makes this shell tool swallow the call's entire output** — even the `echo`s
-  that follow it. Split "start the daemon" and "query it" into separate calls, or run the whole scenario from a
-  script file.
+- **`pkill -f <name>` matches the shell that runs it.** `pkill -f clipowner` killed the whole command line,
+  output and all. Use `pkill -x <name>`, or put the sequence in a script file.
+- **A background job spawned with `&` makes this shell tool swallow the call's entire output** — even the
+  `echo`s that follow it. Split "start the daemon" and "query it" into separate calls, or run the whole scenario
+  from a script file.
 - **`cat > file` is fully buffered when stdout is a file**, so killing the `cat` that captures a paste discards
   the capture and the run reports 0 bytes. Close its stdin (Ctrl+D) and let it exit normally.
 - **A missing-protocol grep proves the code is absent, not that the user is missing anything.** The s102 survey
-  grepped every candidate feature first (all 0 hits) and two of the proposals were still wrong, because the user's
-  own setup did not ask for them (scaling at 1, and OSC 52 vs the local clipboard they already use). Check what
-  their setup actually asks for before ranking a feature.
+  grepped every candidate feature first (all 0 hits) and two of the proposals were still wrong, because the
+  user's own setup did not ask for them (scaling at 1, and OSC 52 vs the local clipboard they already use).
+  Check what their setup actually asks for before ranking a feature.

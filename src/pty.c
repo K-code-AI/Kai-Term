@@ -155,3 +155,28 @@ void pty_write(Pty *p, const void *buf, size_t len)
         len -= (size_t)n;
     }
 }
+
+/* Is something still running here? The DECISION is kept apart from the syscall so a test can put every case
+   through without owning a process — the same split as render_cursor(). Measured against bash, zsh and fish
+   (.scratch/s117/fgprobe2, which answers each shell's startup queries and proves the command ran): idle at
+   the prompt the pty's foreground process group IS the shell's pid, and a foreground command or a pipeline
+   moves it elsewhere. Kai-Term never calls tcsetpgrp, so the shell owns that value.
+   The two guards are measurements, not paranoia. After the shell exits, bash's pty answers tcgetpgrp with 0,
+   and a naive `fg != child` calls a DEAD session "running" — the window would then ask whether to kill
+   nothing (zsh and fish left the old value there, which reads idle only by luck). And a session whose pty is
+   already closed has nothing to ask about. A job the user backgrounded with `&` keeps the shell in the
+   foreground group, so it reads idle: the gate protects a foreground command, not a daemon (measured, and
+   documented as a limitation in README/ISSUES). */
+int fg_busy(pid_t fg, pid_t child)
+{
+    if (fg <= 0 || child <= 0)
+        return 0;
+    return fg != child;
+}
+
+int pty_fg_busy(const Pty *p)
+{
+    if (!p || p->mfd < 0)
+        return 0;
+    return fg_busy(tcgetpgrp(p->mfd), p->child);
+}
