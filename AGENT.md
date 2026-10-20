@@ -80,7 +80,7 @@ sessions per window, tab bar, side-by-side panes. No GUI framework.
   `~/.config/kai-term/kai-term.conf`, then `printf '\033]11;#082135\007'` — the paper changes and `-d` logs that
   an application set it, not the file. Hand these to them; do not map a window to judge a look yourself.
 
-## Current Task — themes 1a-1e: **all committed and pushed (s107)**. The plan's step 2, the cursor bar, is next
+## Current Task — step 2, the cursor bar: **in progress (s111)**. Plan steps 3-7 are next
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -747,12 +747,53 @@ look, bell flash) to the user.
   that a click still does, and that the wheel still scrolls the listing and the preview body without taking the
   keyboard. Nothing about those three is a harness question.
 
+- **2026-10-19, s111 — step 2, the cursor bar. Objective, measured starting point, plan.**
+  The user's words (s102): "A thin rectangle, the most classic blinking cursor". Decided then and not to be
+  re-litigated: always a bar (NO `cursor_style` key), `cursor_blink = 1000` ms half-period with `0` = steady,
+  `cursor_width = 2` px clamped 1..cell_w/3, DECSCUSR honoured so vim/neovim/fish can still ask for block or
+  underline, blink phase in `W` and never in `Term`, blink only while the window has focus.
+  **Measured before writing anything** (read, not assumed): the cursor is today the cell's own background quad
+  in `render_draw()` pass 1 (`src/render.c:1157-1170`, `cellbg = cur_col`) and pass 3 re-tints the glyph under
+  it (`:1300-1310`, inverting the ink); the colour comes from `render_chrome()` (`chrome.cursor` /
+  `chrome.cursor_off`). DECSCUSR is collected but discarded: the CSI state skips intermediate bytes
+  (`src/vt.c:3611`) so `ESC [ 3 SP q` reaches `csi_dispatch()` with final byte `q` and param 3, and the only
+  `case 'q'` in the file is the kitty-graphics APC parser (`:2961`) — 0 hits in the CSI dispatch. Window focus
+  is already tracked: `W.is_activated` is decoded from the xdg-toplevel states in `toplevel_configure()`
+  (`src/main.c:1735`), so the "blink only when focused" gate needs no new Wayland plumbing. There are three
+  timerfds (`tfd` frame, `krfd` key repeat, `pwfd` paste watchdog) — the blink is the fourth.
+  **Plan.** (1) Probe the parser first: feed `ESC[0..6 q` and print what the model does today (expect: nothing
+  changes), so the check is written around a measured before/after. (2) `Term.cur_style` (0 = the app never
+  asked, 1 block, 2 bar, 3 underline) and `Term.cur_blink` (0 = not asked, 1 blinking, 2 steady), set by
+  `csi_dispatch`'s new `q` case; they live in `Term` because DECSCUSR is per-session, and `term_init()` memsets
+  so 0 = "not asked" is the only safe encoding. (3) The per-cell decision becomes ONE pure function in
+  `render.c` (the standing reason: `main.c` and the draw loop are in no test binary, and `test_render.c` already
+  proves `render_chrome()` is a working seam): given shape, blink phase, cell size and the configured width, it
+  answers three things — does pass 1 paint the block, does batch B emit a separate quad and at what rect, does
+  pass 3 invert the ink. A bar must NOT invert the ink and must NOT paint the cell background, or the glyph is
+  drawn over a block and the bar is invisible. (4) The bar/underline quad is emitted in **batch B, after the
+  selection bands and before the glyphs** — batch B is one draw call where the later quad wins, so glyphs after
+  it keep the character readable. The existing rule that the cursor is hidden exactly where a band is painted
+  must be obeyed by the new quad too (the comment at `:1164` says pass 1 and pass 2 must match; a bar that
+  forgets it re-creates that bug). (5) A fourth timerfd in `main.c`; a tick sets `W.dirty` and goes through
+  `redraw()` on the normal path — never swap inside a Wayland listener. Phase in `W`, DEC 25l still hides the
+  cursor, and the timer is only armed while `W.is_activated` and while some session wants a blinking cursor.
+  (6) Two config keys: `cursor_blink` (ms half-period, 0 = steady) and `cursor_width` (px) — `config_default`,
+  the `apply_setting` ladder (settings names 33 -> 35), a line in `config/kai-term.conf`, a README row each
+  (the s110 gate now FAILS if a README row is missing — that is the first use of the check added in s110), the
+  template-parity value check, a default check and a parse check. (7) A/B every new check against the code that
+  lacks it and report the failure counts; measure BOTH builds; hand the look to the user rather than mapping a
+  window.
+  **Expected outcome:** a 2 px bar at the left edge of the cursor cell, full cell height, blinking with a 1 s
+  half-period while the window is focused and steady while it is not; `cursor_blink = 0` gives a steady bar; an
+  app that sends `ESC[1 q` gets a block back, `ESC[3 q` a blinking bar, `ESC[5 q` an underline.
+
 ## Next Steps
 
-1. **Step 2 of the plan: the cursor bar** (see Current Task / 2). Everything that would have had to be decided
-   is decided — a separate quad emitted in batch B under the glyphs, a fourth timerfd for the blink, blink phase
-   in `W` and never in `Term`, `cursor_blink = 1000` / `cursor_width = 2`, DECSCUSR honoured, no `cursor_style`
-   key. Probe first, A/B every new check, and hand the look to the user instead of mapping a window.
+1. **Step 2, the cursor bar — IN PROGRESS, see the s111 entry above for the plan and the measured starting
+   point.** Everything that would have had to be decided is decided — a separate quad emitted in batch B under
+   the glyphs, a fourth timerfd for the blink, blink phase in `W` and never in `Term`, `cursor_blink = 1000` /
+   `cursor_width = 2`, DECSCUSR honoured, no `cursor_style` key. Probe first, A/B every new check, and hand the
+   look to the user instead of mapping a window.
 2. **Then steps 3-7 of the plan** (word/line click selection, confirm-quit, middle-click paste, visual bell,
    plain-click URLs). Each is measured and gated in "Current Task"; the decisions that would have blocked them
    are already made. Do not re-derive the measured facts.
