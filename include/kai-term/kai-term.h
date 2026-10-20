@@ -57,6 +57,12 @@ uint32_t term_default_bg(void);
 const uint32_t *term_palette(void);
 void term_set_palette_entry(int idx, uint32_t argb);
 void term_palette_reset(void);
+void term_palette_entry_reset(int idx);   /* one entry back to built-in: what `OSC 104;N` asks for */
+/* Whether an application may repaint the terminal's OWN colours (OSC 4 / 10 / 11 / 104). Process-wide like the
+   palette itself, because it is a property of the window and not of a session. `osc_colors = 0` is the user's
+   switch: with it off, nothing running inside the terminal can change a colour. */
+void term_set_osc_colors(int on);
+int  term_osc_colors(void);
 
 /* Default xdg-shell app_id. Single-sourced here because config_default(), the
    `app_id =` empty-value fallback in config.c and the last-resort fallback in main.c must all agree;
@@ -366,9 +372,16 @@ typedef struct Term {
        given up on (`Tab.int_dead`), which a kind alone cannot express (fish -> fish announces twice with the
        same kind). It survives a reset with the announcement itself: both are one fact about the shell. */
     int  shell_int_gen;
-    /* Terminal query responses (CPR, DA1, DA2) queued for the PTY. */
+    /* Terminal query responses (CPR, DA1, DA2, OSC 10/11 colour queries) queued for the PTY. */
     char resp[256];
     int resp_len;
+    /* OSC 10/11: an application setting the default ink/paper. vt.c applies the change to the process-wide
+       defaults and sweeps THIS session, then raises the flag; main.c sees it, sweeps every other session and
+       re-points the renderer's clear colour and chrome. The old values travel with the flag because the sweep
+       is a match-and-replace and the defaults have already moved by the time main.c acts. Zeroed by term_init()
+       with the rest of Term: a fresh session has nothing painted that needs sweeping. */
+    int      colors_dirty;
+    uint32_t old_def_fg, old_def_bg;
 } Term;
 
 /* The last directory the shell said it entered (its `cd` ack). main.c compares this with the directory the
@@ -409,6 +422,13 @@ void term_grid_geometry(int win_w, int win_h, int cell_w, int cell_h, int pad,
 
 /* terminal */
 void term_init(Term *t, int rows, int cols, int scrollback);
+/* Re-point everything one session has ALREADY painted at a new default ink/paper (OSC 10/11). Needed because a
+   Cell stores a RESOLVED colour, not a palette index: moving the two defaults alone would change only future
+   output, so the screen in front of the user would keep the old colours. It is also the only thing keeping
+   cell_pristine() true for blank cells across a runtime colour change — the s101 invariant; sweeping only the
+   non-pristine cells re-creates that bug. Idempotent. See the comment on the definition in src/vt.c. */
+void term_recolor_defaults(Term *t, uint32_t old_fg, uint32_t old_bg,
+                           uint32_t new_fg, uint32_t new_bg);
 void term_destroy(Term *t);
 void term_resize(Term *t, int rows, int cols);
 void term_parse(Term *t, const uint8_t *buf, size_t len);
@@ -660,6 +680,10 @@ typedef struct {
 } FmKeys;
 
 /* ---------- config ---------- */
+/* The cap on "names the settings file set explicitly" (see Config.set_keys). 31 settings today; the count
+   of accepted names is pinned by tests/test_vt.c, so this cannot be quietly outgrown. */
+#define CONFIG_SET_KEYS_MAX 64
+
 typedef struct Config {
     char font[128];
     int  font_size;        /* px */
@@ -741,6 +765,28 @@ typedef struct Config {
        unavailable rather than falling back to the default — same rule as the tab bindings. */
     FmKeys fm_key;
     int  loglevel;
+    /* ---- whether an APPLICATION may repaint the terminal (OSC 4 / 10 / 11 / 104) ----
+       The user asked for the capability and for an off switch in the same answer (s102 question 2: "yes, but
+       they were unsure ('I guess ?')… give them an off switch — osc_colors = 1 — so 'any program in my terminal
+       can repaint the window' can be turned off without a rebuild"). On (default): OSC 4 sets a palette entry,
+       OSC 10/11 set or query the default ink/paper, OSC 104 puts entries back — which is what lets pywal-style
+       tools theme a live Kai-Term with no file at all. Off: all four are ignored and logged at debug level.
+       Worth knowing what on means: any program in the terminal can change the colours of the whole window, and
+       an OSC 10/11 also overrides the `foreground =`/`background =` lines for the rest of the run. */
+    int  osc_colors;
+    /* ---- themes (src/theme.c) ----
+       `theme = NAME` in kai-term.conf. A value with no '/' is looked up as NAME.theme in the `themes/`
+       subdirectory of the three config directories (same order, same first-hit-wins rule as config_find);
+       a value with a '/' — or starting with '~' — is a path and is opened directly. Empty = no theme.
+       Precedence, the user's own words (s102): "value in the kai-term.conf should supersede the theme".
+       The theme is applied AFTER the settings file has been read, and only for the colour keys the
+       settings file did not mention itself, so a `background =` line wins wherever it sits in the file. */
+    char theme[256];
+    /* The names the settings file set explicitly — that is how a theme knows which colours it may NOT
+       touch. Names rather than one bit per setting: a new setting needs no registration here, and the
+       list is written by config.c's own apply() path, so it cannot drift from the parser. */
+    char set_keys[CONFIG_SET_KEYS_MAX][32];
+    int  n_set_keys;
 } Config;
 
 void config_default(Config *c);
@@ -757,6 +803,33 @@ void config_load_binds(Config *c, const char *path);
 void config_find(const char *name, char *out, size_t cap);
 /* Expand a leading "~" (or "~/...") to $HOME and copy the result into out. */
 void expand_tilde(const char *in, char *out, size_t cap);
+/* Cut a '#' comment off a config line in place. ONE rule for every file Kai-Term reads — kai-term.conf,
+   kai-term.bind, a .theme — because the rule was wrong once and ate every `#RRGGBB` value (s99). */
+void config_strip_comment(char *line);
+/* #RRGGBB / 0xRRGGBB / RRGGBB / AARRGGBB -> ARGB, `fallback` when the text is not a colour. Shared with
+   src/theme.c: one colour syntax, one parser, so a theme cannot accept a form the config file rejects. */
+uint32_t cfg_parse_color(const char *s, uint32_t fallback);
+/* Which settings the SETTINGS file set explicitly (not the built-in defaults, not a theme). config.c
+   records a name on the apply_setting path; src/theme.c asks before it overwrites one. */
+void config_note_set(Config *c, const char *key);
+int  config_key_was_set(const Config *c, const char *key);
+
+/* ---------- themes (src/theme.c) ----------
+   A theme is a file of COLOURS in the same `key = value` syntax as kai-term.conf (same '#' comment rule,
+   shared function) and also in kitty's `key value` spelling, so an existing kitty theme loads unchanged.
+   Accepted names live in one table in src/theme.c and are checked against config/kai-term.theme by
+   tests/test_vt.c — the same technique that pins kai-term.conf and kai-term.bind. */
+/* Resolve a `theme =` value to a path: NAME -> the first NAME.theme in
+   $XDG_CONFIG_HOME/kai-term/themes, ~/.config/kai-term/themes, /etc/kai-term/themes; anything with a '/'
+   (or a leading '~') is a path and is used as given. Empty `out` when nothing exists. */
+void theme_find(const char *value, char *out, size_t cap);
+/* Apply one theme file to `c` and to the palette (entries 0-15). A colour the settings file set
+   explicitly is skipped with a log line naming both files. Returns the number of keys applied, or -1 when
+   the file cannot be opened. */
+int  theme_apply_file(Config *c, const char *path);
+/* The whole chain for one Config: resolve c->theme and apply it. Returns the same as theme_apply_file,
+   or 0 when no theme is configured. */
+int  theme_apply_config(Config *c);
 
 /* ---------- pty ---------- */
 typedef struct Pty {
@@ -826,6 +899,10 @@ int  mux_open(Mux *m, int rows, int cols, int scrollback);
    new active index, or -1 when the last tab is gone — the caller must then quit. The caller owns the
    PTY: capture the Pty BEFORE closing the tab (the shift moves it) and close/reap it separately. */
 int  mux_close(Mux *m, int idx);
+/* Sweep every session's already-painted cells to a new default ink/paper (OSC 10/11). Idempotent, so the
+   session that raised the change and has already swept itself may be included. */
+void mux_recolor_defaults(Mux *m, uint32_t old_fg, uint32_t old_bg,
+                          uint32_t new_fg, uint32_t new_bg);
 int  mux_goto(Mux *m, int idx);   /* clamped to the tabs that exist; returns the active index */
 int  mux_next(Mux *m);            /* wrap-around; -1 when there is no tab */
 int  mux_prev(Mux *m);

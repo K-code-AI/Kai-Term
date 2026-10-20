@@ -2,7 +2,9 @@
 #include "kai-term.h"
 
 #include <errno.h>
+#include <ctype.h>
 #include <unistd.h>
+#include <strings.h>     /* strncasecmp: the X11 `rgb:` prefix is case-insensitive */
 #include <zlib.h>
 
 int kai_term_loglevel = L_WARN;
@@ -178,7 +180,9 @@ static uint32_t g_def_fg = DEF_FG, g_def_bg = DEF_BG;
 static uint32_t g_palette[256];
 static int g_palette_ready;
 
-static void palette_fill_builtin(void)
+/* The built-in colour of ONE entry, computed rather than looked up in a second table: OSC 104;N has to put a
+   single entry back, and a second copy of the palette is a copy that can drift from the first. */
+static uint32_t palette_builtin_entry(int i)
 {
     /* xterm 16 base colors, then 6x6x6 cube, then grayscale ramp.
        The cube's six levels are 0, 95, 135, 175, 215, 255 — the set almost every terminal and almost every
@@ -193,15 +197,23 @@ static void palette_fill_builtin(void)
         0xff5555ff, 0xffff55ff, 0xff55ffff, 0xffffffff,
     };
     static const int cube6[6] = { 0, 95, 135, 175, 215, 255 };
-    memcpy(g_palette, base16, sizeof(base16));
-    for (int i = 0; i < 216; i++) {
-        int r = cube6[i / 36], g = cube6[(i / 6) % 6], b = cube6[i % 6];
-        g_palette[16 + i] = 0xff000000u | (uint32_t)(r << 16 | g << 8 | b);
+    if (i < 0 || i > 255)
+        return 0xff000000u;
+    if (i < 16)
+        return base16[i];
+    if (i < 232) {
+        int j = i - 16;
+        int r = cube6[j / 36], g = cube6[(j / 6) % 6], b = cube6[j % 6];
+        return 0xff000000u | (uint32_t)(r << 16 | g << 8 | b);
     }
-    for (int i = 0; i < 24; i++) {
-        int v = 8 + i * 10;
-        g_palette[232 + i] = 0xff000000u | (uint32_t)(v << 16 | v << 8 | v);
-    }
+    int v = 8 + (i - 232) * 10;
+    return 0xff000000u | (uint32_t)(v << 16 | v << 8 | v);
+}
+
+static void palette_fill_builtin(void)
+{
+    for (int i = 0; i < 256; i++)
+        g_palette[i] = palette_builtin_entry(i);
     g_palette_ready = 1;
 }
 
@@ -229,6 +241,25 @@ void term_palette_reset(void)
     palette_fill_builtin();
 }
 
+/* One entry back to its built-in colour — `OSC 104;N` resets N alone and leaves the rest of a theme alone.
+   Fills the built-in table first so a caller that never touched the palette cannot get zeros. */
+void term_palette_entry_reset(int idx)
+{
+    if (idx < 0 || idx > 255)
+        return;
+    term_palette();
+    g_palette[idx] = palette_builtin_entry(idx);
+}
+
+/* Whether an application may repaint the terminal's OWN colours (OSC 4 / 10 / 11 / 104). Process-wide like the
+   palette and the two defaults below: it is a property of the window, not of a session. The user asked for the
+   capability AND an off switch (s102 question 2) — with `osc_colors = 0` nothing running inside the terminal can
+   change a colour, which is the security-relevant half of the feature. */
+static int g_osc_colors = 1;
+
+void term_set_osc_colors(int on) { g_osc_colors = on ? 1 : 0; }
+int  term_osc_colors(void)       { return g_osc_colors; }
+
 void term_set_default_colors(uint32_t fg, uint32_t bg)
 {
     g_def_fg = fg;
@@ -237,6 +268,55 @@ void term_set_default_colors(uint32_t fg, uint32_t bg)
 
 uint32_t term_default_fg(void) { return g_def_fg; }
 uint32_t term_default_bg(void) { return g_def_bg; }
+
+/* Re-point everything one session has ALREADY painted at a new default ink/paper (OSC 10/11).
+   This pass is necessary because a Cell stores a RESOLVED colour, not a palette index (see Cell): moving
+   g_def_fg/g_def_bg alone would change only FUTURE output, so the screen the user is looking at keeps the old
+   colours and the terminal reads as half-themed — the exact complaint a live colour change invites.
+   The rule is deliberately dumb: any cell whose fg/bg equals the old default becomes the new default. That one
+   pass is also what keeps the s101 invariant alive. A pristine blank cell has fg==old_fg && bg==old_bg, so it
+   becomes fg==new_fg && bg==new_bg and cell_pristine() still recognises it. Sweep only the cells that are NOT
+   pristine and a blank cell stops being pristine while still looking blank: row_used() counts trailing blanks as
+   content, reflow joins lines it must not, and a selection band appears over nothing. A cell an application
+   painted with the SAME rgb as the old default by explicit SGR is swept too — Kai-Term stores no "this pen is the
+   default" flag, and adding that state to Pen to save that one cell is not worth it.
+   Idempotent: running it twice with the same pair changes nothing the second time, which is what lets main.c
+   sweep every session without needing to exclude the one that already swept itself. */
+static void recolor_grid(Grid *g, uint32_t of, uint32_t ob, uint32_t nf, uint32_t nb)
+{
+    if (!g->row)
+        return;                                  /* no grid parked here (Term.alt when not in the alt screen) */
+    for (int i = 0; i < g->rcap; i++) {
+        if (!g->row[i])
+            continue;
+        for (int x = 0; x < g->cols; x++) {
+            Cell *c = &g->row[i][x];
+            if (c->fg == of) c->fg = nf;
+            if (c->bg == ob) c->bg = nb;
+        }
+    }
+}
+
+void term_recolor_defaults(Term *t, uint32_t old_fg, uint32_t old_bg,
+                           uint32_t new_fg, uint32_t new_bg)
+{
+    if (old_fg == new_fg && old_bg == new_bg)
+        return;
+    recolor_grid(&t->g, old_fg, old_bg, new_fg, new_bg);
+    /* The MAIN grid parked while an application owns the screen. It comes back byte-for-byte on exit, so it
+       must be swept now or the user leaves vim into a half-recoloured shell. */
+    recolor_grid(&t->alt, old_fg, old_bg, new_fg, new_bg);
+    if (t->pen.fg == old_fg) t->pen.fg = new_fg;
+    if (t->pen.bg == old_bg) t->pen.bg = new_bg;
+    /* The prompt snapshot is compared cell-for-cell against the live grid and prompt_cell_same() compares
+       fg/bg, so a snapshot left in the old colours would report "the prompt changed" forever and the shell
+       follow would stop working for the rest of the session. */
+    for (int x = 0; t->prompt_row && x < t->prompt_cols; x++) {
+        Cell *c = &t->prompt_row[x];
+        if (c->fg == old_fg) c->fg = new_fg;
+        if (c->bg == old_bg) c->bg = new_bg;
+    }
+}
 
 /* ---------------- grid ---------------- */
 
@@ -3190,6 +3270,60 @@ static void apc_put(Parser *ps, uint8_t b)
     ps->apc[ps->apc_len++] = (char)b;
 }
 
+/* An OSC colour argument. Kai-Term's own forms (#RRGGBB, 0xRRGGBB, bare RRGGBB, AARRGGBB) go through
+   cfg_parse_color so the project keeps ONE colour syntax and a theme file can never accept a form the config
+   file rejects. The X11 `rgb:RR/GG/BB` and `rgb:RRRR/GGGG/BBBB` forms are what xterm, kitty and every
+   colour-picker tool actually send, so accepting only the hex forms would make the feature useless in practice.
+   X11 colour NAMES ("red", "wheat") are deliberately NOT accepted: that is a 700-entry table, and every tool
+   that can name a colour can also spell it in hex. A 0x00000000 result is "not a colour" — the same convention
+   src/theme.c uses, where it is sound because a 6-digit value always gets alpha 0xff and an 8-digit value with
+   alpha 00 is invisible by definition. */
+static int osc_color(const char *s, uint32_t *out)
+{
+    if (!s || !*s)
+        return 0;
+    if (!strncasecmp(s, "rgb:", 4)) {
+        s += 4;
+        unsigned v[3] = { 0, 0, 0 };
+        int width = 0;                       /* every component must have the SAME digit count (the X11 rule) */
+        for (int i = 0; i < 3; i++) {
+            char *end;
+            unsigned long d = strtoul(s, &end, 16);
+            size_t digits = (size_t)(end - s);
+            if (end == s || (digits != 2 && digits != 4))
+                return 0;
+            if (i == 0) width = (int)digits;
+            else if ((int)digits != width) return 0;
+            /* 2 digits are a byte; 4 digits are a fraction of 0xffff and lose their low byte. No clamp is
+               needed and none is wanted: two hex digits are at most 0xff, and 0xffff >> 8 is 0xff, so a
+               component CANNOT exceed a byte here. It used to be written (d + 0x80) >> 8 to "round", and
+               0xffff + 0x80 is 0x1007f, which >> 8 gives 256 — 256 << 16 lands 0x01 in the green byte, so
+               `rgb:ffff/ffff/ffff`, the canonical X11 form of WHITE, painted #010100: near-black. Measured
+               (.scratch/s104/rgbround.c). That is the s102 cube bug in a new place — a computed colour that
+               overflows its channel — so the arithmetic is deliberately one shift. */
+            v[i] = digits == 2 ? (unsigned)d : (unsigned)(d >> 8);
+            if (i < 2) {
+                if (*end != '/')
+                    return 0;
+                s = end + 1;
+            } else {
+                s = end;
+            }
+        }
+        while (isspace((unsigned char)*s))
+            s++;
+        if (*s)
+            return 0;
+        *out = 0xff000000u | (v[0] << 16) | (v[1] << 8) | v[2];
+        return 1;
+    }
+    uint32_t v = cfg_parse_color(s, 0x00000000u);
+    if (!v)
+        return 0;
+    *out = v;
+    return 1;
+}
+
 static void osc_end(Parser *ps)
 {
     Term *t = ps->t;
@@ -3209,6 +3343,122 @@ static void osc_end(Parser *ps)
     }
     if (cmd == 0 || cmd == 1 || cmd == 2) {
         snprintf(t->title, sizeof(t->title), "%s", s);
+        return;
+    }
+
+    /* OSC 4 (set a palette entry), 10/11 (set or query the default ink/paper) and 104 (put entries back) are
+       the ONLY colour sequences a program can send, so they are the whole of the "repaint the terminal from
+       the inside" capability — which is why they sit behind the user's off switch (s102 question 2: yes to the
+       feature, and an off switch because "any program in my terminal can repaint the window"). */
+    if (!g_osc_colors) {
+        if (cmd == 4 || cmd == 10 || cmd == 11 || cmd == 104)
+            klog(L_DEBUG, "osc: %d ignored — osc_colors = 0", cmd);
+        return;
+    }
+
+    switch (cmd) {
+    case 4: {
+        /* `OSC 4;N;colour` and the multi form `OSC 4;N;colour;M;colour;...` both occur in the wild. Entries
+           0-255 are all settable here, unlike a theme file: the setter is general by design (the theme layer
+           is what restricts a file to 0-15), and `osc_colors = 0` is the switch for anyone who does not want
+           an application touching the cube. */
+        char *p = (char *)s;
+        int set = 0;
+        while (p && *p) {
+            char *iend;
+            long idx = strtol(p, &iend, 10);
+            if (iend == p || *iend != ';') {
+                klog(L_WARN, "osc: OSC 4 '%s' has no entry number", p);
+                break;
+            }
+            char *cstart = iend + 1;
+            char *cend = strchr(cstart, ';');
+            size_t clen = cend ? (size_t)(cend - cstart) : strlen(cstart);
+            char spec[64];
+            if (clen >= sizeof spec) {
+                klog(L_WARN, "osc: OSC 4;%ld colour argument is too long", idx);
+                break;
+            }
+            memcpy(spec, cstart, clen);
+            spec[clen] = 0;
+            uint32_t col;
+            if (!osc_color(spec, &col)) {
+                klog(L_WARN, "osc: OSC 4;%ld '%s' is not a colour", idx, spec);
+            } else if (idx < 0 || idx > 255) {
+                klog(L_WARN, "osc: OSC 4;%ld is not a palette entry (0-255)", idx);
+            } else {
+                term_set_palette_entry((int)idx, col);
+                set++;
+            }
+            p = cend ? cend + 1 : NULL;
+        }
+        klog(L_DEBUG, "osc: OSC 4 set %d palette entr%s", set, set == 1 ? "y" : "ies");
+        break;
+    }
+    case 10:      /* default foreground (ink) */
+    case 11: {    /* default background (paper) */
+        const char *what = cmd == 10 ? "foreground" : "background";
+        if (!strcmp(s, "?")) {
+            /* Query. The X11 16-bit form, so a tool that asks can feed the answer straight back. Called
+               directly rather than through the TERM_RESP macro: that one is scoped to the CSI section and is
+               #undef'd long before this function. */
+            uint32_t cur = cmd == 10 ? term_default_fg() : term_default_bg();
+            term_respond(t, "\x1b]%d;rgb:%04x/%04x/%04x\x1b\\", cmd,
+                         (((cur >> 16) & 0xff) * 0x101), (((cur >> 8) & 0xff) * 0x101),
+                         ((cur & 0xff) * 0x101));
+            break;
+        }
+        uint32_t col;
+        if (!osc_color(s, &col)) {
+            klog(L_WARN, "osc: OSC %d '%s' is not a colour", cmd, s);
+            break;
+        }
+        uint32_t of = term_default_fg(), ob = term_default_bg();
+        uint32_t nf = cmd == 10 ? col : of;
+        uint32_t nb = cmd == 11 ? col : ob;
+        if (nf == of && nb == ob)
+            break;
+        /* The old values travel with the flag: by the time main.c acts, the defaults have moved, and the
+           sweep is a match-and-replace that has to know what the cells on screen were painted with. */
+        t->old_def_fg = of;
+        t->old_def_bg = ob;
+        term_set_default_colors(nf, nb);
+        /* This session first, so output later in the SAME burst already gets the new default. main.c then
+           sweeps every other session and re-points the renderer's clear colour and chrome. */
+        term_recolor_defaults(t, of, ob, nf, nb);
+        t->colors_dirty = 1;
+        klog(L_INFO, "osc: OSC %d set the default %s to #%06x — the kai-term.conf %s line no longer "
+             "describes this window", cmd, what, col & 0xffffff, what);
+        break;
+    }
+    case 104: {
+        /* `OSC 104` puts the whole palette back; `OSC 104;N;M;...` puts only those entries back, which is what
+           lets a tool borrow two colours and give them back without wiping a theme the user set in a file. */
+        if (!s[0]) {
+            term_palette_reset();
+            klog(L_INFO, "osc: OSC 104 reset the whole palette to the built-in colours");
+            break;
+        }
+        char *p = (char *)s;
+        int n = 0;
+        while (p && *p) {
+            char *end;
+            long idx = strtol(p, &end, 10);
+            if (end == p)
+                break;
+            if (idx < 0 || idx > 255)
+                klog(L_WARN, "osc: OSC 104;%ld is not a palette entry (0-255)", idx);
+            else
+                term_palette_entry_reset((int)idx);
+            n++;
+            p = (*end == ';') ? end + 1 : NULL;
+        }
+        klog(L_INFO, "osc: OSC 104 put %d palette entr%s back to the built-in colour",
+             n, n == 1 ? "y" : "ies");
+        break;
+    }
+    default:
+        break;   /* every other OSC: nothing to do, and nothing left to leak into the grid */
     }
 }
 

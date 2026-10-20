@@ -2970,11 +2970,20 @@ int main(int argc, char **argv)
         kai_term_loglevel = L_DEBUG;
     config_load(&conf, opt_config);
     config_load_binds(&conf, opt_binds);
+    /* The theme, if the settings file named one, is applied AFTER both files have been read: a colour the
+       user wrote in kai-term.conf beats it wherever that line sits, and a colour they never wrote is
+       filled in. Doing it here rather than line-by-line during config_load is what makes that true — see
+       src/theme.c and the s102 precedence decision. It must run before term_set_default_colors() below
+       (which hands ink and paper to src/vt.c) and before render_init() clears the window with them. */
+    theme_apply_config(&conf);
     if (opt_debug)
         conf.loglevel = L_DEBUG;
     kai_term_loglevel = conf.loglevel;
     base_font_size = conf.font_size;
     term_set_clear_scrollback(conf.clear_scrollback);
+    /* Whether an application may repaint the terminal (OSC 4/10/11/104). Process-wide state in src/vt.c, set
+       once here like the ink and paper below; `osc_colors = 0` makes the parser ignore all four. */
+    term_set_osc_colors(conf.osc_colors);
     /* Hand the configured ink and paper to src/vt.c BEFORE the first Term exists (mux_open below) and before
        render_init() clears the window with them. This is what makes ONE `background =` line own both the
        `padding` margin (glClear) and every blank cell (pass 1's quad); when the two halves read different
@@ -3192,6 +3201,26 @@ int main(int argc, char **argv)
                         if (tb->term.resp_len > 0) {
                             pty_write(&tb->pty, tb->term.resp, (size_t)tb->term.resp_len);
                             tb->term.resp_len = 0;
+                        }
+                        /* An application changed the default ink or paper (OSC 10/11). vt.c already moved the
+                           process-wide defaults and swept THIS session's cells; finish the job here — sweep the
+                           other sessions, re-point the renderer (its clear colour, the tab bar text, the focus
+                           border and the cursor all derive from these two), and update conf so a new tab and a
+                           `ESC c` get the colour the application asked for rather than the one in the file. The
+                           log says so, because after this line the `background =` line no longer describes the
+                           window and a colour report has to be able to tell the two apart. */
+                        if (tb->term.colors_dirty) {
+                            uint32_t of = tb->term.old_def_fg, ob = tb->term.old_def_bg;
+                            uint32_t nf = term_default_fg(),   nb = term_default_bg();
+                            mux_recolor_defaults(&mux, of, ob, nf, nb);
+                            conf.fg = nf;
+                            conf.bg = nb;
+                            rend.fg = nf;
+                            rend.bg = nb;
+                            tb->term.colors_dirty = 0;
+                            W.dirty = 1;
+                            klog(L_INFO, "display: the window's ink and paper are now #%06x / #%06x — "
+                                 "an application set them, not kai-term.conf", nf & 0xffffff, nb & 0xffffff);
                         }
                         if (ti == mux_active(&mux) || layout_pane_of_tab(&g_layout, ti) >= 0) {
                             /* The visible session, or one drawn NEXT TO it in side-by-side view: the picture

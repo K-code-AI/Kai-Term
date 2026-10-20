@@ -10,7 +10,7 @@
 #include <sys/stat.h>    /* stat(): config_find() only accepts a real regular file */
 #include <unistd.h>
 
-static uint32_t parse_color(const char *s, uint32_t fallback)
+uint32_t cfg_parse_color(const char *s, uint32_t fallback)
 {
     while (isspace((unsigned char)*s))
         s++;
@@ -114,6 +114,10 @@ void config_default(Config *c)
     keybind_parse_plain(".",         &c->fm_key.hidden);
     keybind_parse_plain("Escape",    &c->fm_key.quit);
     c->loglevel = L_WARN;
+    /* An application MAY repaint the terminal's own colours (OSC 4/10/11/104). On by default because the user
+       asked for the capability; the switch exists so it can be turned off without a rebuild (s102 question 2).
+       See Config.osc_colors in kai-term.h for what it lets a program do. */
+    c->osc_colors = 1;
 }
 
 void expand_tilde(const char *in, char *out, size_t cap)
@@ -458,14 +462,14 @@ static void apply_setting(Config *c, const char *key, char *val)
     } else if (!strcmp(key, "scrollback")) {
         c->scrollback = iclamp_(atoi(val), 0, 1000000);
     } else if (!strcmp(key, "foreground")) {
-        c->fg = parse_color(val, c->fg);
+        c->fg = cfg_parse_color(val, c->fg);
     } else if (!strcmp(key, "background")) {
-        c->bg = parse_color(val, c->bg);
+        c->bg = cfg_parse_color(val, c->bg);
     } else if (!strcmp(key, "cursor_color")) {
-        c->cursor_color = parse_color(val, c->cursor_color);
+        c->cursor_color = cfg_parse_color(val, c->cursor_color);
     } else if (!strcmp(key, "selection_color")) {
         /* The selection band, the tab bar's active item and the focus border — one value, three places. */
-        c->selection_color = parse_color(val, c->selection_color);
+        c->selection_color = cfg_parse_color(val, c->selection_color);
     } else if (!strcmp(key, "opacity")) {
         float f = (float)atof(val);
         c->opacity = f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
@@ -552,6 +556,16 @@ static void apply_setting(Config *c, const char *key, char *val)
         c->fm_follow = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "log")) {
         c->loglevel = iclamp_(atoi(val), L_ERROR, L_DEBUG);
+    } else if (!strcmp(key, "osc_colors")) {
+        /* The off switch for OSC 4/10/11/104. Not applied here: it is process-wide state in src/vt.c
+           (g_osc_colors), set by main.c once the settings file has been read, exactly like the default
+           ink/paper. A theme file does NOT set it — it is a permission, not a colour. */
+        c->osc_colors = cfg_bool(val) ? 1 : 0;
+    } else if (!strcmp(key, "theme")) {
+        /* A name (looked up as NAME.theme in <config dir>/themes/) or a path. The theme is NOT applied
+           here: it is applied after this file has been read in full, so a colour line anywhere in the
+           settings file beats it — see src/theme.c and the s102 precedence decision. */
+        snprintf(c->theme, sizeof(c->theme), "%s", val);
     } else {
         klog(L_WARN, "config: unknown key '%s'", key);
     }
@@ -575,7 +589,66 @@ static void apply(Config *c, const char *key, char *val, int from_bind_file)
                      "setting belongs in kai-term.conf", key);
         return;
     }
+    /* Record that the SETTINGS file named this key, before applying it: src/theme.c may fill a colour the
+       user never mentioned, but never one they did. Recorded here rather than in each branch so a new
+       setting is covered the day it is added. */
+    config_note_set(c, key);
     apply_setting(c, key, val);
+}
+
+/* The list of names the settings file set explicitly. Names, not bits: nothing to register, and the
+   lookup is over ~30 short strings once at startup, so the cost is nothing. Overflow is refused loudly
+   rather than dropped — a silently unrecorded name is a colour the user set being overwritten by a theme. */
+void config_note_set(Config *c, const char *key)
+{
+    if (!key[0])
+        return;
+    for (int i = 0; i < c->n_set_keys; i++)
+        if (!strcmp(c->set_keys[i], key))
+            return;                       /* already recorded */
+    if (c->n_set_keys >= CONFIG_SET_KEYS_MAX) {
+        klog(L_WARN, "config: cannot record '%s' — the explicit-key list is full (%d)",
+             key, CONFIG_SET_KEYS_MAX);
+        return;
+    }
+    snprintf(c->set_keys[c->n_set_keys], sizeof c->set_keys[0], "%s", key);
+    c->n_set_keys++;
+}
+
+int config_key_was_set(const Config *c, const char *key)
+{
+    for (int i = 0; i < c->n_set_keys; i++)
+        if (!strcmp(c->set_keys[i], key))
+            return 1;
+    return 0;
+}
+
+/* Cut a comment off a config line, in place. One rule for every file Kai-Term reads — kai-term.conf,
+   kai-term.bind and a .theme — because getting this wrong once ate every `#RRGGBB` colour in the tree
+   (s99). '#' starts a comment in two cases: nothing but whitespace comes before it (a comment line), or
+   whitespace comes before it AND whitespace or the end of the line comes after it (a trailing note). The
+   second half of that rule is what makes a colour work: `background = #1c1c22` has a space before the
+   '#', and the old "whitespace before it is enough" rule cut the line right there, so the documented
+   colour syntax set NOTHING at all — measured, Config.bg stayed at its default with that line in the file,
+   and an empty value is not even worth a warning because "foreground =" is a legal way to ask for the
+   default. `working_dir = /home/me/my#project` still survives (no whitespace before the '#'), and
+   `value # note` is still stripped. */
+void config_strip_comment(char *line)
+{
+    for (char *hash = line; *hash; hash++) {
+        if (*hash != '#')
+            continue;
+        int only_ws_before = 1;
+        for (char *p = line; p < hash; p++)
+            if (!isspace((unsigned char)*p))
+                only_ws_before = 0;
+        if (only_ws_before ||
+            ((hash[-1] == ' ' || hash[-1] == '\t') &&
+             (hash[1] == 0 || isspace((unsigned char)hash[1])))) {
+            *hash = 0;
+            return;
+        }
+    }
 }
 
 /* Where one config file comes from. The first directory below that holds `name` wins and the rest are
@@ -632,28 +705,7 @@ static void config_read(Config *c, const char *path, int from_bind_file)
     int lineno = 0;
     while (fgets(line, sizeof(line), f)) {
         lineno++;
-        /* '#' starts a comment in two cases: nothing but whitespace comes before it (a comment line),
-           or whitespace comes before it AND whitespace or the end of the line comes after it (a trailing
-           note). The second half of that rule is what makes a colour work: `background = #1c1c22` has a
-           space before the '#', and the old "whitespace before it is enough" rule cut the line right
-           there, so the documented colour syntax set NOTHING at all — measured, Config.bg stayed at its
-           default with that line in the file, and an empty value is not even worth a warning because
-           "foreground =" is a legal way to ask for the default. `working_dir = /home/me/my#project`
-           still survives (no whitespace before the '#'), and `value # note` is still stripped. */
-        for (char *hash = line; *hash; hash++) {
-            if (*hash != '#')
-                continue;
-            int only_ws_before = 1;
-            for (char *p = line; p < hash; p++)
-                if (!isspace((unsigned char)*p))
-                    only_ws_before = 0;
-            if (only_ws_before ||
-                ((hash[-1] == ' ' || hash[-1] == '\t') &&
-                 (hash[1] == 0 || isspace((unsigned char)hash[1])))) {
-                *hash = 0;
-                break;
-            }
-        }
+        config_strip_comment(line);   /* the one '#' rule, shared with src/theme.c — see that function */
         trim(line);
         if (!line[0])
             continue;

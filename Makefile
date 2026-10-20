@@ -18,7 +18,7 @@ CFLAGS  += -D_GNU_SOURCE $(shell pkg-config --cflags $(PKG)) -Iinclude/kai-term 
 LDLIBS  += $(shell pkg-config --libs $(PKG)) -lm
 
 PROTO   := /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
-SRCS    := src/config.c src/vt.c src/img.c src/mux.c src/layout.c src/fm.c src/shellint.c src/pty.c src/font.c src/render.c src/main.c
+SRCS    := src/config.c src/theme.c src/vt.c src/img.c src/mux.c src/layout.c src/fm.c src/shellint.c src/pty.c src/font.c src/render.c src/main.c
 OBJS    := $(patsubst src/%.c,build/%.o,$(SRCS))
 GENH    := build/generated/xdg-shell-client-protocol.h
 GENC    := build/generated/xdg-shell-protocol.c
@@ -47,16 +47,19 @@ build/%.o: src/%.c $(HDRS) | build
 $(BIN): $(OBJS) build/xdg-shell-protocol.o | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-bin/test_vt: tests/test_vt.c build/vt.o build/img.o build/mux.o build/layout.o build/config.o build/shellint.o | bin
+bin/test_vt: tests/test_vt.c build/vt.o build/img.o build/mux.o build/layout.o build/config.o build/theme.o build/shellint.o | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-bin/dbg: tests/dbg.c build/vt.o build/img.o build/mux.o build/layout.o build/config.o build/shellint.o | bin
+bin/dbg: tests/dbg.c build/vt.o build/img.o build/mux.o build/layout.o build/config.o build/theme.o build/shellint.o | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # The file manager model is testable on its own: fm.c needs only the image decoders (img.c) and
 # klog/cp_is_wide (vt.c), so this binary pulls in exactly those three (plus shellint.c, which vt.c calls
-# to name an integration kind).
-bin/test_fm: tests/test_fm.c build/fm.o build/vt.o build/img.o build/shellint.o | bin
+# to name an integration kind). config.c joined the list in s104 because vt.c's OSC colour argument goes
+# through cfg_parse_color — one colour syntax for the whole project, rather than a second parser that can
+# drift from the first (the s99 bug was exactly that: a colour reader and a comment reader disagreeing).
+# Still no Wayland, no GL, no font: config.c is pure string handling.
+bin/test_fm: tests/test_fm.c build/fm.o build/vt.o build/img.o build/config.o build/shellint.o | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 # The renderer's colour decisions are testable without a display: render_chrome() reads a Render struct and
@@ -64,7 +67,7 @@ bin/test_fm: tests/test_fm.c build/fm.o build/vt.o build/img.o build/shellint.o 
 # to LINK (fm.o font.o img.o vt.o shellint.o layout.o mux.o, and config.o because the test starts from a
 # real config_default()), but calls nothing that touches a context — that is the seam the dead
 # `cursor_color =` bug needed, see tests/test_render.c.
-bin/test_render: tests/test_render.c build/render.o build/fm.o build/font.o build/img.o build/vt.o build/shellint.o build/layout.o build/mux.o build/config.o $(HDRS) | bin
+bin/test_render: tests/test_render.c build/render.o build/fm.o build/font.o build/img.o build/vt.o build/shellint.o build/layout.o build/mux.o build/config.o build/theme.o $(HDRS) | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 test: bin/test_vt bin/dbg bin/test_fm bin/test_render test-cli
@@ -85,17 +88,17 @@ ASANFLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g
 # header they consume must be a prerequisite. bin/dbg_asan used to list only tests/dbg.c, which
 # left a stale binary on disk: an ASan leak kept being reported from an old src/vt.c that make
 # never rebuilt.
-bin/test_vt_asan: tests/test_vt.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/shellint.c $(HDRS) | bin
-	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_vt.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/shellint.c $(LDLIBS)
+bin/test_vt_asan: tests/test_vt.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_vt.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c $(LDLIBS)
 
-bin/dbg_asan: tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/shellint.c $(HDRS) | bin
-	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/shellint.c $(LDLIBS)
+bin/dbg_asan: tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c src/theme.c src/shellint.c $(LDLIBS)
 
-bin/test_fm_asan: tests/test_fm.c src/fm.c src/vt.c src/img.c src/shellint.c $(HDRS) | bin
-	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_fm.c src/fm.c src/vt.c src/img.c src/shellint.c $(LDLIBS)
+bin/test_fm_asan: tests/test_fm.c src/fm.c src/vt.c src/img.c src/config.c src/shellint.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_fm.c src/fm.c src/vt.c src/img.c src/config.c src/shellint.c $(LDLIBS)
 
-bin/test_render_asan: tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c $(HDRS) | bin
-	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c $(LDLIBS)
+bin/test_render_asan: tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c $(LDLIBS)
 
 asan: bin/test_vt_asan bin/dbg_asan bin/test_fm_asan bin/test_render_asan
 	./bin/test_vt_asan

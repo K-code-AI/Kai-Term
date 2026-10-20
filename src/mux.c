@@ -103,6 +103,19 @@ int mux_close(Mux *m, int idx)
     return m->active;
 }
 
+/* An application changed the default ink/paper (OSC 10/11) in one session: sweep the cells every OTHER
+   session has already painted. The defaults are process-wide (see g_def_fg/g_def_bg in vt.c), so one session's
+   OSC 11 changes the paper of all of them — that is a consequence of the s101 decision to let ONE runtime value
+   own the default colours, and it is the honest behaviour: two sessions with different papers in one window would
+   need per-session defaults, which is a different design. Sweeping the raising session again is harmless — the
+   sweep is a match-and-replace and no cell still carries the old value. */
+void mux_recolor_defaults(Mux *m, uint32_t old_fg, uint32_t old_bg,
+                          uint32_t new_fg, uint32_t new_bg)
+{
+    for (int i = 0; i < m->n; i++)
+        term_recolor_defaults(&m->tab[i].term, old_fg, old_bg, new_fg, new_bg);
+}
+
 int mux_goto(Mux *m, int idx)
 {
     if (m->n == 0) {

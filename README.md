@@ -16,7 +16,9 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   graphics protocol (`timg -p k`). PNG payloads, optionally zlib-compressed, and raw RGB/RGBA pixels
   are decoded; the picture is placed at the cursor, sized from the terminal's cell pixel size, scrolls
   with the text around it, stays in scrollback, and never covers the text drawn over it.
-- **Text and colors** — UTF-8 text, 16-color, 256-color, and 24-bit truecolor support.
+- **Text and colors** — UTF-8 text, 16-color, 256-color, and 24-bit truecolor support. The ANSI 16, the
+  ink, the paper, the cursor and the selection highlight come from a theme file — kitty's format is read
+  unchanged, and `kai-term.conf` keeps the last word on any colour it mentions itself.
 - **Scrollback** — Retains history (2000 lines by default) and scrolls with the mouse wheel or the
   keyboard; new output snaps the view back to the live bottom.
 - **Full-screen applications** — The alternate screen (`vim`, `htop`, `less`, `nano`) is supported; the
@@ -58,7 +60,8 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   pastes into other applications and text copied anywhere else pastes into Kai-Term.
 - **Configuration** — Two plain-text files: `kai-term.conf` for the settings and `kai-term.bind` for the
   key bindings, read from `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term` or `/etc/kai-term`, with a
-  commented template of every default in [`config/`](config) in the source tree.
+  commented template of every default in [`config/`](config) in the source tree. A third kind of file,
+  `NAME.theme`, holds colours only.
 
 ## Requirements
 
@@ -364,6 +367,7 @@ Kai-Term reads two plain-text files, both in the same `key = value` format:
 |---|---|
 | `kai-term.conf` | the settings — font, grid, colours, shell, mouse, sessions, file manager, logging |
 | `kai-term.bind` | the key bindings — every `key_*` and `fm_key_*` name |
+| `NAME.theme` | the colours of a theme, if `kai-term.conf` names one with `theme = NAME` |
 
 ### Where the files come from
 
@@ -383,13 +387,18 @@ its search.
 binding left in an older `kai-term.conf` is still honoured (the log line says where the line belongs now),
 and a setting written in `kai-term.bind` is refused out loud rather than ignored.
 
+A theme is searched by **file name** in the same three locations, in their `themes/` subdirectory —
+`$XDG_CONFIG_HOME/kai-term/themes/`, `~/.config/kai-term/themes/`, `/etc/kai-term/themes/` — and again the
+first hit wins. See [Themes](#themes-theme-files) below.
+
 ### Templates
 
-[`config/kai-term.conf`](config/kai-term.conf) and [`config/kai-term.bind`](config/kai-term.bind) in the
-source tree list every name with its built-in default and say what it does. Copy them to one of the
-locations above and change what you want — a line left at its default does exactly nothing. The test suite
-loads both files and compares every value with the compiled-in defaults, so the templates cannot drift
-from the program.
+[`config/kai-term.conf`](config/kai-term.conf), [`config/kai-term.bind`](config/kai-term.bind) and
+[`config/kai-term.theme`](config/kai-term.theme) in the source tree list every name with its built-in
+default and say what it does. Copy them to one of the locations above and change what you want — a line
+left at its default does exactly nothing. The test suite loads all three and compares every value with the
+compiled-in defaults, and it checks the name lists in both directions, so the templates cannot drift from
+the program.
 
 ### Settings (`kai-term.conf`)
 
@@ -400,10 +409,12 @@ from the program.
 | `cols` | `80` | Initial number of columns |
 | `rows` | `24` | Initial number of rows |
 | `scrollback` | `2000` | History lines to retain. The grid allocates `rows + scrollback` lines once at startup, so a window taller than `rows` keeps fewer of them (`rows + scrollback - current_rows`) |
+| `theme` | Empty | A theme file of colours: a name looked up as `NAME.theme` in the `themes/` directory of the three config locations, or a path (with a `/`, or starting with `~`). See [Themes](#themes-theme-files) |
 | `foreground` | `#e5e5e5` | Default text color — the ink of every cell an application has not colored itself |
 | `background` | `#101014` | Default background color — the one value behind everything an application has not colored: the cells, the `padding` margin, and the pixels left over by whole cells at the bottom and right |
 | `cursor_color` | `#d8d8d8` | Cursor colour. A session that is drawn in the window but is not the one the keyboard talks to gets the same colour dimmed toward `background` |
 | `selection_color` | `#3a4d66` | The selection highlight — and with it the tab bar's active item, the focus border, and the selected row in the file manager's band. One value, so the highlight always means the same thing |
+| `osc_colors` | `1` | Whether a program running in the terminal may repaint the terminal itself: OSC 4 (set a palette entry), OSC 10/11 (set or ask for the default ink and paper), OSC 104 (put palette entries back). This is what lets a `pywal`-style tool theme a live Kai-Term with no file at all. `0` ignores all four. Note what `1` means: an OSC 10/11 overrides `foreground`/`background` for the rest of the run, and it changes the whole window and every session in it, because the default ink and paper are one value on purpose. `kai-term -d` logs every colour an application changed |
 | `opacity` | `1.0` | Window opacity |
 | `padding` | `8` | Pixels of margin between the window edge and the first/last row and column (`0` puts the text flush against the edge). Applied on all four sides; pixels left over by whole cells still go to the bottom and right. That margin is painted with `background`, so it is invisible unless an application colors the edge cells itself |
 | `shell` | Empty | Shell to run; defaults to `$SHELL` |
@@ -439,7 +450,78 @@ to have missed one program's background.
 
 A `#` starts a comment when only whitespace comes before it, or when whitespace comes before **and** after
 it. That is what makes `background = #101014` a colour and `value # note` a note, while
-`working_dir = /home/me/my#project` keeps its value.
+`working_dir = /home/me/my#project` keeps its value. The same rule applies in `kai-term.bind` and in a
+theme file — one rule, one function, because getting it wrong once silently ate every `#RRGGBB` value in
+the file.
+
+### Themes (`.theme` files)
+
+A theme is a file of **colours only**. Fonts, sizes, key bindings and everything else stay in
+`kai-term.conf` and `kai-term.bind`.
+
+```
+# ~/.config/kai-term/kai-term.conf
+theme = 13th-floor            # reads ~/.config/kai-term/themes/13th-floor.theme
+theme = /Data/Themes/dusk.theme   # a value with a '/' (or starting with ~) is a path, read as given
+```
+
+The syntax is the one `kai-term.conf` uses — `key = value`, `#` comments, and the same colour forms
+(`#RRGGBB`, `0xRRGGBB`, `RRGGBB`, `AARRGGBB`). Kitty's `key value` spelling (no `=`) is accepted too, so an
+existing kitty theme loads unchanged:
+
+```
+name 13th Floor
+color0 #bdaaad
+color1 #e07f70
+background #4a0710
+foreground #f2e2c8
+cursor #e48e81
+selection_background #f2e2c8
+```
+
+What a theme may set:
+
+| Name | Also accepted as | Sets |
+|---|---|---|
+| `foreground` | | the default ink |
+| `background` | | the default paper — cells, `padding` margin, leftover pixels |
+| `cursor` | `cursor_color` | the cursor, and the dimmed cursor of a session that is not the visible one |
+| `selection_background` | `selection_color` | the selection highlight, the tab bar's active item, the focus border, the file manager's selected row |
+| `color0` … `color15` | | the ANSI 16, which applications reach with `SGR 30-37`/`90-97` and `SGR 38;5;0-15` |
+| `name` | | metadata: what the log calls the theme. Changes nothing on screen |
+
+What a theme may **not** set: palette entries 16-255. The 6x6x6 colour cube and the grey ramp are computed,
+and an application that asks for 196 means the cube's brightest red — a theme that could repaint the cube
+would make every published 256-colour chart a lie about this terminal. Two names from other programs,
+`selection_foreground` and `cursor_text_color`, are recognised and reported as dropped: Kai-Term draws the
+ink of a selected cell, or of the glyph under the cursor, in that cell's own colour.
+
+**Precedence.** The theme is applied after `kai-term.conf` has been read in full, and only for the colours
+that file did not mention. So a `background =` line in `kai-term.conf` always wins, whether it sits above or
+below the `theme =` line. `kai-term -d` logs the outcome per colour: `theme: background = #4a0710
+(/home/you/.config/kai-term/themes/13th-floor.theme)`, or `theme: cursor from … ignored — kai-term.conf
+sets cursor_color`.
+
+[`config/kai-term.theme`](config/kai-term.theme) is the shipped example: every name above with the colour
+Kai-Term uses when there is no theme at all.
+
+**An application can also change the colours of a running window** — `osc_colors = 1` (the default) accepts
+OSC 4 (set a palette entry, one or several in one sequence), OSC 10 and OSC 11 (set, or ask for with `?`, the
+default ink and paper) and OSC 104 (put palette entries back, all of them or just the ones named). That is what
+lets a `pywal`-style tool theme a live Kai-Term with no file at all. Three consequences worth knowing:
+
+- Unlike a theme file, OSC 4 may repaint entries 16-255 (the colour cube and the grey ramp). A file must not —
+  an application that asks for 196 means the cube's brightest red — but an application asking for it is the
+  normal case, and `osc_colors = 0` is the switch if you do not want that.
+- OSC 10/11 override the `foreground`/`background` lines for the rest of the run, and they change the whole
+  window and every session in it: the default ink and paper are one value on purpose, so the cells and the
+  `padding` margin can never disagree (see the note on `background` above).
+- `OSC 104;N` restores only the entries you name, so a tool can borrow two colours and give them back without
+  wiping a theme you set in a file.
+
+`kai-term -d` logs every one of these: `osc: OSC 11 set the default background to #082135 — the kai-term.conf
+background line no longer describes this window`. With `osc_colors = 0` the four sequences are ignored, colour
+queries get no answer, and the title sequences (OSC 0/1/2) keep working — the switch is about colours only.
 
 ### Key bindings (`kai-term.bind`)
 

@@ -1,0 +1,74 @@
+# Kai-Term — a theme (kai-term.theme)
+#
+# The shipped example: every name a theme may set, each with the colour Kai-Term uses when there is no
+# theme at all. Copy it, rename it, change what you want. A theme holds COLOURS ONLY — fonts, sizes,
+# key bindings and everything else stay in kai-term.conf and kai-term.bind.
+#
+# How to use one
+#   theme = NAME                 in kai-term.conf. NAME.theme is looked up in the first of
+#                                  $XDG_CONFIG_HOME/kai-term/themes/
+#                                  ~/.config/kai-term/themes/
+#                                  /etc/kai-term/themes/
+#                                that holds it, and the others are never opened.
+#   theme = /path/to/file.theme  a value with a '/' (or starting with '~') is a path and is read as given,
+#                                so a theme you downloaded needs no moving and no renaming.
+#
+# Syntax — the same as kai-term.conf: `key = value`, '#' comments, and the same colour forms
+# (#RRGGBB, 0xRRGGBB, RRGGBB, AARRGGBB). kitty's `key value` spelling (no '=') is accepted too, which is
+# what makes an existing kitty theme load unchanged:
+#
+#   color4 #849caf
+#   background #4a0710
+#
+# What a theme may NOT set: palette entries 16-255. The 6x6x6 cube and the grey ramp are computed, and an
+# application that asks for 196 means the cube's brightest red — repainting the cube would make every
+# published 256-colour chart a lie about this terminal.
+#
+# Precedence. The theme is applied after kai-term.conf has been read, and only for the colours that file
+# did not mention. So a `background =` line in kai-term.conf always wins, whether it sits above or below
+# the `theme =` line, and the log says which file set the final value (`kai-term -d`).
+
+
+# The name `--import-theme` gives a converted file, and what the log calls this theme. It is metadata:
+# changing it changes nothing on screen.
+name = Kai-Term built-in defaults
+
+# The ink and the paper. Same meaning as in kai-term.conf: every pixel no application painted — the cells,
+# the `padding` margin, and the leftover pixels at the bottom and right.
+foreground = #e5e5e5
+background = #101014
+
+# The cursor. `cursor` is the kitty spelling, `cursor_color` is Kai-Term's own; they are the same key, and
+# both are listed here only so this file names everything the parser accepts.
+cursor = #d8d8d8
+cursor_color = #d8d8d8
+
+# The selection highlight — and with it the tab bar's active item, the focus border, and the selected row
+# in the file manager's band. `selection_background` (kitty) and `selection_color` (Kai-Term) are one key.
+selection_background = #3a4d66
+selection_color = #3a4d66
+
+# The ANSI 16, the only palette entries a theme may set. Applications reach them with SGR 30-37 / 40-47
+# (the bright halves with 90-97 / 100-107) and with `SGR 38;5;N` for N = 0..15.
+color0  = #000000
+color1  = #cc5555
+color2  = #55cc55
+color3  = #cccc55
+color4  = #5555cc
+color5  = #cc55cc
+color6  = #55cccc
+color7  = #cccccc
+color8  = #777777
+color9  = #ff5555
+color10 = #55ff55
+color11 = #ffff55
+color12 = #5555ff
+color13 = #ffff55ff
+color14 = #55ffff
+color15 = #ffffff
+
+# Two names from other programs that Kai-Term recognises and ignores, because it has nowhere for them: the
+# ink of a selected cell, or of the glyph under the cursor, is that cell's own colour. They are reported by
+# the log rather than guessed at, so a converted theme never silently changes something else.
+#   selection_foreground
+#   cursor_text_color

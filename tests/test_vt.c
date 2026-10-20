@@ -357,6 +357,44 @@ static int src_hexesc_count(const char *path)
     return n;
 }
 
+/* The names src/theme.c accepts, read out of its THEME_KEYS table. Same derivation as cfg_names_of: the
+   table IS the list of accepted names, so a name added to the parser and not to config/kai-term.theme
+   fails a check — the direction a hand-copied list in this file could never catch. The FIRST quoted string
+   on each table line is the name (the second is the kai-term.conf alias used for precedence). */
+static int theme_names_of(const char *path, const char *names[], int cap)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    char line[4096];
+    int in = 0, n = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (!in) {
+            if (strstr(line, "static const ThemeKey THEME_KEYS[] = {"))
+                in = 1;
+            continue;
+        }
+        if (line[0] == '}')
+            break;
+        char *q = strchr(line, '"');
+        if (!q)
+            continue;
+        q++;
+        char *e = strchr(q, '"');
+        if (!e || e == q || n >= cap)
+            break;
+        size_t len = (size_t)(e - q);
+        char *buf = malloc(len + 1);
+        if (!buf)
+            break;
+        memcpy(buf, q, len);
+        buf[len] = 0;
+        names[n++] = buf;
+    }
+    fclose(f);
+    return in ? n : -1;
+}
+
 /* The names src/config.c compares inside ONE function body. The config surface is a strcmp ladder, so that
    ladder IS the list of accepted names — deriving it here is what keeps the check honest when a setting is
    added: the shipped template must gain the line, not a hand-copied list in this file. A body ends at the
@@ -2235,6 +2273,7 @@ int main(void)
             CHECK(t.cursor_color == d.cursor_color, "template: cursor_color matches");
             CHECK(t.selection_color == d.selection_color,
                   "template: selection_color matches (and the shipped line really is SEL_BG)");
+            CHECK(!strcmp(t.theme, d.theme), "template: theme is empty — no theme until the user names one");
             CHECK(!strcmp(t.shell, d.shell), "template: shell matches");
             CHECK(t.shell_integration == d.shell_integration, "template: shell_integration matches");
             CHECK(!strcmp(t.working_dir, d.working_dir), "template: working_dir matches");
@@ -2255,6 +2294,8 @@ int main(void)
                   "template: fm_preview/fm_show_hidden match");
             CHECK(t.fm_follow == d.fm_follow, "template: fm_follow matches");
             CHECK(t.loglevel == d.loglevel, "template: log matches");
+            CHECK(t.osc_colors == d.osc_colors,
+                  "template: osc_colors matches (and the shipped line really is the built-in 1)");
             CHECK(t.tab_prefix_mods == d.tab_prefix_mods, "template: key_tab_prefix matches");
             const KeyBind pairs[][2] = {
                 { t.key_new_tab, d.key_new_tab },
@@ -2305,15 +2346,16 @@ int main(void)
                claims to hold every default. The accepted names are read out of the two strcmp ladders in
                src/config.c, so this fails when a name is added to the parser and not to the template —
                the direction a hand-maintained list in this file could never catch. Verified against a
-               plain set difference first (.scratch/s99/names.sh): 30 settings + 24 bindings, empty diff
-               in every direction (re-checked by hand when `selection_color` was added in s102). */
+               plain set difference first (.scratch/s99/names.sh): 32 settings + 24 bindings, empty diff
+               in every direction (re-checked by hand when `selection_color`, `theme` and `osc_colors` were
+               added). */
             const char *set_names[64], *bind_names[64];
             int ns = cfg_names_of("src/config.c", "static void apply_setting(", set_names, 64);
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 30 && nb == 24,
-                  "template: the parser accepts 30 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 32 && nb == 24,
+                  "template: the parser accepts 32 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);
@@ -4250,13 +4292,424 @@ int main(void)
               "palette: after a reset SGR 31 is the built-in red again — the block leaves no state behind");
     }
 
+    /* ---------- themes (src/theme.c): the file, the search, and who wins ----------
+       A theme is colours only, applied after kai-term.conf and only where that file said nothing. The
+       precedence rule is the user's own (s102): "value in the kai-term.conf should supersede the theme" —
+       which is only true if a `background =` line wins ABOVE and BELOW the `theme =` line, so both orders
+       are checked. Scratch tree under /tmp, HOME/XDG pointed at it, everything restored after. */
+    {
+        char base[128];
+        snprintf(base, sizeof base, "/tmp/kterm_theme_%d", (int)getpid());
+        char d_cfg[256], d_themes[256], f_theme[320], f_conf[256], f_xdgroot[256], f_tilde[320];
+        snprintf(d_cfg,    sizeof d_cfg,    "%s/.config/kai-term", base);
+        snprintf(d_themes, sizeof d_themes, "%s/.config/kai-term/themes", base);
+        snprintf(f_theme,  sizeof f_theme,  "%s/.config/kai-term/themes/test.theme", base);
+        snprintf(f_conf,   sizeof f_conf,   "%s/.config/kai-term/kai-term.conf", base);
+        snprintf(f_xdgroot,sizeof f_xdgroot,"%s/xdg", base);
+        snprintf(f_tilde,  sizeof f_tilde,  "%s/tildetheme.theme", base);
+
+        char save_xdg[4096], save_home[4096];
+        int had_xdg = getenv("XDG_CONFIG_HOME") != NULL;
+        snprintf(save_xdg, sizeof save_xdg, "%s", getenv("XDG_CONFIG_HOME") ? getenv("XDG_CONFIG_HOME") : "");
+        snprintf(save_home, sizeof save_home, "%s", getenv("HOME") ? getenv("HOME") : "");
+
+        mkdir(base, 0700);
+        snprintf(d_cfg, sizeof d_cfg, "%s/.config", base);            mkdir(d_cfg, 0700);
+        snprintf(d_cfg, sizeof d_cfg, "%s/.config/kai-term", base);   mkdir(d_cfg, 0700);
+        mkdir(d_themes, 0700);
+        mkdir(f_xdgroot, 0700);          /* searched, and empty: the HOME theme is the one that must win */
+        setenv("HOME", base, 1);
+        setenv("XDG_CONFIG_HOME", f_xdgroot, 1);
+
+        /* --- theme_find: a name, a path, and what is NOT a theme --- */
+        FILE *tf = fopen(f_theme, "w");
+        CHECK(tf != NULL, "theme: the scratch theme file is writable");
+        if (tf) { fputs("foreground #ff101010\nbackground #ff010203\n", tf); fclose(tf); }
+        char found[4096];
+        theme_find("test", found, sizeof found);
+        CHECK(!strcmp(found, f_theme), "theme: a name resolves to NAME.theme in the searched themes/ dir");
+        theme_find("test.theme", found, sizeof found);
+        CHECK(!strcmp(found, f_theme), "theme: a value that already ends in .theme is not suffixed twice");
+        theme_find("nosuchtheme", found, sizeof found);
+        CHECK(found[0] == 0, "theme: a name nothing holds leaves the path EMPTY (the caller says so, it does not guess)");
+        theme_find(f_theme, found, sizeof found);
+        CHECK(!strcmp(found, f_theme), "theme: a value with a '/' is a path and is used as given");
+        theme_find("/no/such/dir/x.theme", found, sizeof found);
+        CHECK(found[0] == 0, "theme: a path that does not exist is not a theme");
+        tf = fopen(f_tilde, "w");
+        if (tf) { fputs("background #ff050505\n", tf); fclose(tf); }
+        theme_find("~/tildetheme.theme", found, sizeof found);
+        CHECK(!strcmp(found, f_tilde), "theme: '~/...' expands against HOME");
+        remove(f_tilde);                 /* the file goes; what is left is a DIRECTORY of that name */
+        mkdir(f_tilde, 0700);            /* a directory named like a theme is not one (same rule as config_find) */
+        theme_find(f_tilde, found, sizeof found);
+        CHECK(found[0] == 0, "theme: a directory named x.theme is skipped, not opened");
+        rmdir(f_tilde);
+
+        /* --- what a theme may set, in both spellings --- */
+        Config c;
+        config_default(&c);
+        tf = fopen(f_theme, "w");
+        fputs("name = Test theme\n"
+              "foreground #fff2e2c8\n"
+              "background #ff4a0710\n"
+              "cursor #ffe48e81\n"
+              "selection_background #fff2e2c8\n"
+              "color1 #ffe07f70\n"
+              "color15 #fff4e5cf\n", tf);
+        fclose(tf);
+        config_default(&c);
+        int applied = theme_apply_file(&c, f_theme);
+        CHECK(applied == 6,
+              "theme: six colour lines applied (the `name` line is metadata, not a colour) — re-diff, do not copy");
+        CHECK(c.fg == 0xfff2e2c8u && c.bg == 0xff4a0710u,
+              "theme: ink and paper (kitty spelling, no '=') reach the Config");
+        CHECK(c.cursor_color == 0xffe48e81u && c.selection_color == 0xfff2e2c8u,
+              "theme: cursor and selection_background reach the Config");
+        CHECK(term_palette()[1] == 0xffe07f70u && term_palette()[15] == 0xfff4e5cfu,
+              "theme: colorN sets the palette entry an application reads with SGR 38;5;N");
+
+        /* Kai-Term's own spellings are aliases of the same keys. */
+        tf = fopen(f_theme, "w");
+        fputs("cursor_color = #010101\nselection_color = #020202\n", tf);
+        fclose(tf);
+        config_default(&c);
+        theme_apply_file(&c, f_theme);
+        CHECK(c.cursor_color == 0xff010101u && c.selection_color == 0xff020202u,
+              "theme: cursor_color / selection_color (Kai-Term's names) are accepted as aliases");
+
+        /* --- what a theme may NOT do --- */
+        tf = fopen(f_theme, "w");
+        fputs("color16 = #ff00ff00\nfont_size = 9\nforeground = notacolor\n"
+              "selection_foreground = #ff000000\ncursor_text_color = #ff000000\n"
+              "nonsense_key = 1\n", tf);
+        fclose(tf);
+        uint32_t cube16 = term_palette()[16];
+        config_default(&c);
+        int applied_bad = theme_apply_file(&c, f_theme);
+        CHECK(applied_bad == 0, "theme: nothing at all is applied from a file of refused lines");
+        CHECK(term_palette()[16] == cube16, "theme: color16 is refused — the cube is computed, not themeable");
+        CHECK(c.font_size == 14, "theme: a theme cannot set a setting (font_size stays the default)");
+        CHECK(c.fg == DEF_FG, "theme: text that is not a colour is refused, not applied as 0");
+        CHECK(c.fg == DEF_FG && c.bg == DEF_BG,
+              "theme: selection_foreground / cursor_text_color are reported as dropped, not guessed at");
+
+        /* The '#' rule is the shared one: a colour value survives, a note does not. */
+        tf = fopen(f_theme, "w");
+        fputs("background = #1c1c22\nforeground = # note that is a comment\n", tf);
+        fclose(tf);
+        config_default(&c);
+        theme_apply_file(&c, f_theme);
+        CHECK(c.bg == 0xff1c1c22u, "theme: 'background = #1c1c22' is a colour (the s99 '#' rule, shared function)");
+        CHECK(c.fg == DEF_FG, "theme: 'foreground = # note' is a comment, not an empty value");
+
+        /* A missing file says so rather than applying half of something. */
+        config_default(&c);
+        CHECK(theme_apply_file(&c, "/tmp/kterm_theme_nosuch.theme") == -1,
+              "theme: an unreadable theme file returns -1");
+
+        /* --- precedence: kai-term.conf wins, above OR below the theme line --- */
+        tf = fopen(f_theme, "w");
+        fputs("foreground = #ff111111\nbackground = #ff222222\ncursor = #ff333333\n", tf);
+        fclose(tf);
+
+        FILE *cf = fopen(f_conf, "w");
+        fputs("background = #ff999999\ntheme = test\n", cf);   /* the settings line ABOVE the theme line */
+        fclose(cf);
+        config_default(&c);
+        config_load(&c, f_conf);
+        theme_apply_config(&c);
+        CHECK(c.bg == 0xff999999u && c.fg == 0xff111111u,
+              "theme: a background line ABOVE the theme = line beats the theme, and an unset colour is filled in");
+
+        cf = fopen(f_conf, "w");
+        fputs("theme = test\nbackground = #ff999999\n", cf);
+        fclose(cf);
+        config_default(&c);
+        config_load(&c, f_conf);
+        theme_apply_config(&c);
+        CHECK(c.bg == 0xff999999u && c.fg == 0xff111111u,
+              "theme: the same line BELOW the theme = line beats it too — the theme is applied once, after the file");
+
+        /* The alias must step aside as well: a `cursor_color =` line blocks the theme's `cursor`. */
+        cf = fopen(f_conf, "w");
+        fputs("theme = test\ncursor_color = #ff888888\n", cf);
+        fclose(cf);
+        config_default(&c);
+        config_load(&c, f_conf);
+        theme_apply_config(&c);
+        CHECK(c.cursor_color == 0xff888888u,
+              "theme: a cursor_color = line blocks the theme's kitty-spelled `cursor` (same key, one check)");
+
+        /* No settings file at all: the theme's values are simply used. */
+        remove(f_conf);
+        config_default(&c);
+        snprintf(c.theme, sizeof c.theme, "test");
+        theme_apply_config(&c);
+        CHECK(c.bg == 0xff222222u && c.cursor_color == 0xff333333u,
+              "theme: with no kai-term.conf line for a colour, the theme's value stands");
+
+        /* A configured theme that does not exist changes nothing and does not fail the launch. */
+        config_default(&c);
+        snprintf(c.theme, sizeof c.theme, "nosuchtheme");
+        CHECK(theme_apply_config(&c) == 0 && c.bg == DEF_BG,
+              "theme: a theme name nothing holds is a warning, not a changed colour");
+        config_default(&c);
+        CHECK(c.theme[0] == 0 && theme_apply_config(&c) == 0 && c.bg == DEF_BG,
+              "theme: an empty `theme =` (the shipped default) does nothing at all");
+
+        /* --- the acceptance case: the user's own theme, verbatim, kitty spelling --- */
+        tf = fopen(f_theme, "w");
+        fputs("color0 #bdaaad\ncolor1 #e07f70\ncolor2 #9eae80\ncolor3 #d0af63\n"
+              "color4 #849caf\ncolor5 #b78ea6\ncolor6 #7bb2aa\ncolor7 #f2e2c8\n"
+              "color8 #c5b4b7\ncolor9 #e48e81\ncolor10 #aab88f\ncolor11 #d6b976\n"
+              "color12 #93a8b9\ncolor13 #c09cb1\ncolor14 #8bbbb4\ncolor15 #f4e5cf\n"
+              "background #4a0710\nselection_foreground #4a0710\ncursor #e48e81\n"
+              "cursor_text_color #4a0710\nforeground #f2e2c8\nselection_background #f2e2c8\n", tf);
+        fclose(tf);
+        term_palette_reset();
+        config_default(&c);
+        int n13 = theme_apply_file(&c, f_theme);
+        CHECK(n13 == 20,
+              "theme: the 13th Floor file applies 20 of its 22 lines — re-diff, do not copy");
+        CHECK(term_palette()[0] == 0xffbdaaadu && term_palette()[4] == 0xff849cafu
+              && term_palette()[11] == 0xffd6b976u && term_palette()[15] == 0xfff4e5cfu,
+              "theme: all 16 ANSI entries of the user's file land");
+        CHECK(c.bg == 0xff4a0710u && c.fg == 0xfff2e2c8u && c.cursor_color == 0xffe48e81u
+              && c.selection_color == 0xfff2e2c8u,
+              "theme: background / foreground / cursor / selection_background of the user's file land");
+
+        /* --- the shipped example: every accepted name, and the built-in colours --- */
+        const char *tnames[64];
+        int tn = theme_names_of("src/theme.c", tnames, 64);
+        CHECK(tn > 0, "theme: the accepted names were read from src/theme.c (the table moved?)");
+        CHECK(tn == 23, "theme: src/theme.c accepts 23 names — re-diff, do not copy");
+        int tbad = 0;
+        if (tn > 0)
+            tbad += tpl_check_names("config/kai-term.theme", (const char *const *)tnames, tn);
+        CHECK(tbad == 0,
+              "theme: config/kai-term.theme lists exactly the names src/theme.c accepts, in both directions");
+        config_default(&c);
+        term_palette_reset();
+        int tparity = theme_apply_file(&c, "config/kai-term.theme");
+        CHECK(tparity == 22,
+              "theme: the shipped example applies 22 colour lines (23 names, `name` is metadata) — re-diff");
+        CHECK(c.fg == DEF_FG && c.bg == DEF_BG && c.cursor_color == CURSOR_COL
+              && c.selection_color == SEL_BG,
+              "theme: the shipped example changes no colour — its values ARE the built-in defaults");
+        CHECK(term_palette()[0] == 0xff000000u && term_palette()[1] == 0xffcc5555u
+              && term_palette()[9] == 0xffff5555u && term_palette()[15] == 0xffffffffu,
+              "theme: and the example's colorN lines are the built-in ANSI 16");
+        for (int i = 0; i < tn; i++)
+            free((char *)tnames[i]);
+
+        /* Tear down, and leave the palette as the rest of the suite expects it. */
+        term_palette_reset();
+        if (had_xdg)
+            setenv("XDG_CONFIG_HOME", save_xdg, 1);
+        else
+            unsetenv("XDG_CONFIG_HOME");
+        setenv("HOME", save_home, 1);
+        remove(f_theme);
+        remove(f_conf);
+        rmdir(d_themes);
+        snprintf(d_cfg, sizeof d_cfg, "%s/.config/kai-term", base);
+        rmdir(d_cfg);
+        snprintf(d_cfg, sizeof d_cfg, "%s/.config", base);
+        rmdir(d_cfg);
+        rmdir(f_xdgroot);
+        rmdir(base);
+    }
+
+    /* ---------- OSC 4 / 10 / 11 / 104: an application repainting the terminal (step 1d) ----------
+       Every number below is what a probe printed first (.scratch/s104/oscprobe2.c and rgbround.c), not what
+       was intended. The shape worth remembering: OSC 4/10/11/104 are the ONLY colour sequences a program can
+       send, so they are the whole of the "repaint the terminal from the inside" capability, and the user asked
+       for it AND an off switch in the same answer (s102 question 2). Two things this group exists to keep out:
+       a computed colour that overflows its channel (the s102 cube bug, found HERE by the probe before any check
+       was written), and a default-colour change that leaves blank cells non-pristine (the s101 border bug).
+       The escapes are written "\x1b" "]..." — one escape followed by a hex letter would swallow it, which is
+       the trap the group below this one scans for. */
+    {
+        term_set_osc_colors(1);
+        term_palette_reset();
+        term_set_default_colors(DEF_FG, DEF_BG);
+        term_destroy(&T);
+        term_init(&T, 8, 40, 20);
+
+        /* --- OSC 4: one entry, and the multi form both occur in the wild --- */
+        feed("\x1b" "]4;1;#ff0000\x07");
+        CHECK(term_palette()[1] == 0xffff0000u, "osc: OSC 4;1;#ff0000 sets palette entry 1");
+        CHECK(term_palette()[0] == 0xff000000u && term_palette()[2] == 0xff55cc55u,
+              "osc: and leaves both neighbours alone");
+        feed("\x1b" "]4;4;#00ff00;5;#0000ff\x07");
+        CHECK(term_palette()[4] == 0xff00ff00u && term_palette()[5] == 0xff0000ffu,
+              "osc: the multi form OSC 4;N;c;M;c sets BOTH entries");
+
+        /* --- the cube: settable by OSC, deliberately. A theme FILE may not touch it; an application may,
+           and `osc_colors = 0` is the switch for anyone who does not want that. Pinned so the difference
+           between the two layers is a decision and not an accident. --- */
+        feed("\x1b" "]4;196;#112233\x07");
+        CHECK(term_palette()[196] == 0xff112233u,
+              "osc: OSC 4 CAN repaint the cube (196) — a theme file cannot, and osc_colors = 0 is the switch");
+
+        /* --- the rgb: forms, and the channel-overflow gate (measured: the first version painted
+           rgb:ffff/ffff/ffff as #010100, because (0xffff + 0x80) >> 8 is 256 and 256 << 16 puts 0x01 in the
+           GREEN byte. The canonical X11 spelling of WHITE came out near-black — the s102 cube bug again.) --- */
+        feed("\x1b" "]4;9;rgb:ff/ff/ff\x07");
+        CHECK(term_palette()[9] == 0xffffffffu, "osc: rgb:ff/ff/ff (2-digit) is white");
+        feed("\x1b" "]4;9;rgb:ffff/ffff/ffff\x07");
+        CHECK(term_palette()[9] == 0xffffffffu,
+              "osc: rgb:ffff/ffff/ffff (the canonical X11 white) is white, NOT #010100 — a component must "
+              "never exceed its byte");
+        feed("\x1b" "]4;9;rgb:8000/8000/8000\x07");
+        CHECK(term_palette()[9] == 0xff808080u,
+              "osc: a 16-bit component loses its low byte (0x8000 -> 0x80)");
+        feed("\x1b" "]4;9;RGB:aa/BB/cc\x07");
+        CHECK(term_palette()[9] == 0xffaabbccu, "osc: the rgb: prefix is case-insensitive (X11 rule)");
+
+        /* --- what is refused, and refused WITHOUT touching the entry --- */
+        term_palette_entry_reset(9);
+        uint32_t keep9 = term_palette()[9];
+        CHECK(keep9 == 0xffff5555u, "osc: entry 9 is back to its built-in colour (the refusal baseline)");
+        static const char *osc_bad[] = {
+            "notacolor", "rgb:ff/gg/gg", "rgb:ff/ff", "rgb:ff/ff/ff/", "rgb:12/34/5678",
+            "rgb:", "rgb:fffff/fffff/fffff",
+        };
+        for (size_t i = 0; i < sizeof osc_bad / sizeof osc_bad[0]; i++) {
+            char seq[128];
+            snprintf(seq, sizeof seq, "\x1b" "]4;9;%s\x07", osc_bad[i]);
+            term_parse(&T, (const uint8_t *)seq, strlen(seq));
+            CHECK(term_palette()[9] == keep9,
+                  "osc: a malformed colour argument is refused and changes nothing");
+        }
+        feed("\x1b" "]4;999;#ffffff\x07");
+        CHECK(term_palette()[9] == keep9 && term_palette()[255] == 0xffeeeeeeu,
+              "osc: an out-of-range entry index is ignored, not clamped to the last entry (255 keeps its "
+              "built-in grey)");
+
+        /* --- OSC 104: put entries BACK. The subset form is what lets a tool borrow two colours and give
+           them back without wiping a theme the user put in a file. --- */
+        feed("\x1b" "]104;1;4\x07");
+        CHECK(term_palette()[1] == 0xffcc5555u && term_palette()[4] == 0xff5555ccu,
+              "osc: OSC 104;1;4 puts exactly those two entries back");
+        CHECK(term_palette()[196] == 0xff112233u,
+              "osc: and leaves the entry it was not asked about alone (a theme survives a partial reset)");
+        feed("\x1b" "]104\x07");
+        CHECK(term_palette()[196] == 0xffff0000u && term_palette()[9] == 0xffff5555u,
+              "osc: OSC 104 with no argument puts the WHOLE palette back, cube included");
+
+        /* --- OSC 10/11: the window's own ink and paper --- */
+        term_set_default_colors(0xffe5e5e5u, 0xff101014u);
+        term_destroy(&T);
+        term_init(&T, 8, 40, 20);
+        feed("hello");
+        CHECK(T.pen.fg == 0xffe5e5e5u, "osc: the pen starts at the configured ink");
+        T.colors_dirty = 0;
+        feed("\x1b" "]10;#123456\x07");
+        CHECK(term_default_fg() == 0xff123456u, "osc: OSC 10 sets the default ink");
+        CHECK(T.pen.fg == 0xff123456u, "osc: and the pen follows, so the next glyph uses it");
+        CHECK(T.colors_dirty == 1, "osc: OSC 10 raises the flag main.c acts on (renderer + other sessions)");
+        CHECK(T.old_def_fg == 0xffe5e5e5u && T.old_def_bg == 0xff101014u,
+              "osc: and records the values it replaced — the sweep is a match-and-replace and needs them");
+        feed("\x1b" "]11;#654321\x07");
+        CHECK(term_default_bg() == 0xff654321u && term_default_fg() == 0xff123456u,
+              "osc: OSC 11 sets the paper and leaves the ink alone");
+
+        /* --- the query form: what a colour-picker tool reads back --- */
+        T.resp_len = 0;
+        feed("\x1b" "]10;?\x07");
+        CHECK(T.resp_len > 0 && !strcmp(T.resp, "\x1b]10;rgb:1212/3434/5656\x1b\\"),
+              "osc: OSC 10;? answers with the current ink in the X11 16-bit form");
+        T.resp_len = 0;
+        feed("\x1b" "]11;?\x07");
+        CHECK(T.resp_len > 0 && !strcmp(T.resp, "\x1b]11;rgb:6565/4343/2121\x1b\\"),
+              "osc: OSC 11;? answers with the current paper");
+
+        /* --- the off switch: all four ignored, and no query answer either --- */
+        term_set_osc_colors(0);
+        feed("\x1b" "]4;1;#00ff00\x07");
+        CHECK(term_palette()[1] == 0xffcc5555u, "osc_colors = 0: OSC 4 changes no palette entry");
+        feed("\x1b" "]10;#abcdef\x07");
+        CHECK(term_default_fg() == 0xff123456u, "osc_colors = 0: OSC 10 changes no default");
+        feed("\x1b" "]104\x07");
+        CHECK(term_palette()[1] == 0xffcc5555u, "osc_colors = 0: OSC 104 resets nothing");
+        T.resp_len = 0;
+        feed("\x1b" "]10;?\x07");
+        CHECK(T.resp_len == 0, "osc_colors = 0: a colour query gets no answer at all");
+        feed("\x1b" "]2;still works\x07");
+        CHECK(!strcmp(T.title, "still works"),
+              "osc_colors = 0: the title OSCs are untouched — the switch is about colours only");
+        term_set_osc_colors(1);
+        feed("\x1b" "]4;1;#00ff00\x07");
+        CHECK(term_palette()[1] == 0xff00ff00u, "osc_colors = 1 again: the same sequence now lands");
+
+        /* --- the sweep: an ALREADY-painted screen must follow the new paper.
+           A Cell stores a RESOLVED colour, not a palette index, so without this pass the terminal reads as
+           half-themed: new output in the new colour, the screen in front of the user in the old one. --- */
+        term_set_default_colors(0xffe5e5e5u, 0xff101014u);
+        term_palette_reset();
+        term_destroy(&T);
+        term_init(&T, 6, 20, 20);
+        feed("hello");
+        Cell *c0 = &grid_vprow(&T.g, 0)[0], *c15 = &grid_vprow(&T.g, 0)[15];
+        CHECK(c0->bg == 0xff101014u && c15->bg == 0xff101014u,
+              "recolor: before, the painted cell and a blank cell both carry the old paper");
+        CHECK(T.g.wrap[0] == 0, "recolor: 'hello' at 20 cols is one unwrapped row");
+        feed("\x1b" "]11;#0000ff\x07");
+        CHECK(c0->bg == 0xff0000ffu, "recolor: the painted cell follows the new paper");
+        CHECK(c15->bg == 0xff0000ffu, "recolor: and so does the blank cell beside it");
+        /* THE invariant. cell_pristine() compares a cell against the CURRENT defaults, so a sweep that skips
+           the blanks leaves them at the old paper: still looking blank, no longer pristine. row_used() then
+           counts the 15 trailing blanks as content, reflow re-wraps them, and the line gains a wrap mark it
+           never had — the s101 class of bug, in the opposite direction. */
+        term_resize(&T, 6, 10);
+        CHECK(T.g.wrap[0] == 0,
+              "recolor: after OSC 11 a narrow resize must NOT wrap 'hello' — if the sweep skipped the blank "
+              "cells they stop being pristine, row_used() counts the trailing blanks as content, and reflow "
+              "re-wraps them (the s101 invariant)");
+        CHECK(logical_lines(lbuf) == 1 && !strcmp(lbuf[0], "hello"),
+              "recolor: the logical line is still exactly 'hello' after the resize");
+
+        /* The MAIN grid parked while an application owns the screen must follow too: it comes back
+           byte-for-byte on exit, or the user leaves vim into a half-recoloured shell. */
+        term_set_default_colors(0xffe5e5e5u, 0xff101014u);
+        term_destroy(&T);
+        term_init(&T, 6, 20, 20);
+        feed("main");
+        feed("\x1b[?1049h");
+        CHECK(T.alt_screen == 1, "recolor: the alternate screen is up, main grid parked");
+        feed("\x1b" "]11;#00ff00\x07");
+        feed("\x1b[?1049l");
+        CHECK(T.alt_screen == 0 && grid_vprow(&T.g, 0)[0].bg == 0xff00ff00u,
+              "recolor: the restored main grid carries the new paper, not the one it was painted with");
+
+        /* The prompt snapshot is compared cell-for-cell (prompt_cell_same reads fg/bg), so a snapshot left
+           in the old colours would report "the prompt changed" forever and the shell follow would stop. */
+        term_set_default_colors(0xffe5e5e5u, 0xff101014u);
+        term_destroy(&T);
+        term_init(&T, 6, 20, 20);
+        feed("prompt$ ");
+        CHECK(term_at_prompt(&T) == 1, "recolor: an untouched prompt is recognised before the colour change");
+        feed("\x1b" "]11;#0000ff\x07");
+        CHECK(term_at_prompt(&T) == 1,
+              "recolor: and still after it — the snapshot is swept with the grid, or the shell follow dies "
+              "for the rest of the session");
+
+        /* Leave the process-wide state as the rest of the suite expects it. */
+        term_set_default_colors(DEF_FG, DEF_BG);
+        term_palette_reset();
+        term_set_osc_colors(1);
+        term_destroy(&T);
+    }
+
     /* ---------- source hygiene: the "\x1bc" hex-escape trap (see src_hexesc_count) ----------
        Every C file in the project, src and tests alike. Feeding ESC plus a hex-letter control byte takes TWO
        escapes ("\x1b" "c"); one escape swallows the letter and the test then feeds one out-of-range byte. */
     {
         static const char *scan[] = {
-            "src/vt.c", "src/main.c", "src/render.c", "src/config.c", "src/fm.c", "src/mux.c",
-            "src/layout.c", "src/img.c", "src/font.c", "src/pty.c", "src/shellint.c",
+            "src/vt.c", "src/main.c", "src/render.c", "src/config.c", "src/theme.c", "src/fm.c",
+            "src/mux.c", "src/layout.c", "src/img.c", "src/font.c", "src/pty.c", "src/shellint.c",
             "tests/test_vt.c", "tests/test_fm.c", "tests/test_render.c", "tests/dbg.c",
         };
         int bad = 0, unread = 0;
