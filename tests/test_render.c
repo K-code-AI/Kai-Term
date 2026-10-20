@@ -198,6 +198,37 @@ static int src_word_count(const char *path, const char *word)
     return n;
 }
 
+/* Count a LITERAL substring in the code (comments skipped the same way src_word_count skips them).
+   Where this is used instead of src_word_count: a word count also counts a token that merely appears in a
+   comment, so a check like "main.c feeds the row to the layout" passes when the assignment is deleted and the
+   comment naming it is left behind. Naming the assignment (`rq.notice_on`) instead of the field makes the
+   check about the code. */
+static int src_sub_count(const char *path, const char *needle)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    size_t nl = strlen(needle);
+    int n = 0, in_block = 0;
+    char line[4096];
+    while (fgets(line, sizeof line, f)) {
+        char *p = line;
+        while (*p) {
+            if (in_block) {
+                if (p[0] == '*' && p[1] == '/') { in_block = 0; p += 2; continue; }
+                p++;
+                continue;
+            }
+            if (p[0] == '/' && p[1] == '*') { in_block = 1; p += 2; continue; }
+            if (p[0] == '/' && p[1] == '/') break;
+            if (!strncmp(p, needle, nl)) { n++; p += nl; continue; }
+            p++;
+        }
+    }
+    fclose(f);
+    return n;
+}
+
 /* Does the render_init() call in src/main.c pass `arg`? Text check, not execution — the honest limit of
    testing a call site that lives in main(). */
 static int src_call_passes_arg(const char *path, const char *call, const char *arg)
@@ -369,8 +400,14 @@ static void group_source_wiring(void)
           "src/main.c defines the answer and reaches it from the modal key handler");
     CHECK(src_word_count("src/main.c", "confirm_clear") == 4,
           "the question is taken down on both answers AND when the tab it asked about closes on its own");
-    CHECK(src_word_count("src/main.c", "notice_on") == 1 && src_word_count("src/main.c", "notice_text") == 1,
+    /* The layout input and the visibility rule, as SUBSTRINGS: a word count would also count the comments
+       that name these fields, which is how "the row is fed to the layout" could stay green after the
+       assignment was deleted. */
+    CHECK(src_sub_count("src/main.c", "rq.notice_on") == 1
+          && src_sub_count("src/main.c", "rq.notice_text") == 1,
           "src/main.c feeds the question row to the layout — without it the row is never drawn");
+    CHECK(src_sub_count("src/main.c", "g_layout.notice_on") == 1,
+          "src/main.c checks the row really is on screen before it lets the question block a close");
     CHECK(src_word_count("src/main.c", "mux_running") == 2 && src_word_count("src/main.c", "pty_fg_busy") == 2,
           "src/main.c asks the measured predicate rather than inventing its own busy test");
     /* The one link a headless test cannot execute: main() handing the configured value to the renderer and

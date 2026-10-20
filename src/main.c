@@ -157,13 +157,17 @@ static int base_font_size;      /* configured size, restored by Ctrl+0 */
    picture. */
 static Layout g_layout;
 static int layout_mode = LAYOUT_TABS;   /* LAYOUT_TABS (one session fills the window) / LAYOUT_SPLIT */
-/* The confirm-quit question (step 4). `confirm_kind` is 0 when nothing is being asked, otherwise
-   CONFIRM_QUIT (the whole window) or CONFIRM_CLOSE_TAB (one session, whose index is `confirm_tab`). The
-   WORDING is built by confirm_message() in src/mux.c, where it is a checked decision; what lives here is the
-   state the gate sets, the answer it collects, and the fact that showing the row costs a grid row (it is
+/* The confirm-quit question (step 4). `confirm_kind` is CONFIRM_NONE when nothing is being asked, otherwise
+   CONFIRM_QUIT (the whole window) or CONFIRM_CLOSE_TAB (one session, whose index is `confirm_tab`). It doubles
+   as "is a question up?", which is why no question kind may be 0 — see the enum in the header: with
+   CONFIRM_QUIT = 0 a WINDOW close set the state to "nothing is being asked", so nothing was drawn, the
+   keyboard was never modal, and the close had already been swallowed. That is the bug the user reported as
+   "it just doesn't quit, it doesn't ask anything" while tabs worked.
+   The WORDING is built by confirm_message() in src/mux.c, where it is a checked decision; what lives here is
+   the state the gate sets, the answer it collects, and the fact that showing the row costs a grid row (it is
    chrome, laid out by src/layout.c and drawn by src/render.c, so layout_apply() has to run to put it up and
    to take it away). */
-static int  confirm_kind;
+static int  confirm_kind = CONFIRM_NONE;
 static int  confirm_tab = -1;
 static char confirm_text[NOTICE_MAX];
 /* px between panes, and between the tab bar and the grid. Deliberately not a config key: Config.padding
@@ -416,7 +420,7 @@ static void layout_apply(void)
     /* The question row, when one is up. It costs the panes one row (src/layout.c), which is the price of
        drawing chrome in the grid area rather than over it: the terminal the user is being asked about stays
        readable above the question. */
-    rq.notice_on = confirm_kind ? 1 : 0;
+    rq.notice_on = (confirm_kind != CONFIRM_NONE) ? 1 : 0;
     rq.notice_text = confirm_text;
     for (int i = 0; i < rq.ntab; i++) {
         rq.tab[i].tab = i;
@@ -800,20 +804,25 @@ static void tab_open(void)
    one row short after the question is gone. */
 static void confirm_clear(void)
 {
-    if (!confirm_kind)
+    if (confirm_kind == CONFIRM_NONE)
         return;
-    confirm_kind = 0;
+    confirm_kind = CONFIRM_NONE;
     confirm_tab = -1;
     confirm_text[0] = 0;
     layout_apply();
     W.dirty = 1;
 }
 
-/* Put the question up. The text comes from confirm_message(); for a WINDOW it is built from how many
-   sessions are at risk and WHICH ones ("session 2 and 4 are still working" is information a yes/no answer
-   cannot carry), for a TAB from that tab alone. Answering YES closes every session named, not just the
-   visible one — that is what the count in the sentence promises. */
-static void confirm_show(int what, int tabidx)
+/* Put the question up. Returns 1 when the question is actually ON SCREEN and the caller must therefore not
+   close, and 0 when it does not fit and the caller must close rather than swallow the request.
+   That second half is the rule this feature must never break: a question nobody can see must not block a
+   close, because the user is then left with a window that answers neither button. layout_compute() owns the
+   decision (a grid area too short to give up the row says notice_on == 0); main.c only reads it back.
+   The text comes from confirm_message(); for a WINDOW it is built from how many sessions are at risk and
+   WHICH ones ("session 2 and 4 are still working" is information a yes/no answer cannot carry), for a TAB
+   from that tab alone. Answering YES closes every session named, not just the visible one — that is what the
+   count in the sentence promises. */
+static int confirm_show(int what, int tabidx)
 {
     int idx[TAB_MAX];
     int n = 0;
@@ -830,8 +839,17 @@ static void confirm_show(int what, int tabidx)
     confirm_message(what, n, n ? idx : NULL, confirm_text, sizeof confirm_text);
     layout_apply();          /* the row costs a grid row, so every session's grid changes with it */
     W.dirty = 1;
+    if (!g_layout.notice_on) {
+        confirm_kind = CONFIRM_NONE;
+        confirm_tab = -1;
+        confirm_text[0] = 0;
+        layout_apply();
+        klog(L_WARN, "confirm: the question does not fit in this window — closing without asking");
+        return 0;
+    }
     klog(L_INFO, "confirm: asking before %s (%d session(s) running): %s",
          what == CONFIRM_CLOSE_TAB ? "closing a tab" : "quitting", n, confirm_text);
+    return 1;
 }
 
 /* 1 = the question is now up and the caller must NOT close. `never` never asks; `running` (the default)
@@ -841,7 +859,7 @@ static void confirm_show(int what, int tabidx)
    the answer to it. */
 static int confirm_gate_window(void)
 {
-    if (confirm_kind) {
+    if (confirm_kind != CONFIRM_NONE) {
         klog(L_DEBUG, "confirm: a close was requested while the question is up — ignored");
         return 1;
     }
@@ -852,13 +870,12 @@ static int confirm_gate_window(void)
         klog(L_DEBUG, "confirm: nothing is running in any session — closing without asking");
         return 0;
     }
-    confirm_show(CONFIRM_QUIT, -1);
-    return 1;
+    return confirm_show(CONFIRM_QUIT, -1);
 }
 
 static int confirm_gate_tab(int idx)
 {
-    if (confirm_kind) {
+    if (confirm_kind != CONFIRM_NONE) {
         klog(L_DEBUG, "confirm: a tab close was requested while the question is up — ignored");
         return 1;
     }
@@ -870,8 +887,7 @@ static int confirm_gate_tab(int idx)
         klog(L_DEBUG, "confirm: session %d has nothing running — closing without asking", idx + 1);
         return 0;
     }
-    confirm_show(CONFIRM_CLOSE_TAB, idx);
-    return 1;
+    return confirm_show(CONFIRM_CLOSE_TAB, idx);
 }
 
 /* Close one session. The Pty is captured BEFORE mux_close(): the tab after it slides into this slot,
@@ -920,7 +936,7 @@ static void tab_close(int idx)
 static void confirm_answer(int yes)
 {
     int what = confirm_kind, tab = confirm_tab;
-    if (!what)
+    if (what == CONFIRM_NONE)
         return;
     klog(L_INFO, "confirm: %s — %s", yes ? "YES" : "NO",
          yes ? (what == CONFIRM_CLOSE_TAB ? "closing that session" : "quitting, every session with it")
@@ -2065,7 +2081,7 @@ static int send_key(uint32_t key, uint32_t serial)
        sits here rather than at the top of send_key() only because it needs `base` and `kbmods` to say which
        key it swallowed. Enter/y confirms, Esc/n cancels; returning 0 means a held key never repeats an
        answer, and the key-repeat timer's re-sends are swallowed like any other key. */
-    if (confirm_kind) {
+    if (confirm_kind != CONFIRM_NONE) {
         if (base == XKB_KEY_Return || base == XKB_KEY_KP_Enter ||
             base == XKB_KEY_y || base == XKB_KEY_Y)
             confirm_answer(1);

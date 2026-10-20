@@ -1083,7 +1083,12 @@ int mux_running(const Mux *m, int *idx, int max);
    which has to say HOW MANY and WHICH, because "session 2 and 4 are still working" is the information a
    yes/no answer cannot carry. Returns the bytes written (always NUL-terminated). Lives here, not in
    main.c, so the wording is a checkable decision rather than a string nobody can test. */
-enum { CONFIRM_QUIT = 0, CONFIRM_CLOSE_TAB = 1 };
+/* What a close is asking about. CONFIRM_NONE is 0 because main.c's `confirm_kind` doubles as "is a question
+   up?" — and that is exactly the trap this enum fell into in s122: with `CONFIRM_QUIT = 0`, asking about the
+   WINDOW set the state to the same value that means "nothing is being asked", so the question was never drawn,
+   the keyboard was never modal, and the close had already been swallowed. A question kind must therefore never
+   be 0; tests/test_vt.c pins it. */
+enum { CONFIRM_NONE = 0, CONFIRM_QUIT = 1, CONFIRM_CLOSE_TAB = 2 };
 int confirm_message(int what, int n, const int *idx, char *out, size_t cap);
 
 /* ---------- layout: where each session is drawn (src/layout.c) ----------

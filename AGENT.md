@@ -1009,6 +1009,44 @@ numbers and the intermediate check counts are in git.
   new upstream), then `git push origin main`: `8ccc73d..4bcd56b`, and `git status -sb` now reads `main` even
   with `origin/main` — verified from git, not asserted. STILL OWED: the row's look in the user's window (the
   recipe is in "Current Status"), and the rest of the owed-to-the-eye list.
+- **2026-10-20, s122 — the user's window-close report: a real bug, and a redesign of the window question.**
+  Their words: "It just doesn't quit. It doesn't ask anything" — closing with niri's `Mod+Q` — and "but it
+  works for tabs, can we keep the current implementation for Tabs only. and make the modification for the full
+  windows close?", with a picture of the shape they want: a centred box, one sentence naming the running
+  process, and two buttons to click. Text they asked for: `Warning ! "name of the process" is still running.
+  Are you sure you want to close it ?`
+  Objective: (1) find and fix why a window close neither asks nor closes; (2) keep the tab question exactly as
+  it is; (3) give the WINDOW close a centred, mouse-clickable Yes/No dialog that names the foreground process.
+  Planned steps: probe the state machine -> fix the cause + pin it with a check -> the process name (pty.c) ->
+  the wording (mux.c) -> the dialog geometry (layout.c) -> the pixels (render.c) -> main.c's state, gate and
+  pointer hit test -> docs, both builds, every suite, asan, commit, push.
+  Expected outcome: `Mod+Q` on an idle window still closes it at once; on a busy one it puts up the box, and
+  either button or Enter/Esc answers it.
+  DONE (1, the cause, measured not guessed): `.scratch/s122/kindprobe.c` replicates main.c's state machine with
+  the REAL enum values and prints what each path decides. `enum { CONFIRM_QUIT = 0, CONFIRM_CLOSE_TAB = 1 }`
+  collides with main.c's `confirm_kind == 0` meaning "no question is up", so asking about the WINDOW set the
+  state to "nothing is being asked": `notice_drawn=0 modal_keyboard=0 window_still_running=1` — asked? NO,
+  closed? NO — while the tab path prints `kind=1 notice_drawn=1`. That is the report exactly: the gate had
+  already swallowed the close, nothing was ever drawn, and the keyboard was never modal. Tabs worked because
+  CONFIRM_CLOSE_TAB is 1.
+  DONE (2, the fix): `enum { CONFIRM_NONE = 0, CONFIRM_QUIT = 1, CONFIRM_CLOSE_TAB = 2 }` with the trap named in
+  the comment, and main.c comparing against CONFIRM_NONE everywhere instead of truthiness. Plus the rule that
+  makes this class of bug survivable rather than fatal: **a close is never blocked by a question the user cannot
+  see.** `confirm_show()` now returns whether the question really is on screen (it reads `g_layout.notice_on`
+  back after `layout_apply()`), and the gate closes instead of swallowing when it is not — so the worst case is
+  the old behaviour (close at once), never a window that answers neither button.
+  DONE (3, the checks, all non-vacuous): three checks in `tests/test_vt.c` pin the enum invariant (CONFIRM_NONE
+  is 0; no question kind is 0; the two kinds differ), and `tests/test_render.c` gains `src_sub_count()` — a
+  substring scan, because a WORD count also counts a token that only appears in a comment, which is how "main.c
+  feeds the row to the layout" could stay green after the assignment was deleted. `.scratch/s122/mutate.py`, all
+  RUN: `kind_zero` (the shipped bug) 1, `no_visible_guard` 1, `no_layout_input` 1, `notice_always_on` (the
+  geometry decision removed) 2 — no survivors. Measured: both builds exit 0 with 0 warning lines, `test_vt`
+  **1323, 0**, `dbg` MODEL OK, `test_fm` **384, 0**, `test_render` **507, 0**.
+  TWO HARNESS BUGS FOUND AND FIXED, both worth keeping: the staging tree was missing `config/`, `README.md` and
+  the other `tests/*.c`, which test_vt reads by relative path — 6 failures that had nothing to do with the
+  mutant; and, worse, the harness **symlinked `include/` and then wrote the patched header through it,
+  mutating the real project tree**. Now a copy, and every mutant run ends by asserting the project's own header
+  still holds the expected enum and no source carries mutant text.
 
 ## Next Steps
 

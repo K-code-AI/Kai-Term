@@ -3406,6 +3406,18 @@ int main(void)
         CHECK(mux_count(&MX2) == 0, "confirm mux: the tabs are gone, nothing was left behind");
     }
 
+    /* --- confirm-quit: the question kinds must not collide with "no question" -------------------
+       main.c keeps the question state in one int that doubles as "is a question up?", where 0 means no. If a
+       question KIND is also 0, asking sets the state to "nothing is being asked": the question is never drawn,
+       the keyboard is never modal, and the close the gate already swallowed leaves a window that answers
+       neither button. That is exactly the bug the user reported ("it just doesn't quit, it doesn't ask
+       anything") while closing a TAB worked — CONFIRM_QUIT was 0 and CONFIRM_CLOSE_TAB was 1. */
+    CHECK(CONFIRM_NONE == 0, "confirm kinds: CONFIRM_NONE is the zero value, which is what main.c tests");
+    CHECK(CONFIRM_QUIT != 0 && CONFIRM_CLOSE_TAB != 0,
+          "confirm kinds: no question kind is 0, so asking can never look like 'nothing is being asked'");
+    CHECK(CONFIRM_QUIT != CONFIRM_CLOSE_TAB,
+          "confirm kinds: a window close and a tab close are distinguishable");
+
     /* --- confirm-quit: the exact row the window shows (confirm_message) -----------------------
        The wording lives in mux.c so it is a checkable decision rather than a string inside main.c. The
        strings below are copied from what the code writes (.scratch/s120/msgprobe), not from what the
