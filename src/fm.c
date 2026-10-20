@@ -691,6 +691,36 @@ int fm_row_pos(const FileMgr *fm, int row)
     return pos;
 }
 
+/* Does this wheel gesture move the keyboard into the band? Lives here rather than in main.c for the
+   standing reason: main.c is in no test binary, so a rule written there cannot be checked (see
+   fm_row_pos() above, put in the same place for the same reason).
+
+   `hit`     FM_HIT_LIST / FM_HIT_PREVIEW — the caller has already excluded FM_HIT_NONE.
+   `steps`   the whole-cell steps the gesture produced. 0 means it scrolled NOTHING: a trackpad frame
+             with a sub-cell delta, a gesture shorter than one row, or a frame that arrived without
+             axis data. Such a gesture must never move the keyboard. That is not a policy choice — it
+             is the bug this function replaces: the old code called fm_focus_set() on its fifth line,
+             before steps was even computed, and returned early when steps was 0. The keyboard had
+             already jumped to whichever pane the pointer happened to be over, and nothing had
+             scrolled, which is exactly what reads to a user as "hovering steals the focus".
+   `on_hover` the `fm_focus_on_hover =` key. 0 (the default) = only a CLICK takes the keyboard, so a
+             scroll gesture walks the listing but leaves the keyboard where it is. 1 = the older
+             pointer-decides behaviour, kept for anyone who wants it.
+
+   Returns the FM_FOCUS_* to apply, or -1 for "leave the keyboard alone". */
+int fm_wheel_focus(int hit, int steps, int on_hover)
+{
+    if (steps == 0)
+        return -1;
+    if (!on_hover)
+        return -1;
+    if (hit == FM_HIT_PREVIEW)
+        return FM_FOCUS_PREVIEW;
+    if (hit == FM_HIT_LIST)
+        return FM_FOCUS_LIST;
+    return -1;              /* FM_HIT_NONE: not over the band at all — checked, not assumed of the caller */
+}
+
 /* ---------- preview: build (any thread) ---------- */
 
 static int meta_add(FmPreview *p, const char *label, const char *fmt, ...)

@@ -755,8 +755,11 @@ typedef struct Config {
        the band then keeps its proportion when the window is resized or zoomed.
        fm_preview: the preview pane is shown (it can also be toggled at runtime). fm_show_hidden:
        dotfiles are part of the listing from the start. fm_follow: navigating into a directory also
-       sends `cd <path>` to the shell, so the prompt lands where the browser is looking. */
-    int  fm_on, fm_size, fm_preview, fm_show_hidden, fm_follow;
+       sends `cd <path>` to the shell, so the prompt lands where the browser is looking.
+       fm_focus_on_hover: 1 lets a scroll gesture over a band pane move the KEYBOARD to that pane, as
+       earlier sessions did. 0 (the default) means a pane is focused by CLICKING it — the pointer's
+       position alone never takes the keyboard, and a wheel over the band only scrolls. */
+    int  fm_on, fm_size, fm_preview, fm_show_hidden, fm_follow, fm_focus_on_hover;
     /* The window-level shortcuts; these carry modifiers like every other terminal binding. */
     KeyBind key_file_manager;    /* show / hide the file manager */
     KeyBind key_fm_focus;        /* the keyboard drives the file-manager panes */
@@ -1324,6 +1327,12 @@ void fm_set_hidden(FileMgr *fm, int show);
    the footer) or past the end. The painter owns the row layout, so the hit test lives next to it:
    main.c must not re-derive where the entries start. */
 int  fm_row_pos(const FileMgr *fm, int row);
+/* Does a wheel gesture over the band move the KEYBOARD into it? Returns the FM_FOCUS_* to apply, or -1
+   for "leave the keyboard where it is". `steps` is the whole-cell scroll the gesture produced (0 = it
+   scrolled nothing, which must never move the keyboard) and `on_hover` is the `fm_focus_on_hover =`
+   setting: 0 (the default) means only a CLICK takes the keyboard, 1 keeps the older behaviour where the
+   pane under the pointer decides. A pure decision so the rule is testable — main.c is in no test binary. */
+int  fm_wheel_focus(int hit, int steps, int on_hover);
 /* Scrolling the PREVIEW pane's body. The wheel over that pane owns pv_scroll (the listing has its own
    selection, the preview has none), and the painter is the only thing that reads it. delta > 0 moves
    toward the END of the file (wheel down). Clamped to [0, fm_preview_scroll_max()], which is 0 for a

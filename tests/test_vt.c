@@ -2425,6 +2425,8 @@ int main(void)
             CHECK(t.fm_preview == d.fm_preview && t.fm_show_hidden == d.fm_show_hidden,
                   "template: fm_preview/fm_show_hidden match");
             CHECK(t.fm_follow == d.fm_follow, "template: fm_follow matches");
+            CHECK(t.fm_focus_on_hover == d.fm_focus_on_hover,
+                  "template: fm_focus_on_hover matches (and the shipped line really is the built-in 0)");
             CHECK(t.loglevel == d.loglevel, "template: log matches");
             CHECK(t.osc_colors == d.osc_colors,
                   "template: osc_colors matches (and the shipped line really is the built-in 1)");
@@ -2486,8 +2488,8 @@ int main(void)
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 32 && nb == 24,
-                  "template: the parser accepts 32 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 33 && nb == 24,
+                  "template: the parser accepts 33 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);
@@ -2495,6 +2497,7 @@ int main(void)
                 nbad += tpl_check_names(tpl_bind, (const char *const *)bind_names, nb);
             CHECK(nbad == 0,
                   "template: kai-term.conf and kai-term.bind list exactly the names the parser accepts");
+
             for (int i = 0; i < ns; i++)
                 free((char *)set_names[i]);
             for (int i = 0; i < nb; i++)
@@ -2815,6 +2818,11 @@ int main(void)
         CHECK(c.fm_preview == 1, "config: the preview pane is on by default");
         CHECK(c.fm_show_hidden == 0, "config: dotfiles are hidden by default");
         CHECK(c.fm_follow == 1, "config: the shell follows the browsed directory by default");
+        /* The user asked for this default explicitly: a pane of the band is focused by CLICKING it, so
+           the pointer's position never takes the keyboard. The rule itself is checked in test_fm.c
+           (fm_wheel_focus); this pins that a launch without a settings file starts in that mode. */
+        CHECK(c.fm_focus_on_hover == 0,
+              "config: the pointer does not take the keyboard by default — a click is required");
         CHECK(c.key_file_manager.set && c.key_file_manager.sym == 'f' &&
               c.key_file_manager.mods == (KB_CTRL | KB_SHIFT),
               "config: the default file-manager toggle is Ctrl+Shift+F");
@@ -2847,7 +2855,7 @@ int main(void)
         CHECK(f != NULL, "config: temp config file writable (file manager settings)");
         if (f) {
             fputs("file_manager = on\nfm_size = 40\nfm_preview = off\nfm_show_hidden = yes\n"
-                  "fm_follow = 0\nkey_file_manager = Alt+F\nkey_fm_focus = none\n"
+                  "fm_follow = 0\nfm_focus_on_hover = 1\nkey_file_manager = Alt+F\nkey_fm_focus = none\n"
                   "fm_key_up = k\nfm_key_down = j\nfm_key_open = Enter\n"
                   "fm_key_left = h\nfm_key_right = l\nfm_key_path = g\nfm_key_preview = p\n", f);
             fclose(f);
@@ -2858,6 +2866,8 @@ int main(void)
             CHECK(c.fm_preview == 0, "config: fm_preview = off hides the preview pane");
             CHECK(c.fm_show_hidden == 1, "config: fm_show_hidden = yes lists dotfiles");
             CHECK(c.fm_follow == 0, "config: fm_follow = 0 leaves the shell alone");
+            CHECK(c.fm_focus_on_hover == 1,
+                  "config: fm_focus_on_hover = 1 opts back into the pointer taking the keyboard");
             CHECK(c.key_file_manager.set && c.key_file_manager.sym == 'f' &&
                   c.key_file_manager.mods == KB_ALT, "config: key_file_manager = Alt+F rebinds it");
             CHECK(c.key_fm_focus.set == 0, "config: key_fm_focus = none unbinds the focus switch");

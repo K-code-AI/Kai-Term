@@ -226,12 +226,17 @@ line saying why there is no preview — never as garbage and never as an error t
 | `.` | show or hide dotfiles |
 | `Escape` | close the file manager |
 | mouse left click | select the row under the pointer; a **second click on the same row** opens it (a directory is entered; a file does nothing); a click in the terminal pane hands the keyboard back |
-| mouse wheel | over the browser it walks the listing; over the preview pane it scrolls that pane's contents (a file's text, or a directory's entries); over the terminal it scrolls history as usual — except inside a full-screen program that never asked for the mouse, where it becomes cursor keys (see below) |
+| mouse wheel | over the browser it walks the listing; over the preview pane it scrolls that pane's contents (a file's text, or a directory's entries); over the terminal it scrolls history as usual — except inside a full-screen program that never asked for the mouse, where it becomes cursor keys (see below). It does **not** move the keyboard (see below) |
 
 `Ctrl`+`Shift`+`Up` gives the keyboard to the browser, `Ctrl`+`Shift`+`Down` gives it back to the terminal.
 
-The **preview pane** takes the keyboard too: a click on it, or the wheel over it, focuses it, and while it
-has the keyboard `Page_Up`/`Page_Down` scroll the previewed text by one page and `Home`/`End` jump to its
+**A pane of the band is focused by clicking it.** Where the pointer sits never takes the keyboard away from
+the terminal on its own, and a scroll gesture over the band only scrolls — so you can read through a listing
+with the wheel while the command line keeps the keyboard. `fm_focus_on_hover = 1` restores the older
+behaviour, where a scroll gesture over a pane also moves the keyboard to that pane.
+
+The **preview pane** takes the keyboard on a **click**: while it has the keyboard
+`Page_Up`/`Page_Down` scroll the previewed text by one page and `Home`/`End` jump to its
 first and last line — which is what makes a long file readable in the pane that exists to read it. One page
 is exactly what the pane shows at once, so holding `Page_Down` walks a file with no line shown twice and
 none skipped. `Up`/`Down` keep moving the browser's selection there, because that is how you change which
@@ -437,6 +442,7 @@ the program.
 | `fm_preview` | `1` | Show the preview pane next to the browser (`v` toggles it at runtime; off means the browser is full width) |
 | `fm_show_hidden` | `0` | Include dotfiles in the listing from the start (`.` toggles it at runtime) |
 | `fm_follow` | `1` | Browsing into a directory also sends `cd '<path>'` to the shell |
+| `fm_focus_on_hover` | `0` | Whether the pointer's position moves the keyboard into a band pane. `0` = a pane is focused by clicking it; scrolling over the band still scrolls it |
 | `log` | `1` | Log level: 0 = error, 1 = warning, 2 = info, 3 = debug |
 
 Font size, grid dimensions, scrollback limits, opacity, the key-repeat timings and the file-manager band
@@ -663,8 +669,8 @@ listing); its one-shot keys — open, go up, go into a directory, refresh, previ
 
 These belong to the file manager only while it owns the keyboard, and every one of them is configurable
 (`fm_key_*` in `kai-term.bind`). With the file manager closed, or with the terminal focused, the same keys
-go to the shell unchanged. Clicking the preview pane, or using the wheel over it, gives the keyboard to
-that pane.
+go to the shell unchanged. Clicking the preview pane gives the keyboard to that pane (the wheel over it
+scrolls it without taking the keyboard, unless `fm_focus_on_hover = 1`).
 
 | Key | Action (browser focused) | Action (preview focused) |
 |---|---|---|

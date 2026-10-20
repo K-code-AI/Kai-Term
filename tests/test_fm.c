@@ -1306,6 +1306,46 @@ static void test_view_toggle(void)
 
     fm_destroy(&fm);
 }
+
+/* ---------- the wheel over the band and the keyboard (fm_wheel_focus) ----------
+   The user's report: hovering the pointer over the band (or the preview pane) took the keyboard. The
+   mechanism was NOT a hover handler — there is none — it was fm_wheel() in main.c calling fm_focus_set()
+   on its fifth line, BEFORE it knew whether the gesture had scrolled anything, and returning early when
+   it had not. A wl_pointer.frame with a sub-cell delta therefore moved the keyboard and did nothing
+   else. These checks pin the rule the decision now follows; the first three are the bug itself and fail
+   against the old unconditional rule even with fm_focus_on_hover = 1. */
+static void test_wheel_focus(void)
+{
+    /* A gesture that scrolled nothing never moves the keyboard — in EITHER mode. This is the fix, not a
+       preference: the old code focused the pane and then returned because steps was 0. */
+    CHECK(fm_wheel_focus(FM_HIT_LIST, 0, 0) == -1,
+          "wheel focus: a gesture that scrolled nothing leaves the keyboard alone (default mode)");
+    CHECK(fm_wheel_focus(FM_HIT_LIST, 0, 1) == -1,
+          "wheel focus: not even with fm_focus_on_hover = 1 — a scroll of zero is not a focus request");
+    CHECK(fm_wheel_focus(FM_HIT_PREVIEW, 0, 1) == -1,
+          "wheel focus: the preview pane is not focused by a zero scroll either");
+
+    /* The default the user asked for: a pane is focused by CLICKING it, so a real scroll over the band
+       scrolls and leaves the keyboard where it was. */
+    CHECK(fm_wheel_focus(FM_HIT_LIST, 3, 0) == -1,
+          "wheel focus: a real scroll does NOT take the keyboard by default");
+    CHECK(fm_wheel_focus(FM_HIT_PREVIEW, 3, 0) == -1,
+          "wheel focus: nor does it focus the preview pane by default");
+
+    /* fm_focus_on_hover = 1 keeps the older behaviour, for anyone who wants the pane under the pointer to
+       own the keyboard. A gesture in either direction counts as a scroll. */
+    CHECK(fm_wheel_focus(FM_HIT_LIST, 3, 1) == FM_FOCUS_LIST,
+          "wheel focus: fm_focus_on_hover = 1 gives the keyboard to the browser pane");
+    CHECK(fm_wheel_focus(FM_HIT_PREVIEW, -2, 1) == FM_FOCUS_PREVIEW,
+          "wheel focus: and to the preview pane; a wheel-up (negative steps) is a scroll too");
+
+    /* Not over the band at all: never the keyboard, whatever the other arguments say. Checked here rather
+       than left to the caller's FM_HIT_NONE filter, so a future caller cannot get it wrong. */
+    CHECK(fm_wheel_focus(FM_HIT_NONE, 3, 1) == -1,
+          "wheel focus: a point outside the band never moves the keyboard");
+    CHECK(fm_wheel_focus(FM_HIT_NONE, 0, 0) == -1, "wheel focus: and not with no scroll either");
+}
+
 int main(void)
 {
     kai_term_loglevel = L_ERROR;      /* the failure paths log; the tests must not drown in them */
@@ -1321,6 +1361,7 @@ int main(void)
     test_preview_scroll();
     test_preview_keys();
     test_fit();
+    test_wheel_focus();
 
     /* Undo the chmod before removing the tree, or rmdir fails. */
     if (readable_test) {

@@ -91,6 +91,11 @@ void config_default(Config *c)
     c->fm_preview = 1;
     c->fm_show_hidden = 0;
     c->fm_follow = 1;
+    /* A pane of the band is focused by CLICKING it. The pointer's position alone must not take the
+       keyboard: the wheel used to hand it over before knowing whether the gesture had scrolled
+       anything, so a trackpad frame with a sub-cell delta moved the keyboard and did nothing else
+       (fm_wheel_focus in src/fm.c owns the rule; the user asked for click-to-focus as the default). */
+    c->fm_focus_on_hover = 0;
     keybind_parse("Ctrl+Shift+F", &c->key_file_manager);
     keybind_parse("Ctrl+Shift+Up", &c->key_fm_focus);
     keybind_parse("Ctrl+Shift+Down", &c->key_fm_release);
@@ -554,6 +559,11 @@ static void apply_setting(Config *c, const char *key, char *val)
         /* Navigating the browser also sends `cd <path>` to the shell, so the prompt lands in the
            directory being browsed. Off = the shell stays wherever the user left it. */
         c->fm_follow = cfg_bool(val) ? 1 : 0;
+    } else if (!strcmp(key, "fm_focus_on_hover")) {
+        /* 1 = a scroll gesture over a pane of the band moves the keyboard to that pane, as earlier
+           sessions did. 0 (the default) = a pane is focused by CLICKING it; the wheel over the band
+           still scrolls the listing or the preview body, it just leaves the keyboard where it is. */
+        c->fm_focus_on_hover = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "log")) {
         c->loglevel = iclamp_(atoi(val), L_ERROR, L_DEBUG);
     } else if (!strcmp(key, "osc_colors")) {

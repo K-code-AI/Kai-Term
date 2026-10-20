@@ -1609,7 +1609,12 @@ static void fm_pointer_select(int hit, int btn, uint32_t time)
 }
 
 /* The wheel over the band walks the listing, or scrolls the preview pane's body. Returns 1 when the
-   wheel belonged to the file manager (so the caller must not scroll the session). */
+   wheel belonged to the file manager (so the caller must not scroll the session).
+   It does NOT take the keyboard by default: `fm_focus_on_hover = 0` (the default) means a pane is
+   focused by CLICKING it, and a scroll gesture only scrolls. The handover used to happen on this
+   function's fifth line, before `steps` was known, so a gesture that scrolled nothing still moved the
+   keyboard to whichever pane the pointer was over — which is what the user met as "hovering steals the
+   focus". fm_wheel_focus() (src/fm.c, testable) owns the decision. */
 static int fm_wheel(void)
 {
     if (!g_fm.on)
@@ -1617,12 +1622,14 @@ static int fm_wheel(void)
     int hit = layout_hit_fm(&g_layout, W.ptr_x, W.ptr_y);
     if (hit == FM_HIT_NONE)
         return 0;
-    fm_focus_set(hit == FM_HIT_LIST ? FM_FOCUS_LIST : FM_FOCUS_PREVIEW);
     int steps = 0;
     if (W.frame_discrete_seen)
         steps = W.frame_discrete;                       /* wheel down = later entries */
     else if (W.frame_has_axis)
         steps = (int)W.frame_axis_val / imax_(font.cell_h, 1);
+    int f = fm_wheel_focus(hit, steps, conf.fm_focus_on_hover);
+    if (f >= 0)
+        fm_focus_set(f);
     if (!steps)
         return 1;
     if (hit == FM_HIT_PREVIEW) {

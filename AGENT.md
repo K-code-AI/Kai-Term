@@ -23,8 +23,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-19, s107 — build, every suite and `make asan` all green; 1e is
-committed)
+## Current Status (re-measured 2026-10-19, s109 — build, every suite and `make asan` all green)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -34,16 +33,16 @@ committed)
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
 - **Suites** (`KAI_TERM_TEST_NO_WINDOW=1 make test`, exit 0): `CLI: 91 checks, 0 failures, 13 skipped`,
-  `./bin/test_vt` **1127 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **296
+  `./bin/test_vt` **1130 checks, 0 failures**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **305
   checks, 0 failures**, `./bin/test_render` **25 checks, 0 failures** (the renderer's pure colour decisions —
   no display, no GL context). With a display `tests/cli_test.sh` reports **141 checks, 0 failures, 0 skipped**
-  (measured s108; the 50 window checks are the difference from the headless 91). What only its windowed group
-  covers is `main()`'s own argv handling (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`,
-  `-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys and the band's
-  share. The config SEARCH order and the split-by-name rules are NOT exclusive to it — `tests/test_vt.c`'s
-  `cfgsearch` group and `config split` group cover those headless — and neither is `--import-theme`: the import
-  path needs no display, so s107 pinned it in the part of the script that always runs. **Re-diff these numbers,
-  do not copy them.**
+  (measured again in s109; the 50 window checks are the difference from the headless 91). What only its
+  windowed group covers is `main()`'s own argv handling (`-c/--config`, `-b/--binds`, combined flags, `-d`
+  beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys
+  and the band's share. The config SEARCH order and the split-by-name rules are NOT exclusive to it —
+  `tests/test_vt.c`'s `cfgsearch` group and `config split` group cover those headless — and neither is
+  `--import-theme`: the import path needs no display, so s107 pinned it in the part of the script that always
+  runs. **Re-diff these numbers, do not copy them.**
 - **`make asan` is GREEN — exit 0, 0 warning lines, no LeakSanitizer report** (s107). It was red when s106
   closed, and both halves of the red came in with the uncommitted 1e work: two `-Wformat-truncation` warnings
   in `src/theme.c` (`snprintf(v->name, sizeof v->name, "%s", val)` — a `val` of up to 1023 bytes into a
@@ -53,7 +52,7 @@ committed)
   function that cuts at `sizeof v->name - 1` and LOGS the cut, because the cut decides the file name an
   imported theme lands under; the leak went by freeing the two name lists. Both fixes are pinned: the C check
   asserts the exact 127-byte stem, the CLI group greps the log line.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **32** setting names and the
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **33** setting names and the
   **24** binding names out of the two strcmp ladders in `src/config.c`, the **23** theme names out of
   `src/theme.c`'s `THEME_KEYS` table, and the **9** long options out of `usage()` in `src/main.c`, and compares
   each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's tables. A
@@ -634,6 +633,54 @@ look, bell flash) to the user.
   held 9632 of 12227 MiB and the atlases still fit. The probe launch, not the free-megabytes number, is the
   gate.
 
+- **2026-10-19, s109 — the file manager must not take the keyboard from the pointer. Objective, mechanism, plan.**
+  The user's report: "When the file manager is open, hovering the mouse on it gives it the focus, same for the
+  preview pane. They should require a click to take the focus. we could make that a config too (Default: needs
+  a click to take focus)."
+  **The mechanism, found by reading every path that writes `g_fm.focus`** (there are six in `src/main.c`, and
+  grepping `hover` returns 0 hits — there is no hover code): the only one a moving pointer can reach is
+  `fm_wheel()`, which calls `fm_focus_set(hit == FM_HIT_LIST ? … )` on its **fifth line**, before `steps` is
+  even computed. `steps` is `W.frame_discrete` or `(int)W.frame_axis_val / cell_h`, and the function then
+  returns early when `steps == 0` — so a `wl_pointer.frame` that produced no whole-cell scroll (a trackpad
+  frame with a sub-cell delta, a gesture that moved less than one row, a frame arriving without axis data)
+  **moves the keyboard into whichever pane the pointer happens to be over and scrolls nothing**. That is
+  exactly "hovering gives it the focus", and it explains both halves of the report, because the same line
+  picks the pane from the pointer position. `ptr_motion` and `ptr_enter` touch no focus state at all, and
+  `render_draw()` draws the focus border from `fm->focus` only — nothing is pointer-driven on screen.
+  **Plan.** (1) The decision becomes a pure function in `src/fm.c`, `fm_wheel_focus(hit, steps,
+  focus_on_hover) -> FM_FOCUS_* or -1`, because `main.c` is in no test binary and a rule there is untestable
+  (the standing "geometry lives in layout.c" reasoning, applied to a pointer rule). (2) It returns -1 when
+  `steps == 0` in BOTH modes — a gesture that scrolled nothing must not move the keyboard, which is the bug
+  itself, independent of the new key. (3) New setting `fm_focus_on_hover`, default **0** = a click is
+  required, which is what the user asked for; `1` restores the old pointer-follows behaviour. (4) The click
+  path (`fm_pointer_select`) is untouched — it is the "click to take focus" half. (5) The wheel still walks
+  the listing / scrolls the preview body in both modes; only the keyboard handover is gated. (6) Plumbing:
+  `config_default`, the `apply_setting` ladder (settings-name count 32 -> 33), a line in
+  `config/kai-term.conf`, a README table row, the template-parity value check, a default check, a parse
+  check, and a truth table in `tests/test_fm.c` A/B'd against the pre-fix code. (7) No new `cli_test.sh`
+  check: the key changes no log line and no launch output, so the CLI script could only assert that the name
+  is accepted, which the parity check already does — the pointer interaction itself is for the user's eye.
+  **Done, and green.** `fm_wheel_focus()` in `src/fm.c` (declared in the header next to `fm_row_pos()`),
+  `fm_wheel()` in `main.c` now computes `steps` first and asks the function; the click path is untouched. The
+  function also refuses `FM_HIT_NONE` itself rather than trusting the caller's filter. Measured: `make clean
+  && make -j8` 0 warning lines, the four test binaries 0 warning lines, `KAI_TERM_TEST_NO_WINDOW=1 make test`
+  exit 0 with CLI 91/0/13, `./bin/test_vt` **1130/0** (was 1127: the default, the parse, and the template
+  value check), MODEL OK, `./bin/test_fm` **305/0** (was 296: the 9-check truth table), test_render 25/0,
+  `make asan` exit 0 with no report, and the windowed CLI group **141/0/0** again (probe first: the LLM still
+  holds ~9.6 GiB, the atlases still fit).
+  **A/B, run not assumed:** `.scratch/s107/ab_wheel/` replaces `fm_wheel_focus` with the old unconditional
+  rule (`return hit == FM_HIT_PREVIEW ? FM_FOCUS_PREVIEW : FM_FOCUS_LIST;`, ignoring `steps` and the key —
+  exactly what `main.c` did) and the same 305 checks report **7 failures**. The 2 that pass there are the
+  `fm_focus_on_hover = 1` opt-in checks, which *should* pass under the old rule — that is what the opt-in is.
+  Two more mutations in `.scratch/s107/ab_tpl2/` prove the docs gate bites (a copy that holds README.md —
+  the earlier `ab_tpl/` copy did not, so its counts counted a missing file): deleting the
+  `fm_focus_on_hover = 0` line in `config/kai-term.conf` -> 1 failure ("kai-term.conf does not list
+  fm_focus_on_hover"), and changing it to `1` so it disagrees with the built-in default -> 1 failure
+  ("template: fm_focus_on_hover matches"). README's two places that documented the old behaviour ("a click on
+  it, or the wheel over it, focuses it") were corrected — a stale sentence in the docs is a bug the user reads.
+  **Owed to the user's eye:** that hovering the band no longer moves the focus border, that a click still
+  does, and that the wheel still scrolls the listing and the preview body without taking the keyboard.
+
 ## Next Steps
 
 1. **Step 2 of the plan: the cursor bar** (see Current Task / 2). Everything that would have had to be decided
@@ -742,8 +789,8 @@ Kai-Term/
 ├── config/kai-term.theme        # the shipped THEME example: all 23 theme names at the built-in colours
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 1127 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt machinery
-├── tests/test_fm.c              # 296 checks: the file-manager model, previews, decoders, band geometry
+├── tests/test_vt.c              # 1130 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt machinery
+├── tests/test_fm.c              # 305 checks: the file-manager model, previews, decoders, band geometry, pointer rules
 ├── tests/test_render.c          # 25 checks: the renderer's pure colour decisions (no display, no GL call)
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # drives the REAL bin/kai-term: 141 checks / 0 skipped with a display,
@@ -816,7 +863,7 @@ Kai-Term/
   chose it, and the command line `tab_spawn()` hands `pty_spawn()` so a recognised shell loads the script without
   losing the user's own configuration. Nothing here talks to the shell except through those files and the pty;
   the protocol's other half is `kai_apc()` in `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 1127 checks: parser (a C0 byte inside a control sequence — executed, sequence still
+- `tests/test_vt.c` — 1130 checks: parser (a C0 byte inside a control sequence — executed, sequence still
   collecting, nothing painted — and a CSI sequence split across two bursts), clipboard text policy
   (`paste_repair`: UTF-16LE/BE, BOMs, surrogate pairs, sparse NULs stripped not decoded; `clipboard_mime_rank`
   ordering), grid, selection, alt screen, `live_off`, emoji clusters, CSI 3 J, bracketed paste, `term_init`
@@ -839,7 +886,7 @@ Kai-Term/
   itself is in no test binary — that machine is covered by `.scratch/s86/follow2.c` and the live harness. Two
   invariants with dedicated checkers: the `row[]` permutation (also `tests/dbg.c`) and the startup-size round
   trip.
-- `tests/test_fm.c` — 296 checks against a real temporary directory tree (dirs, a dotfile, a dangling symlink, a
+- `tests/test_fm.c` — 305 checks against a real temporary directory tree (dirs, a dotfile, a dangling symlink, a
   FIFO, an unreadable dir, four image formats, a binary file): scan + sort + caps + truncation, the hidden filter
   and `fm_set_hidden`, selection and scrolling (`fm_row_pos`, `ensure_visible`), navigation, the request-id rule
   (a stale answer is dropped), every preview kind and its error path, the highlighter reaching the cells, the
@@ -847,8 +894,10 @@ Kai-Term/
   drawn into — `ink_in_box()`), the preview pane's own scroll (`pv_scroll` / `fm_preview_scroll` /
   `fm_preview_scroll_max`: the painter obeys it for text and for a directory listing, both ends clamp, a new
   preview starts at the top, a pane with no body has nothing to scroll, and a resize pulls the scroll back inside
-  what the NEW pane can show), the selection colour reaching `fm_paint()`, and the band's rects inside
-  `layout_compute()`.
+  what the NEW pane can show), the selection colour reaching `fm_paint()`, the band's rects inside
+  `layout_compute()`, and the wheel-over-the-band keyboard rule (`fm_wheel_focus`: a gesture that scrolled
+  nothing never moves the keyboard, the default needs a CLICK to focus a pane, and `fm_focus_on_hover = 1`
+  restores the older pointer-decides behaviour).
 - `tests/test_render.c` — 25 checks, the only coverage of the renderer's colour decisions that needs no display:
   it links `render.o` (plus `fm.o font.o img.o vt.o shellint.o layout.o mux.o config.o`, which is what
   `render.o` needs to LINK) and calls only `render_chrome()`, which reads a `Render` struct and nothing else —
@@ -1070,8 +1119,8 @@ hit-tested bar then panes.
   cannot express that, and getting it wrong sends Return/BackSpace/`r`/`Escape` to the shell as well as to the
   browser (measured live, s74).
 - **The band has THREE focus states, and the keyboard routing differs between them for exactly four keys.**
-  `FM_FOCUS_TERM` / `FM_FOCUS_LIST` / `FM_FOCUS_PREVIEW`; a click on the preview pane or the wheel over it owns
-  the keyboard to the preview. While the PREVIEW owns it, the band's `fm_key_pageup`/`pagedown`/`home`/`end`
+  `FM_FOCUS_TERM` / `FM_FOCUS_LIST` / `FM_FOCUS_PREVIEW`; a CLICK on the preview pane gives it the keyboard.
+  While the PREVIEW owns it, the band's `fm_key_pageup`/`pagedown`/`home`/`end`
   bindings scroll the previewed TEXT (`fm_preview_page`/`fm_preview_top`/`fm_preview_bottom` in fm.c, routed in
   `fm_keys()` in main.c) instead of moving the listing; `fm_key_up`/`down` deliberately keep moving the listing,
   because changing WHICH entry is previewed is the one thing the preview cannot do for itself. One page is
@@ -1079,6 +1128,17 @@ hit-tested bar then panes.
   the user can see; all three go through `fm_preview_scroll()`, so the clamp has one owner and a preview with no
   body (a picture, plain metadata) simply does not move. Same four bindings, no second set of names to keep in
   sync in `kai-term.bind`.
+- **The pointer's POSITION never takes the keyboard — a click does** (`fm_focus_on_hover = 0`, the default).
+  A scroll gesture over the band scrolls (it walks the listing, or scrolls the preview body) and leaves the
+  keyboard where it was; `fm_focus_on_hover = 1` opts back into the pane under the pointer owning it. The rule
+  is `fm_wheel_focus(hit, steps, on_hover)` in `src/fm.c`, not an `if` in `main.c`, for the standing reason
+  that main.c is in no test binary. What it replaced is the shape worth remembering: `fm_wheel()` called
+  `fm_focus_set()` on its fifth line, BEFORE computing `steps`, and returned early when `steps == 0` — so a
+  `wl_pointer.frame` that produced no whole-cell scroll moved the keyboard and did nothing else, which a user
+  can only describe as "hovering steals the focus". **A state change placed before the guard that decides
+  whether the event counts is a bug even when every later check is correct.** There is no hover handler in this
+  project and there should not be one: every `hover` hit in `src/` is a comment naming this bug, and
+  `render_draw()` draws the focus border from `fm->focus` alone — nothing on screen follows the pointer.
 - `fm_send_cd()` is the only place the feature writes to the shell, never to a session on the alternate screen,
   and only when the directory actually changed (`fm_last_cd`, cleared by `tab_switch()`).
 - **The prompt invariant (what the follow may never violate).** Kai-Term cannot see where a prompt ENDS — the tty

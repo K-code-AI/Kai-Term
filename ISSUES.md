@@ -23,19 +23,18 @@ The four items this file was once holding for the user's eye were answered 2026-
 preview-pane key scrolling and the 75 % band's look all work in their window. `--import-theme` was confirmed
 working by the user 2026-10-19 (s107's feature), so the theme import carries no open question either.
 
-Re-measured 2026-10-19 (s107, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
-(`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **1127
-checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **296 checks, 0 failures**;
-`./bin/test_render` **25 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks, 0
-failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no sanitizer report — it was
-RED (2 warnings + a 134-byte harness leak) for the two sessions before, which is what the s107 close-out fixed.
-The windowed group of `tests/cli_test.sh` ran 2026-10-19 (s108) at the user's request: **141 checks / 0 failures
-/ 0 skipped** — the 50 window checks plus the 91 that always run. What only that group covers is `main()`'s argv
-handling for the flags that OPEN a window (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`,
-`-w`, `-e`) and that a real launch applies the multiplexing / display / file-manager keys and the band's share;
-all of it still holds. `--import-theme` is not in that list — it needs no display, so s107 pinned it headless.
-The config search order and the settings-vs-binding file rules are covered headless in `tests/test_vt.c`
-(13 `cfgsearch` checks + the `config split` group), so they are not a gap. No `TODO`/`FIXME`/`XXX` and no
+Re-measured 2026-10-19 (s109, from `make clean`): `make -j8` exit 0 with **0 warnings** and the TEST build
+(`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with **0 warnings**; `./bin/test_vt` **1130
+checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm` **305 checks, 0 failures**;
+`./bin/test_render` **25 checks, 0 failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks,
+0 failures, 13 skipped` + those four); `make asan` exit 0 with the same counts and no sanitizer report.
+The windowed group of `tests/cli_test.sh` ran again in s109: **141 checks / 0 failures / 0 skipped** — the 50
+window checks plus the 91 that always run. What only that group covers is `main()`'s argv handling for the
+flags that OPEN a window (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and
+that a real launch applies the multiplexing / display / file-manager keys and the band's share; all of it still
+holds. `--import-theme` is not in that list — it needs no display, so s107 pinned it headless. The config
+search order and the settings-vs-binding file rules are covered headless in `tests/test_vt.c` (13 `cfgsearch`
+checks + the `config split` group), so they are not a gap. No `TODO`/`FIXME`/`XXX` and no
 `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
@@ -53,6 +52,27 @@ The full investigation of each — the probes, the wrong theories, the measureme
 Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
 the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**The file manager took the keyboard when the pointer merely moved over the band (2026-10-19, s109).** User
+report: "When the file manager is open, hovering the mouse on it gives it the focus, same for the preview pane."
+The focus border jumped to the browser pane or the preview pane with no click, and the keyboard went with it.
+Cause in one line: there is no hover handler anywhere — `fm_wheel()` in `src/main.c` called `fm_focus_set()` on
+its **fifth line**, before it had computed `steps` (the whole-cell scroll the gesture produced), and then
+returned early when `steps == 0`; so a `wl_pointer.frame` that produced no whole-cell scroll — a trackpad frame
+with a sub-cell delta, a gesture shorter than one row, a frame arriving without axis data — moved the keyboard
+to whichever pane the pointer happened to be over and scrolled nothing. Fix: the decision moved to
+`fm_wheel_focus(hit, steps, on_hover)` in `src/fm.c` (main.c is in no test binary, so a rule written there
+cannot be checked), `fm_wheel()` now computes `steps` first, and a new setting `fm_focus_on_hover` (**default
+0** = a pane is focused by CLICKING it, as the user asked; `1` restores the old behaviour). A gesture that
+scrolled nothing never moves the keyboard in EITHER mode — that half is the bug, not a preference. The wheel
+still walks the listing and still scrolls the preview body; only the keyboard handover is gated. Kept out by a
+9-check truth table in `tests/test_fm.c` plus the default/parse/template checks in `tests/test_vt.c` (settings
+names 32 -> 33). Proven to bite: `.scratch/s107/ab_wheel/` restores the old unconditional rule and 7 of those 9
+checks fail (the 2 that pass are the `fm_focus_on_hover = 1` opt-in checks, which should pass there);
+`.scratch/s107/ab_tpl2/` shows the docs gate bites — deleting the template line gives 1 failure, and setting it
+to `1` so it disagrees with the built-in default gives 1 more. README's two sentences that documented the old
+behaviour were corrected.
+
 
 **`make asan` red on the theme importer — two warnings only the sanitizer build sees, and a harness leak
 (2026-10-19, s107).** No user symptom; the defects were in the build and in the suite, and they mattered because
