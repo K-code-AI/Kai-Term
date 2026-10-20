@@ -230,6 +230,19 @@ static void make_tree(void)
     if (f) { fputs("inside\n", f); fclose(f); }
 
     wstr("file.txt", "hello world\nsecond line\n");
+    /* The preview-pane selection group's file: a hyphenated word, trailing punctuation, two full-width
+       glyphs, a word that starts with punctuation, and a path. Every span the new group pins was read out of
+       this content by .scratch/s115/selprobe2 before the CHECK was written. */
+    wstr("words.txt", "two-three, four.\n"
+                       "\xe4\xbd\xa0\xe5\xa5\xbd \xe4\xb8\x96\xe7\x95\x8c\n"
+                       "/etc/passwd (a path)\n"
+                       "\xe5\x85\x83\xe3\x80\x82\n");   /* 元。 - a full-width mark ends this line */
+    /* One 130-character line (the alphabet five times). The preview CUTS a long line at the pane's right edge
+       rather than wrapping it, so this is the file that pins what a row gesture can reach in a line wider than
+       the pane — .scratch/s116/longline printed the numbers before the CHECK was written. */
+    wstr("long.txt", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
+                     "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
+                     "abcdefghijklmnopqrstuvwxyz\n");
     wstr("code.c",
          "#include <stdio.h>\n"
          "int main(void) { /* greet */ printf(\"hi\"); return 0; }\n");
@@ -1307,6 +1320,365 @@ static void test_view_toggle(void)
     fm_destroy(&fm);
 }
 
+/* ---------- a text selection inside the preview pane (step 3b) ----------
+   The pointer's half of this feature lives in main.c, which is in no test binary; everything about WHAT a
+   gesture selects lives in fm.c and vt.c, and that is what these pin. Every number below was printed by
+   .scratch/s115/selprobe{,2,3} against this exact pane (30 columns x 12 rows, words.txt) before the CHECK
+   was written — the two that the first probe printed wrong (a row span read out of the same printf that
+   filled it, and a scroll invalidation tested on a file with nothing to scroll) are why there are three.
+   The body of a text preview starts at row 2, column 2: rows 0-1 are the head (name, then path), and the
+   two-column gutter is never written, which is what makes the row gesture skip it. */
+
+/* The text a span covers, read back out of the pane: a check that names the WORD a gesture selects says more
+   than one that names two column numbers. */
+static void span_text(const FmPane *p, int y, int x0, int x1, char *out, size_t cap)
+{
+    size_t o = 0;
+    for (int x = x0; x <= x1 && x < p->cols && o + 8 < cap; x++) {
+        uint32_t ch = p->cell[(size_t)y * p->cols + (size_t)x].ch;
+        if (ch)
+            o += (size_t)utf8_encode(ch, out + o);
+    }
+    out[o] = 0;
+}
+
+/* Does the painted band agree with the model, cell for cell? The rule a session enforces through
+   term_cell_highlightable(): a band lands only on a cell that HOLDS something (a glyph, a real space, or the
+   continuation half of a wide glyph), never on the never-written space past the end of a line. Counting the
+   disagreements covers every cell of the pane in one check. */
+static int band_mismatches(const FileMgr *fm, uint32_t sel)
+{
+    const FmPane *p = &fm->prev;
+    int bad = 0;
+    for (int y = 0; y < p->rows; y++)
+        for (int x = 0; x < p->cols; x++) {
+            const Cell *c = &p->cell[(size_t)y * p->cols + (size_t)x];
+            int holds = (c->ch != 0) || (c->attr & ATTR_WIDE);
+            int want = fm_preview_selected(fm, x, y) && holds;
+            if ((c->bg == sel) != want)
+                bad++;
+        }
+    return bad;
+}
+
+/* How many cells of the LIST pane carry the selection colour. Its own selected row is the only thing that
+   puts it there, so the number must not move when a selection appears in the OTHER pane. */
+static int list_band_cells(const FileMgr *fm, uint32_t sel)
+{
+    const FmPane *p = &fm->list;
+    int n = 0;
+    for (int y = 0; y < p->rows; y++)
+        for (int x = 0; x < p->cols; x++)
+            if (p->cell[(size_t)y * p->cols + (size_t)x].bg == sel)
+                n++;
+    return n;
+}
+
+static void test_preview_select(void)
+{
+    FileMgr fm;
+    fm_init(&fm, root);
+    fm_set_size(&fm, 40, 12, 30, 12);
+    unsigned long seq = 0;
+    fm_go(&fm, root, &seq);
+    fm_install_scan(&fm, fm_scan_build(root, seq));
+
+    char path[1024];
+    int pos = find_pos(&fm, "words.txt");
+    CHECK(pos >= 0, "pvsel: the tree has words.txt to preview");
+    fm_select(&fm, pos);
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvsel: a preview is asked for");
+    CHECK(fm_install_preview(&fm, fm_preview_build(path, seq)) == 1, "pvsel: and it installs");
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(pane_shows(&fm, "two-three") == 2, "pvsel: the first body row is row 2");
+
+    /* ---- nothing selected yet ---- */
+    char out[4096];
+    CHECK(!fm.pv_sel_on, "pvsel: nothing is selected before a gesture");
+    CHECK(fm_preview_selection_text(&fm, out, sizeof out) == 0 && out[0] == 0,
+          "pvsel: with no selection there is nothing to copy");
+    CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: and no cell carries a band");
+
+    /* ---- one cell, and the predicate's shape ---- */
+    fm_preview_select(&fm, 2, 2, 2, 2);
+    CHECK(fm.pv_sel_on == 1, "pvsel: a press selects the cell under the pointer");
+    CHECK(fm.pv_ax == 2 && fm.pv_ay == 2 && fm.pv_bx == 2 && fm.pv_by == 2,
+          "pvsel: a one-cell selection stores one cell");
+    CHECK(fm_preview_selected(&fm, 2, 2) == 1, "pvsel: that cell is inside");
+    CHECK(fm_preview_selected(&fm, 1, 2) == 0 && fm_preview_selected(&fm, 3, 2) == 0,
+          "pvsel: its neighbours are not");
+    CHECK(fm_preview_selected(&fm, 2, 3) == 0, "pvsel: and neither is the row below");
+    CHECK(fm_preview_selection_text(&fm, out, sizeof out) == 1 && !strcmp(out, "t"),
+          "pvsel: one cell copies one character");
+    CHECK(band_mismatches(&fm, SEL_BG) == 1, "pvsel: exactly one cell is banded");
+    fm_preview_select_clear(&fm);
+    CHECK(!fm.pv_sel_on, "pvsel: clear() ends it");
+    CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: and the band is gone on the next paint");
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: repainting after a clear leaves no band");
+
+    /* ---- normalisation: the direction of the drag cannot invert the range ---- */
+    fm_preview_select(&fm, 10, 2, 2, 2);
+    CHECK(fm.pv_ax == 2 && fm.pv_ay == 2 && fm.pv_bx == 10 && fm.pv_by == 2,
+          "pvsel: a drag leftward stores the same range as one rightward");
+    fm_preview_select(&fm, 10, 4, 2, 2);
+    CHECK(fm.pv_ax == 2 && fm.pv_ay == 2 && fm.pv_bx == 10 && fm.pv_by == 4,
+          "pvsel: a drag up-and-left anchors on the FIRST row, not the last");
+    int n_up = fm_preview_selection_text(&fm, out, sizeof out);
+    CHECK(n_up == 40 && !strcmp(out, "two-three, four.\n\xe4\xbd\xa0\xe5\xa5\xbd "
+                                     "\xe4\xb8\x96\xe7\x95\x8c\n/etc/pass"),
+          "pvsel: and it copies the same bytes whichever way the pointer moved, with no gutter spaces "
+          "on the rows after the first");
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: a three-row band agrees with the model");
+    /* The case the one above cannot tell apart: a drag that goes DOWN a row but LEFT a column. Normalising
+       by column alone picks the wrong endpoint there, and the stored pair comes out with pv_ay ABOVE pv_by,
+       which makes fm_preview_selected() answer "nothing" for every row — a drag that selected nothing at all.
+       Found by mutation (.scratch/s116/mutate.py no_normalise): the first two checks here pass with that
+       mutant, so without this one the normalisation pinned nothing. */
+    fm_preview_select(&fm, 10, 2, 2, 4);
+    CHECK(fm.pv_ax == 10 && fm.pv_ay == 2 && fm.pv_bx == 2 && fm.pv_by == 4,
+          "pvsel: a drag down-and-left still anchors on the row the press started on");
+    int n_dn = fm_preview_selection_text(&fm, out, sizeof out);
+    CHECK(n_dn == 24,
+          "pvsel: and it selects the three rows it names - the wrong endpoint leaves every row outside "
+          "the range and the drag selects nothing at all");
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: and its band is the model's, row for row");
+
+    /* ---- clamping: a press or a drag outside the pane ---- */
+    fm_preview_select(&fm, -5, -5, 999, 999);
+    CHECK(fm.pv_ax == 0 && fm.pv_ay == 0 && fm.pv_bx == 29 && fm.pv_by == 11,
+          "pvsel: a range bigger than the pane is clamped to the pane");
+    CHECK(fm_preview_selected(&fm, 0, 0) == 1 && fm_preview_selected(&fm, 29, 11) == 1,
+          "pvsel: the clamped corners are inside");
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: a whole-pane band still skips the blank cells");
+    fm_preview_select_clear(&fm);
+
+    /* ---- the band is a background, not a foreground ---- */
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    uint32_t ink = fm.prev.cell[2 * fm.prev.cols + 2].fg;
+    fm_preview_select(&fm, 2, 2, 10, 2);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(fm.prev.cell[2 * fm.prev.cols + 2].fg == ink,
+          "pvsel: the band leaves the ink alone, so syntax colour survives the highlight");
+    CHECK(fm.prev.cell[2 * fm.prev.cols + 2].bg == SEL_BG,
+          "pvsel: and writes itself into the cell's own bg, the way the list's selected row does");
+
+    /* ---- the band never floats: the gutter and the space past a line stay unhighlighted ---- */
+    fm_preview_select(&fm, 0, 2, 29, 2);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(fm.prev.cell[2 * fm.prev.cols + 0].bg != SEL_BG,
+          "pvsel: the never-written gutter column gets no band");
+    CHECK(fm.prev.cell[2 * fm.prev.cols + 1].bg != SEL_BG,
+          "pvsel: nor the second gutter column");
+    CHECK(fm.prev.cell[2 * fm.prev.cols + 18].bg != SEL_BG,
+          "pvsel: nor the space past the end of the line");
+    CHECK(fm.prev.cell[2 * fm.prev.cols + 12].bg == SEL_BG,
+          "pvsel: but a REAL space inside the line does, exactly as in a session");
+    CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: and every cell of the pane agrees");
+
+    /* ---- the band belongs to the preview pane ---- */
+    int lb_before = list_band_cells(&fm, SEL_BG);
+    fm_preview_select(&fm, 2, 2, 17, 4);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(list_band_cells(&fm, SEL_BG) == lb_before,
+          "pvsel: a preview selection paints nothing in the LIST pane - its selected row is its own");
+    fm_preview_select_clear(&fm);
+
+    /* ---- the word gesture: the session's rule, not a copy of it ---- */
+    int x0, x1, ok;
+    char w[128];
+    ok = fm_preview_word_span(&fm, 2, 2, &x0, &x1);
+    span_text(&fm.prev, 2, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 2 && x1 == 10 && !strcmp(w, "two-three"),
+          "pvsel: a double click takes a hyphenated word whole");
+    ok = fm_preview_word_span(&fm, 11, 2, &x0, &x1);
+    span_text(&fm.prev, 2, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 2 && x1 == 10 && !strcmp(w, "two-three"),
+          "pvsel: a click on the comma after it lands on the word, and the comma is cut");
+    ok = fm_preview_word_span(&fm, 13, 2, &x0, &x1);
+    span_text(&fm.prev, 2, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 13 && x1 == 16 && !strcmp(w, "four"),
+          "pvsel: trailing punctuation is cut (the user's rule: any of it)");
+    ok = fm_preview_word_span(&fm, 2, 4, &x0, &x1);
+    span_text(&fm.prev, 4, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 2 && x1 == 12 && !strcmp(w, "/etc/passwd"),
+          "pvsel: a path stays one word - slashes and dots inside it are not separators");
+    ok = fm_preview_word_span(&fm, 14, 4, &x0, &x1);
+    span_text(&fm.prev, 4, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 14 && x1 == 15 && !strcmp(w, "(a"),
+          "pvsel: LEADING punctuation stays (the user's rule: we don't take the trailing)");
+    ok = fm_preview_word_span(&fm, 20, 4, &x0, &x1);
+    span_text(&fm.prev, 4, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 17 && x1 == 20 && !strcmp(w, "path"),
+          "pvsel: and the closing bracket after a word is cut");
+    ok = fm_preview_word_span(&fm, 1, 2, &x0, &x1);
+    CHECK(ok == 1 && x0 == 1 && x1 == 1,
+          "pvsel: a double click on a blank selects the clicked cell - doing nothing is worse");
+    /* The head rows are text too: the file's name is selectable. */
+    ok = fm_preview_word_span(&fm, 2, 0, &x0, &x1);
+    span_text(&fm.prev, 0, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 1 && x1 == 9 && !strcmp(w, "words.txt"),
+          "pvsel: the preview's head row is selectable text as well");
+    /* Out of the pane. */
+    x0 = x1 = -7;
+    ok = fm_preview_word_span(&fm, 99, 2, &x0, &x1);
+    CHECK(ok == 0, "pvsel: a column outside the pane has no word");
+    ok = fm_preview_word_span(&fm, 2, 99, &x0, &x1);
+    CHECK(ok == 0, "pvsel: nor does a row outside it");
+    /* One rule, one copy: the preview's word span IS vt.c's row-level function over the pane's own cells.
+       If fm.c ever grew its own punctuation table, this is the check that would notice the drift. */
+    int sx0, sx1;
+    ok = fm_preview_word_span(&fm, 13, 2, &x0, &x1);
+    int ok2 = cell_row_word_span(fm.prev.cell + (size_t)2 * fm.prev.cols, fm.prev.cols, 13, &sx0, &sx1);
+    CHECK(ok == 1 && ok2 == 1 && x0 == sx0 && x1 == sx1,
+          "pvsel: the preview uses the session's word rule, not a second copy of it");
+
+    /* ---- the wide glyph: never split, by the span, by the band or by the copy ---- */
+    ok = fm_preview_word_span(&fm, 2, 3, &x0, &x1);
+    span_text(&fm.prev, 3, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 2 && x1 == 5 && !strcmp(w, "\xe4\xbd\xa0\xe5\xa5\xbd"),
+          "pvsel: a double click covers both cells of each full-width glyph");
+    ok = fm_preview_word_span(&fm, 4, 3, &x0, &x1);
+    CHECK(ok == 1 && x0 == 2 && x1 == 5,
+          "pvsel: clicking the second glyph's anchor gives the same run, never half a pair");
+    /* A trailing mark that is NOT ASCII: the explicit list in trailing_punct() (the same table a session
+       uses) is what cuts it, and the wide-pair rule is what keeps the cut from splitting it. Measured
+       .scratch/s115/selprobe4: row 5 is 元 at cols 2-3 and 。 (U+3002) at cols 4-5. Without that list the
+       span would be 2..5 - this is the check the ASCII-only mutant of the shared rule fails. */
+    ok = fm_preview_word_span(&fm, 2, 5, &x0, &x1);
+    span_text(&fm.prev, 5, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 2 && x1 == 3 && !strcmp(w, "\xe5\x85\x83"),
+          "pvsel: a full-width CJK mark is cut as trailing punctuation, glyph and all");
+    ok = fm_preview_word_span(&fm, 4, 5, &x0, &x1);
+    span_text(&fm.prev, 5, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 2 && x1 == 3 && !strcmp(w, "\xe5\x85\x83"),
+          "pvsel: double-clicking the mark itself selects the word before it, not half a mark");
+    ok = fm_preview_row_span(&fm, 5, &x0, &x1);
+    CHECK(ok == 1 && x0 == 2 && x1 == 5,
+          "pvsel: but the ROW keeps the mark - it is part of the line the file holds");
+    fm_preview_select(&fm, 2, 3, 5, 3);
+    CHECK(fm_preview_selection_text(&fm, out, sizeof out) == 6 &&
+          !strcmp(out, "\xe4\xbd\xa0\xe5\xa5\xbd"),
+          "pvsel: a copy of the two pairs is the two glyphs, not four cells");
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(fm.prev.cell[3 * fm.prev.cols + 3].bg == SEL_BG && fm.prev.cell[3 * fm.prev.cols + 5].bg == SEL_BG,
+          "pvsel: a wide glyph's continuation half is banded too, or the glyph is half lit");
+    fm_preview_select(&fm, 2, 3, 3, 3);
+    CHECK(fm_preview_selection_text(&fm, out, sizeof out) == 3 && !strcmp(out, "\xe4\xbd\xa0"),
+          "pvsel: a range ending inside a pair still copies the whole glyph once");
+    fm_preview_select_clear(&fm);
+
+    /* ---- the row gesture ---- */
+    ok = fm_preview_row_span(&fm, 2, &x0, &x1);
+    CHECK(ok == 1 && x0 == 2 && x1 == 17,
+          "pvsel: a triple click spans the row's OWN cells - not the pane's gutter, not past the text");
+    fm_preview_select(&fm, x0, 2, x1, 2);
+    CHECK(fm_preview_selection_text(&fm, out, sizeof out) == 16 && !strcmp(out, "two-three, four."),
+          "pvsel: and copies the file's line exactly, with no gutter spaces added");
+    fm_preview_select_clear(&fm);
+    ok = fm_preview_row_span(&fm, 11, &x0, &x1);
+    CHECK(ok == 1 && x0 == 0 && x1 == 29,
+          "pvsel: a row holding nothing spans the whole row - the gesture means something, it copies nothing");
+    fm_preview_select(&fm, x0, 11, x1, 11);
+    CHECK(fm_preview_selection_text(&fm, out, sizeof out) == 0,
+          "pvsel: and an empty row copies the empty string");
+    fm_preview_select_clear(&fm);
+    x0 = x1 = -7;
+    ok = fm_preview_row_span(&fm, 12, &x0, &x1);      /* one row past the pane */
+    CHECK(ok == 0, "pvsel: a row outside the pane has no span");
+    ok = fm_preview_row_span(&fm, -1, &x0, &x1);
+    CHECK(ok == 0, "pvsel: nor does a negative one");
+
+    /* ---- the copy is bounded by the buffer, and always terminated ---- */
+    fm_preview_select(&fm, 2, 2, 17, 2);
+    char small[9];
+    memset(small, 'Z', sizeof small);
+    int n = fm_preview_selection_text(&fm, small, sizeof small);
+    CHECK(n == 8 && !strcmp(small, "two-thre"),
+          "pvsel: a small buffer gets a prefix, cut to leave room for the NUL");
+    char one[1];
+    one[0] = 'Z';
+    n = fm_preview_selection_text(&fm, one, 1);
+    CHECK(n == 0 && one[0] == 0, "pvsel: a one-byte buffer copies nothing and stays terminated");
+    /* cap == 0 has no byte to terminate. The function first guarded only its opening store (`if (cap)
+       out[0] = 0;`) and left the terminating one as `out[n < cap ? n : cap - 1]` — for cap 0 that is
+       `out[-1]`, and .scratch/s116/capzero.c under ASan showed the WRITE one byte before the caller's array.
+       The buffer is deliberately the SECOND byte of an array: `pad + 1 - 1` is `pad[0]` by pointer
+       arithmetic, so this check sees the underflow without needing a sanitizer build. */
+    char pad[2];
+    pad[0] = 'Z';
+    pad[1] = 'Y';
+    n = fm_preview_selection_text(&fm, pad + 1, 0);
+    CHECK(n == 0 && pad[0] == 'Z' && pad[1] == 'Y',
+          "pvsel: a zero-capacity buffer is written nowhere at all, not one byte before it either");
+    fm_preview_select_clear(&fm);
+
+    /* ---- invalidation: the range names CELLS, so anything that changes them ends it ---- */
+    fm_select(&fm, find_pos(&fm, "many.txt"));       /* 40 lines: this pane has room to scroll */
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvsel: many.txt is previewed");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    CHECK(fm_preview_scroll_max(&fm) == 30, "pvsel: and this pane has 30 rows to scroll through");
+    fm_preview_select(&fm, 2, 2, 6, 2);
+    CHECK(fm.pv_sel_on == 1, "pvsel: selected in the scrollable preview");
+    fm_preview_scroll(&fm, 0);
+    CHECK(fm.pv_sel_on == 1,
+          "pvsel: a wheel gesture that moved nothing keeps the selection - it is not a scroll");
+    fm_preview_scroll(&fm, 1);
+    CHECK(fm.pv_sel_on == 0,
+          "pvsel: a scroll that DID move clears it - the cells the endpoints name hold other text now");
+    fm_preview_select(&fm, 2, 2, 6, 2);
+    fm_set_size(&fm, 40, 12, 30, 12);
+    CHECK(fm.pv_sel_on == 1, "pvsel: a resize that changed nothing keeps it");
+    fm_set_size(&fm, 40, 12, 40, 12);
+    CHECK(fm.pv_sel_on == 0, "pvsel: a wider pane clears it - the columns name different characters now");
+    fm_set_size(&fm, 40, 12, 30, 12);
+    fm_preview_select(&fm, 2, 2, 6, 2);
+    fm_select(&fm, find_pos(&fm, "words.txt"));
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvsel: another file is selected");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    CHECK(fm.pv_sel_on == 0,
+          "pvsel: a new preview clears it - the range named the PREVIOUS file's cells");
+
+    /* ---- a directory preview is selectable too: its body is the entry list ---- */
+    fm_select(&fm, find_pos(&fm, "many"));
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvsel: a directory preview is asked for");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    int row = pane_shows(&fm, "f0");
+    CHECK(row >= 0, "pvsel: the directory preview paints its entries");
+    ok = fm_preview_word_span(&fm, 2, row, &x0, &x1);
+    span_text(&fm.prev, row, x0, x1, w, sizeof w);
+    CHECK(ok == 1 && x0 == 2 && !strcmp(w, "f0"), "pvsel: an entry name is a word there too");
+    fm_preview_select(&fm, 2, row, 6, row);
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: and its band follows the same rule");
+
+    /* ---- a line WIDER than the pane: the copy is what the row shows, not the file's whole line ----
+       The preview cuts a long line at the pane's right edge rather than wrapping it, and the pane never
+       scrolls sideways, so the tail of a line wider than the pane is not in any cell to select. Measured
+       (.scratch/s116/longline): in a 30-column pane the row span is 2..29 and the copy is 28 bytes of a
+       130-character line. This check exists because README and ISSUES both said the copy gives back "the
+       whole line as the file holds it" — a claim the code does not support, and the reason both files now
+       say what the row can actually reach. It sits last in the group because installing a preview replaces
+       the one the checks above read. */
+    fm_select(&fm, find_pos(&fm, "long.txt"));
+    CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvsel: the long-line file is previewed");
+    fm_install_preview(&fm, fm_preview_build(path, seq));
+    fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
+    ok = fm_preview_row_span(&fm, 2, &x0, &x1);
+    CHECK(ok == 1 && x0 == 2 && x1 == 29,
+          "pvsel: a row wider than the pane spans to the pane's LAST column");
+    fm_preview_select(&fm, x0, 2, x1, 2);
+    int n_long = fm_preview_selection_text(&fm, out, sizeof out);
+    CHECK(n_long == 28 && !strcmp(out, "abcdefghijklmnopqrstuvwxyzab"),
+          "pvsel: and the copy is the 28 cells that row SHOWS, not the 130-character line the file holds");
+
+    fm_destroy(&fm);
+}
+
 /* ---------- the wheel over the band and the keyboard (fm_wheel_focus) ----------
    The user's report: hovering the pointer over the band (or the preview pane) took the keyboard. The
    mechanism was NOT a hover handler — there is none — it was fm_wheel() in main.c calling fm_focus_set()
@@ -1361,6 +1733,7 @@ int main(void)
     test_preview_scroll();
     test_preview_keys();
     test_fit();
+    test_preview_select();
     test_wheel_focus();
 
     /* Undo the chmod before removing the tree, or rmdir fails. */

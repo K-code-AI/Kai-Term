@@ -99,6 +99,11 @@ typedef struct Wayland {
     int32_t ptr_x, ptr_y;       /* last pointer position in surface coords (px) */
     int ptr_btn;                /* held button mapped to SGR index (0/1/2), or -1 */
     int selecting;              /* 1 while a left-button text selection drag is in progress */
+    int pv_selecting;           /* 1 while a drag is extending a selection INSIDE the file manager's
+                                   preview pane. Kept apart from `selecting` because the two drags name
+                                   cells of different grids — a session's viewport cell and the pane's own
+                                   cell — and the band's hit test runs before the terminal's, so a press in
+                                   the band never sets `selecting` and the two can never both be live. */
     /* The left-click gesture, for the double/triple click that selects a word / a whole line.
        click_count is which press in a row this is (1 = a fresh single click), counted by
        term_click_count() from the press time and whether the cell is the same one. click_word marks
@@ -249,6 +254,17 @@ static uint64_t mono_ms(void)
    double-click-to-select-word (step 3) must feel like the same gesture, not a slightly different one. */
 static uint32_t fm_click_ms;
 static int fm_click_pos = -1;     /* view position of that click, -1 = no pending first click */
+/* The PREVIEW pane's click state, deliberately separate from the list's above: that pair compares a view
+   POSITION (a second click on the same ENTRY opens it), this one compares a pane CELL (a second click on
+   the same cell selects the WORD, a third the ROW). One window and one CLICK_DCLICK_MS, two different
+   objects — merging them would let a click in one pane break the other's gesture, and a list row number is
+   not comparable with a preview column. anchor/drag are the drag's own ends: fm_preview_select() normalises
+   the pair it stores, so the press point has to be remembered or a drag leftward/upward would anchor on
+   whichever end happened to come first. */
+static uint32_t fm_pv_click_ms;
+static int fm_pv_click_x = -1, fm_pv_click_y = -1, fm_pv_click_count;
+static int fm_pv_anchor_x = -1, fm_pv_anchor_y = -1;   /* where the drag started */
+static int fm_pv_drag_x = -1, fm_pv_drag_y = -1;       /* the last cell it was extended to */
 static pthread_t fm_thr;
 static pthread_mutex_t fm_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fm_cv = PTHREAD_COND_INITIALIZER;
@@ -311,6 +327,9 @@ static void kb_keymap(void *d, struct wl_keyboard *k, uint32_t format, int fd, u
 static void selection_copy(uint32_t serial);
 static void clipboard_paste(void);
 static void update_title(void);
+/* The preview pane's cell under the pointer, defined with the other pointer mappers further down but needed
+   by the band's click handler above them. */
+static int pv_cell(int *x, int *y);
 /* Declared here because the file manager's `cd` and typed path (further up) go through it: it is the one
    place that tells the model "these bytes are INPUT, expect an echo" (term_note_input, src/vt.c). */
 static void input_write(Term *t, Pty *p, const void *buf, size_t len);
@@ -967,7 +986,12 @@ static void fm_drain_results(void)
                 if (fm_install_scan(&g_fm, (FmScan *)(uintptr_t)res.ptr))
                     fm_ask_preview();   /* the selection may have moved when the listing landed */
             } else {
-                fm_install_preview(&g_fm, (FmPreview *)(uintptr_t)res.ptr);
+                /* A new preview replaces every cell in the pane, so the range a drag was naming holds
+                   another file's text. fm_install_preview() clears the model's selection; the drag flag is
+                   main.c's, and a live flag would re-create a selection from the old anchor on the next
+                   motion event. */
+                if (fm_install_preview(&g_fm, (FmPreview *)(uintptr_t)res.ptr))
+                    W.pv_selecting = 0;
             }
             W.dirty = 1;
             continue;
@@ -1376,6 +1400,11 @@ static void fm_close(void)
         return;
     g_fm.on = 0;
     g_fm.focus = FM_FOCUS_TERM;
+    /* A preview-pane text selection dies with the pane it names: the band repaints from scratch when it
+       reopens, the listing may have changed while it was hidden, and a drag that was still in progress
+       would otherwise keep extending a range in a pane that is no longer drawn. */
+    fm_preview_select_clear(&g_fm);
+    W.pv_selecting = 0;
     fm_touch();
     klog(L_DEBUG, "fm: closed — the terminal is the whole window again");
 }
@@ -1589,9 +1618,9 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
 }
 
 /* A click inside the band. The browser pane selects the entry drawn under the pointer and takes the
-   keyboard; the preview pane only takes the keyboard. Row -> entry is fm_row_pos(), which uses the
-   painter's own metrics, so a click always lands on the line it lands on — including in a pane too
-   short for its header and footer, where the entries start at row 0.
+   keyboard; the preview pane takes the keyboard AND selects the text under the pointer (step 3b).
+   Row -> entry is fm_row_pos(), which uses the painter's own metrics, so a click always lands on the line it
+   lands on — including in a pane too short for its header and footer, where the entries start at row 0.
    One click selects; a second click on the SAME entry within FM_DCLICK_MS also opens it (a directory is
    entered; a file does nothing, exactly as the `open` key — a path is typed by `fm_key_path` and by nothing
    a mouse click can do). Any other click resets the pair, so a click on the
@@ -1600,7 +1629,51 @@ static void fm_pointer_select(int hit, int btn, uint32_t time)
 {
     if (hit == FM_HIT_PREVIEW) {
         fm_focus_set(FM_FOCUS_PREVIEW);
-        fm_click_pos = -1;
+        fm_click_pos = -1;      /* a click here is never the second half of a LIST double-click */
+        /* Only the left button selects text: a right or middle click in this pane just moves the keyboard,
+           exactly as it did before step 3b, so nothing that used to work changes owner. */
+        if (btn != 0)
+            return;
+        int x, y;
+        if (!pv_cell(&x, &y))
+            return;
+        /* One selection at a time in the window: the session's highlight and the pane's cannot both be
+           live, because Ctrl+Shift+C has exactly one answer to give. Dropping the session's here is the
+           same thing a press in the terminal pane already does to a previous selection. */
+        if (cur_term())
+            term_select_clear(cur_term());
+        /* The same gesture the terminal pane gives, counted by the same function (term_click_count) against
+           the same CLICK_DCLICK_MS: a second click in the same CELL selects the WORD, a third the ROW.
+           conf.click_selects_word is the one switch for it — the agreed decision is that a second key for
+           the same gesture in a second pane is a knob nobody would understand. */
+        int same = (x == fm_pv_click_x && y == fm_pv_click_y);
+        fm_pv_click_count = conf.click_selects_word
+                          ? term_click_count(time, fm_pv_click_ms, same, fm_pv_click_count)
+                          : 1;
+        fm_pv_click_ms = time;
+        fm_pv_click_x = x;
+        fm_pv_click_y = y;
+        int x0 = x, x1 = x;
+        const char *how = "click";
+        if (fm_pv_click_count >= 3) {
+            fm_pv_click_count = 3;      /* a fourth click stays a row, it does not grow */
+            if (fm_preview_row_span(&g_fm, y, &x0, &x1))
+                how = "triple click";
+        } else if (fm_pv_click_count == 2) {
+            if (fm_preview_word_span(&g_fm, x, y, &x0, &x1))
+                how = "double click";
+        }
+        fm_preview_select(&g_fm, x0, y, x1, y);
+        W.pv_selecting = 1;
+        fm_pv_anchor_x = x;
+        fm_pv_anchor_y = y;
+        fm_pv_drag_x = x;
+        fm_pv_drag_y = y;
+        /* Log what the OWNER of the state holds, not what was asked for (Key Decisions: a log line that
+           prints its own argument can lie). fm_preview_select() normalises the pair, so the printed range is
+           the one the painter bands and the copy reads. */
+        klog(L_DEBUG, "fm: preview %s at pane cell (%d,%d) selects %d,%d -> %d,%d",
+             how, x, y, g_fm.pv_ax, g_fm.pv_ay, g_fm.pv_bx, g_fm.pv_by);
         return;
     }
     g_fm.focus = FM_FOCUS_LIST;
@@ -2080,6 +2153,25 @@ static void sel_cell(int *col, int *row)
     *row = iclamp_((W.ptr_y - W.gy) / ch, 0, cur_term()->g.rows - 1);
 }
 
+/* The PREVIEW PANE's cell under the pointer, in that pane's own coordinates. Exact for the same reason
+   sel_cell() is: render.c draws the band's cells from g_layout.fm.prev_x/prev_y with the same cell box, and
+   term_grid_geometry() leaves the whole-cell remainder at the right/bottom, so a pointer in it clamps to the
+   last column/row — which is also what makes a drag that leaves the pane extend to its edge instead of
+   stopping dead. Returns 0 only when there is no preview pane to name a cell in (the band is closed, its
+   preview is toggled away, or its grid could not be allocated). */
+static int pv_cell(int *x, int *y)
+{
+    if (!g_fm.on || !g_fm.preview_on || !g_fm.prev.cell || g_fm.prev.cols <= 0 || g_fm.prev.rows <= 0)
+        return 0;
+    if (!g_layout.fm.on || !g_layout.fm.prev_on)
+        return 0;
+    int cw = font.cell_w > 0 ? font.cell_w : 1;
+    int ch = font.cell_h > 0 ? font.cell_h : 1;
+    *x = iclamp_((W.ptr_x - g_layout.fm.prev_x) / cw, 0, g_fm.prev.cols - 1);
+    *y = iclamp_((W.ptr_y - g_layout.fm.prev_y) / ch, 0, g_fm.prev.rows - 1);
+    return 1;
+}
+
 /* Set both selection endpoints: the anchor cell and the cell the pointer is on now.
    Whole glyphs only: an endpoint is always a cell EDGE, never a point inside a
    glyph, so a highlighted range always covers complete cells and half a letter cannot be highlighted.
@@ -2162,6 +2254,26 @@ static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t 
     (void)d; (void)p; (void)time;
     W.ptr_x = wl_fixed_to_int(x);   /* fixed-point -> integer surface px (see ptr_enter) */
     W.ptr_y = wl_fixed_to_int(y);
+    /* A drag inside the file manager's preview pane extends THAT selection, not the session's: the two grids
+       have different origins and different column counts, so the cell is mapped by pv_cell() and the range is
+       stored in the pane's own coordinates. The flag is dropped the moment the band or its selection is gone,
+       so a motion after the preview was replaced cannot re-create a range from the old anchor. */
+    if (W.pv_selecting) {
+        if (!g_fm.on || !g_fm.pv_sel_on) {
+            W.pv_selecting = 0;
+            return;
+        }
+        int px, py;
+        if (!pv_cell(&px, &py))
+            return;
+        if (px == fm_pv_drag_x && py == fm_pv_drag_y)
+            return;                 /* the pointer moved within the same cell: nothing changed to repaint */
+        fm_pv_drag_x = px;
+        fm_pv_drag_y = py;
+        fm_preview_select(&g_fm, fm_pv_anchor_x, fm_pv_anchor_y, px, py);
+        W.dirty = 1;
+        return;
+    }
     /* text selection drag: extend the selection to the pointer cell */
     if (W.selecting) {
         int col, row;
@@ -2206,6 +2318,26 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
     (void)d; (void)p;
     int btn = mouse_sgr_button(button);   /* 0 left, 1 middle, 2 right, 3 other (vt.c) */
     int pressed = state == WL_POINTER_BUTTON_STATE_PRESSED;
+
+    /* A preview-pane text drag ends wherever the button is RELEASED — over its own pane, over another pane,
+       over the tab bar, or outside the band — so this comes BEFORE every hit test below. An early return in
+       one of them would leave the drag live, and the next motion event would keep extending a range under a
+       pointer the user has already let go of. */
+    if (!pressed && W.pv_selecting) {
+        W.pv_selecting = 0;
+        fm_pv_anchor_x = fm_pv_anchor_y = fm_pv_drag_x = fm_pv_drag_y = -1;
+        /* Same rule as the terminal's release: by default the highlight just stays and Ctrl+Shift+C copies
+           it; copy_on_release = 1 offers it to the clipboard straight away. */
+        if (conf.copy_on_release) {
+            selection_copy(serial);
+        } else if (g_fm.pv_sel_on) {
+            klog(L_DEBUG, "fm: preview selection finished: pane cell %d,%d -> %d,%d "
+                          "(copy_on_release off — Ctrl+Shift+C to copy)",
+                 g_fm.pv_ax, g_fm.pv_ay, g_fm.pv_bx, g_fm.pv_by);
+        }
+        W.dirty = 1;
+        return;
+    }
 
     /* The tab bar is chrome, not terminal. A left click on an item shows that session, a middle click
        closes it, and neither reaches the application nor starts a text selection. This is checked BEFORE the
@@ -2269,6 +2401,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         int col, row;
         sel_cell(&col, &row);
         if (pressed) {
+            /* One selection at a time in the window: a press here ends a preview-pane selection, the mirror
+               of what a press in the preview pane does to the session's. Without it both highlights are on
+               screen and Ctrl+Shift+C has to guess which one the user meant. */
+            fm_preview_select_clear(&g_fm);
             /* Which click in a row is this? Same cell within CLICK_DCLICK_MS continues the gesture.
                A second click selects the WORD under the pointer, a third the whole LOGICAL line (a
                soft-wrapped line is one line, so a triple click takes every row it spans) — the user's
@@ -2673,13 +2809,19 @@ static void maybe_create_data_device(void)
     }
 }
 
-/* Copy the current selection to the clipboard as a text/plain data source. */
+/* Copy the current selection to the clipboard as a text/plain data source.
+   ONE owner per copy: the file manager's preview pane owns it when it holds a selection, otherwise the
+   session does. Both can be on screen at once, so the order of these two branches IS the rule — and the log
+   line names the owner that served the bytes, because "why did that copy the wrong thing?" is unanswerable
+   from a line that only prints a byte count (Key Decisions: log what the owner of the state reports). */
 static void selection_copy(uint32_t serial)
 {
-    if (!W.data_dev || !cur_term()->sel_active)
+    if (!W.data_dev)
         return;
     char buf[16400];
-    int n = term_selection_text(cur_term(), buf, sizeof(buf));
+    int from_preview = g_fm.on && g_fm.pv_sel_on;
+    int n = from_preview ? fm_preview_selection_text(&g_fm, buf, sizeof buf)
+                         : (cur_term() ? term_selection_text(cur_term(), buf, sizeof buf) : 0);
     if (n <= 0)
         return;
     free(clip_text);
@@ -2696,7 +2838,8 @@ static void selection_copy(uint32_t serial)
     wl_data_source_add_listener(clip_source, &source_listener, NULL);
     wl_data_device_set_selection(W.data_dev, clip_source, serial);
     wl_display_flush(W.display);
-    klog(L_DEBUG, "selection copied: %d bytes", n);
+    klog(L_DEBUG, "selection copied: %d bytes from %s", n,
+         from_preview ? "the file manager's preview pane" : "the terminal");
 }
 
 /* Paste the current clipboard selection (received via the selection event) into the PTY. */

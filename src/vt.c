@@ -1551,13 +1551,24 @@ int term_word_span(Term *t, int col, int row, int *out_c0, int *out_c1)
     *out_c0 = *out_c1 = col;
     if (row < 0 || row >= t->g.rows || col < 0 || col >= t->g.cols)
         return 0;
-    const Cell *rc = grid_vprow(&t->g, row);
+    return cell_row_word_span(grid_vprow(&t->g, row), t->g.cols, col, out_c0, out_c1);
+}
+
+/* The same rule on ONE row of cells given directly — the seam the file manager's preview pane uses,
+   whose pane is a flat Cell array with the same ATTR_WIDE convention as a session grid. One copy of
+   the rule on purpose: a second `trailing_punct()` is the drift the project's one-colour-parser rule
+   exists to prevent, and the checks in tests/test_vt.c and tests/test_fm.c then pin the same thing. */
+int cell_row_word_span(const Cell *rc, int cols, int col, int *out_c0, int *out_c1)
+{
+    if (!rc || !out_c0 || !out_c1 || cols <= 0 || col < 0 || col >= cols)
+        return 0;
+    *out_c0 = *out_c1 = col;
     if (!word_cell(&rc[col]))
         return 1;                        /* a blank: the one cell under the pointer */
     int a = col, b = col;
     while (a > 0 && word_cell(&rc[a - 1]))
         a--;
-    while (b < t->g.cols - 1 && word_cell(&rc[b + 1]))
+    while (b < cols - 1 && word_cell(&rc[b + 1]))
         b++;
     /* Cut trailing punctuation a GLYPH at a time: a full-width mark is a wide pair, and dropping its
      * anchor while leaving its continuation would put half a glyph outside the selection. Never strip

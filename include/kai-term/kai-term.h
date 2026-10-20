@@ -612,6 +612,10 @@ int  term_cell_highlightable(Term *t, int col, int row);
    off (leading punctuation stays). *out_c0..*out_c1 inclusive; a click on a blank yields the clicked
    cell alone. A wide glyph is never split: the run always covers the anchor and its continuation. */
 int term_word_span(Term *t, int col, int row, int *out_c0, int *out_c1);
+/* The same rule over one row of cells handed in directly, for a grid that is not a session's: the file
+   manager's preview pane is a flat Cell array (cell[y*cols+x]) with the same ATTR_WIDE convention, so
+   its word selection is this function and not a second copy of the punctuation rule. */
+int cell_row_word_span(const Cell *rc, int cols, int col, int *out_c0, int *out_c1);
 /* The logical line of `row`: the physical rows a soft-wrapped line spans, joined by the grid's wrap
    marks. *out_r0..*out_r1 inclusive (viewport rows). A hard break (the application's own newline)
    ends it. */
@@ -1352,6 +1356,14 @@ typedef struct {
                             previews). Owned by the wheel over that pane; reset when a new preview is
                             installed, clamped to what the pane can show. The LIST pane has no such field
                             because its scroll is its selection — fm->top follows fm->sel. */
+    /* A text selection INSIDE the preview pane, in that pane's cell coordinates, endpoints inclusive and
+       normalised so (pv_ax,pv_ay) comes first in reading order. It is viewport-relative exactly like a
+       session's: the cells it names hold whatever the pane is showing NOW, so it is cleared when the
+       preview is re-installed, when pv_scroll moves, and when the pane is resized. The band is painted
+       into the cells' own bg by the painter (the same mechanism the list's selected row uses), so the
+       renderer needs no new path. */
+    int pv_sel_on;
+    int pv_ax, pv_ay, pv_bx, pv_by;
     int list_cols, list_rows, prev_cols, prev_rows;   /* what the layout asked for */
     FmPane list, prev;   /* what the renderer draws */
 
@@ -1425,6 +1437,31 @@ int  fm_preview_page_rows(const FileMgr *fm);
 void fm_preview_page(FileMgr *fm, int pages);   /* pages < 0 = toward the top */
 void fm_preview_top(FileMgr *fm);
 void fm_preview_bottom(FileMgr *fm);
+
+/* ---- a text selection inside the preview pane (the pointer's half lives in main.c) ----
+   Coordinates are the PREVIEW PANE's cells, inclusive at both ends, and the pair is normalised here so
+   a leftward or upward drag cannot produce an inverted range. Everything the gesture needs is here so a
+   test can check it with no display and no mouse — the same reason the terminal's word/line spans are
+   in vt.c. */
+void fm_preview_select(FileMgr *fm, int x0, int y0, int x1, int y1);
+void fm_preview_select_clear(FileMgr *fm);
+int  fm_preview_selected(const FileMgr *fm, int x, int y);   /* is this pane cell inside the selection? */
+/* The word at a pane cell — the SAME rule a session uses (cell_row_word_span in vt.c), so a double click
+   means one thing everywhere in the window. *out_x0..*out_x1 inclusive. */
+int  fm_preview_word_span(const FileMgr *fm, int x, int y, int *out_x0, int *out_x1);
+/* The row a triple click takes. The preview CUTS a long line at its right edge rather than wrapping it
+   (measured, .scratch/s115/pvprobe), so one file line is exactly one pane row: the span is the row's OWN
+   cells — first to last that holds something — which skips the pane's two-column gutter (never written) and
+   keeps a line the file itself indents (written as real spaces). There are no wrap marks to walk, unlike a
+   session grid. A row holding nothing returns the whole row: the gesture still means something, it just
+   copies nothing. */
+int  fm_preview_row_span(const FileMgr *fm, int y, int *out_x0, int *out_x1);
+/* Copy the selection the way term_selection_text() copies a session's: rows joined with '\n', trailing
+   blanks of each row dropped, a wide glyph's continuation cell contributing nothing. One difference, for the
+   same reason fm_preview_row_span() spans the row's own cells: each row is read inside its USED range, so a
+   middle row of a multi-row selection does not turn the pane's never-written gutter into leading spaces. A
+   gap between two used cells (an entry name and its right-aligned size) is still a space. Returns the length. */
+int  fm_preview_selection_text(const FileMgr *fm, char *out, size_t cap);
 
 /* ---- preview: build (worker thread) then install (main thread) ---- */
 FmPreview *fm_preview_build(const char *path, unsigned long seq);

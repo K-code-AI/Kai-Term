@@ -23,20 +23,21 @@ The four items this file was once holding for the user's eye were answered 2026-
 preview-pane key scrolling and the 75 % band's look all work in their window. `--import-theme` was confirmed
 working by the user 2026-10-19 (s107's feature), so the theme import carries no open question either.
 
-Re-measured 2026-10-20 (s114, from `make clean`, on the tree that added the double/triple click): `make -j8`
-exit 0 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit
-0 with **0 warning lines**; `./bin/test_vt` **1217 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
-`./bin/test_fm` **305 checks, 0 failures**; `./bin/test_render` **495 checks, 0 failures**;
-`KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks, 0 failures, 13 skipped` + those four);
-`make asan` exit 0 with the same counts, 0 warning lines and no sanitizer report. The windowed group of
+Re-measured 2026-10-20 (s117, from `make clean`, on the tree that added the preview pane's text selection):
+`make -j8` exit 0 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm
+bin/test_render`) exit 0 with **0 warning lines**; `./bin/test_vt` **1217 checks, 0 failures**; `./bin/dbg`
+**MODEL OK (0 problems)**; `./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **495 checks, 0
+failures**; `KAI_TERM_TEST_NO_WINDOW=1 make test` exit 0 (`CLI: 91 checks, 0 failures, 13 skipped` + those
+four); `make asan` exit 0 with the same counts, 0 warning lines and no sanitizer report. The windowed group of
 `tests/cli_test.sh` was NOT re-run this session (no window is mapped while the user is at the machine); the
 last time it ran was s109: **141 checks / 0 failures / 0 skipped** — the 50 window checks plus the 91 that
 always run. What only that group covers is `main()`'s argv handling for the flags that OPEN a window
 (`-c/--config`, `-b/--binds`, combined flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies
-the multiplexing / display / file-manager keys and the band's share. Step 3 added no command-line flag, so
-nothing in that group is new. `--import-theme` is not in that list — it needs no display, so s107 pinned it
-headless. The config search order and the settings-vs-binding file rules are covered headless in
-`tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. No
+the multiplexing / display / file-manager keys and the band's share. The config search order and the
+settings-vs-binding file rules are covered headless in `tests/test_vt.c` (13 `cfgsearch` checks + the `config
+split` group), so they are not a gap. Neither step 3 (the double/triple click) nor step 3b (the preview pane's
+selection) added a command-line flag, so nothing in that windowed group is new; `--import-theme` is not in that
+list either — it needs no display, so s107 pinned it headless. No
 `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
@@ -525,19 +526,29 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   then directories first, then case-insensitive by name (then by bytes, so the order is total). No sort
   options, no tree view, no multi-select, and no rename / copy / move / delete — the browser reads the
   filesystem and writes nothing to it.
-- **One click selects, a double-click opens.** Two left clicks on the same row within 500 ms enter a directory;
-  on a file they do nothing, exactly like `Return` (a path is typed by `p` and by no mouse action). The
-  threshold is not configurable, and a click on the header, on the
-  preview or on a different row breaks the pair. A single click never opens, and the band's clicks never
+- **One click selects, a double-click opens — in the browser pane.** Two left clicks on the same row within
+  500 ms enter a directory; on a file they do nothing, exactly like `Return` (a path is typed by `p` and by no
+  mouse action). The threshold is not configurable, and a click on the header, on the preview pane or on a
+  different row breaks the pair. A single click never opens, and the band's clicks never
   reach an application that has grabbed the mouse. The wheel over the browser walks the listing and the wheel
   over the preview scrolls that pane's contents; neither scrolls the terminal's history.
+- **The preview pane's text selection is its own, and it is viewport-relative.** A drag there highlights a
+  range of the previewed text and `Ctrl`+`Shift`+`C` copies it; a double click takes a word and a triple the
+  row, with the terminal's rule for what a word is (one shared implementation, so the two cannot drift). It is
+  not the terminal's selection: scrolling the pane, resizing it or previewing another file clears it, because
+  the range names CELLS and those cells now hold other text — the same rule a session's selection follows when
+  you scroll its scrollback. A line longer than the pane is CUT at the right edge rather than wrapped, so the
+  row gesture takes the one row the file's line occupies — and the copy is what that row SHOWS: the tail of a
+  line wider than the pane is in no cell to select, because the pane never scrolls sideways. There is one
+  selection at a time in the window: a click in one pane drops the other's highlight.
 - **While the band owns the keyboard, no other key reaches the shell** — that is the point of the feature,
   but it also means the band's own bindings are the only way to move there. The window's shortcuts (sessions,
   zoom, copy/paste, `Shift`+`PageUp`/`PageDown` scrolling, the band's toggle and focus keys) still work, and
   a click in the terminal pane hands the keyboard back.
 - **The band is not part of the terminal's grid.** It is drawn from its own `Cell` arrays through the same
   renderer passes, so it uses the same font, colours and wide-glyph rules — but the terminal's selection,
-  scrollback and mouse reporting do not reach it, and text in the preview pane cannot be selected.
+  scrollback and mouse reporting do not reach it. The preview pane has its own text selection (see above); the
+  browser pane has none, because its "selection" is the highlighted entry.
 
 **Shell integration (`shell_integration = 1`, the default)**
 

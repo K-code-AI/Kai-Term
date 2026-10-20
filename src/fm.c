@@ -445,6 +445,11 @@ void fm_set_size(FileMgr *fm, int lc, int lr, int pc, int pr)
        its bottom in a 12-row pane (pv_scroll 30) and the pane grown to 40 rows left 28 rows of nothing. */
     fm->pv_scroll = iclamp_(fm->pv_scroll, 0, fm_preview_scroll_max(fm));
 
+    /* A resize clears a preview-pane text selection, exactly as it clears a session's: the endpoints name
+       cells of the pane the user is LEAVING, and after a narrowing the later endpoint can even sit outside
+       the pane that now exists. */
+    fm_preview_select_clear(fm);
+
     fm->dirty = 1;
 }
 
@@ -980,6 +985,7 @@ int fm_install_preview(FileMgr *fm, FmPreview *pv)
     fm_preview_free(fm->pv);
     fm->pv = pv;
     fm->pv_scroll = 0;      /* a new file starts at its beginning, however far the last one was scrolled */
+    fm_preview_select_clear(fm);   /* and the cells the old selection named held the OLD file's text */
     fm->dirty = 1;
     return 1;
 }
@@ -1640,6 +1646,10 @@ void fm_preview_scroll(FileMgr *fm, int delta)
     if (want == fm->pv_scroll)
         return;
     fm->pv_scroll = want;
+    /* The selection names CELLS, and scrolling replaced every cell in the pane with different text — so a
+       selection that survives a scroll is a highlight over the wrong words. Same rule as a session's
+       viewport-relative selection (ISSUES.md "Selection is viewport-relative"). */
+    fm_preview_select_clear(fm);
     fm->dirty = 1;
 }
 
@@ -1673,6 +1683,175 @@ void fm_preview_top(FileMgr *fm)
 void fm_preview_bottom(FileMgr *fm)
 {
     fm_preview_scroll(fm, fm_preview_scroll_max(fm) + 1);
+}
+
+/* ---------- a text selection inside the preview pane ----------
+   main.c owns the gesture (it has the pointer and the clock); everything about WHAT that gesture selects
+   is here, where a test can check it with no display and no mouse — the same reason the terminal's
+   word/line spans live in vt.c. Coordinates are the PREVIEW PANE's cells, inclusive at both ends,
+   normalised so a leftward or upward drag cannot produce an inverted range. */
+
+void fm_preview_select(FileMgr *fm, int x0, int y0, int x1, int y1)
+{
+    const FmPane *p = &fm->prev;
+    if (!p->cell || p->cols <= 0 || p->rows <= 0) {
+        fm_preview_select_clear(fm);
+        return;
+    }
+    x0 = iclamp_(x0, 0, p->cols - 1);
+    x1 = iclamp_(x1, 0, p->cols - 1);
+    y0 = iclamp_(y0, 0, p->rows - 1);
+    y1 = iclamp_(y1, 0, p->rows - 1);
+    /* Reading order decides which endpoint is the anchor — swapping only the columns would put the
+       anchor on the LATER row of a drag that went up and left. */
+    int a_first = (y0 < y1) || (y0 == y1 && x0 <= x1);
+    fm->pv_sel_on = 1;
+    fm->pv_ax = a_first ? x0 : x1;
+    fm->pv_ay = a_first ? y0 : y1;
+    fm->pv_bx = a_first ? x1 : x0;
+    fm->pv_by = a_first ? y1 : y0;
+    fm->dirty = 1;
+}
+
+void fm_preview_select_clear(FileMgr *fm)
+{
+    if (!fm->pv_sel_on)
+        return;
+    fm->pv_sel_on = 0;
+    fm->pv_ax = fm->pv_ay = fm->pv_bx = fm->pv_by = 0;
+    fm->dirty = 1;
+}
+
+int fm_preview_selected(const FileMgr *fm, int x, int y)
+{
+    if (!fm->pv_sel_on)
+        return 0;
+    if (y < fm->pv_ay || y > fm->pv_by)
+        return 0;
+    if (y > fm->pv_ay && y < fm->pv_by)   /* a row fully between the two endpoints */
+        return 1;
+    if (y == fm->pv_ay && y == fm->pv_by)
+        return x >= fm->pv_ax && x <= fm->pv_bx;
+    if (y == fm->pv_ay)
+        return x >= fm->pv_ax;
+    return x <= fm->pv_bx;
+}
+
+int fm_preview_word_span(const FileMgr *fm, int x, int y, int *out_x0, int *out_x1)
+{
+    const FmPane *p = &fm->prev;
+    if (!p->cell || y < 0 || y >= p->rows)
+        return 0;
+    /* The SAME rule a session's double click uses. One copy on purpose: a second punctuation table in
+       fm.c is the drift the project's one-colour-parser rule exists to prevent. */
+    return cell_row_word_span(p->cell + (size_t)y * (size_t)p->cols, p->cols, x, out_x0, out_x1);
+}
+
+int fm_preview_row_span(const FileMgr *fm, int y, int *out_x0, int *out_x1)
+{
+    const FmPane *p = &fm->prev;
+    if (!out_x0 || !out_x1 || !p->cell || p->cols <= 0 || y < 0 || y >= p->rows) {
+        if (out_x0) *out_x0 = 0;
+        if (out_x1) *out_x1 = p->cols > 0 ? p->cols - 1 : 0;
+        return 0;
+    }
+    /* The whole row — but the row's OWN cells, not the pane's gutter. The preview indents its body by two
+       columns that were never written, so a span starting at column 0 would copy two spaces the file does
+       not contain and paste them into the user's shell. Measured (.scratch/s115/selprobe3): spanning 0..29
+       copied "  two-three, four."; spanning the used cells copies "two-three, four.". A line the FILE
+       indents is safe either way, because pane_puts() writes those spaces as real cells — so "the first cell
+       that holds something" is exactly where the file's own text starts.
+       The preview CUTS a long line at its right edge rather than wrapping it, so one file line is exactly
+       one pane row and there are no wrap marks to walk (unlike a session grid). */
+    const Cell *r = p->cell + (size_t)y * (size_t)p->cols;
+    int first = -1, last = -1;
+    for (int x = 0; x < p->cols; x++) {
+        if (r[x].ch == 0 && !(r[x].attr & ATTR_WIDE))
+            continue;              /* never written: the gutter, or the space past the end of the line */
+        if (first < 0)
+            first = x;
+        last = x;
+    }
+    if (first < 0) {               /* a blank line: the row is still the row, it just holds nothing */
+        *out_x0 = 0;
+        *out_x1 = p->cols - 1;
+        return 1;
+    }
+    *out_x0 = first;
+    *out_x1 = last;
+    return 1;
+}
+
+int fm_preview_selection_text(const FileMgr *fm, char *out, size_t cap)
+{
+    const FmPane *p = &fm->prev;
+    /* A zero-capacity buffer has no byte to terminate, and the terminating store below is
+       `out[n < cap ? n : cap - 1]`, which with cap == 0 is `out[-1]`. Measured, not assumed:
+       .scratch/s116/capzero.c calls this with cap 0 and ASan reports a WRITE one byte before the caller's
+       array (src/fm.c:1847). No caller in the tree passes 0 today, which is exactly why the guard belongs
+       here rather than in the callers: this is a public entry point in the header. */
+    if (!cap)
+        return 0;
+    out[0] = 0;
+    if (!fm->pv_sel_on || !p->cell)
+        return 0;
+    size_t n = 0;
+    size_t linecap = (size_t)p->cols * 4u + 1u;   /* one codepoint per cell, 4 UTF-8 bytes each */
+    char *line = malloc(linecap);
+    if (!line)
+        return 0;
+    for (int y = fm->pv_ay; y <= fm->pv_by; y++) {
+        const Cell *r = p->cell + (size_t)y * (size_t)p->cols;
+        /* The row's used range, same scan fm_preview_row_span() uses. A multi-row selection covers a middle
+           row from column 0 (that is what makes it a LINE selection rather than a rectangle), and in this
+           pane column 0 and 1 are the gutter the painter never writes — so copying them as spaces pastes two
+           characters the file does not contain. Measured: a three-row drag copied "  \xe4\xbd\xa0\xe5\xa5\xbd..."
+           before this clamp and copies "\xe4\xbd\xa0\xe5\xa5\xbd..." after. A gap BETWEEN two used cells (the
+           space between an entry name and its right-aligned size) is still a space, because that gap is part
+           of the line the pane is showing. */
+        int first = -1, last = -1;
+        for (int x = 0; x < p->cols; x++) {
+            if (r[x].ch == 0 && !(r[x].attr & ATTR_WIDE))
+                continue;
+            if (first < 0)
+                first = x;
+            last = x;
+        }
+        int ln = 0;
+        for (int x = 0; first >= 0 && x < p->cols; x++) {
+            if (x < first || x > last)     /* a row with no used cells at all leaves first < 0: nothing */
+                continue;
+            if (!fm_preview_selected(fm, x, y))
+                continue;
+            const Cell *c = &r[x];
+            if ((c->attr & ATTR_WIDE) && c->ch == 0)
+                continue;              /* continuation of a wide glyph: already copied */
+            if (c->ch == 0) {
+                if (ln + 1 < (int)linecap)
+                    line[ln++] = ' ';
+                continue;
+            }
+            char b8[4];
+            int m = utf8_encode(c->ch, b8);
+            if (ln + m < (int)linecap) {
+                memcpy(line + ln, b8, (size_t)m);
+                ln += m;
+            }
+        }
+        while (ln > 0 && line[ln - 1] == ' ')
+            ln--;
+        if (y > fm->pv_ay) {
+            if (n + 1 < cap)
+                out[n++] = '\n';
+        }
+        if (n + (size_t)ln >= cap)
+            ln = cap > n + 1 ? (int)(cap - n - 1) : 0;
+        memcpy(out + n, line, (size_t)ln);
+        n += (size_t)ln;
+    }
+    free(line);
+    out[n < cap ? n : cap - 1] = 0;
+    return (int)n;
 }
 
 /* The header lines every preview starts with: what is being previewed, and what it is. */
@@ -1803,7 +1982,7 @@ static void paint_preview_meta(FileMgr *fm, uint32_t fg, uint32_t bg, int row, i
     }
 }
 
-static void paint_preview(FileMgr *fm, uint32_t fg, uint32_t bg)
+static void paint_preview(FileMgr *fm, uint32_t fg, uint32_t bg, uint32_t sel)
 {
     FmPane *p = &fm->prev;
     if (!p->cell)
@@ -1827,12 +2006,28 @@ static void paint_preview(FileMgr *fm, uint32_t fg, uint32_t bg)
         break;
     default:       paint_preview_meta(fm, fg, bg, row, FM_META_LINES); break;
     }
+    /* The text-selection band, painted LAST so it sits over whatever the body wrote, and into the cell's
+       own bg exactly the way the list's selected row does — which is why the renderer needs no new path
+       and why a check can read the band straight out of the pane cells. Only a cell that HOLDS something
+       gets it (a glyph, a real space, or the continuation half of a wide glyph), so the band never floats
+       over the never-written space past the end of a line: the rule term_cell_highlightable() enforces in
+       a session. The foreground is left alone, so syntax colours survive the highlight. */
+    for (int y = fm->pv_ay; fm->pv_sel_on && y <= fm->pv_by; y++) {
+        for (int x = 0; x < p->cols; x++) {
+            if (!fm_preview_selected(fm, x, y))
+                continue;
+            Cell *c = &p->cell[(size_t)y * (size_t)p->cols + (size_t)x];
+            if (c->ch == 0 && !(c->attr & ATTR_WIDE))
+                continue;
+            c->bg = sel;
+        }
+    }
 }
 
 void fm_paint(FileMgr *fm, uint32_t fg, uint32_t bg, uint32_t sel)
 {
     paint_list(fm, fg, bg, sel);
-    paint_preview(fm, fg, bg);
+    paint_preview(fm, fg, bg, sel);
     fm->dirty = 0;
 }
 

@@ -32,7 +32,8 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   `man` and `htop` answer only that form.
 - **Clear scrollback** — `clear` can remove both visible content and terminal history.
 - **Mouse support** — Application mouse reporting, text selection (drag, or a double click for a word and a
-  triple click for a line), and clipboard integration.
+  triple click for a line) in the terminal AND in the file manager's preview pane, and clipboard
+  integration.
 - **Scrolling a program that owns its screen** — The mouse wheel scrolls `nano`, `less` and `man` even
   though they never asked for the mouse, by turning the wheel into cursor-key presses; a click moves the
   program's own cursor to the cell you clicked. See "The mouse wheel and a click inside a full-screen
@@ -52,6 +53,8 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   (PNG, JPEG, WebP, GIF), syntax-highlighted text, or the type, size, dates, owner and permissions of
   anything else, and the shell below follows the directory you browse into, keeping whatever you had already
   typed at the prompt. The listing starts with a `..` row, one click selects and a double-click opens.
+  The preview pane's text is selectable too — drag, or a double click for a word and a triple click for a
+  row — and `Ctrl`+`Shift`+`C` copies it with the terminal's rule for what a word is.
   One key drops the selected entry's quoted path onto your half-typed command without running it. One
   shortcut shows the band, another moves the keyboard between the browser and the terminal. While the
   preview pane has the keyboard, `Page_Up`/`Page_Down`/`Home`/`End` scroll the previewed text.
@@ -231,7 +234,7 @@ line saying why there is no preview — never as garbage and never as an error t
 | `v` | show or hide the preview pane (with it off, the browser is the full width of the band) |
 | `.` | show or hide dotfiles |
 | `Escape` | close the file manager |
-| mouse left click | select the row under the pointer; a **second click on the same row** opens it (a directory is entered; a file does nothing); a click in the terminal pane hands the keyboard back |
+| mouse left click | in the **browser**: select the row under the pointer, and a **second click on the same row** opens it (a directory is entered; a file does nothing). In the **preview pane**: select the text under the pointer — drag to extend it, a **double click** takes a word and a **triple click** the row. A click in the terminal pane hands the keyboard back |
 | mouse wheel | over the browser it walks the listing; over the preview pane it scrolls that pane's contents (a file's text, or a directory's entries); over the terminal it scrolls history as usual — except inside a full-screen program that never asked for the mouse, where it becomes cursor keys (see below). It does **not** move the keyboard (see below) |
 
 `Ctrl`+`Shift`+`Up` gives the keyboard to the browser, `Ctrl`+`Shift`+`Down` gives it back to the terminal.
@@ -248,6 +251,22 @@ is exactly what the pane shows at once, so holding `Page_Down` walks a file with
 none skipped. `Up`/`Down` keep moving the browser's selection there, because that is how you change which
 entry is being previewed. A preview with nothing to scroll — a picture, or a metadata-only preview — does
 not move at all.
+
+**The preview pane's text is selectable.** Drag the left button over a previewed file — its text, a
+directory's entry list, or the two header lines — and the range is highlighted; `Ctrl`+`Shift`+`C` copies it.
+A **double click** selects the word under the pointer and a **triple click** the whole row, using exactly the
+terminal's rule for what a word is (see the selection notes under **Keyboard shortcuts**), so the gesture
+means one thing wherever you make it in the window; `click_selects_word = 0` turns it off in both places.
+The highlight is the same colour as every other selection (`selection_color`) and changes only the
+background, so a syntax-coloured keyword stays readable under it, and it never covers the blank space past
+the end of a line. What reaches the clipboard is the file's own text: the pane's two-column indent is not
+part of it, and a row is copied as one line — the preview cuts a long line at the pane's right edge rather
+than wrapping it, so a line wider than the pane copies the part that row shows and the rest of it is not
+reachable by the mouse (the pane never scrolls sideways; widen the band if you need the tail). Scrolling the
+pane, resizing it or previewing another file clears the selection, since in every one of those cases the range
+would name different text. There is one selection at a time in the window: a click in the preview pane drops
+the terminal's highlight and a click in a terminal pane drops the pane's, so `Ctrl`+`Shift`+`C` never has to
+guess which one you meant.
 
 While the band has the keyboard — browser or preview — the keys above belong to it **and no other key
 reaches the terminal** —
@@ -659,7 +678,7 @@ clipboard, from where any other application can paste it. Set
 `copy_on_release = 1` in the configuration file to copy as soon as the button is released (the earlier
 behaviour). Text copied in another application pastes into Kai-Term with `Ctrl`+`Shift`+`V`.
 
-Selection works a whole character at a time: a highlighted range always covers complete glyphs, never half of one. Empty space past the end of a line is not highlighted, while spaces between characters are — the copied text is unchanged either way.
+Selection works a whole character at a time: a highlighted range always covers complete glyphs, never half of one. Empty space past the end of a line is not highlighted, while spaces between characters are — the copied text is unchanged either way. The file manager's preview pane has its own selection, with the same gestures and the same rule for what a word is (see "File manager").
 
 A **double click** selects the word under the pointer and a **triple click** the whole line; `click_selects_word = 0` turns both off. Two clicks count as one gesture when the second press lands in the same cell within 500 ms — the same window the file manager's double-click-to-open uses, so the two gestures feel like one thing. What a word is follows the rule you would expect: the run of characters up to the next space, with punctuation stuck to the END cut off (`file.txt,` and `word"` give `file.txt` and `word`) and punctuation at the START kept (`/etc/passwd`, `(paren`). A wide character — a CJK glyph or an emoji — is never cut in half, and the line a triple click takes is the line as the program wrote it: a line that wrapped at the window edge is selected across every row it occupies, and a line the program ended with a newline stops there. Because a word or line gesture is a selection, it never synthesises the cursor-key presses of `click_moves_cursor` — double-clicking inside `nano` or `less` selects a word instead of walking their cursor two columns. One limit worth knowing: a word so long that the window itself broke it is selected up to the break on the row you clicked; the triple click is what takes a wrapped line whole.
 
