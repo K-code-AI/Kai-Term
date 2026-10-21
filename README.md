@@ -82,6 +82,11 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   pastes into other applications and text copied anywhere else pastes into Kai-Term.
   `middle_click_paste = 1` (off by default) also pastes it with a **middle click** in the terminal area, and
   changes what a middle click means nowhere else.
+- **A click on a web address** — A single **left click** on an `http://` or `https://` address in a terminal
+  pane opens it with the desktop's own opener. An address the window had to break at the edge of the window is
+  still one address and opens whole. Nothing else about a click changes: dragging still selects, a second click
+  still selects the word (and opens nothing), and a full-screen program keeps its own click.
+  `click_opens_url = 0` turns it off.
 - **Configuration** — Two plain-text files: `kai-term.conf` for the settings and `kai-term.bind` for the
   key bindings, read from `$XDG_CONFIG_HOME/kai-term`, `~/.config/kai-term` or `/etc/kai-term`, with a
   commented template of every default in [`config/`](config) in the source tree. A third kind of file,
@@ -437,6 +442,46 @@ Two things worth knowing:
   for its text, and why it got nothing back when it does (no clipboard device on the seat, a paste already in
   flight, or a clipboard holding no text).
 
+### Clicking a web address
+
+A single **left click** on an `http://` or `https://` address in a terminal pane hands it to the desktop's own
+opener (`xdg-open`). There is no modifier to remember, and **no shell is involved**: the address goes over as one
+argument, so no character in it can be interpreted as a command, and an address longer than 2048 characters is
+refused rather than opened. `click_opens_url = 0` turns the whole thing off.
+
+What a click like this never takes away:
+
+- **A drag still selects text**, and `Shift` + click still means selection.
+- **A second click still selects the WORD, and opens nothing.** The open waits out the double-click window
+  (500 ms) before it fires, so double-clicking an address selects it — `Ctrl`+`Shift`+`C` then copies it —
+  instead of launching a browser. A triple click still takes the whole line.
+- **A program that owns its own screen keeps its click.** `less`, `nano` and `man` keep click-to-place-their-
+  cursor; a program that asked for the mouse (`vim`, `tmux`, `less --mouse`) keeps its click reports, as always.
+- **The tab bar and the file-manager band keep their clicks** — a click on either is that surface's, never a URL's.
+
+What counts as an address:
+
+- the run of non-blank characters the pointer is in, as long as it contains `http://` or `https://` — the scheme
+  may be written in any case, and `HTTPS://EXAMPLE.COM` opens the same page;
+- an address the **window** broke at the edge is ONE address and opens whole; an address the **program** broke
+  with a newline is two lines, and only the part on the row you clicked opens;
+- punctuation that sticks to the end of a run is cut (`https://x.`, `https://x,`, and the last bracket of
+  `(https://x/a(b)c)`), while a trailing **slash** is kept — `https://x/` and `https://x` are different pages;
+- an address containing a character Kai-Term cannot spell — a CJK glyph or an emoji inside it — is **refused**,
+  never opened in half, because half an address is a different page;
+- only `http` and `https`. `ftp://`, `mailto:`, `file://` and an address with no scheme at all open nothing, and
+  neither does anything that would reach the opener looking like an option (a leading `-`).
+
+Two things worth knowing:
+
+- **Whether a window actually appears is the desktop's business, not Kai-Term's.** Kai-Term starts the opener in
+  its own session, with its input and output on `/dev/null` and none of Kai-Term's own descriptors passed to it —
+  a browser must not end up holding your terminal's pseudo-terminals open after their shells are gone. If the
+  desktop has no opener, or none for that kind of address, nothing appears; `./bin/kai-term -d` logs the address
+  it handed over (`url: a click asked xdg-open for …`) and, when the click was refused, why.
+- **A run that has scrolled above the top of the window is not found** — the same limit a triple click has, and
+  scrolling back to it is what makes it clickable again.
+
 ## Configuration
 
 Kai-Term reads two plain-text files, both in the same `key = value` format:
@@ -505,6 +550,7 @@ the program.
 | `click_moves_cursor` | `1` | In that same state, a left click that does not drag walks the program's own cursor to the clicked cell (`0` means a click only ever selects text). A drag always selects, and `Shift` + click always selects |
 | `click_selects_word` | `1` | A second left click in the same cell selects the **word** under the pointer, a third the whole **line** (`0` leaves every click selecting one cell, extended by dragging). A word is everything up to the next space with punctuation at the END cut off, so double-clicking `file.txt,` selects `file.txt`; punctuation at the START stays, so `/etc/passwd` comes over whole. The line a triple click takes is the line the program wrote, so one that wrapped at the window edge is selected in every row it occupies. A word or line gesture never sends the program cursor keys, so it selects inside `nano` and `less` instead of walking their cursor twice |
 | `middle_click_paste` | `0` | `1` makes a **middle click in the terminal area** paste the clipboard (`Ctrl`+`Shift`+`V` does that either way). Off by default, and off it changes nothing: a middle click in the terminal area does nothing at all. It never changes what a middle click means anywhere else — on a tab in the bar it still **closes** that session (asking first if something is running), in the file-manager band it still picks a file, and a program that asked for the mouse (`nano --mouse`, vim, `less`, tmux) keeps its middle button because it asked for it |
+| `click_opens_url` | `1` | A single **left click** on an `http://` or `https://` address in a terminal pane hands it to the desktop's own opener (`xdg-open`); `0` means a click never opens anything. An address the window broke at the edge is one address and opens whole; one the program broke with a newline does not join. It never takes a click that belongs to something else: a drag still selects, a **second** click still selects the word and opens nothing (the open waits out the 500 ms double-click window), `Shift` + click still selects, the tab bar and the file-manager band keep their clicks, and a program that owns its own screen (`less`, `nano`, `man`) keeps its click-to-place-cursor. No shell is involved, so nothing in the address is interpreted; an address over 2048 characters, or one with a character Kai-Term cannot spell in it, is refused rather than opened |
 | `bell` | `visual` | What a `BEL` does. `visual` washes that session's field briefly toward the text colour and fades it out; `off` draws nothing. Kai-Term has no audio, so this is the only bell there is — and `BEL` is how `readline` (an ambiguous Tab), `less`/`man` (an unknown command, or scrolling past the end of the file), `sudo` (a wrong password) and vim (an error) say "no". A `BEL` that answers the cursor-key presses a click became is not flashed — Kai-Term caused it. The flash covers that session's own pane (in side-by-side view only the pane whose program rings flashes), sits **under** the text so the line stays readable, and never touches the window's margin. `1`/`on` and `0`/`off` are accepted spellings; any other word warns and keeps the current value |
 | `cursor_blink` | `1000` | Cursor blink half-period in ms: the bar is drawn for this long, then hidden for this long (`0` = steady). Your setting is the ceiling — a program can ask for a steady cursor with DECSCUSR but cannot switch the blink back on. Blinking also stops while the window has no focus (clamped to 0–10000) |
 | `cursor_width` | `2` | Pixels wide the bar cursor is — and how tall an underline is, when a program asks for one. Never wider than a third of a cell, so a large value cannot turn the bar back into a block (clamped to 1–64) |

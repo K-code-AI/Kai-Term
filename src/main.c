@@ -120,6 +120,15 @@ typedef struct Wayland {
     uint32_t click_ms;
     int click_col, click_row;
     int click_word;
+    /* A click that landed on a web address is not opened on the spot: it waits out the double-click window, so a
+       second click can take the WORD instead and open nothing (url_open_due / URL_OPEN_WAIT_MS). What is stored
+       is the cell and the text as they were at the click, because url_tick() re-asks the same question at the
+       deadline — a session that closed (and shifted the tab indices with it), a pane that scrolled or a program
+       that repainted the line all change the answer, and the open is dropped rather than guessed at. */
+    long long url_press_ms;         /* 0 = nothing pending */
+    int url_tab;                    /* the tab index the click was in */
+    int url_col, url_row;           /* the cell it was in */
+    char url_text[URL_MAX + 1];     /* what was under that cell at the click */
     double scroll_accum;        /* pending scrollback scroll in lines (+ = up/history) */
     double wheel_accum;         /* the same carry, for a wheel gesture turned into application cursor
                                    keys — kept apart from scroll_accum so a session that leaves the
@@ -2693,6 +2702,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                of what a press in the preview pane does to the session's. Without it both highlights are on
                screen and Ctrl+Shift+C has to guess which one the user meant. */
             fm_preview_select_clear(&g_fm);
+            /* A pending open belongs to the gesture that just ended, and this press starts a new one. Whatever
+               the last release was waiting on is dropped here; the release below sets a new one if it earns it. */
+            W.url_press_ms = 0;
+            W.url_text[0] = 0;
             /* Which click in a row is this? Same cell within CLICK_DCLICK_MS continues the gesture.
                A second click selects the WORD under the pointer, a third the whole LOGICAL line (a
                soft-wrapped line is one line, so a triple click takes every row it spans) — the user's
@@ -2740,6 +2753,45 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                synthesis is keystrokes computed from the cursor position the model already tracks, so
                nothing here knows what nano is; see term_click_arrow_keys(). */
             int no_drag = (col == cur_term()->sel_ax && row == cur_term()->sel_ay);
+            /* A plain click on a web address. The ORDER is url_click_opens()'s, in src/url.c, so "a drag still
+               selects", "the second and third click select a word and a line", "Shift means selection" and
+               "a program that owns its own screen keeps its click" are cases in a table a test can flip instead
+               of early returns in a file no test binary links. main.c supplies the flags — it owns the pointer,
+               the geometry and the clock — and what it decides is only that an open is PENDING: url_tick() opens
+               it once the double-click window has passed, which is what lets a double click on an address select
+               the word and open nothing. The scan and the text are asked here, at the click, so what the user
+               aimed at is what is checked again at the deadline. */
+            Term *ut = cur_term();
+            UrlSpan usp;
+            char url[sizeof W.url_text];
+            url[0] = 0;
+            UrlClick uc = { .enabled = conf.click_opens_url,
+                            .released = 1,
+                            .single = W.click_count <= 1,
+                            .no_drag = no_drag,
+                            .shift = ptr_shift_held(),
+                            .app_owns_click = term_wants_key_mouse(ut),
+                            .url_found = 0 };
+            if (uc.enabled && uc.single && uc.no_drag && !uc.shift && !uc.app_owns_click &&
+                term_url_span(ut, col, row, &usp)) {
+                int ul = term_url_text(ut, &usp, url, sizeof url);
+                if (ul < 0)
+                    klog(L_WARN, "url: a run of more than %d characters is not something to open", URL_MAX);
+                else if (ul > 0)
+                    uc.url_found = 1;
+            }
+            if (url_click_opens(&uc)) {
+                W.url_press_ms = (long long)mono_ms();
+                W.url_tab = mux_active(&mux);
+                W.url_col = col;
+                W.url_row = row;
+                snprintf(W.url_text, sizeof W.url_text, "%s", url);
+                term_select_clear(ut);   /* a click that opens something leaves no one-cell highlight behind */
+                klog(L_DEBUG, "url: the click at (%d,%d) holds %s — waiting out the double-click window",
+                     col, row, url);
+                W.dirty = 1;
+                return;
+            }
             if (no_drag && !W.click_word && conf.click_moves_cursor && !ptr_shift_held() &&
                 term_wants_key_mouse(cur_term())) {
                 char seq[3 * TERM_ARROW_MAX + 8];
@@ -3074,6 +3126,40 @@ static void bell_tick(void)
     if (live || W.bell_live)
         W.dirty = 1;
     W.bell_live = live;
+}
+
+/* The frame timer's URL tick, beside bell_tick() for the same reason: a wait expires on a schedule and nothing
+   else in the loop wakes on one. The open is RE-ASKED at the deadline rather than trusted from the click: the tab
+   may have closed (and mux_close shifts the indices of the later tabs with it), the pane may have scrolled, or the
+   program may have repainted the line. Anything other than the same answer for the same cell is dropped — opening
+   an address the user never clicked is worse than opening nothing. */
+static void url_tick(void)
+{
+    if (!W.url_press_ms)
+        return;
+    if (!url_open_due((long long)mono_ms(), W.url_press_ms, URL_OPEN_WAIT_MS))
+        return;
+    int ti = W.url_tab;
+    int col = W.url_col, row = W.url_row;
+    char clicked[URL_MAX + 1];
+    snprintf(clicked, sizeof clicked, "%s", W.url_text);
+    W.url_press_ms = 0;
+    W.url_text[0] = 0;
+    if (ti < 0 || ti >= mux_count(&mux)) {
+        klog(L_DEBUG, "url: the session the click was in is gone — nothing opened");
+        return;
+    }
+    Term *t = &mux.tab[ti].term;
+    UrlSpan sp;
+    char holds[URL_MAX + 1];
+    if (!term_url_span(t, col, row, &sp) ||
+        term_url_text(t, &sp, holds, sizeof holds) <= 0 || strcmp(holds, clicked)) {
+        klog(L_INFO, "url: the text under the click changed while the click waited — nothing opened");
+        return;
+    }
+    klog(L_INFO, "url: a click asked %s for %s", URL_OPENER_PROGRAM, clicked);
+    if (url_spawn(URL_OPENER_PROGRAM, clicked) < 0)
+        klog(L_WARN, "url: could not start %s: %s", URL_OPENER_PROGRAM, strerror(errno));
 }
 
 static void dd_data_offer(void *d, struct wl_data_device *dd, struct wl_data_offer *offer)
@@ -3934,6 +4020,9 @@ int main(int argc, char **argv)
                 fm_cd_tick();
                 /* A bell flash fades on a schedule, so it is kept alive here too — see bell_tick(). */
                 bell_tick();
+                /* A click that landed on a web address opens once the double-click window has passed — see
+                   url_tick(). No redraw is implied: nothing about it is drawn. */
+                url_tick();
                 /* Draw when something changed AND no frame callback is in flight (frame_cb == NULL means
                    the compositor already showed the buffer we committed, so the swap has the best chance
                    of not waiting for a buffer release). `resized` is in the condition because a size

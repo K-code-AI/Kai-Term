@@ -25,10 +25,10 @@ working by the user 2026-10-19 (s107's feature), so the theme import carries no 
 confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
 with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-20 (s128, from `make clean`, on the tree that stopped the click-caused bell flash): `make -j8`
+Re-measured 2026-10-22 (s131, from `make clean`, on the tree that added the plain-click web address): `make -j8`
 exit 0 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0
-with **0 warning lines**; `./bin/test_vt` **1516 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
-`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **561 checks, 0 failures**; `make asan` exit 0 with
+with **0 warning lines**; `./bin/test_vt` **1632 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **575 checks, 0 failures**; `make asan` exit 0 with
 the same four counts, **0 warning lines** and no LeakSanitizer/UBSan report. `sh tests/cli_test.sh` with
 `KAI_TERM_TEST_NO_WINDOW=1` reports **CLI: 99 checks, 0 failures, 13 skipped** — the 13 are the windowed group,
 which was last run for real in s124 (**CLI: 149 checks, 0 failures, 0 skipped**, twice). That group maps ~15 real
@@ -38,7 +38,9 @@ flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the mult
 file-manager keys and the band's share. The config search order and the settings-vs-binding file rules are covered
 headless in `tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. None of
 step 3 (the double/triple click), step 3b (the preview pane's selection), step 4 (confirm-quit), step 5 (the
-middle-click option) or step 6 (the bell) added a command-line flag, so nothing in that windowed group is new;
+middle-click option), step 6 (the bell) or step 7 (the web-address click) added a command-line flag — step 7 is a
+settings key (`click_opens_url`) and the opener's name is a header constant, not a flag — so nothing in that
+windowed group is new;
 `--import-theme` is not in that list either — it needs no display, so s107 pinned it headless. No
 `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
@@ -507,6 +509,36 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   scans plus the user's eye. Two mutants of `.scratch/s126/mutate.py` (`render_draws_nothing`,
   `render_wrong_surface`) survive every check in the tree by construction. Whether the flash READS as a bell and
   not as a glitch is a question for the user's window, not for a suite.
+
+**A click on a web address (`click_opens_url = 1`, the default; s129)**
+
+- **The scan never declines a click; the gate does.** `term_url_span()` finds an address on the alternate screen
+  too (checked: `https://example.com/alt` is found while `term_wants_key_mouse()` answers 1), and
+  `url_click_opens()` is what refuses it. That division is deliberate — a scanner that hid the address could not
+  be tested for finding it, and the refusal would then be an absence rather than a decision.
+- **A run whose start has scrolled above the viewport is not found.** `term_line_span()` walks viewport rows only,
+  so scrolling back to the line is what makes it clickable. The triple click has the same limit and it is pinned
+  by a check (`url/scroll`) so it cannot be mistaken for a URL-only bug.
+- **A run a non-ASCII or wide cell would cut is REFUSED, not shortened.** `https://ex<U+00E9>.com` opens nothing;
+  the draft rule measured in s129 opened `https://ex`, which is a different page — that is the one place the
+  shipped rule differs from the draft, and it is checked. A non-ASCII cell to the LEFT of the scheme is fine, and
+  checked: the scheme match fixes where the run starts.
+- **2048 characters is the ceiling** (`URL_MAX`), measured on all three sides (2047 opens, 2048 opens, 2049 is
+  refused with nothing written). The scan itself finds a 3000-character run, so the ceiling is the opener's
+  guard, not the scanner's; over it logs `url: a run of more than 2048 characters is not something to open`.
+- **The open is re-asked at the deadline, and a changed answer opens nothing.** The click stores the cell and the
+  text; when the double-click window has passed, `main.c` re-runs the scan on the same cell and compares. A
+  session that closed (and shifted the tab indices), a pane that scrolled or a program that repainted the line all
+  drop the open, logging `url: the text under the click changed while the click waited`. Opening nothing beats
+  opening an address nobody clicked.
+- **The opener has to exist, and Kai-Term does not install one.** `xdg-open` is verified present on this host
+  (`/usr/bin/xdg-open`, with `xdg-desktop-portal` running); it is a header constant and not a config key, because
+  a key holding a program name is a way to make the terminal exec anything. With no opener, or none for that
+  address, nothing appears and no error is possible from Kai-Term's side — `-d` logs the ask.
+- **What no harness here can see, stated rather than hidden:** `url_spawn()` is exercised end to end (a stand-in
+  opener reports its own argv, session id, signal mask and open descriptors, and a `;touch` inside the address
+  never runs), but `xdg-open` starting a real browser on the user's desktop is a window-and-desktop fact. Whether
+  the plain click opens a page is owed to the user's eye; nothing here claims it.
 
 **Graphics / images**
 

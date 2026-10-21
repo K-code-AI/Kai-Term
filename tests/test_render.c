@@ -638,6 +638,60 @@ static void group_source_wiring(void)
           && src_sub_count("src/main.c", "st->synth_ms") == 1,
           "the stamp is written through the CURRENT session's Tab — the one the click sent its presses to, not a "
           "slot index that would mute whichever tab happens to be first");
+    /* ---- a plain click opens a URL: main.c computes the flags, url.c owns every rule (s129) ---
+       The feature is a click, and a click is handled in a file no test binary links. The run rule, the
+       gates, the wait and the spawn are all checked as functions in tests/test_vt.c; what these scans pin
+       is that main.c CONSULTS them rather than keeping its own copy — the dead-`cursor_color` shape is a
+       key parsed, stored and tested at the parser while nothing at the pixel end reads it, and the URL
+       version of that would be a click that opens nothing (or opens something the gate refused).
+       Every count measured on the wired tree with .scratch/s129/scancount.py — re-measure, do not copy. */
+    CHECK(src_word_count("src/main.c", "url_click_opens") == 1,
+          "src/main.c asks the gate exactly once — the order of the flags is src/url.c's decision, so "
+          "re-deriving it in the event handler could drift from the table the checks flip");
+    CHECK(src_word_count("src/main.c", "click_opens_url") == 1,
+          "src/main.c feeds conf.click_opens_url to that decision — a key nothing reads is the dead "
+          "cursor_color shape again");
+    CHECK(src_word_count("src/main.c", "term_url_span") == 2 &&
+          src_word_count("src/main.c", "term_url_text") == 2,
+          "the scan is asked TWICE: once at the click and once at the deadline, when the session may have "
+          "closed, scrolled or repainted the line");
+    CHECK(src_sub_count("src/main.c", "strcmp(holds, clicked)") == 1,
+          "and the deadline compares the text it re-read with the text the click saw — an address the user "
+          "never clicked is never opened");
+    CHECK(src_word_count("src/main.c", "url_tick") == 2 && src_sub_count("src/main.c", "url_tick();") == 1,
+          "the tick is defined AND called from the frame timer — a wait nothing drives never expires, which "
+          "is a click that opens nothing at all");
+    CHECK(src_word_count("src/main.c", "url_open_due") == 1 &&
+          src_word_count("src/main.c", "URL_OPEN_WAIT_MS") == 1,
+          "the wait asks the shared decision with the header's window, never a literal — the number has to "
+          "stay the one term_click_count() uses");
+    CHECK(src_sub_count("src/main.c", "W.url_press_ms = 0") == 2,
+          "the pending open is cleared in BOTH places that end a wait: a new press, and the deadline itself "
+          "— a stamp left set would open the same address on every frame");
+    CHECK(src_word_count("src/main.c", "url_spawn") == 1 &&
+          src_sub_count("src/main.c", "url_spawn(URL_OPENER_PROGRAM, clicked)") == 1,
+          "exactly ONE spawn site, and it takes the header's opener and the RE-VALIDATED text");
+    CHECK(src_word_count("src/main.c", "URL_OPENER_PROGRAM") == 3 &&
+          src_word_count("src/url.c", "URL_OPENER_PROGRAM") == 0,
+          "the opener's name lives in main.c only (the spawn and its two log lines) — src/url.c starts "
+          "whatever it is handed, so there is one place to look for what Kai-Term executes");
+    CHECK(src_word_count("src/main.c", "url_is_openable") == 0 &&
+          src_word_count("src/url.c", "url_is_openable") == 2,
+          "the argument check is not re-implemented at the click: it is defined once in src/url.c and "
+          "called by term_url_text(), so no caller can obtain text that failed it");
+    CHECK(src_word_count("src/url.c", "term_line_span") == 1,
+          "src/url.c walks the logical line with the SAME function a triple click uses — a second walk of "
+          "the wrap marks is a second answer about which rows are one line");
+    CHECK(src_word_count("src/url.c", "closefrom") == 1 && src_word_count("src/url.c", "setsid") == 1 &&
+          src_word_count("src/url.c", "sigprocmask") == 1,
+          "the three things the spawn promises are all in it: Kai-Term's descriptors closed, a session of "
+          "its own, and the blocked signal mask cleared before the exec");
+    CHECK(src_word_count("src/url.c", "system") == 0 && src_word_count("src/url.c", "popen") == 0 &&
+          src_word_count("src/url.c", "execl") == 0 && src_word_count("src/url.c", "execlp") == 0 &&
+          src_word_count("src/url.c", "execve") == 0,
+          "no shell and no second exec path anywhere in the feature — the argument is data, always");
+    CHECK(src_sub_count("src/url.c", "char *argv[3]") == 1,
+          "the opener is started with exactly one argument and a NULL terminator");
     /* The one link a headless test cannot execute: main() handing the configured value to the renderer and
        to the band's painter. The call string includes the '&' so a COMMENT that merely names the function
        (main.c has two) cannot start the scan. */

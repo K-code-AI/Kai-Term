@@ -68,6 +68,10 @@ void config_default(Config *c)
     /* Middle-click paste is OFF by default — the user asked for it as an option precisely because they dislike
        it. Nothing about a middle click changes until this is turned on. */
     c->middle_click_paste = 0;
+    /* A plain click opens a URL. ON by default — the user asked for the plain click, no modifier, and this is
+       the answer to that question rather than a new idea. It is still a key: the one behaviour in the tree that
+       starts a program, and a click that launches a browser is something a user must be able to turn off. */
+    c->click_opens_url = 1;
     /* The bell is VISUAL by default. Kai-Term has no audio, so a BEL that is not drawn is a BEL nobody hears:
        readline's ambiguous completion, `less` on an unknown command or a scroll past the end of its file, and sudo
        on a wrong password all say "no" with
@@ -539,6 +543,11 @@ static void apply_setting(Config *c, const char *key, char *val)
            file-manager band still picks a file, and one while a program holds the mouse is still reported to
            that program — the order is ptr_press_action()'s, in src/vt.c, and a check pins it. */
         c->middle_click_paste = cfg_bool(val) ? 1 : 0;
+    } else if (!strcmp(key, "click_opens_url")) {
+        /* 1 (default) = a single left click on an http(s) run in a terminal pane hands it to xdg-open. 0 = a click
+           never opens anything; selecting, the word/line gesture and click-to-place are untouched. The gates are
+           url_click_opens()'s in src/url.c, and the run rule is term_url_span()'s next to it. */
+        c->click_opens_url = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "bell")) {
         /* What a BEL does: `visual` (the default) flashes that session's field for BELL_FLASH_MS, `off` draws
            nothing. 1/on/yes/true and 0/off/no/false are accepted as spellings of the two, the way confirm_quit

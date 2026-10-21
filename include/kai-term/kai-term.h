@@ -706,6 +706,90 @@ int bell_strength(long long now_ms, long long rang_ms, int dur_ms);
    FLASH is a decision about the picture, not about the model. */
 int bell_is_ours(long long now_ms, long long synth_ms, int window_ms);
 
+/* ---------- a plain click opens a URL (step 7, implemented in src/url.c) ---------------------------------
+   The whole feature lives in src/url.c rather than in main.c for the standing reason: main.c is linked into no
+   test binary, and here the un-testable part is only the compositor and the browser — the scan, the gates, the
+   wait and even the fork/exec are all reachable from a test (tests/test_vt.c runs a real script through
+   url_spawn()). main.c computes the flags and draws nothing; url.c answers the questions.
+
+   URL_MAX is the ceiling on what will be handed to an opener. Measured (.scratch/s129/urlprobe.c): the scan
+   itself happily finds a 3000-character run (16 rows at 200 cols), and a "URL" that long is not a URL — it is a
+   program printing a line that starts with a scheme. Refusing is also the bound that keeps the pending-open
+   buffer a fixed size. */
+#define URL_MAX 2048
+
+/* The program a URL is handed to. The desktop's own opener, so Kai-Term needs no browser of its own and no
+   .desktop parsing; verified present on this host (/usr/bin/xdg-open, with xdg-desktop-portal running). It is a
+   constant and not a config key on purpose: a key holding a program name is a way to make the terminal exec
+   anything, and nobody asked for one. execvp, never a shell — no character of the URL is ever interpreted. */
+#define URL_OPENER_PROGRAM "xdg-open"
+
+/* A URL run in the grid, inclusive, in viewport rows and columns. A run can cross rows because a soft-wrapped
+   line is ONE line the application never saw broken — the same fact a triple click rests on. */
+typedef struct {
+    int r0, c0, r1, c1;
+} UrlSpan;
+
+/* The URL run under pane cell (col,row), or 0 when there is none. The rules, all of them measured first
+   (.scratch/s129/urlprobe.c) and all of them checked in tests/test_vt.c:
+     - the run is ASCII-only: a space, a never-written cell (which is what a tab leaves behind) and a quote or
+       angle bracket end it; a non-ASCII or wide cell ends it too, and because that CUTS a URL in half
+       (`https://ex\xc3\xa9.com` would otherwise open `https://ex`, a different page) a run with such a cell on
+       its right is REFUSED outright. A non-ASCII cell on the LEFT is fine: the scheme match fixes the start.
+     - the run must contain a scheme: `http://` or `https://`, case-insensitive (RFC 3986 says the scheme is),
+       and something after it — `http://` alone opens nothing.
+     - trailing marks that stick to the end of a run rather than belonging to the URL are cut: . , : ; ! ? and a
+       closer ( ) ] } ) with no matching opener. A trailing SLASH is kept: `https://x/` and `https://x` are
+       different pages, and cutting one is a wrong answer, not a smaller one.
+     - the logical line is walked with term_line_span(), so a URL the WINDOW broke is one run and a URL the
+       PROGRAM broke with a newline is not. */
+int term_url_span(Term *t, int col, int row, UrlSpan *sp);
+
+/* The bytes of a span, NUL-terminated into out (cap bytes). Returns the length, 0 when it does not fit (nothing
+   is written in that case — half a URL must never be opened), and -1 when the run is longer than URL_MAX. */
+int term_url_text(Term *t, const UrlSpan *sp, char *out, size_t cap);
+
+/* Is this string something to hand the opener? 1 = yes. It must carry a scheme Kai-Term opens for, hold no
+   control character, no space and no DEL, be no longer than URL_MAX, and not start with '-' — an argument
+   starting with a dash would be read as an OPTION by the opener, which is the one way a URL could change what
+   the opener does rather than what it opens. */
+int url_is_openable(const char *url);
+
+/* The gates on a plain click, as ONE decision. main.c owns the geometry and the clock and fills these; url.c
+   owns the order, so "a drag still selects", "a double click selects a word instead" and "nano/less/vim keep
+   their click-to-place-cursor" are checks in a table rather than claims inside an event handler. */
+typedef struct {
+    int enabled;          /* conf.click_opens_url */
+    int released;         /* a URL opens on RELEASE: a press cannot know whether a second click follows */
+    int single;           /* this was the only click of the gesture (2 and 3 select a word / a line) */
+    int no_drag;          /* the press and the release were in the same cell */
+    int shift;            /* Shift means "selection", here as everywhere else */
+    int app_owns_click;   /* term_wants_key_mouse(): the program that owns its screen keeps its click */
+    int url_found;        /* term_url_span() + term_url_text() answered a URL */
+} UrlClick;
+int url_click_opens(const UrlClick *c);
+
+/* The click waits out the double-click window before it opens, so double-clicking a URL selects the word and
+   opens NOTHING. 1 when the wait is over. The boundary is STRICTLY greater than `window_ms` on purpose: it is
+   the same window term_click_count() uses, and that one counts a press at exactly CLICK_DCLICK_MS as still the
+   same gesture — if this opened at exactly the same instant, the two rules would disagree about the last
+   millisecond of a double click. 0 for nothing pending (press_ms 0), a clock that went backwards, or a wait that
+   is not over. */
+int url_open_due(long long now_ms, long long press_ms, int window_ms);
+
+/* What main.c passes as that window: the double-click window itself, so the two rules cannot disagree about when
+   a gesture stops being a single click. */
+#define URL_OPEN_WAIT_MS CLICK_DCLICK_MS
+
+/* Start `program` with ONE argument, detached: setsid, stdin/stdout/stderr on /dev/null, every descriptor of
+   Kai-Term's own closed (closefrom) and every blocked signal unblocked before the exec. The last two are not
+   paranoia: SIGCHLD is blocked in this process for the signalfd, and a signal mask survives exec, so without the
+   unblock xdg-open would run as a shell with SIGCHLD blocked; and without closefrom a browser would inherit the
+   pty masters of every session, which keeps those ptys alive long after their shells are gone. The child is NOT
+   waited for — src/main.c's signalfd reaps it and ignores a pid that is not a shell. Returns 0 when the child was
+   started (whether the program exists is only knowable by the child), -1 when fork failed. */
+int url_spawn(const char *program, const char *arg);
+
 /* Setting for CSI 3 J ("erase saved lines"): 1 (default) lets it drop the scrollback buffer, 0 keeps
    the history. It is a process-wide setting rather than Term state because `ESC c` / RIS rebuilds the
    Term (term_init) and must not silently re-enable it — same pattern as kai_term_loglevel. */
@@ -891,6 +975,15 @@ typedef struct Config {
        ptr_press_action() (src/vt.c), which is where the order bar > band > application > pane lives as one
        checkable decision. A program that asked for the mouse keeps its middle button either way. */
     int  middle_click_paste;
+    /* click_opens_url: 1 (the default) = a single left click on an `http://`/`https://` run in a terminal pane
+       opens it with the desktop's opener (`xdg-open`). The user asked for the plain click — no modifier — and it
+       is on by default for that reason, but it is a key and not a law because it launches a program. What it
+       never does is take a click that already belongs to something else: a drag still selects, a second click
+       still selects the WORD (and opens nothing — the open waits out the double-click window), `Shift` + click
+       still means selection, the tab bar and the file-manager band keep their clicks, a program that asked for
+       the mouse keeps its reports, and a program that owns its own screen without asking for the mouse (`less`,
+       `nano`, `man`) keeps its click-to-place-cursor. The rules are url_click_opens()'s, in src/url.c. */
+    int  click_opens_url;
     /* bell: what a BEL does — BELL_VISUAL (the default, a short flash of that session's field) or BELL_OFF.
        On by default because a BEL is how readline, `less`, `man`, vim and sudo say "no" or "that one is
        ambiguous", and a terminal with no audio and no flash never says it at all. It is a flash of the PANE,

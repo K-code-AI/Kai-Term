@@ -2356,6 +2356,600 @@ int main(void)
 #undef PP
     }
 
+    /* ---------- a plain click opens a URL: the run rule, the gates, the wait, the spawn ------
+       Step 7. The whole feature lives in src/url.c so that all of it — including the fork/exec — is in a
+       binary this suite links; src/main.c only computes the flags and is in no test binary.
+       Every number below was printed by .scratch/s129/realprobe.c against src/url.c BEFORE the check was
+       written. That probe is not .scratch/s129/urlprobe.c: urlprobe.c ran a DRAFT rule and differs from the
+       shipped one in exactly one place — it answered `https://ex` for `https://ex<é>.com`, which src/url.c
+       refuses, because opening half a URL opens the WRONG page. Re-run realprobe to re-diff these. */
+    {
+        UrlSpan us;
+        char utxt[URL_MAX + 1];
+
+        /* --- a URL in ordinary shell output: the run, and what a click in it gets ------------- */
+        term_destroy(&T);
+        term_init(&T, 12, 40, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("see https://example.com/a?b=c&d#e next\r\n");
+        CHECK(term_url_span(&T, 5, 0, &us) && us.r0 == 0 && us.c0 == 4 && us.r1 == 0 && us.c1 == 32,
+              "url: a click on the scheme finds the run — query, fragment and all");
+        CHECK(term_url_text(&T, &us, utxt, sizeof utxt) == 29 &&
+              !strcmp(utxt, "https://example.com/a?b=c&d#e"),
+              "url: and the text is the run exactly, 29 bytes (re-diff, do not copy)");
+        CHECK(term_url_span(&T, 30, 0, &us) && us.c0 == 4 && us.c1 == 32,
+              "url: a click anywhere in the run finds the same run — you need not hit the scheme");
+        CHECK(!term_url_span(&T, 1, 0, &us),
+              "url: the word BEFORE the run is not part of it (the click was on `see`)");
+        CHECK(us.r0 == 0 && us.c0 == 0 && us.r1 == 0 && us.c1 == 0,
+              "url: a refused click leaves a ZEROED span, not the answer of the click before it — a "
+              "caller that ignores the return value cannot pick up a stale run");
+        CHECK(!term_url_span(&T, 36, 0, &us),
+              "url: a blank cell after the run answers no span");
+        {
+            char tiny[10];
+            tiny[0] = 'x';
+            CHECK(term_url_span(&T, 5, 0, &us) && us.c0 == 4 && us.c1 == 32,
+                  "url: the good click is found again after the refused ones (no state carries over)");
+            CHECK(term_url_text(&T, &us, tiny, sizeof tiny) == 0 && tiny[0] == 0,
+                  "url: a buffer too small writes NOTHING — half a URL must never reach an opener");
+        }
+        CHECK(!term_url_span(&T, 40, 0, &us) && !term_url_span(&T, -1, 0, &us) &&
+              !term_url_span(&T, 0, 12, &us) && !term_url_span(&T, 0, -1, &us),
+              "url: a cell outside the grid answers no span");
+        CHECK(!term_url_span(&T, 5, 0, NULL) && term_url_text(&T, NULL, utxt, sizeof utxt) == 0 &&
+              term_url_text(&T, &us, NULL, sizeof utxt) == 0,
+              "url: a missing out-parameter is a refusal, not a write through NULL");
+
+        /* --- the marks that stick to the end of a run, and the ones that do not -------------- */
+        term_destroy(&T);
+        term_init(&T, 12, 60, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("https://example.com/ slash\r\n");
+        feed("visit https://example.com/x, ok\r\n");
+        feed("end https://example.com/x.\r\n");
+        feed("(https://example.com/a(b)c) today\r\n");
+        feed("say \"https://example.com/q\" loud\r\n");
+        feed("https://x.com/a) alone\r\n");
+        feed("https://example.com/x: and\r\n");
+        feed("https://example.com/x; and\r\n");
+        feed("https://example.com/x! and\r\n");
+        CHECK(term_url_span(&T, 5, 0, &us) && us.c0 == 0 && us.c1 == 19 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 20 &&
+              !strcmp(utxt, "https://example.com/"),
+              "url: a trailing SLASH is kept — `https://x/` and `https://x` are different pages, so "
+              "cutting one is a wrong answer, not a smaller one");
+        CHECK(term_url_span(&T, 6, 1, &us) && us.c0 == 6 && us.c1 == 26 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 21 && !strcmp(utxt, "https://example.com/x"),
+              "url: a comma that ends a sentence is cut");
+        CHECK(term_url_span(&T, 5, 2, &us) && us.c0 == 4 && us.c1 == 24 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 21 && !strcmp(utxt, "https://example.com/x"),
+              "url: a full stop at the end of a sentence is cut");
+        CHECK(term_url_span(&T, 2, 3, &us) && us.c0 == 1 && us.c1 == 25 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 25 &&
+              !strcmp(utxt, "https://example.com/a(b)c"),
+              "url: `(url)` — the opener is outside (the run starts at the scheme) and a closer that "
+              "balanced something INSIDE the URL is kept");
+        CHECK(term_url_span(&T, 6, 4, &us) && us.c0 == 5 && us.c1 == 25 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 21 && !strcmp(utxt, "https://example.com/q"),
+              "url: a quote ENDS the run, so `\"url\"` opens the URL and not the quotes");
+        CHECK(term_url_span(&T, 5, 5, &us) && us.c0 == 0 && us.c1 == 14 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 15 && !strcmp(utxt, "https://x.com/a"),
+              "url: a closer with no matching opener inside the run is cut — it closed the sentence");
+        CHECK(term_url_span(&T, 5, 6, &us) && us.c1 == 20 &&
+              term_url_span(&T, 5, 7, &us) && us.c1 == 20 &&
+              term_url_span(&T, 5, 8, &us) && us.c1 == 20,
+              "url: a trailing colon, semicolon and bang are cut the same way");
+
+        /* --- what counts as a URL at all ------------------------------------------------------ */
+        term_destroy(&T);
+        term_init(&T, 12, 60, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("HTTPS://EXAMPLE.COM/UPPER\r\n");
+        feed("http:// alone\r\n");
+        feed("https:// alone-no-host\r\n");
+        feed("xhttps://example.com midword\r\n");
+        feed("ftp://example.com not-http\r\n");
+        feed("mailto:me@example.com not-http\r\n");
+        feed("HtTpS://MiXeD.Case/Ok\r\n");
+        CHECK(term_url_span(&T, 1, 0, &us) && us.c0 == 0 && us.c1 == 24 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 25 &&
+              !strcmp(utxt, "HTTPS://EXAMPLE.COM/UPPER"),
+              "url: the scheme is case-insensitive (RFC 3986) and the text is handed over as printed");
+        CHECK(!term_url_span(&T, 1, 1, &us) && !term_url_span(&T, 1, 2, &us),
+              "url: a scheme with NOTHING after it opens nothing — `http://` alone is refused");
+        CHECK(term_url_span(&T, 0, 3, &us) && us.c0 == 1 && us.c1 == 19 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 19 && !strcmp(utxt, "https://example.com"),
+              "url: a scheme mid-word matches from the scheme, as `grep -o 'https\\?://[^ ]*'` does");
+        CHECK(term_url_span(&T, 3, 3, &us) && us.c0 == 1 && us.c1 == 19,
+              "url: and a click on the tail of that word finds it too");
+        CHECK(!term_url_span(&T, 1, 4, &us) && !term_url_span(&T, 2, 5, &us),
+              "url: ftp:// and mailto: are NOT ours to open — only http and https");
+        CHECK(term_url_span(&T, 1, 6, &us) && us.c0 == 0 && us.c1 == 20 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 21 &&
+              !strcmp(utxt, "HtTpS://MiXeD.Case/Ok"),
+              "url: a mixed-case scheme is still a scheme");
+
+        /* --- a run a non-ASCII glyph would cut in half is REFUSED, not shortened -------------
+           This is the one place the shipped rule differs from the s129 draft, and it is the difference
+           between opening the page the user pointed at and opening another one. */
+        term_destroy(&T);
+        term_init(&T, 12, 40, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("https://\xe4\xbe\x8b.com wide\r\n");
+        feed("ok \xe4\xbe\x8b https://example.com/wide\r\n");
+        feed("https://ex\xC3\xA9.com not-ascii\r\n");
+        CHECK(cellch(0, 8) == 0x4F8B && (cellattr(0, 9) & ATTR_WIDE),
+              "url/wide: the setup really put a wide glyph inside the run");
+        CHECK(!term_url_span(&T, 3, 0, &us),
+              "url/wide: a run broken by a wide glyph is REFUSED — `https://<U+4F8B>.com` is not "
+              "`https://`, which is a different page");
+        CHECK(term_url_span(&T, 12, 1, &us) && us.c0 == 6 && us.c1 == 29 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 24 && !strcmp(utxt, "https://example.com/wide"),
+              "url/wide: a wide glyph to the LEFT is fine — the scheme match fixes where the run starts");
+        CHECK(!term_url_span(&T, 5, 2, &us),
+              "url/non-ascii: `https://ex<U+00E9>.com` is refused rather than opened as `https://ex`");
+
+        /* --- a URL the WINDOW broke is one URL; a URL the PROGRAM broke is two --------------- */
+        term_destroy(&T);
+        term_init(&T, 12, 40, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("read https://example.org/a/very/long/path/that/wraps/over/two/rows now\r\n");
+        CHECK(T.g.wrap[T.g.scroll_off + 0] == 1,
+              "url/wrap: the window really did break the line, mark on the row that was broken");
+        CHECK(term_url_span(&T, 6, 0, &us) && us.r0 == 0 && us.c0 == 5 && us.r1 == 1 && us.c1 == 25,
+              "url/wrap: a click on the FIRST row takes the run across both rows");
+        CHECK(term_url_span(&T, 3, 1, &us) && us.r0 == 0 && us.c0 == 5 && us.r1 == 1 && us.c1 == 25,
+              "url/wrap: a click on the SECOND row takes the same run — one logical line");
+        CHECK(term_url_text(&T, &us, utxt, sizeof utxt) == 61 &&
+              !strcmp(utxt, "https://example.org/a/very/long/path/that/wraps/over/two/rows"),
+              "url/wrap: and the text is the whole address with the break removed (61 bytes)");
+        CHECK(!term_url_span(&T, 30, 1, &us) && !term_url_span(&T, 39, 1, &us),
+              "url/wrap: the word after the run is still not part of it");
+        term_destroy(&T);
+        term_init(&T, 12, 40, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("https://example.com/\nwrapped-by-the-program\r\n");
+        CHECK(term_url_span(&T, 5, 0, &us) && us.r0 == 0 && us.c0 == 0 && us.r1 == 0 && us.c1 == 19 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 20 && !strcmp(utxt, "https://example.com/"),
+              "url/wrap: an address the PROGRAM ended with a newline stops there — Kai-Term does not "
+              "invent a join the application never wrote");
+        CHECK(!term_url_span(&T, 2, 1, &us),
+              "url/wrap: and the row below is its own line, not the tail of the address");
+        /* The harder form of the same rule, found by a mutant (s129): a line the program ended AT the margin
+           looks continuous — the row is full — but leaves NO wrap mark, and the mark is the only thing that
+           tells a window's break from the program's. Measured: wrap[0] == 0, and the run stops at column 19. */
+        term_destroy(&T);
+        term_init(&T, 12, 20, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("https://example.com/\r\nwrapped\r\n");
+        CHECK(T.g.wrap[T.g.scroll_off + 0] == 0,
+              "url/wrap: a line the program ended EXACTLY at the margin sets no wrap mark — the row is full "
+              "and still the break is the program's");
+        CHECK(term_url_span(&T, 5, 0, &us) && us.r0 == 0 && us.c0 == 0 && us.r1 == 0 && us.c1 == 19 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 20 && !strcmp(utxt, "https://example.com/"),
+              "url/wrap: and the run stops at the margin — it does not reach into the next row just because "
+              "the cells look continuous");
+        term_destroy(&T);
+        term_init(&T, 12, 20, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("a https://example.com\nb\r\n");
+        CHECK(term_url_span(&T, 3, 0, &us) && us.r0 == 0 && us.c0 == 2 && us.r1 == 1 && us.c1 == 0 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 19 && !strcmp(utxt, "https://example.com"),
+              "url/wrap: an address ending EXACTLY at the margin wraps mid-host and still opens whole");
+        CHECK(term_url_span(&T, 19, 0, &us) && us.r0 == 0 && us.c0 == 2 && us.r1 == 1 && us.c1 == 0,
+              "url/wrap: a click on the very last cell of the row finds the same run");
+        CHECK(!term_url_span(&T, 5, 1, &us),
+              "url/wrap: the blank cells of the continuation row answer no span");
+
+        /* --- a tab leaves ch == 0 gaps, and a gap ends a run with no special case ------------- */
+        term_destroy(&T);
+        term_init(&T, 12, 40, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("x\thttps://example.com/tab\r\n");
+        CHECK(cellch(0, 1) == 0 && cellch(0, 7) == 0,
+              "url/tab: the tab really left codepoint-less cells behind");
+        CHECK(term_url_span(&T, 8, 0, &us) && us.c0 == 8 && us.c1 == 30 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 23 && !strcmp(utxt, "https://example.com/tab"),
+              "url/tab: the run starts after the gap, not at the word the tab followed");
+        CHECK(!term_url_span(&T, 3, 0, &us),
+              "url/tab: a click inside the gap answers no span");
+
+        /* --- the alt screen: the model still finds the run, and the GATE is what declines ---- */
+        term_destroy(&T);
+        term_init(&T, 12, 40, 100);
+        feed("\x1b[?1049h");
+        feed("https://example.com/alt\r\n");
+        CHECK(T.alt_screen == 1 && term_wants_key_mouse(&T) == 1,
+              "url/alt: a full-screen program that did NOT ask for the mouse owns its own clicks");
+        CHECK(term_url_span(&T, 5, 0, &us) && us.c0 == 0 && us.c1 == 22 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 23 && !strcmp(utxt, "https://example.com/alt"),
+              "url/alt: the SCAN still finds the address on the alternate screen — declining the click "
+              "is the gate's job, not the scanner's (a scanner that hid it could never be checked)");
+        feed("\x1b[?1049l");
+        CHECK(term_wants_key_mouse(&T) == 0, "url/alt: leaving the alternate screen gives the click back");
+
+        /* --- the length ceiling: a 3000-character run is not a URL --------------------------- */
+        term_destroy(&T);
+        term_init(&T, 24, 200, 100);
+        feed("\x1b[2J\x1b[H");
+        {
+            char big[4096];
+            int bn = snprintf(big, sizeof big, "https://");
+            for (int i = 0; i < 3000; i++)
+                big[bn++] = 'a';
+            big[bn] = 0;
+            feed(big);
+        }
+        CHECK(term_url_span(&T, 8, 0, &us) && us.r0 == 0 && us.c0 == 0 && us.r1 == 15 && us.c1 == 7,
+              "url/long: the scan really does find a 3000-character run across 16 rows");
+        CHECK(term_url_text(&T, &us, utxt, sizeof utxt) == -1 && utxt[0] == 0,
+              "url/long: and the text refuses it — over URL_MAX is not something to open, and nothing "
+              "is written");
+        /* The boundary, measured on both sides: URL_MAX itself is allowed. */
+        for (int want = URL_MAX - 1; want <= URL_MAX + 1; want++) {
+            term_destroy(&T);
+            term_init(&T, 24, 200, 100);
+            feed("\x1b[2J\x1b[H");
+            char big[4096];
+            int bn = snprintf(big, sizeof big, "https://");
+            for (int i = 8; i < want; i++)
+                big[bn++] = 'a';
+            big[bn] = 0;
+            feed(big);
+            int got = term_url_span(&T, 8, 0, &us) ? term_url_text(&T, &us, utxt, sizeof utxt) : -2;
+            CHECK(got == (want <= URL_MAX ? want : -1),
+                  "url/long: a run of exactly URL_MAX opens, URL_MAX+1 does not (re-diff, do not copy)");
+        }
+
+        /* --- the delimiters a program prints AROUND a link ----------------------------------- */
+        term_destroy(&T);
+        term_init(&T, 12, 60, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("<https://example.com/angle>\r\n");
+        feed("[https://example.com/sq]\r\n");
+        feed("https://example.com/search?q=hi?\r\n");
+        feed("https://example.com/a-b_c~d%20e\r\n");
+        feed("https://example.com/x, https://example.com/y\r\n");
+        feed("https://example.com/#frag and https://example.com/a(b)\r\n");
+        feed("no-scheme example.com/path here\r\n");
+        feed("https://example.com/ts   \r\n");
+        feed("https://example.com/a[b]c\r\n");
+        feed("https://example.com/{x}\r\n");
+        CHECK(term_url_span(&T, 2, 0, &us) && us.c0 == 1 && us.c1 == 25 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 25 &&
+              !strcmp(utxt, "https://example.com/angle"),
+              "url/marks: `<url>` — the angle brackets are outside the run");
+        CHECK(term_url_span(&T, 2, 1, &us) && us.c0 == 1 && us.c1 == 22 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 22 &&
+              !strcmp(utxt, "https://example.com/sq"),
+              "url/marks: `[url]` — the closer is cut as unbalanced");
+        CHECK(term_url_span(&T, 5, 2, &us) && us.c1 == 30 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 31 &&
+              !strcmp(utxt, "https://example.com/search?q=hi"),
+              "url/marks: a `?` inside a query is kept, one stuck on the end is cut");
+        CHECK(term_url_span(&T, 5, 3, &us) && us.c1 == 30 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 31 &&
+              !strcmp(utxt, "https://example.com/a-b_c~d%20e"),
+              "url/marks: `- _ ~ %` are ordinary URL characters");
+        CHECK(term_url_span(&T, 5, 4, &us) && us.c0 == 0 && us.c1 == 20 &&
+              term_url_span(&T, 30, 4, &us) && us.c0 == 23 && us.c1 == 43,
+              "url/marks: two addresses on one line are two runs — each click gets its own");
+        CHECK(term_url_span(&T, 5, 5, &us) && us.c1 == 24 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 25 &&
+              !strcmp(utxt, "https://example.com/#frag"),
+              "url/marks: a fragment is part of the address");
+        CHECK(term_url_span(&T, 30, 5, &us) && us.c0 == 30 && us.c1 == 53 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 24 &&
+              !strcmp(utxt, "https://example.com/a(b)"),
+              "url/marks: a run ENDING in a balanced pair keeps it");
+        CHECK(!term_url_span(&T, 10, 6, &us),
+              "url/marks: `example.com/path` with no scheme is a word, not a link");
+        CHECK(term_url_span(&T, 5, 7, &us) && us.c1 == 21 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 22 && !strcmp(utxt, "https://example.com/ts"),
+              "url/marks: the spaces a program pads its output with end the run");
+        CHECK(term_url_span(&T, 5, 8, &us) && us.c1 == 24 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 25 &&
+              !strcmp(utxt, "https://example.com/a[b]c"),
+              "url/marks: brackets INSIDE a path are kept — only an unmatched closer at the END is cut");
+        CHECK(term_url_span(&T, 5, 9, &us) && us.c1 == 22 &&
+              term_url_text(&T, &us, utxt, sizeof utxt) == 23 &&
+              !strcmp(utxt, "https://example.com/{x}"),
+              "url/marks: braces inside a path, same rule");
+
+        /* --- the limit worth naming: a run that scrolled above the viewport is not found ------ */
+        term_destroy(&T);
+        term_init(&T, 6, 40, 100);
+        feed("\x1b[2J\x1b[H");
+        feed("https://example.com/scrolled-away\r\n");
+        feed("a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\n");
+        CHECK(T.g.scroll_off > 0, "url/scroll: the setup really pushed the address into history");
+        CHECK(!term_url_span(&T, 5, 0, &us),
+              "url/scroll: a run whose start is above the viewport is NOT found — the same limit the "
+              "triple click has (filed in ISSUES, not hidden)");
+
+        /* --- url_is_openable: what may be handed to an opener at all ------------------------- */
+        CHECK(url_is_openable("https://example.com") && url_is_openable("http://x") &&
+              url_is_openable("HTTPS://EXAMPLE.COM") && url_is_openable("https://x/") &&
+              url_is_openable("https://x?a=b#c") && url_is_openable("https://example.com/a(b)") &&
+              url_is_openable("https://x/a%20b"),
+              "url/openable: the shapes a real address arrives in are all accepted");
+        /* The two constants the feature is built on, pinned the way CLICK_DCLICK_MS is: README names both, and
+           a header that quietly changes them changes what Kai-Term executes and what it will hand over. The
+           `hdr_url_max_small` mutant (URL_MAX 2048 -> 64) survived every check before this pair existed, because
+           the length checks are written in terms of the constant and so follow it wherever it goes. */
+        CHECK(URL_MAX == 2048,
+              "url/const: the ceiling is 2048 characters — README says 2048, so the number is pinned, not "
+              "just used");
+        CHECK(!strcmp(URL_OPENER_PROGRAM, "xdg-open"),
+              "url/const: the opener is the desktop's own `xdg-open` — the one program name in the feature "
+              "and the one README tells the user to have installed");
+        CHECK(!url_is_openable("-https://example.com"),
+              "url/openable: an argument starting with a dash is an OPTION — the one way a URL could "
+              "change what the opener DOES rather than what it opens");
+        CHECK(!url_is_openable("https://") && !url_is_openable("http://") && !url_is_openable(""),
+              "url/openable: an empty address is refused");
+        CHECK(!url_is_openable("ftp://example.com") && !url_is_openable("mailto:a@b") &&
+              !url_is_openable("file:///etc/passwd") && !url_is_openable("example.com/x"),
+              "url/openable: no other scheme, and no address without one");
+        CHECK(!url_is_openable("x y") && !url_is_openable("https://x\ty") &&
+              !url_is_openable("https://x\x01y") && !url_is_openable("https://x\x7fy"),
+              "url/openable: no space, no control character, no DEL reaches an opener");
+        CHECK(!url_is_openable("https://\xc3\xa9.com"),
+              "url/openable: no non-ASCII byte reaches an opener either (the grid rule refuses the run "
+              "before this, and this is the second lock on the same door)");
+        {
+            char big[URL_MAX + 8];
+            int bn = snprintf(big, sizeof big, "https://");
+            for (int i = 8; i < URL_MAX; i++)
+                big[bn++] = 'a';
+            big[bn] = 0;
+            CHECK(url_is_openable(big), "url/openable: URL_MAX characters exactly is still openable");
+            big[bn++] = 'a';
+            big[bn] = 0;
+            CHECK(!url_is_openable(big), "url/openable: one more is not");
+        }
+
+        /* --- the gates on a plain click, as ONE decision --------------------------------------
+           main.c owns the pointer, the geometry and the clock and fills the flags; url.c owns the
+           ORDER. Each line below is a bug a user would report by name. Measured by realprobe. */
+        {
+            UrlClick c;
+#define UC(A, B, C, D, E, F, G) (memset(&c, 0, sizeof c), c.enabled = (A), c.released = (B), \
+            c.single = (C), c.no_drag = (D), c.shift = (E), c.app_owns_click = (F), \
+            c.url_found = (G), &c)
+            CHECK(url_click_opens(UC(1, 1, 1, 1, 0, 0, 1)) == 1,
+                  "url/gate: a single left RELEASE in a plain pane with an address under it opens");
+            CHECK(url_click_opens(UC(0, 1, 1, 1, 0, 0, 1)) == 0,
+                  "url/gate: `click_opens_url = 0` and no click opens anything");
+            CHECK(url_click_opens(UC(1, 0, 1, 1, 0, 0, 1)) == 0,
+                  "url/gate: a PRESS never opens — at the press a second click cannot be known about yet");
+            CHECK(url_click_opens(UC(1, 1, 0, 1, 0, 0, 1)) == 0,
+                  "url/gate: the second and third click of a gesture select a WORD and a LINE, they do "
+                  "not open");
+            CHECK(url_click_opens(UC(1, 1, 1, 0, 0, 0, 1)) == 0,
+                  "url/gate: a DRAG selects text — that rule is older and louder than this one");
+            CHECK(url_click_opens(UC(1, 1, 1, 1, 1, 0, 1)) == 0,
+                  "url/gate: `Shift` + click means selection, here as everywhere else");
+            CHECK(url_click_opens(UC(1, 1, 1, 1, 0, 1, 1)) == 0,
+                  "url/gate: a program that owns its screen keeps its click-to-place-cursor — `less`, "
+                  "`nano`, `man`");
+            CHECK(url_click_opens(UC(1, 1, 1, 1, 0, 0, 0)) == 0,
+                  "url/gate: no address under the pointer, nothing to open");
+            CHECK(url_click_opens(NULL) == 0, "url/gate: a NULL decision is answered, not crashed");
+#undef UC
+        }
+
+        /* --- the wait: a double click on an address selects the word and opens NOTHING --------
+           The boundary is STRICTLY past the window, and it has to be: term_click_count() counts a press
+           at exactly CLICK_DCLICK_MS as still the same gesture, so if the open fired at that instant the
+           two rules would disagree about the last millisecond of a double click. */
+        CHECK(CLICK_DCLICK_MS == 500 && URL_OPEN_WAIT_MS == CLICK_DCLICK_MS,
+              "url/wait: the open waits out exactly the double-click window — one gesture, one number");
+        CHECK(url_open_due(1000 + CLICK_DCLICK_MS, 1000, URL_OPEN_WAIT_MS) == 0,
+              "url/wait: at exactly the window the gesture is still a double click, so nothing opens yet");
+        CHECK(url_open_due(1000 + CLICK_DCLICK_MS + 1, 1000, URL_OPEN_WAIT_MS) == 1,
+              "url/wait: one ms past it, the gesture is over and the single click opens");
+        CHECK(url_open_due(999, 1000, URL_OPEN_WAIT_MS) == 0,
+              "url/wait: a clock that went backwards opens nothing");
+        CHECK(url_open_due(99999, 0, URL_OPEN_WAIT_MS) == 0,
+              "url/wait: nothing is pending when the press time is 0");
+        CHECK(url_open_due(1000, 1000, 0) == 1,
+              "url/wait: a zero window asks the click to answer now (the window is never 0 in the tree)");
+        CHECK(term_click_count(1000 + CLICK_DCLICK_MS, 1000, 1, 1) == 2 &&
+              url_open_due(1000 + CLICK_DCLICK_MS, 1000, URL_OPEN_WAIT_MS) == 0,
+              "url/wait: at the boundary the two rules AGREE — still a double click, still no open");
+
+        /* --- the switch: click_opens_url, and the default IS the feature ----------------------
+           The user asked for the plain click, so it ships ON; a group that only proved `= 0` works would
+           pass a build that shipped it OFF. Default first, then every spelling of both values fed AFTER
+           the opposite one (the s120 `cfg_no_auto` lesson), then the bool contract. */
+        {
+            Config c;
+            const char *path = "/tmp/kterm_test_config_url.conf";
+            config_default(&c);
+            CHECK(c.click_opens_url == 1,
+                  "config: click_opens_url defaults to ON — the user asked for the plain click, not for "
+                  "an option they had to find");
+            FILE *f = fopen(path, "w");
+            CHECK(f != NULL, "config: temp config file writable (click_opens_url)");
+            if (f) {
+                static const char *on[]  = { "1", "on", "yes", "true", "ON", "True" };
+                static const char *off[] = { "0", "off", "no", "false", "OFF" };
+                for (size_t i = 0; i < sizeof on / sizeof on[0]; i++) {
+                    f = fopen(path, "w");
+                    fprintf(f, "click_opens_url = 0\nclick_opens_url = %s\n", on[i]);
+                    fclose(f);
+                    config_default(&c);
+                    config_load(&c, path);
+                    CHECK(c.click_opens_url == 1,
+                          "config: click_opens_url = 1 (and its on/yes/true spellings) turns it on");
+                }
+                for (size_t i = 0; i < sizeof off / sizeof off[0]; i++) {
+                    f = fopen(path, "w");
+                    fprintf(f, "click_opens_url = 1\nclick_opens_url = %s\n", off[i]);
+                    fclose(f);
+                    config_default(&c);
+                    config_load(&c, path);
+                    CHECK(c.click_opens_url == 0,
+                          "config: click_opens_url = 0 (and its off/no/false spellings) turns it off — "
+                          "the one behaviour in the tree that starts a program is a key, not a law");
+                }
+                f = fopen(path, "w");
+                fputs("click_opens_url = 0\nclick_opens_url = maybe\n", f);
+                fclose(f);
+                config_default(&c);
+                config_load(&c, path);
+                CHECK(c.click_opens_url == 1,
+                      "config: a word that is not 0/off/no/false means ON — cfg_bool's rule, shared by "
+                      "every bool key (an enum like `bell` is the one that keeps instead)");
+                remove(path);
+            }
+        }
+
+        /* --- url_spawn: the one place Kai-Term starts a program -------------------------------
+           The claim in the header is three parts — the argument arrives as ONE argument with no shell in
+           between, Kai-Term's own descriptors are closed in the child, and the blocked SIGCHLD mask is
+           unblocked. All three are checkable headless with a script as the stand-in opener: the script
+           writes what it was given and what it can see. `xdg-open` launching a real browser is NOT what
+           this proves, and nothing here claims it. */
+        {
+            char script[160], outp[160], pwn[160];
+            snprintf(script, sizeof script, "/tmp/kterm-urlspawn-%ld.sh", (long)getpid());
+            snprintf(outp, sizeof outp, "/tmp/kterm-urlspawn-%ld.out", (long)getpid());
+            snprintf(pwn, sizeof pwn, "/tmp/kterm-urlspawn-%ld.pwned", (long)getpid());
+            remove(outp);
+            remove(pwn);
+            FILE *sf = fopen(script, "w");
+            CHECK(sf != NULL, "spawn: the stand-in opener was written");
+            if (sf) {
+                fprintf(sf, "#!/bin/sh\n"
+                            "{\n"
+                            "  printf 'argc=%%d\\n' \"$#\"\n"
+                            "  printf 'arg=%%s\\n' \"$1\"\n"
+                            "  printf 'sid=%%s\\n' \"$(awk '{print $6}' /proc/self/stat)\"\n"
+                            /* BOTH spellings, and that is not redundancy: a pty MASTER fd links to
+               /dev/ptmx and a SLAVE fd to /dev/pts/N, so a grep for "pts" alone reports 0 for a child that
+               inherited every master in the process — which is exactly what the `spawn_no_closefrom` mutant
+               does, and it survived the first version of this check (.scratch/s129/fdprobe.c). */
+                            "  printf 'ptys=%%d\\n' \"$(ls -l /proc/self/fd 2>/dev/null | grep -c -e pts "
+                            "-e ptmx)\"\n"
+                            "} > %s 2>&1\n", outp);
+                fclose(sf);
+                chmod(script, 0700);
+
+                /* A pty master, so there IS a Kai-Term descriptor the child must not inherit — the
+                   exact failure the header names (a browser holding the user's ptys open after their
+                   shells are gone). posix_openpt is called without O_CLOEXEC in src/pty.c too, so this
+                   reproduces the real condition rather than a convenient one. */
+                int pty = posix_openpt(O_RDWR | O_NOCTTY);
+                CHECK(pty >= 0, "spawn: a pty master was opened to be inherited (or not)");
+
+                /* SIGCHLD blocked, the way main.c has it for its signalfd. */
+                sigset_t blk, old;
+                sigemptyset(&blk);
+                sigaddset(&blk, SIGCHLD);
+                sigprocmask(SIG_BLOCK, &blk, &old);
+                long myside = (long)getsid(0);
+
+                /* One argument, and a hostile one: if anything in the path to the opener were a SHELL,
+                   the `;touch` would run and the .pwned file would exist. */
+                char url[256];
+                snprintf(url, sizeof url, "https://example.com/a?b=1;touch %s", pwn);
+                int rc = url_spawn(script, url);
+                CHECK(rc == 0, "spawn: the opener was started (fork succeeded)");
+
+                char got[4096];
+                size_t got_n = 0;
+                int appeared = 0;
+                for (int tries = 0; tries < 300 && !appeared; tries++) {
+                    struct stat st;
+                    if (stat(outp, &st) == 0 && st.st_size > 0) {
+                        FILE *rf = fopen(outp, "r");
+                        if (rf) {
+                            got_n = fread(got, 1, sizeof got - 1, rf);
+                            got[got_n] = 0;
+                            fclose(rf);
+                            if (got_n > 0)
+                                appeared = 1;
+                        }
+                    }
+                    if (!appeared)
+                        usleep(10000);
+                }
+                CHECK(appeared, "spawn: the opener ran and reported (within 3 s)");
+                if (appeared) {
+                    CHECK(strstr(got, "argc=1\n") != NULL,
+                          "spawn: exactly ONE argument reached the opener — no word splitting, no shell");
+                    char want[512];
+                    snprintf(want, sizeof want, "arg=%s\n", url);
+                    CHECK(strstr(got, want) != NULL,
+                          "spawn: and it is the address VERBATIM, semicolon and all");
+                    CHECK(strstr(got, "ptys=0\n") != NULL,
+                          "spawn: the child holds NO pty — neither a master (/dev/ptmx) nor a slave "
+                          "(/dev/pts/N) — every descriptor of Kai-Term's own was closed (closefrom), so a "
+                          "browser cannot keep a session's pty alive");
+                    const char *sid = strstr(got, "sid=");
+                    long kidsid = sid ? strtol(sid + 4, NULL, 10) : myside;
+                    CHECK(sid != NULL && kidsid != myside,
+                          "spawn: the opener is in its OWN session — Ctrl+C at the prompt cannot reach it "
+                          "and it cannot take the terminal's controlling tty");
+                }
+                CHECK(access(pwn, F_OK) != 0,
+                      "spawn: nothing in the address was INTERPRETED — no shell ran the `;touch`");
+
+                /* The blocked-signal claim needs a stand-in that is NOT a shell. Measured with
+                   .scratch/s129/maskprobe.c: a shell normalises its own signal mask at startup, so a script
+                   reports SigBlk 0 even when url_spawn never unblocked anything — the first version of this
+                   check was vacuous and `spawn_no_unblock` survived it. awk leaves the inherited mask alone:
+                   the real url_spawn reports 0000000000000000 and the mutant 0000000000010000.
+                   awk's whole program is the ONE argument, which is also a fact worth knowing: the argument
+                   arrives as data, not as a command line. */
+                if (access("/usr/bin/awk", X_OK) != 0) {
+                    printf("SKIP: spawn: no /usr/bin/awk to report the inherited signal mask\n");
+                } else {
+                    char mask_out[160], awk_prog[512];
+                    snprintf(mask_out, sizeof mask_out, "/tmp/kterm-urlspawn-%ld.mask", (long)getpid());
+                    remove(mask_out);
+                    snprintf(awk_prog, sizeof awk_prog,
+                             "BEGIN{out=\"%s\"; while((getline l < \"/proc/self/status\")>0) "
+                             "if (l ~ /^SigBlk/) print l > out; close(out)}", mask_out);
+                    CHECK(url_spawn("/usr/bin/awk", awk_prog) == 0,
+                          "spawn: the non-shell stand-in was started (the signal-mask half)");
+                    char mgot[256] = "";
+                    int mask_seen = 0;
+                    for (int tries = 0; tries < 300 && !mask_seen; tries++) {
+                        FILE *rf = fopen(mask_out, "r");
+                        if (rf) {
+                            if (fread(mgot, 1, sizeof mgot - 1, rf) > 0) {
+                                mgot[strcspn(mgot, "\n")] = 0;
+                                mask_seen = 1;
+                            }
+                            fclose(rf);
+                        }
+                        if (!mask_seen)
+                            usleep(10000);
+                    }
+                    CHECK(mask_seen, "spawn: the non-shell stand-in reported its inherited mask (within 3 s)");
+                    const char *colon = strstr(mgot, "SigBlk:");
+                    unsigned long long mask = colon ? strtoull(colon + 7, NULL, 16) : ~0ULL;
+                    CHECK(mask_seen && (mask & (1ULL << (SIGCHLD - 1))) == 0,
+                          "spawn: SIGCHLD is UNBLOCKED in the child — this process blocks it for its signalfd, "
+                          "a mask survives exec, and the real opener is a shell script that waits for children "
+                          "of its own");
+                    remove(mask_out);
+                }
+                while (waitpid(-1, NULL, WNOHANG) > 0) {}   /* the opener is our child; leave no zombie */
+                if (pty >= 0)
+                    close(pty);
+                sigprocmask(SIG_SETMASK, &old, NULL);
+                remove(script);
+                remove(outp);
+                remove(pwn);
+            }
+        }
+    }
+
     /* --- the visual bell: BEL is an event, and only a real BEL rings ---------------------------
        The user's answer to question 6 was "on by default", so the parser half has to be pinned: a BEL in the
        text must be RECORDED, and a 0x07 that is doing another job must NOT ring. The second half matters more
@@ -3321,6 +3915,9 @@ int main(void)
             CHECK(t.middle_click_paste == d.middle_click_paste && d.middle_click_paste == 0,
                   "template: middle_click_paste matches, and the shipped line really is the built-in 0 — "
                   "a template that ships the option ON contradicts the default the user asked for");
+            CHECK(t.click_opens_url == d.click_opens_url && d.click_opens_url == 1,
+                  "template: click_opens_url matches, and the shipped line really is the built-in 1 — here "
+                  "the template shipping 0 would quietly ship the feature OFF");
             CHECK(t.bell == d.bell && d.bell == BELL_VISUAL,
                   "template: bell matches, and the shipped line really is the built-in `visual` — the user "
                   "asked for the bell to be visible by default");
@@ -3398,8 +3995,8 @@ int main(void)
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 39 && nb == 24,
-                  "template: the parser accepts 39 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 40 && nb == 24,
+                  "template: the parser accepts 40 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);
@@ -7161,6 +7758,7 @@ int main(void)
         static const char *scan[] = {
             "src/vt.c", "src/main.c", "src/render.c", "src/config.c", "src/theme.c", "src/fm.c",
             "src/mux.c", "src/layout.c", "src/img.c", "src/font.c", "src/pty.c", "src/shellint.c",
+            "src/url.c",
             "tests/test_vt.c", "tests/test_fm.c", "tests/test_render.c", "tests/dbg.c",
         };
         int bad = 0, unread = 0;
