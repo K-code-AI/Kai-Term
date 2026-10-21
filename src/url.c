@@ -1,8 +1,5 @@
-/* Kai-Term — a plain click opens a URL (plan step 7).
-   Everything about that sentence that is a DECISION is here: which run of cells a click lands on, what makes
-   that run a URL, what gates the click, how long it waits, and how the opener is started. src/main.c computes
-   the flags (it owns the pointer, the geometry and the clock) and asks this file the questions — the standing
-   rule of the project, because main.c is linked into no test binary and a rule written there is a claim. */
+/* Which run of cells a click lands on, what makes that run a URL, what gates the click, how long it waits
+   and how the opener is started. main.c owns the pointer, the geometry and the clock and asks questions. */
 #include "kai-term.h"
 
 #include <fcntl.h>
@@ -14,11 +11,9 @@
 
 /* ---------- what a run of cells is ---------- */
 
-/* Can this codepoint sit inside a URL run? ASCII only. A space, a never-written cell (which is what a tab
-   leaves behind — measured: `x\thttps://example.com/tab` starts the run at the gap's end) and the five marks a
-   terminal draws AROUND a URL far more often than inside one all end it. A non-ASCII codepoint ends it too, and
-   that one is special: it CUTS the URL, which is why url_run_at() refuses the whole run rather than opening the
-   half it could spell (`https://ex<C3><A9>.com` would otherwise open `https://ex` — a different page). */
+/* Can this codepoint sit inside a URL run? ASCII only: a space, a never-written cell and the five marks a
+   terminal draws AROUND a URL end it. A non-ASCII codepoint CUTS it, so the whole run is refused rather
+   than opening the half this rule can spell. */
 static int url_cell(uint32_t ch)
 {
     if (ch == 0 || ch == ' ' || ch < 0x20 || ch == 0x7f || ch >= 0x80)
@@ -65,11 +60,9 @@ static int scheme_len(const uint32_t *v, int n, int i)
     return 0;
 }
 
-/* A mark that sticks to the end of a run instead of belonging to the URL: the sentence punctuation a program
-   prints after a link. The quote/bracket marks cannot appear here at all — url_cell() ends a run on them — so
-   they are deliberately NOT in this list (a branch that cannot be taken is a branch nobody can test).
-   A SLASH is not here either, and that is a decision, not an oversight: `https://x/` and `https://x` are
-   different pages, so cutting a trailing slash is a wrong answer rather than a smaller one. */
+/* Sentence punctuation printed after a link. Quote and bracket marks cannot appear here because url_cell()
+   already ends a run on them; a trailing slash is kept because `https://x/` and `https://x` are different
+   pages. */
 static int url_trailing(uint32_t ch)
 {
     switch (ch) {
@@ -80,9 +73,8 @@ static int url_trailing(uint32_t ch)
     }
 }
 
-/* Does the closer at v[b] close the URL or the sentence around it? `(https://x/a(b)c)` ends with a bracket that
-   closed nothing inside the URL, while `https://x/a(b)` ends with one that did. Counting inside the run is what
-   tells them apart; the same rule a browser's own URL finder uses. */
+/* Does the closer at v[b] close the URL or the sentence around it? `(https://x/a(b)c)` ends with a bracket
+   that closed nothing inside the run, `https://x/a(b)` does not; counting the pairs tells them apart. */
 static int unbalanced_closer(const uint32_t *v, int a, int b)
 {
     char close = (char)v[b];
@@ -113,9 +105,8 @@ static int url_run_at(const uint32_t *v, const uint8_t *cut, int n, int at, int 
         lo--;
     while (hi < n - 1 && url_cell(v[hi + 1]))
         hi++;
-    /* Cut, not ended: the next cell is a glyph this rule cannot spell, so the run is half of something. The
-     * LEFT side needs no such guard — the scheme match fixes where the URL starts no matter what sits before
-     * it (measured: `xhttps://example.com` opens `https://example.com`). */
+    /* Cut, not ended: the next cell is a glyph this rule cannot spell, so the run is half of something. The left
+   side needs no guard — the scheme match fixes where the run starts whatever sits before it. */
     if (hi + 1 < n && cut[hi + 1])
         return 0;
     int start = -1, slen = 0;
@@ -185,12 +176,9 @@ int term_url_span(Term *t, int col, int row, UrlSpan *sp)
     return 1;
 }
 
-/* Cells of the span on one row: the first row starts at c0, the last ends at c1, the rows between are whole —
-   which is what a soft-wrapped run looks like, since the break happened AT the margin. This is the ONE owner of
-   that reading: term_url_text() spells the address out with it and the renderer's hover underline (pass 2c in
-   src/render.c) draws with it, so the line under an address and the bytes handed to the opener cannot disagree
-   about which cells belong to the run. `cols` is the grid the span was found in — pass the Term's own cols, not a
-   pane's, or a pane that has not caught up with a resize answers a different question than the click did. */
+/* Cells of the span on one row: the first row starts at c0, the last ends at c1, the rows between are whole.
+   The spelled-out address and the hover underline both use this, so they cannot disagree about which cells
+   belong to the run. Pass the Term's own cols, not a pane's. */
 int url_span_row(const UrlSpan *sp, int r, int cols, int *from, int *to)
 {
     if (!sp || !from || !to)
@@ -259,12 +247,8 @@ int url_is_openable(const char *url)
     size_t n = strlen(url);
     if (n > (size_t)URL_MAX)
         return 0;
-    /* An argument that starts with a dash is an OPTION, not a document. That is the one way a "URL" could
-       change what the opener DOES instead of what it opens, and it costs one comparison to close.
-       Honest note (s129, mutant `url_openable_dash`): this branch is UNREACHABLE today — the scheme test below
-       requires the first bytes to be `http://`/`https://`, so no string this function accepts can start with a
-       dash, and no check can tell the branch from its absence. It stays as the lock on a PUBLIC entry point:
-       the day a second scheme is accepted, this becomes the only thing between an address and an option. */
+    /* An argument that starts with a dash is an option, not a document — the one way a URL could change what the
+   opener DOES. Unreachable while only http(s) is accepted; it is the lock for the day a second scheme is. */
     if (url[0] == '-')
         return 0;
     for (size_t i = 0; i < n; i++) {
@@ -279,11 +263,8 @@ int url_is_openable(const char *url)
     return 0;                                  /* ftp, mailto, file, magnet: not ours to open */
 }
 
-/* Why a plain click does not open, in the order the gates are asked. This is a VALUE and not a chain of early
-   returns because "I clicked on an address and nothing happened" is the one report this feature will get, and a
-   refusal that logs nothing makes it undecidable (s131 shipped exactly that, and s132 could not tell which gate
-   fired from any amount of reading). The first gate that refuses is the one reported, so the answer is the real
-   reason rather than the last one. */
+/* Why a plain click does not open, in the order the gates are asked. A value rather than a chain of early
+   returns so a refusal can name the gate that fired instead of the last one. */
 int url_refusal(const UrlClick *c)
 {
     if (!c)
@@ -305,9 +286,7 @@ int url_refusal(const UrlClick *c)
     return URL_REFUSE_NONE;
 }
 
-/* The refusal in words. Written here so the line the user reads and the line a check pins cannot drift apart.
-   Every one of these names a thing the user can act on or at least understand — "it moved" is a different answer
-   from "that program keeps its clicks", and a report that says which one is a report that can be fixed. */
+/* The refusal in words, written here so the line the user reads and the line a check pins cannot drift. */
 const char *url_refusal_name(int why)
 {
     switch (why) {
@@ -328,13 +307,9 @@ int url_click_opens(const UrlClick *c)
     return url_refusal(c) == URL_REFUSE_NONE;
 }
 
-/* Should the run under the pointer be underlined? Written as the CLICK's decision rather than as its own list of
-   ifs, on purpose: an underline is a promise that a plain click here opens the address, so the one way it can lie is
-   to disagree with the gate the click obeys. The three gates a hover cannot have (a release, a single click, a
-   pointer that never moved) are filled in as a hover implies; `dragging` answers the click's MOVED gate because it
-   is the same fact seen from the other side — the pointer is selecting text, so the click this hover would promise
-   selects too. `in_pane` is the one gate with no click equivalent: the click path never reaches the URL code when it
-   lands on the bar, the band, a margin or the confirm-quit box, while a hover has to say so itself. */
+/* Should the run under the pointer be underlined? Asked as the CLICK's decision, not as its own list of ifs:
+   an underline is a promise that a plain click here opens, so the only way it can lie is to disagree with
+   the gate the click obeys. */
 int url_hover_shows(const UrlHover *h)
 {
     if (!h)
@@ -357,10 +332,8 @@ int url_open_due(long long now_ms, long long press_ms, int window_ms)
         return 0;                              /* nothing pending */
     if (window_ms <= 0)
         return 1;                              /* a zero window asks for the click to answer now */
-    /* Same honest note (s129, mutant `wait_no_clock_guard`): with the return expression below this guard is
-       unreachable — a `now_ms` before `press_ms` makes the difference negative, which is never past the window.
-       It stays because the expression is one edit away from `llabs(...)` or an unsigned clock, and a monotonic
-       clock that jumped backwards is a real thing on a resumed machine. */
+    /* Unreachable with the expression below (a negative difference is never past the window); it stays because a
+   monotonic clock really can jump backwards on a resumed machine. */
     if (now_ms < press_ms)
         return 0;                              /* the clock went backwards */
     return now_ms - press_ms > (long long)window_ms;
@@ -374,9 +347,8 @@ int url_spawn(const char *program, const char *arg)
     if (pid < 0)
         return -1;
     if (pid == 0) {
-        /* Unblock every signal first: this process blocks SIGCHLD for its signalfd, a signal mask survives
-           exec, and xdg-open is a shell script that waits for children. Inheriting that mask is how a feature
-           that "worked in the test" fails on the desktop. */
+        /* Unblock every signal first: this process blocks SIGCHLD for its signalfd, a signal mask survives exec, and
+   xdg-open is a shell script that waits for children. */
         sigset_t all;
         sigemptyset(&all);
         sigprocmask(SIG_SETMASK, &all, NULL);
@@ -392,10 +364,8 @@ int url_spawn(const char *program, const char *arg)
             if (dev > STDERR_FILENO)
                 close(dev);
         }
-        /* Every descriptor of Kai-Term's own goes next: the pty master of EVERY session, the Wayland socket,
-           the timerfds, the signalfd, the epoll fd. None of them is close-on-exec (posix_openpt is called
-           without O_CLOEXEC because the shell child closes it by hand), so without this a browser would end up
-           holding the user's ptys open long after their shells were gone. */
+        /* Every descriptor of Kai-Term's own goes next: none of them is close-on-exec, so without this a browser
+   would hold the user's ptys open long after their shells were gone. */
         closefrom(STDERR_FILENO + 1);
         char *argv[3] = { (char *)program, (char *)arg, NULL };
         execvp(program, argv);

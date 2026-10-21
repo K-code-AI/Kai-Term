@@ -1,16 +1,6 @@
-/* Kai-Term — themes. A theme is a file of COLOURS and nothing else: fonts, sizes, key bindings and every
-   other setting stay in kai-term.conf and kai-term.bind, where a user expects to find them.
-   The syntax is the one Kai-Term already reads — `key = value`, the same '#' comment rule (config_strip_comment,
-   shared on purpose: it was wrong once and ate every `#RRGGBB` value, s99) — and kitty's `key value` spelling
-   is accepted too, so an existing kitty theme loads unchanged. The colour syntax is cfg_parse_color's, also
-   shared: one syntax, one parser, so a theme can never accept a form the config file rejects.
-   Precedence (the user's answer, s102): the theme is applied AFTER kai-term.conf has been read in full, and
-   only for the colours the settings file did not mention itself. That is what makes a `background =` line win
-   wherever it sits in the file — above or below the `theme =` line — and it is why config.c records the names
-   the settings file set (config_note_set) instead of applying a theme line by line.
-   Only palette entries 0-15 are themeable. The 6x6x6 cube (16-231) and the grey ramp (232-255) are computed:
-   an application that asks for 196 means the cube's brightest red, and a theme that could repaint the cube
-   would make every published 256-colour chart a lie about that terminal. */
+/* A theme is a file of COLOURS and nothing else. The syntax is the one Kai-Term already reads, so a kitty
+   theme loads unchanged, and only palette entries 0-15 are themeable: the 6x6x6 cube and the grey ramp are
+   computed, and repainting them would make every 256-colour chart a lie about this terminal. */
 #include "kai-term.h"
 
 #include <ctype.h>
@@ -21,12 +11,9 @@
 #include <strings.h>     /* strcasecmp / strncasecmp: the other programs' key spellings are not consistent */
 #include <sys/stat.h>    /* stat(): a theme has to be a real regular file, same rule as a config file */
 
-/* The names a theme file may set. ONE table, and tests/test_vt.c reads these strings out of this file and
-   compares them with config/kai-term.theme — the same technique that pins kai-term.conf and kai-term.bind,
-   so a name added here without being documented fails a check.
-   The spellings are kitty's, with Kai-Term's own name beside each as an alias: that is what makes the kitty
-   theme corpus drop-in. `canonical` is the kai-term.conf name a user may have set instead, and it is what the
-   precedence check looks up — a theme's `cursor` must step aside for a `cursor_color =` line. */
+/* The names a theme file may set. tests/test_vt.c reads this table out of the source and compares it with
+   config/kai-term.theme, so a name added here without being documented fails a check. `canonical` is the
+   kai-term.conf name that outranks the theme's own. */
 enum { TK_FG, TK_BG, TK_CURSOR, TK_SEL, TK_COLOR, TK_NAME };
 typedef struct ThemeKey {
     const char *name;
@@ -269,26 +256,9 @@ int theme_apply_config(Config *c)
     return theme_apply_file(c, path);
 }
 
-/* ==================== importing a theme written for another program (--import-theme) ====================
-   A theme file is the whole of what another terminal knows about colour, so the import is a translation of
-   NAMES and of COLOUR SPELLINGS — nothing else. It runs once, at the user's request, and writes a Kai-Term
-   .theme file; after that the theme is read by the same reader as a hand-written one, which is what makes
-   the round trip in tests/test_vt.c the strongest check here.
-
-   Two rules the whole block obeys:
-   - NEVER GUESS A FORMAT. The sniff looks for a positive marker in the CONTENT, not in the file name (a
-     theme called `x.conf` can be any of these). Nothing matched -> refuse and list what was looked for. A
-     guessed format is a wrong colour that looks fine, which is the s99 shape (a reader and a writer
-     disagreeing) with a bigger blast radius.
-   - NEVER GUESS A COLOUR. A value that is not a colour in a form Kai-Term can read is refused and logged,
-     not approximated. That covers X11 names (`red`), alacritty's symbolic values (`CellForeground`) and a
-     Windows Terminal profile's `"background": "red"`.
-
-   Formats read: kai-term's own and kitty's (one reader, already there), Xresources, alacritty.toml,
-   Konsole's .colorscheme (modern sections and the legacy [Color Scheme]), xfce4-terminal's terminalrc, and
-   a Windows Terminal / VS Code JSON scheme. iTerm2's .itermcolors is RECOGNISED AND REFUSED: it is an XML
-   plist of 0.0-1.0 floats, there is no iTerm2 on this machine to check a reader against, and a parser nobody
-   can verify against a real file is worse than a refusal that says what it looked for. */
+/* --import-theme translates NAMES and COLOUR SPELLINGS from another terminal's file and writes a Kai-Term
+   .theme. Two rules: never guess a format (the sniff looks for a marker in the content, not the name) and
+   never guess a colour (a value Kai-Term cannot read is refused and logged, not approximated). */
 
 const char *theme_format_name(int fmt)
 {
@@ -323,10 +293,8 @@ static int kai_key_known(const char *key)
     return 0;
 }
 
-/* One line of any line-based theme file, split the way that format splits it. Returns 0 for a blank or a
-   comment, 1 for a section header (name in `sec`, brackets off, original case), 2 for a key/value pair.
-   The three separators these files use are '=', ':' and a space; the FIRST one wins, which is what keeps
-   `XTerm*faceName: DejaVu Sans Mono` one pair with a value that has spaces in it. */
+/* One line of any line-based theme file: 0 for blank or comment, 1 for a section header, 2 for a pair. The
+   FIRST of '=', ':' or a space splits, which keeps `XTerm*faceName: DejaVu Sans Mono` one pair. */
 static int split_line(char *line, char *sec, size_t seccap, char *key, size_t kcap,
                       char *val, size_t vcap)
 {
@@ -346,9 +314,8 @@ static int split_line(char *line, char *sec, size_t seccap, char *key, size_t kc
         return 1;
     }
     /* The separator is the first '=' or ':' in the line; only when there is neither does a space split a
-       kitty-style `key value`. "First of =, :, space" was the first attempt and it broke every alacritty
-       line: `background = '#1d1f21'` has a SPACE before the '=', so the value came back as
-       "= '#1d1f21'" and nothing was imported (measured — the whole file dropped 24 keys, 0 applied). */
+   kitty-style `key value`. Splitting on the first of the three breaks alacritty's
+   `background = '#1d1f21'`, whose value then starts with '='. */
     char *sep = NULL;
     for (char *p = line; *p; p++) {
         if (*p == '=' || *p == ':') {
@@ -456,11 +423,8 @@ int theme_sniff(const char *text)
 
 /* ---------- colour spellings ---------- */
 
-/* xfconf (xfce4-terminal) stores 16-BIT components: `#1c1c1c1c1c1c` is R=G=B=0x1c1c. Folding is one shift
-   per component, never a truncation: hand those 12 digits to cfg_parse_color and strtoull yields
-   0x1c1c1c1c1c1c, the uint32 return keeps the LOW 32 bits, and the result is `#1c1c1c1c` — an alpha of 0x1c
-   and a blue of 0x1c, a colour that looks plausible and is wrong. Same class as the s102 cube
-   (`55 + 41 * level` = 260) and the s104 `rgb:ffff` rounding: a value wider than the channel it lands in. */
+/* xfconf stores 16-bit components: `#1c1c1c1c1c1c` is R=G=B=0x1c1c. Fold one shift per component — handing
+   those digits to cfg_parse_color keeps the LOW 32 bits and yields a plausible, wrong colour. */
 static int hex12_color(const char *s, uint32_t *out)
 {
     if (*s == '#')
@@ -549,10 +513,9 @@ static void drop_key(ThemeVals *v, int lineno, const char *key, const char *why)
     klog(L_INFO, "import:%d: '%s' has nowhere to go (%s)", lineno, key, why);
 }
 
-/* A theme's own name, from its `name` / `Description` key. ThemeVals.name is 127 characters and a value here
-   can be up to 1023, so a long name IS cut — the question is whether the cut is a decision or an accident.
-   It is the name an imported theme is written under, so the log says how long the file's name was and how much
-   of it survived. (The JSON reader already spelled its cap out; this is the same rule, in one place.) */
+/* A theme's own name, from its `name` / `Description` key. ThemeVals.name holds 127 characters and a value
+   can reach 1023, so a long name IS cut — and it decides the file an imported theme is written under, so
+   the log says how long it was and how much survived. */
 static void set_name(ThemeVals *v, const char *val, int lineno)
 {
     size_t len = strlen(val);
@@ -637,10 +600,8 @@ static int konsole_slot(const char *sec, const char *key, int *slot, int *idx)
         *slot = SL_PAL;
         return 1;
     }
-    /* `Color0Intense` .. `Color7Intense` are Konsole's BRIGHT eight: they map to palette entries 8-15, not
-       onto the dark ones. Treating them as duplicates of Color0-7 (the first attempt) threw away half the
-       palette and logged eight confusing "already set" lines. The tail is compared only when the name is
-       long enough to have one. */
+    /* `Color0Intense` .. `Color7Intense` are Konsole's BRIGHT eight: palette entries 8-15, not duplicates of
+   Color0-7. The tail is compared only when the name is long enough to have one. */
     size_t wl = strlen(what);
     if (wl > 7 && !strcasecmp(what + wl - 7, "Intense")) {
         char base[64];
@@ -821,9 +782,7 @@ static int import_kv(int fmt, const char *sec, const char *key, const char *val,
 
 /* ---------- the JSON reader ---------- */
 /* Deliberately small: it walks the text for `"key" : "value"` pairs and nothing else, tracking brace depth.
-   A full parser would be more code than the mapping and would buy nothing — every value wanted here is a
-   string. A value that is not a string (null, false, a number) is skipped, which is what stops a Windows
-   Terminal profile's `"background": "red"` from becoming a colour. */
+   A value that is not a string is skipped, which is what stops `"background": "red"` becoming a colour. */
 typedef struct JsonPair {
     char key[128];
     char val[256];

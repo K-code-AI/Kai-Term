@@ -1,7 +1,5 @@
-/* Kai-Term — configuration. Two files, one `key = value` syntax: kai-term.conf holds the settings (how the
-   terminal looks and behaves), kai-term.bind holds the key bindings. Both are searched for in
-   $XDG_CONFIG_HOME/kai-term, then ~/.config/kai-term, then /etc/kai-term — first one found wins, and none
-   found anywhere means the built-in defaults below. */
+/* Two files, one `key = value` syntax: kai-term.conf holds the settings, kai-term.bind the key bindings.
+   Each is searched in $XDG_CONFIG_HOME/kai-term, ~/.config/kai-term and /etc/kai-term; the first wins. */
 #include "kai-term.h"
 
 #include <ctype.h>
@@ -45,10 +43,7 @@ void config_default(Config *c)
     c->selection_color = SEL_BG;
     c->opacity = 1.0f;
     c->shell[0] = 0;           /* empty => $SHELL */
-    /* The integration script is handed to a recognised shell only (fish/bash/zsh). On by default: it changes
-       nothing a user sees until the file manager follows a navigation, and it is the only way to move the
-       shell without touching the user's half-typed line. shell_integration = 0 starts every shell exactly as
-       earlier sessions did. */
+    /* On by default: it changes nothing the user sees until the file manager follows a navigation. */
     c->shell_integration = 1;
     c->working_dir[0] = 0;     /* empty => $HOME */
     /* xdg-shell app_id: window rules and taskbar grouping key off it, so the default
@@ -56,10 +51,8 @@ void config_default(Config *c)
     snprintf(c->app_id, sizeof(c->app_id), DEF_APP_ID);
     c->clear_scrollback = 1;   /* CSI 3 J drops the scrollback (on by default) */
     c->copy_on_release = 0;    /* selecting does not copy unless the user asks (Ctrl+Shift+C does) */
-    /* The mouse inside a full-screen program that never asked for the mouse (nano, less, man). Both on:
-       in that state the wheel and a click used to do NOTHING at all (the alt grid has no scrollback and a
-       mouse report would be typed into the document), so turning them into cursor keys costs the user
-       nothing that worked before. See Config in kai-term.h for what each one does and what it can surprise. */
+    /* On by default: in that state the wheel and a click used to do nothing at all, so turning them into cursor
+   keys costs nothing that worked before. */
     c->wheel_sends_keys = 1;
     c->click_moves_cursor = 1;
     /* Double click selects a word, triple click the whole logical line. On by default: the user asked for
@@ -72,15 +65,10 @@ void config_default(Config *c)
        the answer to that question rather than a new idea. It is still a key: the one behaviour in the tree that
        starts a program, and a click that launches a browser is something a user must be able to turn off. */
     c->click_opens_url = 1;
-    /* The bell is VISUAL by default. Kai-Term has no audio, so a BEL that is not drawn is a BEL nobody hears:
-       readline's ambiguous completion, `less` on an unknown command or a scroll past the end of its file, and sudo
-       on a wrong password all say "no" with
-       a BEL and would otherwise say nothing at all. The user's answer to question 6 was "on by default". */
+    /* Visual by default: Kai-Term has no audio, so a BEL that is not drawn is a BEL nobody hears. */
     c->bell = BELL_VISUAL;
-    /* The cursor: a thin bar (there is no `cursor_style` key — the user asked for one look) that is on for
-       1000 ms and off for 1000 ms, the classic rhythm. 0 turns the blink off and an application cannot turn
-       it back on (see the CURBLINK enum comment). 2 px is the width that reads as a hairline at 14px but is
-       still one whole pixel on a HiDPI-free 1x display; render_cursor() clamps it to a third of a cell. */
+    /* A thin bar, on for 1000 ms and off for 1000 ms. An application can ask for a steady cursor but cannot
+   switch the blink back on, and render_cursor() clamps the width to a third of a cell. */
     c->cursor_blink = 1000;
     c->cursor_width = 2;
     c->repeat_delay = 300;     /* ms before a held key repeats (0 = Kai-Term does not repeat) */
@@ -105,20 +93,14 @@ void config_default(Config *c)
        foreground command in it, so an idle window still closes instantly. */
     c->confirm_quit = CONFIRM_RUNNING;
     keybind_parse("Ctrl+Shift+S", &c->key_toggle_layout);
-    /* The in-window file manager. OFF by default: a user who never presses the toggle gets exactly the
-       terminal of earlier sessions, and closing it again returns to that state. The band takes 75% of the
-       window's height (layout.c clamps that against the real window and always leaves the terminal its
-       floor), the preview pane is on, dotfiles are hidden at first, and browsing a directory also moves
-       the shell there (fm_follow). */
+    /* Off by default: a user who never presses the toggle gets exactly the terminal of earlier sessions. The band
+   takes 75% of the window's height, always leaving the terminal its floor. */
     c->fm_on = 0;
     c->fm_size = FM_SIZE_DEF;
     c->fm_preview = 1;
     c->fm_show_hidden = 0;
     c->fm_follow = 1;
-    /* A pane of the band is focused by CLICKING it. The pointer's position alone must not take the
-       keyboard: the wheel used to hand it over before knowing whether the gesture had scrolled
-       anything, so a trackpad frame with a sub-cell delta moved the keyboard and did nothing else
-       (fm_wheel_focus in src/fm.c owns the rule; the user asked for click-to-focus as the default). */
+    /* A pane of the band is focused by CLICKING it. The pointer's position alone must not take the keyboard. */
     c->fm_focus_on_hover = 0;
     keybind_parse("Ctrl+Shift+F", &c->key_file_manager);
     keybind_parse("Ctrl+Shift+Up", &c->key_fm_focus);
@@ -241,10 +223,8 @@ static unsigned mod_bit_of(const char *tok)
     return 0;
 }
 
-/* A key token -> its keysym. A single printable character IS its own keysym (X keysyms for ASCII are
-   the codepoints), and letters are folded to LOWERCASE: a binding names the KEY, and the Shift state
-   is a modifier of its own, so "Ctrl+Shift+T" and "Ctrl+Shift+t" mean the same thing and main.c
-   folds the pressed keysym the same way before comparing. */
+/* A single printable character IS its own keysym (X keysyms for ASCII are the codepoints). Letters fold to
+   LOWERCASE: a binding names the KEY, and Shift is a modifier of its own. */
 static int sym_of(const char *tok, uint32_t *sym)
 {
     for (size_t i = 0; i < sizeof(key_names) / sizeof(key_names[0]); i++)
@@ -394,13 +374,8 @@ static void set_fm_keybind(KeyBind *kb, const char *key, const char *val)
     *kb = parsed;
 }
 
-/* ---------- the two halves of the config surface ----------
-   A SETTING (how the terminal looks and behaves) lives in kai-term.conf; a KEY BINDING (which key does
-   which action) lives in kai-term.bind. One `key = value` syntax and one line reader serve both files;
-   what differs is which NAMES each file accepts, and that is exactly what the two functions below decide.
-   The split is by NAME, never by "which file was open": a kai-term.conf written before the split keeps
-   working (apply() logs where the line belongs now), and the bind file is read LAST, so for a name both
-   files set the bind file wins. */
+/* A SETTING lives in kai-term.conf, a KEY BINDING in kai-term.bind. The split is by NAME, never by which file
+   was open, so a config written before the split keeps working; the bind file is read last and wins. */
 
 /* Every key that names a key binding. Returns 1 when `key` is one of them (and has been applied), 0 when
    it is not — the caller then tries apply_setting(). */
@@ -538,10 +513,8 @@ static void apply_setting(Config *c, const char *key, char *val)
            0 = every click selects one cell, as before this existed. */
         c->click_selects_word = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "middle_click_paste")) {
-        /* 0 (default) = a middle click does nothing in a terminal pane, as it always has. 1 = it pastes the
-           CLIPBOARD there. Only the pane: a middle click on the tab bar still closes a session, one in the
-           file-manager band still picks a file, and one while a program holds the mouse is still reported to
-           that program — the order is ptr_press_action()'s, in src/vt.c, and a check pins it. */
+        /* 0: a middle click does nothing in a terminal pane. 1: it pastes the clipboard there, and only there — the
+   tab bar, the band and a program that holds the mouse keep their own middle click. */
         c->middle_click_paste = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "click_opens_url")) {
         /* 1 (default) = a single left click on an http(s) run in a terminal pane hands it to xdg-open. 0 = a click
@@ -549,11 +522,8 @@ static void apply_setting(Config *c, const char *key, char *val)
            url_click_opens()'s in src/url.c, and the run rule is term_url_span()'s next to it. */
         c->click_opens_url = cfg_bool(val) ? 1 : 0;
     } else if (!strcmp(key, "bell")) {
-        /* What a BEL does: `visual` (the default) flashes that session's field for BELL_FLASH_MS, `off` draws
-           nothing. 1/on/yes/true and 0/off/no/false are accepted as spellings of the two, the way confirm_quit
-           accepts them for its three. An unknown word WARNS AND KEEPS — that is the rule for an enum, and it is
-           NOT the rule for a bool (cfg_bool() reads any word but 0/off/no/false as ON; the s125 check pins
-           that, so do not copy this branch into a bool key or the other way round). */
+        /* `visual` flashes that session's field, `off` draws nothing. An unknown word warns and keeps the current
+   value: that is the rule for an enum, and it is NOT how cfg_bool() reads a word. */
         if (!strcasecmp(val, "off") || !strcmp(val, "0") || !strcasecmp(val, "no") ||
             !strcasecmp(val, "false")) {
             c->bell = BELL_OFF;
@@ -565,10 +535,8 @@ static void apply_setting(Config *c, const char *key, char *val)
                  c->bell == BELL_OFF ? "off" : "visual");
         }
     } else if (!strcmp(key, "cursor_blink")) {
-        /* Half-period in ms: the cursor is drawn for this long, then hidden for this long. 0 = steady.
-           The upper clamp is only there to stop a typo (`cursor_blink = 100000`) leaving a cursor that
-           looks broken; nothing sane needs more than a few seconds. Blinking is additionally gated on the
-           window having focus and on DEC 25l — see blink_half_ms() in src/main.c. */
+        /* Half-period in ms: drawn this long, then hidden this long; 0 = steady. The upper clamp only stops a typo
+   leaving a cursor that looks broken. */
         c->cursor_blink = iclamp_(atoi(val), 0, 10000);
     } else if (!strcmp(key, "cursor_width")) {
         /* px of bar (and of underline). Clamped to at least 1 here and to a third of a cell in
@@ -604,11 +572,8 @@ static void apply_setting(Config *c, const char *key, char *val)
                  val, c->tab_bar == BAR_OFF ? "off" : (c->tab_bar == BAR_ALWAYS ? "always" : "auto"));
         }
     } else if (!strcmp(key, "confirm_quit")) {
-        /* What a close does when something is still running: `running` (default) asks only when a session
-           has a foreground command, `always` asks at every close of the window or of a tab, `never` quits
-           as earlier builds did. The predicate is pty_fg_busy() — tcgetpgrp on the pty master — so what
-           counts as "running" is measured, not guessed: a foreground command or a pipeline yes, a job
-           backgrounded with `&` no. */
+        /* `running` (default) asks only when a session has a foreground command, `always` asks at every close,
+   `never` quits. "Running" is tcgetpgrp, so a job backgrounded with `&` does not count. */
         if (!strcasecmp(val, "never") || !strcmp(val, "0") || !strcasecmp(val, "off") ||
             !strcasecmp(val, "no") || !strcasecmp(val, "false")) {
             c->confirm_quit = CONFIRM_NEVER;
@@ -667,10 +632,8 @@ static void apply_setting(Config *c, const char *key, char *val)
     }
 }
 
-/* One line of either file. `from_bind_file` says which file it came from, and the only thing that decides
-   is which NAMES are accepted there: a binding written in kai-term.conf is applied and pointed at
-   kai-term.bind, a setting written in kai-term.bind is refused and pointed at kai-term.conf. Either way
-   the line is never silently dropped. */
+/* One line of either file. Which NAMES that file accepts is the only thing that decides, and either way the
+   line is never silently dropped. */
 static void apply(Config *c, const char *key, char *val, int from_bind_file)
 {
     if (apply_bind_key(c, key, val)) {
@@ -719,16 +682,9 @@ int config_key_was_set(const Config *c, const char *key)
     return 0;
 }
 
-/* Cut a comment off a config line, in place. One rule for every file Kai-Term reads — kai-term.conf,
-   kai-term.bind and a .theme — because getting this wrong once ate every `#RRGGBB` colour in the tree
-   (s99). '#' starts a comment in two cases: nothing but whitespace comes before it (a comment line), or
-   whitespace comes before it AND whitespace or the end of the line comes after it (a trailing note). The
-   second half of that rule is what makes a colour work: `background = #1c1c22` has a space before the
-   '#', and the old "whitespace before it is enough" rule cut the line right there, so the documented
-   colour syntax set NOTHING at all — measured, Config.bg stayed at its default with that line in the file,
-   and an empty value is not even worth a warning because "foreground =" is a legal way to ask for the
-   default. `working_dir = /home/me/my#project` still survives (no whitespace before the '#'), and
-   `value # note` is still stripped. */
+/* Cut a comment off a config line, in place. '#' starts one when only whitespace precedes it, or when
+   whitespace precedes it AND whitespace or the end of line follows — that second half is what keeps
+   `background = #1c1c22` a colour and `/home/me/my#project` a path. */
 void config_strip_comment(char *line)
 {
     for (char *hash = line; *hash; hash++) {
@@ -747,18 +703,9 @@ void config_strip_comment(char *line)
     }
 }
 
-/* Where one config file comes from. The first directory below that holds `name` wins and the rest are
-   never opened, so a user's own file is never mixed with the system's:
-
-       $XDG_CONFIG_HOME/kai-term/   (only when XDG_CONFIG_HOME is set and non-empty)
-       ~/.config/kai-term/
-       /etc/kai-term/
-
-   Nothing found anywhere leaves `out` EMPTY, which is how the callers know to keep the built-in defaults
-   rather than open a path that does not exist. The search is per FILE NAME, not per directory: a user who
-   has a kai-term.conf in ~/.config and no kai-term.bind there still gets the system-wide bindings from
-   /etc/kai-term, which is the point of shipping a bind file distro-side. A directory, a FIFO or a dangling
-   symlink named kai-term.conf is not a config file, so S_ISREG is checked and the search moves on. */
+/* The first directory that holds `name` wins: $XDG_CONFIG_HOME/kai-term, ~/.config/kai-term, /etc/kai-term.
+   The search is per file name and a non-regular file is skipped; leaving `out` empty means the caller keeps
+   the built-in defaults. */
 void config_find(const char *name, char *out, size_t cap)
 {
     out[0] = 0;
