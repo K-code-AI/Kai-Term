@@ -72,10 +72,8 @@ typedef struct Wayland {
     int comp_ver;               /* bound wl_compositor interface version */
     int pw, ph;                 /* pending configure size (px) */
     int cur_w, cur_h;           /* applied size (px) */
-    /* Where the grid of the VISIBLE session starts inside the window, in px: the origin of the pane that
-       layout_apply() gave it (the Config.padding margin, plus the tab-bar row and its gap when the bar is
-       drawn). sel_cell()/mouse_cell() map the pointer through it, so a click names the cell drawn under it;
-       render.c uses the per-pane origins of g_layout directly. */
+    /* The visible session's grid origin inside the window, in px (layout_apply()'s pane origin, padding and
+       tab bar included) — the pointer is mapped through it so a click names the cell drawn under it. */
     int gx, gy;
     int first_done;
     /* The one outstanding wl_surface_frame callback, NULL when none is in flight. It replaces the old
@@ -91,58 +89,43 @@ typedef struct Wayland {
     int fatal;                  /* the renderer gave up (no video memory): main() exits 1, not 0 */
     int is_fullscreen, is_maximized, is_activated;   /* xdg_toplevel configure states (debug only) */
     /* The blink phase of the visible session's cursor: 1 = drawn this frame. Window state on purpose —
-       term_init() memsets Term for every new tab, so a phase stored in the model would survive a tab
-       switch, a zoom and a resize it has no business surviving, and DEC 25l would have to fight it.
-       Steady whenever the blink is not armed (see blink_update), which is what `cursor_blink = 0`, an
-       unfocused window and a DECSCUSR steady request all mean. */
+       term_init() memsets Term for every new tab, so a phase in the model would survive a tab switch, a
+       zoom and a resize it has no business surviving. Steady whenever the blink is not armed. */
     int cursor_on;
-    /* 1 while a visual-bell flash is on screen for a DRAWN session. Window state, like cursor_on: it is about
-       what the frame shows, not about the session. It exists for one reason — the tick that keeps the window
-       dirty while a flash fades must also ask for EXACTLY ONE more frame when the last flash ends, because at
-       that moment bell_strength() answers 0 and nothing else would ever redraw: without it the screen keeps the
-       last half-faded flash forever. */
+    /* 1 while a visual-bell flash is on screen for a DRAWN session. Window state, like cursor_on. It exists so
+       the tick that keeps the window dirty while a flash fades asks for EXACTLY ONE more frame when the last
+       flash ends: at that moment bell_strength() answers 0 and nothing else would ever redraw again. */
     int bell_live;
     int32_t ptr_x, ptr_y;       /* last pointer position in surface coords (px) */
     /* 1 while the pointer is on this surface. wl_pointer.leave does NOT clear ptr_x/ptr_y — the last position
        stays — so without this a pointer that left the window would keep naming the cell it last touched, and the
        hover underline would sit on screen after the pointer is gone. */
     int ptr_in;
-    /* The pane/cell the last pointer event named, remembered ONLY to decide whether a motion event deserves a
-       frame: a compositor sends one motion per pixel and a full frame per pixel is a storm for nothing. -1 = the
-       pointer was over no pane. This is not the underline itself — that is recomputed every frame in redraw() —
-       just the cheap part of the question. */
+    /* The pane/cell the last pointer event named, kept only to skip a frame when a motion changed nothing:
+       a compositor sends one motion per pixel. -1 = over no pane. */
     int hover_tab, hover_col, hover_row;
     int ptr_btn;                /* held button mapped to SGR index (0/1/2), or -1 */
     int selecting;              /* 1 while a left-button text selection drag is in progress */
-    int pv_selecting;           /* 1 while a drag is extending a selection INSIDE the file manager's
-                                   preview pane. Kept apart from `selecting` because the two drags name
-                                   cells of different grids — a session's viewport cell and the pane's own
-                                   cell — and the band's hit test runs before the terminal's, so a press in
-                                   the band never sets `selecting` and the two can never both be live. */
-    /* The left-click gesture, for the double/triple click that selects a word / a whole line.
-       click_count is which press in a row this is (1 = a fresh single click), counted by
-       term_click_count() from the press time and whether the cell is the same one. click_word marks
-       the gesture as a word/line selection, which is what suppresses the synthesised cursor-key
-       presses on release: a double click inside nano must select a word, not walk its cursor twice.
-       The state is the WINDOW's, not the session's, because it is about the pointer and the clock. */
+    int pv_selecting;           /* 1 while a drag extends a selection inside the file manager's preview
+                                   pane. Kept apart from `selecting`: the two drags name cells of different
+                                   grids and only one can be live. */
+    /* The multi-click gesture: click_count is which press in a row this is (1 = fresh, from
+       term_click_count()), click_word suppresses the cursor keys synthesised on release. */
     int click_count;
     uint32_t click_ms;
     int click_col, click_row;
     int click_word;
-    /* A click that landed on a web address is not opened on the spot: it waits out the double-click window, so a
-       second click can take the WORD instead and open nothing (url_open_due / URL_OPEN_WAIT_MS). What is stored
-       is the cell and the text as they were at the click, because url_tick() re-asks the same question at the
-       deadline — a session that closed (and shifted the tab indices with it), a pane that scrolled or a program
-       that repainted the line all change the answer, and the open is dropped rather than guessed at. */
+    /* A click on a web address waits out the double-click window before opening, so a second click can take
+       the word instead. url_tick() re-asks at the deadline and drops the open if the cell's answer has
+       changed. */
     long long url_press_ms;         /* 0 = nothing pending */
     int url_tab;                    /* the tab index the click was in */
     int url_col, url_row;           /* the cell it was in */
     char url_text[URL_MAX + 1];     /* what was under that cell at the click */
     double scroll_accum;        /* pending scrollback scroll in lines (+ = up/history) */
-    double wheel_accum;         /* the same carry, for a wheel gesture turned into application cursor
-                                   keys — kept apart from scroll_accum so a session that leaves the
-                                   alternate screen mid-gesture cannot hand the scrollback a remainder it
-                                   never asked for */
+    double wheel_accum;         /* The same carry, for a wheel gesture turned into application cursor keys.
+                                   Kept apart from scroll_accum so leaving the alternate screen mid-gesture
+                                   cannot hand scrollback a remainder it never asked for. */
     double frame_axis_val;      /* axis value (px) accumulated within the current scroll frame */
     int    frame_discrete;      /* discrete wheel steps accumulated within the current frame */
     int    frame_has_axis;      /* an axis event occurred in the current frame */
@@ -150,12 +133,9 @@ typedef struct Wayland {
 } Wayland;
 
 static Wayland W;
-/* Multiplexing: every session this window hosts — each with its own Term (grid, scrollback,
-   selection, alt screen) and its own shell on its own PTY — plus which one is visible. The two
-   accessors below are how the rest of this file reaches "what the user is looking at": they read
-   mux.active on every call, so there is no second copy of that state that could drift out of sync.
-   They return NULL only when the last tab has just been closed; the paths that can still run then
-   (redraw, layout_apply) check for it, and everything else stops as soon as W.running does. */
+/* Multiplexing: every session this window hosts — each with its own Term and its own shell on its own
+   PTY — plus which one is visible. The two accessors below read mux.active on every call, so there is
+   no second copy of that state to drift. They return NULL only when the last tab has just been closed. */
 static Mux mux;
 static Font font;
 static Render rend;
@@ -163,10 +143,8 @@ static Config conf;
 static const char *opt_cmd = NULL;   /* -e/--exec: argv storage lives until exit, so const is fine */
 static const char *g_cmd = NULL;     /* what every session runs (opt_cmd, config shell, or NULL) */
 static char g_wdir[4096];            /* resolved startup directory, reused by every new tab */
-/* Shell integration (src/shellint.c): the private per-instance directory holding the three shell scripts.
-   Created once at startup when shell_integration = 1, removed on the way out. Empty means "running without
-   integration", which is exactly how every session behaved before the feature existed — every code path that
-   could use it checks this first. */
+/* Shell integration's private per-instance directory holding its shell scripts: made at startup, removed on
+   the way out. Empty means running without integration. */
 static char g_intdir[FM_PATH_MAX];
 /* Session ids for the request files. A counter, deliberately NOT the tab index: mux_close() shifts the array
    down and a new tab reuses the freed index, so two live sessions could otherwise share one request file and
@@ -175,16 +153,12 @@ static int g_int_seq;
 static int base_font_size;      /* configured size, restored by Ctrl+0 */
 
 /* How this window's pixels are shared: the tab-bar strip, one rect per session, and the grid size every
-   session gets. src/layout.c computes it, render_draw() draws exactly it, and the pointer hit tests use it.
-   layout_apply() recomputes it whenever the window size, the font, the session list, the visible session or
-   the view mode changes — and once per frame, because the bar labels and their unread marks are part of the
-   picture. */
+   session gets. src/layout.c computes it, render_draw() draws exactly it, the pointer hit tests use it.
+   layout_apply() recomputes it on any change to size, font, session list, visible session or view mode. */
 static Layout g_layout;
 static int layout_mode = LAYOUT_TABS;   /* LAYOUT_TABS (one session fills the window) / LAYOUT_SPLIT */
-/* The confirm-quit question. `confirm_kind` is CONFIRM_NONE when nothing is being asked and doubles as "is a
-   question up?", which is why no question kind may be 0: with CONFIRM_QUIT = 0 a window close would set the
-   state to "nothing is being asked", draw nothing, and swallow the close. A TAB close takes the row and a
-   WINDOW close takes the box, decided here and nowhere else — a window is the close that cannot be undone. */
+/* The confirm-quit question. confirm_kind doubles as "is a question up?", so no question kind may be 0:
+   CONFIRM_QUIT = 0 would read as "nothing asked", draw nothing and swallow the close. */
 static int  confirm_kind = CONFIRM_NONE;
 static int  confirm_tab = -1;
 /* One buffer for both questions. DIALOG_MAX is the larger of the two limits, so neither the row's text nor
@@ -196,18 +170,12 @@ static char confirm_text[DIALOG_MAX];
    over its neighbour. */
 #define PANE_GAP 8
 
-/* The in-window file manager. What lives HERE is only the wiring: which region owns the keyboard, the
-   worker thread that keeps a huge directory or a 12 MB photo off the frame path, the result pipe that
-   hands an answer back to this thread, and the `cd <path>` the shell gets when the browser moves. The
-   model is src/fm.c, the band geometry is src/layout.c, the drawing is src/render.c.
-   It is OFF by default and its worker thread does not exist until the feature is first opened, so a
-   session that never touches it runs exactly the code it ran before. */
+/* The in-window file manager: only the wiring lives here — which region owns the keyboard, the worker
+   thread, its result pipe, and the `cd <path>` the shell gets. The model is src/fm.c. */
 static FileMgr g_fm;
 
-/* The worker's request slots hold only the NEWEST request of each kind: a request superseded before the
-   thread got to it is overwritten rather than queued. That is the same rule fm_install_scan() and
-   fm_install_preview() apply to an answer that lands after the user moved on, applied one step earlier
-   so the disk is not even read for it. */
+/* The worker's request slots hold only the newest request of each kind: one superseded before the thread
+   reached it is overwritten, so the disk is not even read for it. */
 enum { FMQ_SCAN = 0, FMQ_PREVIEW = 1, FMQ_KINDS = 2 };
 typedef struct {
     int used;
@@ -218,16 +186,12 @@ static FmReq fm_req[FMQ_KINDS];
 static int fm_quit;                 /* the worker must leave its cond_wait and exit */
 static int fm_worker_up;
 /* The directory the shell is believed to be in (fm_follow) — the one fact every follow decision is made
-   from: fm_send_cd() skips a directory it already stated, and the clear -> `cd` -> re-populate machine
-   asks the same variable whether a `cd` still has to be sent at all. One per window, because one window has
-   one file manager; a session switch clears it so the newly visible shell is re-synced on the next
-   navigation. Declared up here because tab_switch() resets it and fm_send_cd() is further down. */
+   from. One per window, because one window has one file manager; a session switch clears it so the newly
+   visible shell is re-synced on the next navigation. tab_switch() resets it, so it is declared here. */
 static char fm_last_cd[FM_PATH_MAX];
 
-/* The clear -> `cd` -> re-populate sequence: capture the line's text, erase the line, run the `cd`, type the
-   text back. It cannot be one write — the erase must be PROVEN before the `cd` is sent, or a line editor
-   that binds Ctrl+U to something other than erase-to-start leaves half a command for the `cd` to be RUN on.
-   So every advance happens after that session's pty output has been parsed. */
+/* The clear -> `cd` -> re-populate sequence, one step per parsed pty burst: the erase must be PROVEN before
+   the `cd`, or a line editor that binds Ctrl+U elsewhere leaves half a command for the `cd` to run on. */
 enum { FMCD_IDLE = 0, FMCD_INTEGRATION, FMCD_ERASING, FMCD_CDING, FMCD_RETYPING };
 static const char *const fm_cd_state_name[] = { "idle", "integration", "erasing", "cd", "re-typing" };
 static int fm_cd_state = FMCD_IDLE;
@@ -236,10 +200,9 @@ static char fm_cd_line[FM_LINE_MAX];    /* what the user had typed, captured bef
 static char fm_cd_dir[FM_PATH_MAX];     /* the directory the browser is in NOW (a newer navigation
                                            re-targets it, so the shell always ends up where the user is
                                            looking, even if they moved again mid-sequence) */
-static int fm_cd_docrow = -1;           /* the DOCUMENT row the last `cd` of this sequence was typed on, or
-                                           -1 when this sequence has sent no `cd` (the browser moved back to
-                                           the directory the shell was already in). The new prompt is only
-                                           believed once the cursor has moved off that row. */
+static int fm_cd_docrow = -1;           /* the DOCUMENT row the last `cd` was typed on, or -1 when no `cd`
+                                           was sent. The new prompt is believed only once the cursor has
+                                           left that row. */
 static uint64_t fm_cd_deadline;         /* CLOCK_MONOTONIC ms; a stuck sequence is dropped, not retried */
 static uint64_t fm_cd_last_burst;       /* CLOCK_MONOTONIC ms of the last output burst of the owning
                                            session — CDING counts its quiet period from this */
@@ -251,11 +214,9 @@ static uint64_t fm_cd_last_burst;       /* CLOCK_MONOTONIC ms of the last output
    boundary is not the prompt: a shell answers a `cd` with the echo, a continuation row and prompt chrome,
    each in its own burst. Stopping at the first would remember a blank row as "the prompt". */
 #define FMCD_QUIET_MS 150
-/* How long to wait for an integrated shell to confirm the directory it entered. Measured (s91, real fish 4.6
-   and bash 5.3 in a real pty): the ack comes back within tens of milliseconds of the request. 400 ms is far
-   above that and still short enough that a shell which never answers — a nested shell, a script the user
-   overrode, an old script — falls back to the typed path well inside one keystroke of patience. The wait
-   costs nothing the user sees: no erase, no re-type, and the fallback runs by itself. */
+/* How long to wait for an integrated shell to confirm the directory it entered. The ack comes back within
+   tens of milliseconds, so 400 ms is far above it yet short enough that a shell which never answers — a
+   nested shell, a script the user overrode — falls back to the typed path inside one keystroke. */
 #define FM_INT_ACK_MS 400
 static void fm_cd_abort(const char *why);
 
@@ -267,12 +228,8 @@ static uint64_t mono_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000L);
 }
 
-/* The band's click state. One click selects the entry under the pointer; a SECOND click on the same entry
-   within this many milliseconds opens it, which is what a user means by "double-click to open". Wayland's
-   button `time` is milliseconds on the same clock as the keyboard events, so a plain difference measures
-   the gap; unsigned arithmetic makes a click after the 49-day wrap look like a long gap rather than a
-   double-click. The window is CLICK_DCLICK_MS in kai-term.h — one number, because the terminal's
-   double-click-to-select-word (step 3) must feel like the same gesture, not a slightly different one. */
+/* One click selects, a second on the same entry within CLICK_DCLICK_MS opens. Button `time` is ms on the
+   keyboard's clock; unsigned arithmetic makes the 49-day wrap read as a long gap. */
 static uint32_t fm_click_ms;
 static int fm_click_pos = -1;     /* view position of that click, -1 = no pending first click */
 /* The preview pane's click state is deliberately separate from the list's: that pair compares a view
@@ -325,10 +282,8 @@ static int paste_overflow;                 /* paste bigger than PASTE_BUF_MAX: s
 #define PASTE_BUF_MAX (8u << 20)           /* 8 MiB of clipboard text */
 static int g_ep = -1;                      /* main epoll fd (for adding the paste pipe) */
 
-/* Key repeat: a Wayland compositor delivers exactly one press and one release per physical keypress and only
-   reports the system-wide repeat settings, so a client that wants "hold the key and it repeats" generates
-   the repeats itself. The timing comes from Kai-Term's own config so the feel is identical on every
-   compositor and the settings are testable. */
+/* Wayland delivers one press and one release per physical keypress, so the client generates its own repeats
+   — timed from Kai-Term's config, so the feel is the same on every compositor. */
 static int krfd = -1;
 static int rep_key = -1;        /* Wayland keycode being repeated, -1 = none */
 static uint32_t rep_serial;     /* serial of that key's press (clipboard actions need one) */
@@ -365,13 +320,11 @@ static void wl_flush(void)
 }
 
 /* ---- frame pacing ----
-   1. A wl_surface_frame callback is armed ONLY with a commit that attaches a NEW buffer. One armed on an
-      empty commit can stay pending forever, and every draw path here is gated on "no callback in flight".
-   2. eglSwapBuffers is NOT guaranteed to return: it waits for the compositor's wl_buffer.release, which
-      only this thread can read, so a swap must never run while a wl_display_prepare_read() is outstanding.
-   3. The first buffer must be attached by the FIRST xdg_surface_configure handler: a window is not mapped
-      until a commit carries a buffer, so a client that defers its first draw never maps and never receives
-      a frame callback either. */
+   A wl_frame callback is armed only with a commit that attaches a NEW buffer: armed on an empty
+   commit it can stay pending forever, and every draw path here is gated on "no callback in
+   flight". A swap must never run while wl_display_prepare_read() is outstanding, because
+   eglSwapBuffers waits for a wl_buffer.release only this thread can read. The first configure
+   must attach a buffer: a window is not mapped until a commit carries one. */
 static void request_frame(void)
 {
     if (W.frame_cb || !W.surface)
@@ -380,10 +333,8 @@ static void request_frame(void)
     wl_callback_add_listener(W.frame_cb, &frame_listener, NULL);
 }
 
-/* Recompute this window's layout and make every session match it. Every session gets the grid size a pane of
-   this layout has, drawn or not — that is what keeps a tab switch cheap: no resize, no SIGWINCH storm, no
-   reflow of its scrollback. W.gx/W.gy become the origin of the pane the visible session is drawn in, the
-   origin sel_cell() and mouse_cell() map the pointer through. */
+/* Recompute the layout and give every session the grid of a pane in it, drawn or not: a tab switch then
+   costs no resize, no SIGWINCH storm and no reflow. W.gx/W.gy become the visible session's pane origin. */
 static void layout_apply(void)
 {
     if (!W.egl_window || mux_count(&mux) == 0)
@@ -406,10 +357,8 @@ static void layout_apply(void)
     rq.fm_preview_on = g_fm.preview_on;
     rq.fm_size = conf.fm_size;
     /* The question, whichever form it takes. The ROW (a tab close) costs the panes one row — the price of
-       drawing chrome in the grid area rather than over it, so the terminal the user is being asked about stays
-       readable above it. The BOX (a window close) costs nothing: it is centred over the grid and the pane
-       rect is byte for byte what it was a frame earlier, which is the whole point of asking about a window
-       without shrinking the window. */
+       drawing chrome in the grid area rather than over it, so the terminal stays readable above it. The
+       BOX (a window close) costs nothing: it is centred over the grid, the pane rect unchanged. */
     rq.notice_on = (confirm_kind == CONFIRM_CLOSE_TAB) ? 1 : 0;
     rq.notice_text = confirm_text;
     rq.dialog_on = (confirm_kind == CONFIRM_QUIT) ? 1 : 0;
@@ -428,11 +377,9 @@ static void layout_apply(void)
 
     for (int i = 0; i < mux_count(&mux); i++) {
         Tab *tb = &mux.tab[i];
-        /* The image protocol sizes pictures in PIXELS while the grid is in cells, and an application
-           learns the cell size from the PTY's winsize (measured with timg 1.6.3: it only selects its
-           kitty graphics mode when the PTY reports a non-zero pixel geometry, and it scales with it).
-           This is the one place where the font metrics and every session are in scope together, and it
-           runs on zoom too, where the cell changes without cols x rows changing. */
+        /* The image protocol sizes pictures in PIXELS while the grid is in cells, and an application learns the
+           cell size from the PTY's winsize (timg selects its kitty graphics mode only when that geometry
+           is non-zero). This is the one place where the font metrics and every session are in scope. */
         term_set_cell_px(&tb->term, font.cell_w, font.cell_h);
         pty_set_cells(&tb->pty, font.cell_w, font.cell_h);
     }
@@ -458,10 +405,8 @@ static void layout_apply(void)
         W.gy = g_layout.pane[pi].y;
     }
 
-    /* The band's two panes are Cell grids sized by the layout exactly like a session grid is: this is the
-       one place that knows their rects, so it is the one place allowed to resize the grids fm_paint()
-       writes and render_draw() reads. With the file manager off the rects are 0x0 and the grids are
-       freed. */
+    /* The band's two panes are Cell grids sized by the layout like a session grid; this is the only place
+       that knows their rects, so the only place allowed to resize them. Off, they are 0x0. */
     fm_set_size(&g_fm, g_layout.fm.list_cols, g_layout.fm.list_rows,
                 g_layout.fm.prev_cols, g_layout.fm.prev_rows);
 
@@ -479,11 +424,8 @@ static void layout_apply(void)
     }
 }
 
-/* Slide the viewport through scrollback by moving Grid.scroll_off. delta > 0 scrolls UP into
-   history (toward row[0], the oldest retained line); delta < 0 scrolls DOWN toward the live
-   bottom. Clamped to the grid invariant 0 <= scroll_off <= live_off, where live_off is the
-   anchor that follows the newest output. Returns the movement actually applied (same sign as
-   delta, 0 when clamped at an end) so callers can detect a scroll that hit a limit. */
+/* Move the viewport through scrollback. delta > 0 scrolls UP toward row[0] (the oldest retained line), < 0
+   toward the live bottom; clamped to 0..live_off. Returns the movement applied, 0 at an end. */
 static int scrollback_nav(Term *t, int delta)
 {
     int live = t->g.live_off;
@@ -501,10 +443,8 @@ static int scrollback_nav(Term *t, int delta)
     return applied;
 }
 
-/* Apply a smooth scrollback scroll expressed in (possibly fractional) lines.
-   delta_lines > 0 scrolls up (into history); < 0 scrolls down (toward the live bottom).
-   Fractional remainders are carried in W.scroll_accum so high-resolution (pixel) scrolling
-   accumulates into whole-line steps without losing sub-line motion. */
+/* A smooth scroll in (possibly fractional) lines; delta_lines > 0 is up into history. The fraction is
+   carried in W.scroll_accum so pixel-wheel motion still adds up to whole lines. */
 static void scroll_apply(double delta_lines)
 {
     W.scroll_accum += delta_lines;
@@ -556,10 +496,8 @@ static void redraw(void)
     /* The bar labels, their unread marks and the pane rects ARE the picture, so the layout is recomputed
        here too (it resizes nothing when the grids already match). */
     layout_apply();
-    /* A frame callback can still be pending when a configure forces a new buffer: the buffer about to
-       be attached supersedes it, so drop its callback and let the new commit carry its own.
-       wl_callback.destroy is always legal and libwayland discards events of a destroyed object, so an
-       old done can never clear the new callback's state. */
+    /* The buffer this configure attaches supersedes the pending one, so destroy its callback: libwayland
+       discards events of a destroyed object, so an old done cannot clear the new callback's state. */
     if (W.frame_cb) {
         wl_callback_destroy(W.frame_cb);
         W.frame_cb = NULL;
@@ -569,10 +507,8 @@ static void redraw(void)
     Term *terms[TAB_MAX];
     for (int i = 0; i < mux_count(&mux); i++)
         terms[i] = &mux.tab[i].term;
-    /* The band is painted from the model into its Cell grids here, after layout_apply() sized them and
-       before the frame is built. Painting is cheap (a few thousand Cells) and only happens when the
-       model says it changed (fm->dirty), which navigation, a new listing, a new preview and a resize
-       all set. */
+    /* Paint the band from the model into its Cell grids: after layout_apply() sized them, before the frame
+       is built, and only when fm->dirty says the model changed. */
     if (g_fm.on && g_fm.dirty)
         fm_paint(&g_fm, conf.fg, conf.bg, conf.selection_color);
     /* The blink phase of this frame. Copied, not read from W inside the renderer: the renderer takes its
@@ -589,21 +525,17 @@ static void redraw(void)
     hover_update();
     int drew = render_draw(&rend, &font, &g_layout, terms, &g_fm);
     if (drew < 0) {
-        /* The renderer could not put the glyph atlas in GPU memory even after dropping every picture
-           texture, so there is nothing this frame — or any later one — can draw. The alternative is
-           drawing with a texture that has no texels, which faults inside libnvidia-eglcore (that is how
-           85 core dumps got here). Close the window the ordinary way: the shells get SIGHUP from the
-           exit path, and the process leaves an exit status instead of a core dump. */
+        /* The renderer could not put the glyph atlas in GPU memory even after dropping every picture texture, so
+           there is nothing this frame — or any later one — can draw. The alternative is drawing with a
+           texture that has no texels, which faults inside libnvidia-eglcore. Close the window normally. */
         klog(L_ERROR, "kai-term: no video memory for the glyph atlas — exiting");
         W.fatal = 1;
         W.running = 0;
         return;
     }
     if (!drew) {
-        /* NO buffer was attached, so nothing may be armed on the commit that follows: the done of a
-           commit without a buffer can stay pending forever, and every draw path here is gated on "no
-           callback in flight" (that is exactly how the fullscreen freeze worked). Keep the frame dirty
-           so the 8 ms timer retries, and do not print one error line per retry. */
+        /* No buffer was attached, so nothing may be armed on the commit that follows (see frame pacing).
+           Keep the frame dirty so the 8 ms timer retries, and do not print one error line per retry. */
         if ((swap_fail_streak++ % 64) == 0)
             klog(L_WARN, "swap failed (%d in a row), retrying on the next frame", swap_fail_streak);
         W.dirty = 1;
@@ -635,19 +567,16 @@ static int apply_pending_resize(void)
     layout_apply();
     W.dirty = 1;
     W.resized = 1;      /* cleared by redraw() once a buffer of THIS size has been attached */
-    /* Do NOT arm a frame callback here, and do not swap here: a wl_frame callback is only delivered
-       after a buffer is committed, so arming one before any draw leaves W.frame_cb set forever and
-       blocks every draw path (the startup deadlock, and the fullscreen freeze). The frame path
-       (timerfd / frame_done) is what answers the configure with a buffer of the new size. */
+    /* Do not arm a frame callback or swap here: with no buffer committed the callback would never be
+       delivered and every draw path would stay blocked. The frame path answers this configure. */
     return 1;
 }
 
 /* ---------------- multiplexing: the sessions of this window ---------------- */
 
-/* The tab state, in the window title. There is no tab bar (the renderer draws cells, not chrome), so
-   the title is the only place a user can see which session they are looking at, how many there are,
-   and whether a hidden one has output they have not looked at yet. With one session the title stays
-   exactly what it was before multiplexing existed. */
+/* The tab state in the window title: the renderer draws cells, not chrome, so the title is the only place a
+   user sees which session they are in, how many there are, and whether a hidden one has unread output. One
+   session, an unchanged title. */
 static void update_title(void)
 {
     if (!W.toplevel)
@@ -703,12 +632,9 @@ static int tab_for_child(pid_t pid)
    everything else (an unsupported shell, `-e COMMAND`, integration off) is spawned exactly as before. */
 static int tab_spawn(Tab *tb)
 {
-    /* The cell size goes into the Pty BEFORE the spawn. pty_spawn's first TIOCSWINSZ is the geometry
-       the child sees when it starts, and a tool that asks for the pixel geometry immediately
-       (`kai-term -e 'timg foo.png'`) would otherwise fall back to text blocks because that first
-       winsize still has ws_xpixel == 0 — layout_apply() only pushes the cell size once the first
-       frame is drawn, which can be later than the child's first query. pty_set_cells() is not usable
-       here: it re-issues an ioctl and there is no master fd yet. */
+    /* The cell size goes into the Pty BEFORE the spawn: pty_spawn's first TIOCSWINSZ is the geometry the child
+       sees at startup, and a tool that asks for pixel geometry immediately (`kai-term -e 'timg foo.png'`)
+       would otherwise fall back to text blocks. pty_set_cells() is unusable here — no master fd yet. */
     tb->pty.cell_w = font.cell_w > 0 ? font.cell_w : 0;
     tb->pty.cell_h = font.cell_h > 0 ? font.cell_h : 0;
 
@@ -782,10 +708,9 @@ static void tab_open(void)
 }
 
 /* ---------------- confirm-quit: asking before a close throws work away ----------------
-   Closing a window or a tab closes its pty master and hangs up the shell, so anything running dies with no
-   warning. The predicate is pty_fg_busy(): the terminal's foreground process group, which is the shell's own
-   group at a prompt and a command's group while it runs one. A job backgrounded with `&` keeps the shell in
-   the foreground group, so it reads idle — the gate protects a foreground command, not a daemon. */
+   The predicate is pty_fg_busy(): the terminal's foreground process group. A job backgrounded
+   with `&` keeps the shell in that group, so it reads idle — this gate protects a foreground
+   command, not a daemon. */
 
 /* Take the question down. layout_apply() runs because the row costs a grid row: without it the panes stay
    one row short after the question is gone. */
@@ -800,10 +725,8 @@ static void confirm_clear(void)
     W.dirty = 1;
 }
 
-/* Put the question up. Returns 1 when it is actually ON SCREEN and the caller must therefore not close, and 0
-   when it does not fit and the caller must close rather than swallow the request: a question nobody can see
-   must not block a close, or the user is left with a window that answers neither button. layout_compute()
-   owns that decision and main.c only reads the field back. */
+/* Put the question up. 1 = it is on screen, so the caller must not close; 0 = it does not fit and the
+   caller must close rather than swallow the request. layout_compute() owns that decision. */
 static int confirm_show(int what, int tabidx)
 {
     int idx[TAB_MAX];
@@ -845,10 +768,8 @@ static int confirm_show(int what, int tabidx)
 }
 
 /* 1 = the question is now up and the caller must NOT close. `never` never asks; `running` (the default)
-   asks only when something is in a foreground group, which is what keeps an idle window closing instantly —
-   the behaviour every earlier build had; `always` asks at every close of the window and of a tab. A second
-   close request while a question is already up is ignored rather than stacked: the row on screen already is
-   the answer to it. */
+   asks only when something is in a foreground group; `always` asks at every close. A second close request
+   while a question is already up is ignored rather than stacked: the row on screen is already the answer. */
 static int confirm_gate_window(void)
 {
     if (confirm_kind != CONFIRM_NONE) {
@@ -889,17 +810,13 @@ static void tab_close(int idx)
 {
     if (idx < 0 || idx >= mux_count(&mux))
         return;
-    /* mux_close() keeps the array dense: every tab AFTER idx slides down one slot. So a follow belongs to
-       no session any more once idx or any LOWER index closes — fm_cd_tab would keep its old number and
-       name a different shell, which is the one thing this index must never do (the machine would erase that
-       shell's line, `cd` it and type the other session's text into it). Aborting on idx == fm_cd_tab alone
-       is not enough; the shift is what breaks the index. */
+    /* mux_close() shifts every tab after idx down, so a follow belongs to no session once idx or any LOWER
+       index closes: fm_cd_tab would keep its old number and name a different shell — the machine would
+       erase that shell's line, `cd` it and type the other session's text into it. */
     if (fm_cd_tab >= 0 && idx <= fm_cd_tab)
         fm_cd_abort("a session closed");
-    /* A question about a TAB belongs to that index, and mux_close() shifts every later tab down. If the
-       session it asked about has already gone — it exited on its own while the row was up — answering YES
-       would close a DIFFERENT shell. Same rule as the follow above: this index must never name the wrong
-       session, so the question goes down with it. */
+    /* A question about a TAB belongs to that index, and mux_close() shifts every later tab down: if the
+       session it asked about already exited, answering YES would close a different shell. */
     if (confirm_kind == CONFIRM_CLOSE_TAB && idx <= confirm_tab)
         confirm_clear();
     Pty p = mux.tab[idx].pty;
@@ -921,10 +838,8 @@ static void tab_close(int idx)
     W.dirty = 1;
 }
 
-/* The answer. Both paths log what was decided, because "asked and nothing was running" is a real outcome
-   (the foreground group converges in seconds after a command starts) and a user who was asked for no visible
-   reason needs one line to point at. YES for a window means quitting the whole window, which is what the
-   sentence promised: every session named in it closes, not just the visible one. */
+/* The answer, logged either way: "asked and nothing was running" is a real outcome, and a user asked for no
+   visible reason needs one line to point at. YES for a window closes every session named in it. */
 static void confirm_answer(int yes)
 {
     int what = confirm_kind, tab = confirm_tab;
@@ -1117,10 +1032,9 @@ static void fm_drain_results(void)
                 if (fm_install_scan(&g_fm, (FmScan *)(uintptr_t)res.ptr))
                     fm_ask_preview();   /* the selection may have moved when the listing landed */
             } else {
-                /* A new preview replaces every cell in the pane, so the range a drag was naming holds
-                   another file's text. fm_install_preview() clears the model's selection; the drag flag is
-                   main.c's, and a live flag would re-create a selection from the old anchor on the next
-                   motion event. */
+                /* A new preview replaces every cell, so a drag's range now names another file's text. This
+                   flag must be cleared with the model's selection, or the next motion re-creates it from
+                   the old anchor. */
                 if (fm_install_preview(&g_fm, (FmPreview *)(uintptr_t)res.ptr))
                     W.pv_selecting = 0;
             }
@@ -1158,19 +1072,15 @@ static size_t shell_quote(char *out, size_t cap, const char *path)
    sent to a session on the alternate screen: vim, htop and less would receive it as typing. Only for a
    directory not already told it about — otherwise the refresh key types and runs `cd` at the prompt again. */
 
-/* The row the cursor is on, in the grid's own document numbering (slot 0 = document row row_base, the
-   cursor's slot is live_off + cy). A viewport row says nothing across a scroll: a prompt on the last row
-   stays at the same viewport row while the grid rotates under it. This is the same identity the image
-   anchors use (src/vt.c, "Images are anchored to an ABSOLUTE document row"). */
+/* The cursor's row in the grid's document numbering (slot 0 = row_base, cursor slot = live_off + cy). A
+   viewport row says nothing across a scroll: the grid rotates under it. */
 static int term_docrow(Term *t)
 {
     return t->g.row_base + t->g.live_off + t->cy;
 }
 
-/* Write the `cd` itself. Shared by the fast path and the deferred machine so the quoting and the log line
-   cannot drift apart. Moves fm_last_cd, which is the single owner of "where the shell is believed to be" —
-   the machine's next step is decided by comparing it with fm_cd_dir, so a `cd` is never sent for a
-   directory the shell is already in. */
+/* Shared by the fast path and the deferred machine so the quoting and the log line cannot drift apart.
+   Moves fm_last_cd, so a `cd` is never sent for a directory the shell is already in. */
 static void fm_cd_write(Term *t, Pty *p, const char *dir)
 {
     char cmd[FM_PATH_MAX + 16];
@@ -1188,32 +1098,24 @@ static void fm_cd_write(Term *t, Pty *p, const char *dir)
     klog(L_DEBUG, "fm: told the shell to follow: cd %s", dir);
 }
 
-/* Ask the shell to change its OWN directory — the path that leaves the user's line completely alone.
-   The directory travels in this session's request file and the sequence carries no data at all, so a stray
-   sequence can never run a path and a path can never be guessed into a sequence. Nothing is used from the
-   shell's reply except a comparison with what was asked for. Returns 1 when the request was sent (the ack
-   decides the rest, in fm_cd_advance), 0 when this session must have the typed path instead. */
+/* Ask the shell to change its OWN directory, leaving the user's line alone: the path travels in the request
+   file, so the sequence carries no data a stray byte could run. 1 = sent, 0 = typed path. */
 static int fm_int_try(Tab *tb, Term *t, Pty *p, const char *dir)
 {
     if (!conf.shell_integration || !g_intdir[0] || !tb || !tb->cd_req[0])
         return 0;
-    /* A shell that announces is a shell that listens, and the user can put a different one in front of us at
-       any moment: the scripts wrap a bare `fish`/`bash`/`zsh`, so a nested shell announces when it starts and
-       the outer one announces again when it exits. Either way Term.shell_int_gen moves, and that REVIVES an
-       integration this session had given up on — int_dead describes the shell that was reading the line then,
-       not the session forever. The kind alone cannot say this (fish -> a nested fish -> back to fish announces
-       three times with the same kind). */
+    /* A shell that announces is a shell that listens, and the user can put a different one in front of us at any
+       moment: a nested shell announces when it starts and the outer one announces again when it exits.
+       Either way Term.shell_int_gen moves, which REVIVES an integration this session had given up on. */
     if (t->shell_int_gen != tb->int_gen) {
         if (tb->int_dead)
             klog(L_DEBUG, "fm: a shell announced again — the integration is used for this session again");
         tb->int_dead = 0;
         tb->int_gen = t->shell_int_gen;
     }
-    /* Two ways this session has no working integration: its shell never announced (an unsupported shell, or
-       one started before the script existed), and one that announced and then stopped answering — which is
-       what a nested shell looks like (a plain bash started inside an integrated fish has the environment but
-       not the key binding). The second is remembered so the bytes are not sprayed at the same reader on every
-       later navigation; the sequence is inert, so the cost of being wrong that way is a delay, not damage. */
+    /* Two ways integration is dead: the shell never announced, or it announced and stopped answering — what
+       a nested shell looks like. The second is remembered; the sequence is inert, so being wrong costs a
+       delay, not damage. */
     if (t->shell_int == SHELLINT_NONE || tb->int_dead)
         return 0;
     size_t len = 0;
@@ -1225,10 +1127,8 @@ static int fm_int_try(Tab *tb, Term *t, Pty *p, const char *dir)
         klog(L_WARN, "fm: shell integration could not be asked for %s — using the typed path", dir);
         return 0;
     }
-    /* Deliberately NOT input_write()/term_note_input(): those open the echo window, which is for bytes whose
-       echo may appear on the user's line. These bytes are consumed by the shell's line editor and never
-       echoed, so opening the window would only make term_at_prompt() answer "not empty" for no reason and
-       hold the follow shut behind that proof. The ack is the evidence here, not the echo. */
+    /* Not input_write()/term_note_input(): those open the echo window, for bytes that may echo on the
+       user's line. These are never echoed — the ack is the evidence here. */
     term_shell_cd_ack_clear(t);
     pty_write(p, seq, len);
     fm_cd_state = FMCD_INTEGRATION;
@@ -1262,10 +1162,8 @@ static void fm_send_cd(const char *dir)
     }
     if (!strcmp(fm_last_cd, dir))
         return;
-    /* Integration first: when THIS session's shell announced Kai-Term's script, ask IT to move. Nothing is
-       typed, so the user's half-typed line is never captured, never erased and never re-typed — that is the
-       whole reason this path exists. Everything else (no announcement, integration off, a dead integration,
-       an unwritable request file) falls through to the machine below, which is unchanged. */
+    /* Integration first: an announced shell is asked to move, so the user's half-typed line is never
+       captured, erased or re-typed. Everything else falls through to the typed machine. */
     if (fm_int_try(mux_cur(&mux), t, p, dir))
         return;
     /* Fast path: the line is provably empty, so nothing has to be erased first. */
@@ -1273,11 +1171,9 @@ static void fm_send_cd(const char *dir)
         fm_cd_write(t, p, dir);
         return;
     }
-    /* The line has text on it: capture it. term_prompt_line_typed() answers 1 when the row reads as "the
-       remembered prompt, then typed text ending exactly at the cursor", and IGNORES whatever the shell
-       paints right of the cursor (fish's grey autosuggestion). What makes that safe is the step after it:
-       the `cd` is sent only once the WHOLE row is proven equal to the remembered prompt, so a cursor
-       parked mid-line fails the proof and the sequence drops instead of running a mangled command. */
+    /* Capture the typed text. term_prompt_line_typed() ignores the shell's ghost text right of the cursor;
+       the next step proves the WHOLE row equals the remembered prompt, so a cursor parked mid-line fails
+       it. */
     if (!term_prompt_line_typed(t, fm_cd_line, sizeof fm_cd_line)) {
         fm_cd_line[0] = 0;
         klog(L_DEBUG, "fm: not telling the shell to follow — its input line is not one I can describe");
@@ -1288,11 +1184,8 @@ static void fm_send_cd(const char *dir)
     fm_cd_tab = mux_active(&mux);
     fm_cd_state = FMCD_ERASING;
     fm_cd_deadline = mono_ms() + FMCD_TIMEOUT_MS;
-    /* Ctrl+U erases backwards to the start of the line. Measured on this box: fish 4.6 binds it to
-       backward-kill-line, readline's is unix-line-discard, zsh's emacs mode binds ^U to
-       unix-line-discard too (fish's own binding read with `fish -c 'bind \cu'`, s79). It needs no
-       character count, which a backspace-per-cell approach would: a tab advances several columns and a
-       wide glyph occupies two cells, so cells are not keystrokes. */
+    /* Ctrl+U erases to the start of the line in fish, readline and zsh's emacs mode. It needs no character
+       count, which backspace-per-cell would: a tab and a wide glyph each cover several cells. */
     input_write(t, p, "\025", 1);
     klog(L_DEBUG, "fm: clearing the shell's input line to follow the browser into %s", dir);
 }
@@ -1324,11 +1217,8 @@ static void fm_cd_abort(const char *why)
     fm_cd_docrow = -1;
 }
 
-/* The integrated shell never confirmed the directory. Stop believing the integration for this session — a
-   nested shell (a plain bash started inside an integrated fish) has the environment but not the key binding,
-   and asking it again on every navigation would only add a delay — and run the machine that types, which is
-   what handled this navigation before integration existed. Nothing was erased and nothing was captured, so
-   there is nothing to lose here; the user's line is exactly as they left it either way. */
+/* The integrated shell never confirmed the directory, so this session stops being treated as integrated (a
+   nested shell has the environment but not the binding) and falls back to the typed machine. */
 static void fm_int_failed(void)
 {
     int ti = fm_cd_tab;
@@ -1346,10 +1236,8 @@ static void fm_int_failed(void)
     fm_send_cd(dir);
 }
 
-/* Advance the sequence after one burst of that session's output. This is where it moves, because the only
-   evidence that an erase or a `cd` landed is what the shell printed next. Called for every session; a
-   sequence belongs to exactly one of them. `burst` says whether this call was caused by that output (1) or
-   by the frame timer (0) — only real output restarts CDING's quiet period. */
+/* Advance the sequence after one burst of that session's output: the only evidence an erase or a `cd`
+   landed is what the shell printed next. Only real output (burst=1) restarts CDING's quiet period. */
 static void fm_cd_advance(int ti, int burst)
 {
     if (fm_cd_state == FMCD_IDLE)
@@ -1374,10 +1262,8 @@ static void fm_cd_advance(int ti, int burst)
     }
     switch (fm_cd_state) {
     case FMCD_INTEGRATION:
-        /* The ONLY evidence is the shell's own ack naming the directory it entered. What it printed around
-           the request says nothing: a prompt redraw is not proof of a cd, and the request produced no echo to
-           wait for. Until the ack names THIS navigation's directory there is nothing to do — the deadline
-           turns the silence into the typed path. */
+        /* The shell's own ack naming the directory it entered is the ONLY evidence: a prompt redraw proves
+           nothing and the request produced no echo. The deadline turns silence into the typed path. */
         if (!t->shell_cd_ack[0] || strcmp(t->shell_cd_ack, fm_cd_dir))
             return;
         snprintf(fm_last_cd, sizeof fm_last_cd, "%s", fm_cd_dir);
@@ -1401,21 +1287,18 @@ static void fm_cd_advance(int ti, int burst)
         if (!term_at_prompt(t))
             return;                       /* the new prompt has not been drawn yet */
         if (fm_cd_docrow >= 0 && term_docrow(t) == fm_cd_docrow)
-            /* Still the row the `cd` was typed on. The tty echoes the command we sent, and because that write ended
-               with CR the model had no echo window left, so the end of our own command re-took the prompt
-               snapshot — making term_at_prompt() true on a row that is not a prompt. The command ends with a
-               newline, so the shell's next prompt is on a later DOCUMENT row; comparing document rows is
-               what survives the grid scrolling under us. */
+            /* Still the row the `cd` was typed on. Our own command ended with CR, so no echo window was
+               left and its echo re-took the prompt snapshot — term_at_prompt() is true here on a row that
+               is not a prompt. The shell's next prompt sits on a later DOCUMENT row. */
             return;
         /* Off the `cd` row is necessary but not sufficient — see FMCD_QUIET_MS. Wait for the session to go
            quiet, which is the evidence that the shell has finished drawing its prompt. */
         if (mono_ms() - fm_cd_last_burst < FMCD_QUIET_MS)
             return;
         if (strcmp(fm_last_cd, fm_cd_dir)) {
-            /* The browser moved again while that `cd` was in flight, or it moved back to the directory the
-               shell never left, and the line is provably empty. State the newest directory before anything
-               is typed back — and only then, because fm_last_cd is what says whether a `cd` is needed at
-               all (fm_cd_write moves it, so a second pass through here never repeats the line). */
+            /* The browser moved again while that `cd` was in flight, or back where the shell already was,
+               and the line is provably empty. State the newest directory before typing anything back, or a
+               second pass repeats the line. */
             fm_cd_deadline = mono_ms() + FMCD_TIMEOUT_MS;
             fm_cd_write(t, p, fm_cd_dir);
             return;
@@ -1432,10 +1315,9 @@ static void fm_cd_advance(int ti, int burst)
         klog(L_DEBUG, "fm: re-typing what was on the line: %s", fm_cd_line);
         return;
     case FMCD_RETYPING:
-        /* NOT term_prompt_line(): that requires every cell right of the cursor to equal the snapshot, which is right
-           for a caller about to erase the line and wrong for one asking "did MY typing land?" — fish paints
-           ghost text right of the cursor after a re-type. term_prompt_line_is() asks this state's question:
-           the line is the remembered prompt plus exactly fm_cd_line, ending at the cursor. */
+        /* NOT term_prompt_line(): that demands the cells right of the cursor equal the snapshot, which
+           fish's ghost text breaks. term_prompt_line_is() asks what this state needs — the prompt plus
+           exactly fm_cd_line, ending at the cursor. */
         if (!term_prompt_line_is(t, fm_cd_line))
             return;                       /* the echo has not landed (or differs): keep waiting */
         fm_cd_state = FMCD_IDLE;
@@ -1453,10 +1335,9 @@ static void fm_cd_advance(int ti, int burst)
     }
 }
 
-/* The deadline has to be checked even when the session prints nothing at all — a shell that never answers
-   produces no output to advance on. The frame timer fires every 8 ms, far finer than the timeout. It is
-   also what advances CDING once the session has gone quiet (FMCD_QUIET_MS): that step's evidence is the
-   END of the shell's output, and no further burst is coming to trigger it. */
+/* Checked from the frame timer, because a shell that never answers produces no output to advance on. The
+   timer also advances CDING once output stops (FMCD_QUIET_MS): the END of output is that step's evidence,
+   and no burst is coming to trigger it. */
 static void fm_cd_tick(void)
 {
     if (fm_cd_state == FMCD_IDLE)
@@ -1497,10 +1378,9 @@ static void fm_open(void)
     klog(L_DEBUG, "fm: opened on %s", g_fm.dir);
 }
 
-/* Closing leaves the terminal exactly as it was: the band's rects go back to 0x0 (layout_apply does
-   that), the terminal pane takes the whole grid area back, and the model keeps its listing so reopening
-   is instant. The worker thread stays alive but idle — killing and re-creating it per open buys nothing
-   and would race with an answer already in the pipe. */
+/* Closing leaves the terminal as it was: the band's rects go to 0x0 and the model keeps its listing, so
+   reopening is instant. The worker stays alive but idle — killing it would race with an answer already in
+   the pipe. */
 static void fm_close(void)
 {
     if (!g_fm.on)
@@ -1541,10 +1421,9 @@ static void fm_focus_set(int f)
          f == FM_FOCUS_TERM ? "terminal" : (f == FM_FOCUS_PREVIEW ? "preview" : "browser"));
 }
 
-/* One navigation that happened: ask the worker for the new listing, tell the shell, re-ask for the preview
-   of whatever the selection landed on, and re-apply the geometry. `seq` MUST already hold the id the model
-   issued: writing fm_nav(fm_go_sel(fm, &seq), seq, ...) compiles, warns about nothing and is broken,
-   because C evaluates arguments in an unspecified order and gcc reads the caller's 0 first. */
+/* One navigation: ask the worker for the listing, tell the shell, re-ask for the preview, re-apply the
+   geometry. `seq` MUST already hold the id the model issued — `fm_nav(fm_go_sel(fm, &seq), seq, ...)`
+   compiles, warns about nothing and is broken: C evaluates arguments in unspecified order. */
 static void fm_nav(int changed, unsigned long seq, const char *what)
 {
     if (!changed)
@@ -1572,12 +1451,9 @@ static void fm_preview_toggle(void)
     fm_ask_preview();
 }
 
-/* The key that puts the selected entry's path on the shell's line. It types the path and NOTHING else — no
-   newline, so Kai-Term never runs a file it was only asked to name. The gate is the NON-STRICT predicate
-   on purpose: this action erases nothing, it inserts at the cursor and leaves the line unsubmitted, so the
-   strict predicate's "cells right of the cursor must be blank" half only ever caused refusals (fish's ghost
-   text, a cursor moved back mid-line). Still refused: the alternate screen, an undescribable prompt, a
-   cursor left of where the prompt ended, and a clear/cd/re-type sequence already in flight. */
+/* Types the selected entry's path and NOTHING else — no newline, so Kai-Term never runs a file it was only
+   asked to name. The gate is the NON-STRICT predicate: this inserts at the cursor and erases nothing, so
+   demanding blank cells right of it only caused refusals. */
 static void fm_send_path(void)
 {
     Term *t = cur_term();
@@ -1613,9 +1489,9 @@ static void fm_sel_changed(void)
     W.dirty = 1;
 }
 
-/* Open the selected entry: descend into a directory, and on anything else do NOTHING (s95 — it used to type
-   a file's quoted path here; that moved to its own key, `fm_key_path`). One function because the `open` key and
-   the second click of a double-click must never drift apart. */
+/* Open the selected entry: descend into a directory, and on anything else do NOTHING — typing a file's
+   path is fm_key_path's job. One function because the `open` key and the second click of a double-click
+   must never drift apart. */
 static void fm_open_sel(void)
 {
     unsigned long seq = 0;
@@ -1629,11 +1505,9 @@ static void fm_open_sel(void)
     }
 }
 
-/* The band's own keys, matched ONLY while the band owns the keyboard — that gate is what makes bare `Up`,
-   `r` or `Escape` safe bindings. Three states, not two: -1 is not one of the band's keys (the key reaches
-   the PTY), 0 is handled and must NOT auto-repeat, 1 is handled and holding it should keep going.
-   Returning 0 for the one-shots used to mean "not handled", so Return on a file typed its path AND sent a
-   newline, which the shell then executed. */
+/* Matched ONLY while the band owns the keyboard — that gate is what makes bare `Up`, `r` or `Escape` safe.
+   Three states: -1 not a band key (reaches the PTY), 0 handled and must NOT auto-repeat, 1 handled and
+   repeats. 0 once meant "not handled", so Return typed a path AND a newline the shell ran. */
 static int fm_keys(xkb_keysym_t base, unsigned mods)
 {
     if (!g_fm.on || g_fm.focus == FM_FOCUS_TERM)
@@ -1641,10 +1515,8 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
     const FmKeys *k = &conf.fm_key;
     unsigned long seq = 0;
 
-    /* The preview pane owns the keyboard: the four scroll keys move the PREVIEWED TEXT, not the listing, and
-       use the same bindings as the browser's on purpose — one action per key, the focus deciding which body
-       it scrolls. `Up`/`Down` keep moving the LISTING because that changes which file is being previewed,
-       the one thing this pane cannot do for itself. */
+    /* The four scroll keys move the PREVIEWED TEXT, with the browser's bindings: one action per key, the
+       focus deciding which body it scrolls. `Up`/`Down` still move the LISTING. */
     if (g_fm.focus == FM_FOCUS_PREVIEW) {
         if (bind_match(&k->pageup, base, mods))   { fm_preview_page(&g_fm, -1); W.dirty = 1; return 1; }
         if (bind_match(&k->pagedown, base, mods)) { fm_preview_page(&g_fm, +1); W.dirty = 1; return 1; }
@@ -1658,11 +1530,8 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
     if (bind_match(&k->pagedown, base, mods)) { fm_page(&g_fm, +1); fm_sel_changed(); return 1; }
     if (bind_match(&k->home, base, mods))     { fm_home(&g_fm); fm_sel_changed(); return 1; }
     if (bind_match(&k->end, base, mods))      { fm_end(&g_fm); fm_sel_changed(); return 1; }
-    /* Left is "up one level" and Right is "into this one" — the two arrows a user reads off any file
-       manager. Right and `open` do NOTHING to a file: neither types anything, so holding either down through
-       a listing cannot write at the prompt. fm_go_sel() is the model's own answer to "is this a directory I
-       can enter" (it stats a symlink, and returns 0 for a plain file or a dangling link), so no second
-       classification is invented here. */
+    /* Left is "up one level", Right is "into this one". Right and `open` do NOTHING to a file, so holding
+       either through a listing cannot write at the prompt. */
     if (bind_match(&k->left, base, mods)) {
         int changed = fm_parent(&g_fm, &seq);   /* fills seq — see fm_nav */
         fm_nav(changed, seq, "parent");
@@ -1677,9 +1546,9 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
         return 0;
     }
     if (bind_match(&k->open, base, mods))     { fm_open_sel(); return 0; }
-    /* The only band key that touches the shell's line, and the user asked for it by name (s95): it types the
-       selected entry's quoted path at the cursor and stops there — no CR, so nothing is ever run. A one-shot
-       (return 0): holding it must not type the same path over and over. */
+    /* The only band key that touches the shell's line: it types the selected entry's quoted path at the
+       cursor and stops there — no CR, so nothing is ever run. A one-shot (return 0): holding it must not
+       type the same path over and over. */
     if (bind_match(&k->path, base, mods))     { fm_send_path(); return 0; }
     if (bind_match(&k->parent, base, mods)) {
         int changed = fm_parent(&g_fm, &seq);   /* fills seq — see fm_nav */
@@ -1694,17 +1563,15 @@ static int fm_keys(xkb_keysym_t base, unsigned mods)
     return -1;
 }
 
-/* A click inside the band: the browser pane selects the entry under the pointer and takes the keyboard,
-   the preview pane takes the keyboard and selects the text under the pointer. Row -> entry uses the
-   painter's own metrics, so a click always lands on the line it lands on. One click selects; a second on
-   the SAME entry within FM_DCLICK_MS also opens it. Any other click resets the pair. */
+/* A click inside the band selects in whichever pane it landed and takes the keyboard; a second on the SAME
+   entry within FM_DCLICK_MS opens it. Row -> entry uses the painter's own metrics. */
 static void fm_pointer_select(int hit, int btn, uint32_t time)
 {
     if (hit == FM_HIT_PREVIEW) {
         fm_focus_set(FM_FOCUS_PREVIEW);
         fm_click_pos = -1;      /* a click here is never the second half of a LIST double-click */
-        /* Only the left button selects text: a right or middle click in this pane just moves the keyboard,
-           exactly as it did before step 3b, so nothing that used to work changes owner. */
+        /* Only the left button selects text: a right or middle click in this pane just moves the
+           keyboard. */
         if (btn != 0)
             return;
         int x, y;
@@ -1715,10 +1582,9 @@ static void fm_pointer_select(int hit, int btn, uint32_t time)
            same thing a press in the terminal pane already does to a previous selection. */
         if (cur_term())
             term_select_clear(cur_term());
-        /* The same gesture the terminal pane gives, counted by the same function (term_click_count) against
-           the same CLICK_DCLICK_MS: a second click in the same CELL selects the WORD, a third the ROW.
-           conf.click_selects_word is the one switch for it — the agreed decision is that a second key for
-           the same gesture in a second pane is a knob nobody would understand. */
+        /* The same gesture as the terminal pane, counted by term_click_count against the same
+           CLICK_DCLICK_MS: second click selects the WORD, third the ROW. conf.click_selects_word switches
+           both, not one per pane. */
         int same = (x == fm_pv_click_x && y == fm_pv_click_y);
         fm_pv_click_count = conf.click_selects_word
                           ? term_click_count(time, fm_pv_click_ms, same, fm_pv_click_count)
@@ -1773,10 +1639,8 @@ static void fm_pointer_select(int hit, int btn, uint32_t time)
     fm_open_sel();
 }
 
-/* The wheel over the band walks the listing or scrolls the preview pane's body; returns 1 when the wheel
-   belonged to the file manager. It does NOT take the keyboard by default: a pane is focused by CLICKING it.
-   The handover used to happen before `steps` was known, so a gesture that scrolled nothing still moved the
-   keyboard to whichever pane the pointer happened to be over. */
+/* The wheel over the band walks the listing or scrolls the preview's body; 1 = the wheel belonged to the
+   file manager. It does NOT take the keyboard by default — a pane is focused by CLICKING it. */
 static int fm_wheel(void)
 {
     if (!g_fm.on)
@@ -1795,10 +1659,8 @@ static int fm_wheel(void)
     if (!steps)
         return 1;
     if (hit == FM_HIT_PREVIEW) {
-        /* The preview has no selection to walk, so the wheel scrolls its BODY — the text of a file, or the
-           entries of a directory. It used to do nothing at all here, which is what made a long file
-           unreadable in the pane that exists to read it. fm_preview_scroll() clamps to what the pane can
-           show, so a picture or a metadata-only preview simply does not move. */
+        /* No selection to walk here, so the wheel scrolls the preview's BODY — a file's text or a
+           directory's entries. fm_preview_scroll() clamps, so a picture does not move. */
         fm_preview_scroll(&g_fm, steps);
         W.dirty = 1;
         return 1;
@@ -1846,11 +1708,9 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time)
     if (W.frame_cb == cb)
         W.frame_cb = NULL;
     wl_callback_destroy(cb);
-    /* The compositor has shown the buffer whose callback this was, so a swap now has the best possible
-       chance of not waiting on a buffer release — this is the preferred moment to draw. `resized` is
-       part of the condition because a configure that only changed the SIZE leaves nothing dirty: the
-       compositor is waiting for a buffer of the new size and this is the first safe chance to give it
-       one (fullscreen, maximize, drag-resize). */
+    /* The compositor has shown the buffer whose callback this was, so a swap now is least likely to wait on
+       a release — the preferred moment to draw. `resized` is in the condition because a size-only configure
+       leaves nothing dirty while the compositor waits for a buffer of the new size. */
     if (W.dirty || W.resized)
         redraw();
 }
@@ -1872,11 +1732,9 @@ static void xdg_surface_configure(void *d, struct xdg_surface *xs, uint32_t seri
         W.first_done = 1;
         W.dirty = 1;
     }
-    /* Two rules: (1) the FIRST configure must attach a buffer right here — a window is not mapped until a
-       commit carries a buffer, so a client that waits for a frame callback before drawing the first frame
-       never maps and never gets that callback; (2) every LATER configure is answered with a commit only,
-       the buffer of the new size attached by the frame path. Answering a configure with a buffer while
-       another is still in flight is what made the driver fail the swap with EGL_BAD_ALLOC. */
+    /* The FIRST configure must attach a buffer right here (a window is not mapped until a commit carries
+       one, so waiting for a callback never maps and never gets one); every LATER configure gets a commit
+       only — a buffer while another is in flight made the driver fail the swap with EGL_BAD_ALLOC. */
     if (!W.swapped_once)
         redraw();
     else
@@ -1894,9 +1752,7 @@ static void toplevel_configure(void *d, struct xdg_toplevel *t, int32_t w, int32
         W.pw = w, W.ph = h;   /* apply after commit via apply_pending_resize */
     /* No behaviour depends on the toplevel states, but they are the only client-side evidence that the
        compositor put the window into fullscreen/maximized, so a change is logged under -d: without it a
-       "the screen froze in fullscreen" report cannot be followed from the client side at all. `activated`
-       is included because it changes on every focus switch (and at startup), which also proves the state
-       decoding itself is running. */
+       "the screen froze in fullscreen" report cannot be followed from the client side at all. */
     uint32_t *st;
     int fs = 0, mx = 0, act = 0;
     wl_array_for_each(st, states) {
@@ -1934,11 +1790,8 @@ static const struct xdg_toplevel_listener toplevel_listener = {
 };
 
 /* Every byte Kai-Term sends to the application AS INPUT goes through here, so the model knows an echo is
-   coming: that is what lets it tell the shell's own prompt from a prompt plus what the user has typed
-   (term_at_prompt / term_note_input, src/vt.c). A payload holding CR or LF submits the line and so closes
-   the echo window; Ctrl+C discards it and does the same.
-   NOT every write to the pty belongs here: a query answer (DA1/DA2/DSR/CPR) and an SGR mouse report are
-   the terminal's own output, and noting one would open an echo window that no keystroke ever closes. */
+   coming — what tells the shell's own prompt from a prompt plus typed text. CR/LF or Ctrl+C submits the
+   line and closes the window; a query answer or a mouse report is output, not input. */
 static void input_write(Term *t, Pty *p, const void *buf, size_t len)
 {
     if (!p)
@@ -1972,12 +1825,9 @@ static int send_key(uint32_t key, uint32_t serial)
     xkb_mod_mask_t shift = xkb_keymap_mod_get_mask(W.keymap, "Shift");
     int shift_held = shift && (eff & shift);
 
-    /* Multiplexing. Matched FIRST, before the built-in Ctrl+Shift+C/V: the tab actions are the ones
-       the user can rebind, so if a chord is shared it is the configured binding that wins (the
-       copy/paste action can be moved by rebinding the tab one). Every one of them returns 0, so a
-       held key never opens, closes or switches tab after tab — see the repeat comment at the top of
-       the file. The bindings come from the config file (key_new_tab, key_close_tab, key_next_tab,
-       key_prev_tab, key_toggle_layout, key_tab_prefix). */
+    /* Multiplexing. Matched FIRST, before the built-in Ctrl+Shift+C/V: the tab actions are the ones the user can
+       rebind, so on a shared chord the configured binding wins. Every one returns 0, so a held key never
+       opens, closes or switches tab after tab (see the repeat comment at the top of the file). */
     unsigned kbmods = 0;
     if (ctrl && (eff & ctrl))
         kbmods |= KB_CTRL;
@@ -1989,10 +1839,8 @@ static int send_key(uint32_t key, uint32_t serial)
         kbmods |= KB_ALT;
     if (superm && (eff & superm))
         kbmods |= KB_SUPER;
-    /* The question is modal whichever form it takes: matched before EVERY binding, the file manager's keys and
-       the PTY paths, so nothing else can act while the user is answering. Enter/y confirms, Esc/n cancels —
-       the same two answers the box's buttons carry, so the pointer and the keyboard can never disagree about
-       what Yes means. A held key never repeats an answer. */
+    /* Modal: matched before every binding and the PTY paths, so nothing else can act while the user
+       answers. Enter/y confirms, Esc/n cancels — the same answers the box's buttons carry. */
     if (confirm_kind != CONFIRM_NONE) {
         if (base == XKB_KEY_Return || base == XKB_KEY_KP_Enter ||
             base == XKB_KEY_y || base == XKB_KEY_Y)
@@ -2013,17 +1861,14 @@ static int send_key(uint32_t key, uint32_t serial)
     if (bind_match(&conf.key_next_tab, base, kbmods)) { tab_switch(mux_next(&mux)); return 0; }
     if (bind_match(&conf.key_prev_tab, base, kbmods)) { tab_switch(mux_prev(&mux)); return 0; }
     if (bind_match(&conf.key_toggle_layout, base, kbmods)) { layout_toggle(); return 0; }
-    /* The file manager. The three window-level bindings work from anywhere, because showing the band and
-       moving the keyboard between its regions is not something the band itself can do. The band's own
-       keys are matched only while it owns the keyboard (fm_keys checks that) — which is what makes the
-       bare `Up` / `r` / `Escape` defaults safe for the shell. */
+    /* The three window-level bindings work from anywhere: showing the band and moving the keyboard
+       between its regions is not something the band can do for itself. The band's own keys are matched
+       only while it owns the keyboard. */
     if (bind_match(&conf.key_file_manager, base, kbmods)) { fm_toggle(); return 0; }
     if (bind_match(&conf.key_fm_focus, base, kbmods))     { fm_focus_set(FM_FOCUS_LIST); return 0; }
     if (bind_match(&conf.key_fm_release, base, kbmods))   { fm_focus_set(FM_FOCUS_TERM); return 0; }
-    /* key_tab_prefix + a digit jumps straight to that tab. Digits are the one case the KeyBind fields cannot
-       express. The digit is taken from the key's LEVEL-0 keysym, NOT from `base`: on a US layout the default
-       prefix Ctrl+Shift turns 1 into "!", so matching `base` made the shortcut dead in the default
-       configuration. Shift is already in the modifier mask the prefix is compared against. */
+    /* key_tab_prefix + a digit jumps to that tab, the one case the KeyBind fields cannot express. The
+       digit comes from the LEVEL-0 keysym, not `base`: on a US layout Ctrl+Shift turns 1 into "!". */
     if (conf.tab_prefix_mods && kbmods == conf.tab_prefix_mods) {
         xkb_layout_index_t grp = xkb_state_serialize_layout(W.xkb_state, XKB_STATE_LAYOUT_EFFECTIVE);
         const xkb_keysym_t *lev = NULL;
@@ -2060,12 +1905,9 @@ static int send_key(uint32_t key, uint32_t serial)
     int fmk = fm_keys(base, kbmods);
     if (fmk >= 0)
         return fmk;
-    /* The band owns the keyboard, so nothing else may reach the shell. Until this, a key that was not one
-       of the band's bindings fell straight through to the PTY: typing with the browser focused wrote into
-       a terminal the user was deliberately not looking at, and `ls<Enter>` there ran a command the user
-       never meant to run in that window. Everything matched ABOVE this point still works — tabs, zoom,
-       copy/paste, scrollback navigation, the band's own toggle and focus keys — because those are window
-       chrome, not text. Returning 0 (not 1) means no key repeat is armed for a swallowed key. */
+    /* The band owns the keyboard, so nothing else may reach the shell: a key that is not a band binding
+       falls through to the PTY and runs in a terminal the user is not looking at. Chrome matched above
+       still works. */
     if (g_fm.on && g_fm.focus != FM_FOCUS_TERM) {
         klog(L_DEBUG, "fm: key swallowed — the file manager has the keyboard");
         return 0;
@@ -2233,12 +2075,8 @@ static void sel_cell(int *col, int *row)
     *row = iclamp_((W.ptr_y - W.gy) / ch, 0, cur_term()->g.rows - 1);
 }
 
-/* The PREVIEW PANE's cell under the pointer, in that pane's own coordinates. Exact for the same reason
-   sel_cell() is: render.c draws the band's cells from g_layout.fm.prev_x/prev_y with the same cell box, and
-   term_grid_geometry() leaves the whole-cell remainder at the right/bottom, so a pointer in it clamps to the
-   last column/row — which is also what makes a drag that leaves the pane extend to its edge instead of
-   stopping dead. Returns 0 only when there is no preview pane to name a cell in (the band is closed, its
-   preview is toggled away, or its grid could not be allocated). */
+/* The preview pane's cell under the pointer, in that pane's own coordinates. Exact for the same reason
+   sel_cell() is — same cell box, remainder clamped to the last row/column. 0 = no preview pane. */
 static int pv_cell(int *x, int *y)
 {
     if (!g_fm.on || !g_fm.preview_on || !g_fm.prev.cell || g_fm.prev.cols <= 0 || g_fm.prev.rows <= 0)
@@ -2252,12 +2090,8 @@ static int pv_cell(int *x, int *y)
     return 1;
 }
 
-/* The pane the pointer is over and the cell of THAT pane's grid it names. This is sel_cell() per pane rather than
-   for the visible session: in side-by-side view the pointer can be over a session the keyboard is not talking to,
-   and the underline has to sit on the grid the pointer is actually on. Exact for the same reason sel_cell() is —
-   render_draw() draws column x of a pane at [pg->x + x*cw, pg->x + (x+1)*cw) — and it answers 0 for the tab bar,
-   the file-manager band, the padding margin, the whole-cell remainder below the last row, and a pointer that is not
-   on the surface at all (W.ptr_in), which is exactly the set of places a plain click never reaches a URL. */
+/* The pane the pointer is over and the cell of that pane's grid it names: in side-by-side view the
+   pointer can be over a session the keyboard is not talking to. 0 = over no grid at all. */
 static int hover_cell(int *tab, int *col, int *row)
 {
     if (!W.ptr_in)
@@ -2276,10 +2110,9 @@ static int hover_cell(int *tab, int *col, int *row)
     return 1;
 }
 
-/* A pointer event just happened: if the CELL under the pointer changed, the frame has to be redrawn. Only the
-   cheap half of the question is asked here (a pane index and a cell, no scan); the run itself is recomputed in
-   hover_update(). A motion inside one cell asks for nothing, which is what keeps a dragged mouse from turning
-   into a frame storm. */
+/* A pointer event just happened: if the CELL under it changed, the frame has to be redrawn. Only the
+   cheap half of the question is asked here (a pane index and a cell, no scan); the run itself is
+   recomputed in hover_update(). */
 static void hover_motion(void)
 {
     int tab = -1, col = 0, row = 0;
@@ -2293,10 +2126,9 @@ static void hover_motion(void)
     W.dirty = 1;
 }
 
-/* The address the pointer is over, copied into Render for the frame about to be built. Recomputed EVERY
-   frame rather than remembered from the motion event: a scroll, new output, a resize, a tab switch or a pane
-   closing changes what is under the pointer without a single pointer event, and an underline left on a run
-   that is no longer there is the one failure this feature has. */
+/* The address under the pointer, copied into Render for the frame about to be built. Recomputed every
+   frame, not remembered from the motion event: a scroll, new output or a resize changes what is under
+   the pointer with no pointer event. */
 static void hover_update(void)
 {
     rend.hover_tab = -1;
@@ -2336,10 +2168,9 @@ static void hover_update(void)
     rend.hover_span = sp;
 }
 
-/* Set both selection endpoints: the anchor cell and the cell the pointer is on now. Whole glyphs only — an
-   endpoint is always a cell EDGE, never a point inside a glyph. The endpoint that comes FIRST in reading
-   order gets the cell's LEFT edge, the later one its RIGHT edge; dragging left swaps the endpoints, so their
-   fracs have to swap with them. */
+/* Set both selection endpoints. An endpoint is always a cell EDGE, never a point inside a glyph; the one
+   first in reading order gets the LEFT edge, so dragging left swaps the endpoints and their fracs with
+   them. */
 static void sel_set_endpoints(int ax, int ay, int bx, int by)
 {
     int forward = (by > ay) || (by == ay && bx >= ax);
@@ -2370,11 +2201,10 @@ static void ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surf, wl_fixed_t x, wl_fixed_t y)
 {
     (void)d; (void)surf;
-    /* wl_pointer.enter/motion surface_x/surface_y are wl_fixed_t (16.16/8.8 fixed point,
-       NOT pixels). Convert to integer surface pixels before storing: sel_cell/mouse_cell map
-       the pointer with plain `ptr / cell` division, so a raw fixed-point value (~256x too
-       large) clamps every click to the last row/column -> selection snaps to the bottom-right
-       and jumps in huge increments instead of tracking the pointer. */
+    /* wl_pointer.enter/motion surface_x/surface_y are wl_fixed_t (16.16/8.8 fixed point, NOT pixels).
+       Convert to integer surface pixels before storing: sel_cell/mouse_cell map the pointer with plain
+       `ptr / cell` division, so a raw fixed-point value (~256x too large) clamps every click to the last
+       row/column. */
     W.ptr_x = wl_fixed_to_int(x);
     W.ptr_y = wl_fixed_to_int(y);
     W.ptr_in = 1;
@@ -2421,10 +2251,9 @@ static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t 
     (void)d; (void)p; (void)time;
     W.ptr_x = wl_fixed_to_int(x);   /* fixed-point -> integer surface px (see ptr_enter) */
     W.ptr_y = wl_fixed_to_int(y);
-    /* A drag inside the file manager's preview pane extends THAT selection, not the session's: the two grids
-       have different origins and different column counts, so the cell is mapped by pv_cell() and the range is
-       stored in the pane's own coordinates. The flag is dropped the moment the band or its selection is gone,
-       so a motion after the preview was replaced cannot re-create a range from the old anchor. */
+    /* A drag inside the preview pane extends THAT selection, not the session's: the two grids have
+       different origins and column counts, so the cell comes from pv_cell() and the range is in the
+       pane's own coordinates. The flag drops as soon as the band or its selection is gone. */
     if (W.pv_selecting) {
         if (!g_fm.on || !g_fm.pv_sel_on) {
             W.pv_selecting = 0;
@@ -2465,17 +2294,14 @@ static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t 
         mouse_send(W.ptr_btn + 32, col, row, 'M');
     }
     /* The hover underline follows the pointer CELL, not every motion event: a compositor sends one event per
-       pixel, and a frame per pixel would be a storm for nothing. The run itself is recomputed in redraw(), which
-       is what keeps the underline honest when the TEXT moves under a pointer that never moved (a scroll, new
-       output, a resize). The selection-drag paths above returned before this: during a drag the underline is off
-       by url_hover_shows()'s own rule, and those paths already mark the window dirty. */
+   pixel, and a frame per pixel would be a storm for nothing. The run itself is recomputed in redraw(),
+   which keeps the underline honest when the TEXT moves under a pointer that never moved. */
     hover_motion();
 }
 
-/* Is Shift down right now? The pointer events carry no modifier state, but the keyboard listener keeps
-   xkb_state current (kb_mod calls xkb_state_update_mask), so the terminal can ask. Shift is the escape
-   hatch every terminal uses to step around an application's mouse handling: Shift + click means "I want
-   the selection, not whatever the program does with a click". */
+/* Pointer events carry no modifier state, but the keyboard listener keeps xkb_state current, so the
+   terminal can ask. Shift + click is the escape hatch every terminal uses to step around an
+   application's mouse handling. */
 static int ptr_shift_held(void)
 {
     if (!W.keymap || !W.xkb_state)
@@ -2492,10 +2318,9 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
     int btn = mouse_sgr_button(button);   /* 0 left, 1 middle, 2 right, 3 other (vt.c) */
     int pressed = state == WL_POINTER_BUTTON_STATE_PRESSED;
 
-    /* A preview-pane text drag ends wherever the button is RELEASED — over its own pane, over another pane,
-       over the tab bar, or outside the band — so this comes BEFORE every hit test below. An early return in
-       one of them would leave the drag live, and the next motion event would keep extending a range under a
-       pointer the user has already let go of. */
+    /* A preview-pane text drag ends wherever the button is RELEASED — over any pane, the tab bar, or
+       outside the band — so this comes BEFORE every hit test below: an early return would leave the drag
+       live and the next motion would extend a range under a pointer the user already let go of. */
     if (!pressed && W.pv_selecting) {
         W.pv_selecting = 0;
         fm_pv_anchor_x = fm_pv_anchor_y = fm_pv_drag_x = fm_pv_drag_y = -1;
@@ -2512,12 +2337,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         return;
     }
 
-    /* One decision says which surface owns this press. main.c computes the FLAGS — it owns the geometry, the
-       model and the config — and ptr_press_action() in src/vt.c owns the ORDER, which is the part a user feels
-       and the part a test can flip. Every branch below is then gated on that answer instead of re-deriving its
-       own condition, so the chain and the check cannot drift apart: a middle click that decided to paste over
-       the tab bar would be a bug in a function no test binary links, and it is instead a case in a table.
-       `cur_term()` is guarded here because this runs before the branch that closes the last session returns. */
+    /* One decision says which surface owns this press: main.c computes the FLAGS (it owns the geometry,
+       the model and the config) and ptr_press_action() in src/vt.c owns the ORDER, which is the part a
+       user feels and a test can flip. Every branch below is gated on that answer. `cur_term()` is
+       guarded: this runs before the last tab closes. */
     int bi = layout_hit_bar(&g_layout, W.ptr_x, W.ptr_y);
     int fm_hit = g_fm.on ? layout_hit_fm(&g_layout, W.ptr_x, W.ptr_y) : FM_HIT_NONE;
     Term *pt = cur_term();
@@ -2530,10 +2353,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                     .middle_paste = conf.middle_click_paste };
     int act = ptr_press_action(&pp);
 
-    /* The confirm-quit BOX owns the pointer while it is up, checked before the bar, the band and the panes: a
-       click on Yes must answer the question and nothing else, not also close the tab underneath it. Both the
-       press and the release are swallowed — a release that fell through would reach code assuming the press
-       was its own. Only a press ON A BUTTON answers: inside the box but off both buttons answers nothing. */
+    /* The confirm-quit BOX owns the pointer while it is up, checked before the bar, the band and the
+       panes: a click on Yes must answer the question and not also close the tab underneath. Press and
+       release are both swallowed — a release that fell through would reach code assuming the press was
+       its own. Only a press ON A BUTTON answers. */
     if (act == PTR_DIALOG) {
         if (pressed) {
             int hi = layout_hit_dialog(&g_layout, W.ptr_x, W.ptr_y);
@@ -2552,10 +2375,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         return;
     }
 
-    /* The tab bar is chrome, not terminal. A left click on an item shows that session, a middle click
-       closes it, and neither reaches the application nor starts a text selection. This is checked BEFORE the
-       mouse-reporting branch on purpose: an application that grabbed the mouse (?1000/?1002) still must not
-       be able to eat the bar that names its tab. */
+    /* The tab bar is chrome, not terminal: a left click shows that session, a middle click closes it,
+       and neither reaches the application or starts a selection. Checked BEFORE the mouse-reporting
+       branch on purpose — an application that grabbed the mouse must not be able to eat the bar that
+       names its tab. */
     if (act == PTR_BAR) {
         int tab = g_layout.item[bi].tab;
         W.selecting = 0;
@@ -2578,10 +2401,9 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         return;
     }
 
-    /* The file-manager band is chrome, like the bar: a click there selects an entry or moves the
-       keyboard, and it never reaches the application (not even when the application grabbed the mouse)
-       and never starts a text selection. Checked before the mouse-reporting branch for exactly the bar's
-       reason — an application must not be able to eat the browser the user is looking at. */
+    /* The file-manager band is chrome like the bar: a click there never reaches the application (not
+       even when it grabbed the mouse) and never starts a text selection. Checked before the mouse-
+       reporting branch for the bar's reason. */
     if (g_fm.on) {
         if (act == PTR_FM) {
             W.selecting = 0;
@@ -2643,10 +2465,9 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                the last release was waiting on is dropped here; the release below sets a new one if it earns it. */
             W.url_press_ms = 0;
             W.url_text[0] = 0;
-            /* Which click in a row is this? Same cell within CLICK_DCLICK_MS continues the gesture.
-               A second click selects the WORD under the pointer, a third the whole LOGICAL line (a
-               soft-wrapped line is one line, so a triple click takes every row it spans) — the user's
-               rule for what a word is lives in vt.c's term_word_span(), next to the grid it reads. */
+            /* Which click in a row is this? Same cell within CLICK_DCLICK_MS continues the gesture. A
+               second click selects the WORD, a third the whole LOGICAL line (a soft-wrapped line is one
+               line). The rule for what a word is lives in vt.c's term_word_span(). */
             int same = (col == W.click_col && row == W.click_row);
             W.click_count = conf.click_selects_word
                           ? term_click_count(time, W.click_ms, same, W.click_count)
@@ -2682,16 +2503,13 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                  cur_term()->g.rows, cur_term()->g.cols);
         } else {
             W.selecting = 0;
-            /* A click that never moved is the user asking the program to put its cursor where they clicked — only for a
-               program that owns its own screen and never asked for the mouse, the one state where a report
-               cannot be sent and the one where a click used to do nothing. A DRAG still selects, and Shift
-               still means selection. */
+            /* A click that never moved asks the program to put its cursor where they clicked — only for
+               a program that owns its own screen and never asked for the mouse, the one state where a
+               report cannot be sent. A DRAG still selects, and Shift still means selection. */
             int no_drag = (col == cur_term()->sel_ax && row == cur_term()->sel_ay);
-            /* A plain click on a web address. The ORDER is url_click_opens()'s, in src/url.c, so "a drag still
-               selects", "the second click selects a word" and "Shift means selection" are cases in a table
-               a test can flip rather than early returns in a file no test binary links. main.c supplies the
-               flags and decides only that an open is PENDING: url_tick() opens it once the double-click
-               window has passed, which is what lets a double click select the word and open nothing. */
+            /* A plain click on a web address. The ORDER is url_click_opens()'s in src/url.c, so "a drag
+               still selects" and "Shift means selection" are rows in a table a test can flip; main.c
+               only decides that an open is PENDING until the double-click window passes. */
             Term *ut = cur_term();
             UrlSpan usp;
             char url[sizeof W.url_text];
@@ -2724,12 +2542,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                 W.dirty = 1;
                 return;
             }
-            /* A plain click in a pane that did NOT open something says why, at debug level. This line exists
-               because "I clicked an address and nothing happened" is the report this feature will get and there
-               was no way to answer it: s131 shipped a refusal that logged nothing, and s132 could not tell from
-               any amount of reading whether the address was not found, the pointer drifted a cell, Shift was
-               down or the program owns its screen. With the switch off it stays quiet — the user asked for no
-               opens, so there is nothing to explain. */
+            /* A plain click that did NOT open something says why, at debug level: "I clicked an address
+               and nothing happened" is unanswerable without knowing whether the address was not found,
+               the pointer drifted, Shift was down or the program owns its screen. With the switch off it
+               stays quiet. */
             if (uc.enabled)
                 klog(L_DEBUG, "url: the click at (%d,%d) opened nothing — %s",
                      col, row, url_refusal_name(why));
@@ -2740,12 +2556,11 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                 if (n > 0) {
                     term_select_clear(cur_term());   /* the cursor moved; leave no stray highlight */
                     send_str(seq, (size_t)n);
-                    /* Stamp the moment on THIS session's Tab: a program that cannot honour one of these presses answers with a
-                       BEL, and the pty-read path asks whether a BEL answers these very presses before turning
-                       one into a flash, so the pane never washes for a complaint about Kai-Term's own typing.
-                       The wheel path is NOT stamped: there the user asked to scroll. (Keep the name of that
-                       check out of this comment: the scan that pins the call reads main.c with strstr and does
-                       not skip comments, so a comment naming it would match first.) */
+                    /* Stamp the moment on THIS session's Tab: a program that cannot honour one of these
+                       presses answers with a BEL, and the pty-read path asks whether a BEL answers these
+                       presses before turning one into a flash. The wheel path is NOT stamped — there the
+                       user asked to scroll. Do not name that pty-read check in a comment: the scan that
+                       pins this call reads main.c as plain text. */
                     Tab *st = mux_cur(&mux);
                     if (st)
                         st->synth_ms = (long long)mono_ms();
@@ -2755,10 +2570,9 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                     return;
                 }
             }
-            /* Releasing the drag used to ALWAYS offer the selection to the
-               clipboard, which meant any stray click-drag overwrote what the user had copied.
-               `copy_on_release = 1` restores that; by default the selection just stays visible and
-               Ctrl+Shift+C is what copies it. */
+            /* Releasing the drag used to ALWAYS offer the selection to the clipboard, so any stray
+               click-drag overwrote what the user had copied. `copy_on_release = 1` restores that; by
+               default the selection stays visible and Ctrl+Shift+C copies it. */
             if (conf.copy_on_release) {
                 selection_copy(serial);   /* finalize: offer the selection to the clipboard */
             } else if (cur_term()->sel_active) {
@@ -2771,10 +2585,10 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
     }
 }
 
-/* The wheel inside a program that owns its own screen and never asked for the mouse: such a program has no
-   terminal scrollback to move, and it must NOT be sent a mouse report, because a program with no mouse
-   protocol reads one as typed text. So the gesture becomes cursor-key presses. Fractional (trackpad)
-   motion is accumulated so a slow two-finger swipe still produces whole presses. */
+/* The wheel inside a program that owns its own screen and never asked for the mouse: it has no terminal
+   scrollback to move, and it must NOT get a mouse report, because a program with no mouse protocol reads
+   one as typed text. So the gesture becomes cursor-key presses, with fractional (trackpad) motion
+   accumulated into whole presses. */
 static int app_wheel(Term *t, double delta_lines)
 {
     if (!conf.wheel_sends_keys || !term_wants_key_mouse(t)) {
@@ -2804,11 +2618,9 @@ static void ptr_axis(void *d, struct wl_pointer *p, uint32_t time, uint32_t axis
         return;
     double v = wl_fixed_to_double(value);
     if (cur_term()->mouse_mode & (MOUSE_PRESS | MOUSE_DRAG)) {
-        /* An application grabbed the mouse: report the wheel as button 64 (up) / 65 (down), which is what
-           xterm, kitty, neovim and tmux send — and NOT 4/5. Measured 2026-10-21
-           (.scratch/s96/nanoprobe) on nano --mouse, which asks for ?1000+?1006: ESC[<5;20;12M did nothing
-           at all, ESC[<65;20;12M scrolled the text, and in the legacy form 32+65 scrolled while 32+4 did
-           not. mouse_wheel_button() (vt.c) owns those numbers so tests/test_vt.c can pin them. */
+        /* An application grabbed the mouse: report the wheel as button 64 (up) / 65 (down), which is what xterm,
+           kitty, neovim and tmux send — and NOT 4/5, which ncurses reads as button 1 and so leaves the
+           wheel dead. mouse_wheel_button() (vt.c) owns those numbers so tests/test_vt.c can pin them. */
         int col, row;
         mouse_cell(&col, &row);
         mouse_send(mouse_wheel_button(v < 0), col, row, 'M');
@@ -2917,10 +2729,9 @@ static const struct wl_data_source_listener source_listener = {
 static void offer_offer(void *d, struct wl_data_offer *o, const char *mime)
 {
     (void)d; (void)o;
-    /* Keep the BEST advertised text type, not the LAST one. Which types a source advertises, and in
-       what order, is entirely the source's business — Firefox offers text/plain, text/html,
-       text/x-moz-url and text/plain;charset=utf-8 in an order of its own — and the type asked for
-       decides what bytes come back. The old rule let the last advertisement win. */
+    /* Keep the BEST advertised text type, not the LAST one: which types a source advertises, and in what
+       order, is entirely the source's business (Firefox offers four in an order of its own), and the
+       type asked for decides the bytes that come back. */
     int r = clipboard_mime_rank(mime);
     if (r > last_offer_text) {
         last_offer_text = r;
@@ -2954,10 +2765,9 @@ static void start_paste(struct wl_data_offer *offer, const char *mime)
         epoll_ctl(g_ep, EPOLL_CTL_ADD, paste_fd[0], &ev);
 }
 
-/* Paste idle watchdog. A paste is only flushed when the source closes the pipe (EOF), which is what
-   every real client does. If a client leaves the write end open, the buffered block would sit there
-   unflushed forever, so after a quiet period we deliver what we have. One-shot: it is re-armed by the
-   next short read. */
+/* Paste idle watchdog. A paste is flushed when the source closes the pipe (EOF), which every real client
+   does; if one leaves the write end open the buffered block would sit there forever, so after a quiet
+   period we deliver what we have. One-shot: re-armed by the next short read. */
 static int pwfd = -1;
 
 static void paste_watch_arm(void)
@@ -2979,10 +2789,10 @@ static void paste_watch_disarm(void)
         ;
 }
 
-/* ---------- the cursor blink ---------- A tick flips W.cursor_on and marks the frame dirty; the swap then
-   happens on the NORMAL frame path, inside redraw() — never swap inside a Wayland listener, and never arm a
-   wl_surface_frame callback without attaching a buffer. The user's `cursor_blink =` is the ceiling:
-   DECSCUSR can only make the cursor LESS flashy, and blinking is gated on the window having focus. */
+/* ---------- the cursor blink ----------
+   A tick flips W.cursor_on and marks the frame dirty; the swap happens on the normal frame path inside
+   redraw(), never inside a Wayland listener. The user's `cursor_blink =` is the ceiling: DECSCUSR can
+   only make the cursor LESS flashy, and blinking is gated on the window having focus. */
 static int cbfd = -1;
 static int cbfd_half;                 /* the half-period currently armed; 0 = disarmed */
 static Term *cbfd_term;               /* the session that half-period was decided for */
@@ -3001,10 +2811,9 @@ static int blink_half_ms(void)
     return conf.cursor_blink;
 }
 
-/* Re-arm only when the wanted state CHANGED: this runs from the frame tick, and a timerfd_settime per frame
-   would be 60 syscalls a second for a decision that changes when a tab switches or an application asks.
-   "Changed" includes WHICH session is visible, or a switch would leave the new session inheriting the old
-   one's phase — landing in the off half with no cursor until the next tick of the old rhythm. */
+/* Re-arm only when the wanted state CHANGED: this runs from the frame tick, and a timerfd_settime per
+   frame would be 60 syscalls a second. "Changed" includes WHICH session is visible, or a switch would
+   leave the new session in the old one's off half. */
 static void blink_update(void)
 {
     if (cbfd < 0)
@@ -3029,21 +2838,20 @@ static void blink_update(void)
     klog(L_DEBUG, "cursor blink: half-period %d ms (%s)", half, half > 0 ? "blinking" : "steady");
 }
 
-/* Is a visual-bell flash on screen right now? The rule is mux_bell_live()'s (src/mux.c) — it is checked there,
-   and it is the one that knows only a DRAWN session has a field to wash out. What stays here is the two things
-   only this file owns: the clock and the config line. The duration is handed in rather than read by the callee,
-   so `bell = off` needs no branch and the renderer and this tick cannot disagree about when a flash ends. */
+/* Is a visual-bell flash on screen right now? The rule is mux_bell_live()'s (src/mux.c) — it is the one
+   that knows only a DRAWN session has a field to wash out. The duration is handed in rather than read by
+   the callee, so `bell = off` needs no branch and the renderer and this tick cannot disagree about when
+   a flash ends. */
 static int bell_live(void)
 {
     return mux_bell_live(&mux, &g_layout, (long long)mono_ms(),
                          conf.bell == BELL_VISUAL ? BELL_FLASH_MS : 0);
 }
 
-/* The frame timer's bell tick, next to blink_update() for the same reason: a flash changes on a schedule, and
-   nothing else in the loop wakes on one. While a flash is live the window must be redrawn every frame or the
-   fade would be one frozen colour; and on the frame where the LAST flash ends the window must be redrawn once
-   MORE, because bell_strength() has just answered 0 and the screen still holds the previous frame's wash. That
-   final frame is what W.bell_live is for — without it a bell would leave a permanent tint on the pane. */
+/* The frame timer's bell tick, beside blink_update() because a flash changes on a schedule and nothing
+   else in the loop wakes on one. While it is live the window redraws every frame or the fade is one
+   frozen colour; the frame the last flash ends redraws once more, because the screen still holds the
+   previous wash. */
 static void bell_tick(void)
 {
     int live = bell_live();
@@ -3052,11 +2860,10 @@ static void bell_tick(void)
     W.bell_live = live;
 }
 
-/* The frame timer's URL tick, beside bell_tick() for the same reason: a wait expires on a schedule and nothing
-   else in the loop wakes on one. The open is RE-ASKED at the deadline rather than trusted from the click: the tab
-   may have closed (and mux_close shifts the indices of the later tabs with it), the pane may have scrolled, or the
-   program may have repainted the line. Anything other than the same answer for the same cell is dropped — opening
-   an address the user never clicked is worse than opening nothing. */
+/* The frame timer's URL tick, beside bell_tick() because a wait expires on a schedule. The open is RE-
+   ASKED at the deadline rather than trusted from the click: the tab may have closed, the pane may have
+   scrolled, or the program may have repainted the line. Anything other than the same answer for the same
+   cell is dropped. */
 static void url_tick(void)
 {
     if (!W.url_press_ms)
@@ -3141,11 +2948,9 @@ static void maybe_create_data_device(void)
     }
 }
 
-/* Copy the current selection to the clipboard as a text/plain data source.
-   ONE owner per copy: the file manager's preview pane owns it when it holds a selection, otherwise the
-   session does. Both can be on screen at once, so the order of these two branches IS the rule — and the log
-   line names the owner that served the bytes, because "why did that copy the wrong thing?" is unanswerable
-   from a line that only prints a byte count (Key Decisions: log what the owner of the state reports). */
+/* Copy the current selection to the clipboard as a text/plain data source. ONE owner per copy: the file
+   manager's preview pane when it holds a selection, otherwise the session. Both can be on screen at once,
+   so the order of these two branches IS the rule, and the log line names the owner that served the bytes. */
 static void selection_copy(uint32_t serial)
 {
     if (!W.data_dev)
@@ -3174,10 +2979,9 @@ static void selection_copy(uint32_t serial)
          from_preview ? "the file manager's preview pane" : "the terminal");
 }
 
-/* Ask the clipboard for its text. `why` names the gesture that asked — the middle click or Ctrl+Shift+V —
-   because the two paths are otherwise identical and a user debugging a paste that produced nothing needs to
-   know which one they pulled. Every early return says why in the log: silently doing nothing is how
-   "the middle click is broken" becomes an unanswerable bug report. */
+/* Ask the clipboard for its text. `why` names the gesture that asked (the middle click or Ctrl+Shift+V),
+   because the two paths are otherwise identical, and every early return says why in the log: silently
+   doing nothing is how "the middle click is broken" becomes an unanswerable report. */
 static int clipboard_paste(const char *why)
 {
     if (!W.data_dev) {
@@ -3198,20 +3002,19 @@ static int clipboard_paste(const char *why)
 }
 
 /* Send the buffered clipboard text to the PTY, wrapped in the bracketed-paste delimiters when the
-   application asked for mode 2004 (bash/zsh/vim then insert the block literally instead of running
-   every line as it arrives). Each write stays under the PTY's input buffer so a big paste is never
-   cut in half by the tty layer — a split block would lose the delimiters' pairing. */
+   application asked for mode 2004 (bash/zsh/vim then insert the block instead of running every line as
+   it arrives). Each write stays under the PTY's input buffer so a big paste is never cut in half by the
+   tty layer — a split block would lose the delimiters' pairing. */
 static void paste_flush(void)
 {
     if (!paste_len)
         return;
     if (fm_cd_state != FMCD_IDLE)
         fm_cd_abort("a paste was inserted at the prompt");
-    /* A NUL byte must never reach the pty. Firefox on Wayland serves UTF-16 code units under a
-       UTF-8 label, and pasting those bytes verbatim is what the user reported as "a stray h":
-       bash's bracketed-paste reader stops at the first NUL, so "http://127.0.0.1:8080" arrives as a
-       single `h`, and zsh inserts them all and paints every NUL as `^@` (measured, s98). Repair the
-       block — decode UTF-16 to UTF-8, otherwise drop the NULs — before any of it is written. */
+    /* A NUL byte must never reach the pty. Firefox on Wayland serves UTF-16 code units under a UTF-8
+       label: bash's bracketed-paste reader stops at the first NUL, so a pasted URL arrives as a single
+       `h`, and zsh paints every NUL as `^@`. Repair the block — decode UTF-16 to UTF-8, otherwise drop
+       the NULs — before any of it is written. */
     if (memchr(paste_buf, 0, paste_len)) {
         size_t cap = paste_len * 3 / 2 + 8;
         char *tmp = malloc(cap);
@@ -3355,10 +3158,10 @@ static void registry_global(void *d, struct wl_registry *reg, uint32_t id,
     } else if (!strcmp(iface, wl_shm_interface.name)) {
         W.shm = wl_registry_bind(reg, id, &wl_shm_interface, 1);
     } else if (!strcmp(iface, wl_seat_interface.name)) {
-        /* Bind at v5 so the derived wl_pointer carries axis_discrete/axis_source/axis_stop/frame
-           (all SINCE_VERSION 5), needed for smooth wheel + touchpad scrolling. The compositor's
-           advertised version caps this (niri advertises 9). wl_keyboard has no events above v4 in
-           this protocol, so a v5 seat adds no unhandled keyboard events. */
+        /* Bind at v5 so the derived wl_pointer carries axis_discrete/axis_source/axis_stop/frame (all
+           SINCE_VERSION 5), needed for smooth wheel and touchpad scrolling. The compositor's advertised
+           version caps this. wl_keyboard has no events above v4, so a v5 seat adds no unhandled keyboard
+           events. */
         W.seat = wl_registry_bind(reg, id, &wl_seat_interface, imin_(version, 5));
         wl_seat_add_listener(W.seat, &seat_listener, NULL);
     } else if (!strcmp(iface, xdg_wm_base_interface.name)) {
@@ -3404,10 +3207,9 @@ static int wayland_setup(int init_w, int init_h)
     xdg_surface_add_listener(W.xdg_surface, &xdg_surface_listener, NULL);
     W.toplevel = xdg_surface_get_toplevel(W.xdg_surface);
     xdg_toplevel_add_listener(W.toplevel, &toplevel_listener, NULL);
-    /* app_id is what the compositor matches windows on (niri/Sway rules, taskbar grouping, file
-       managers' "open terminal here"). Configurable through the config file; config_default() puts
-       DEF_APP_ID ("Kai-Term") there and an empty value is refilled there too, so the
-       fallback here only covers a Config that never went through config_default. */
+    /* app_id is what the compositor matches windows on (niri/Sway rules, taskbar grouping).
+       config_default() puts DEF_APP_ID there and refills an empty value, so the fallback here only
+       covers a Config that never went through config_default. */
     xdg_toplevel_set_app_id(W.toplevel, conf.app_id[0] ? conf.app_id : DEF_APP_ID);
     klog(L_INFO, "app_id: %s", conf.app_id[0] ? conf.app_id : DEF_APP_ID);
     update_title();   /* DEF_TITLE while there is one session; "Kai-Term [2/3]" once there are several */
@@ -3420,11 +3222,9 @@ static int wayland_setup(int init_w, int init_h)
         klog(L_ERROR, "wl_egl_window_create failed");
         return -1;
     }
-    /* conf.fg goes to the renderer because the tab bar's colours are mixed from the CONFIGURED palette:
-       an application may repaint its own cells but not the chrome that names its tab (see Render.fg).
-       conf.cursor_color goes with it for the same reason in the other direction: the key was in the
-       config file, the parser and the struct for weeks and reached no pixel, because the renderer drew
-       the cursor from the CURSOR_COL macro (see Render.cursor_color, and ISSUES.md). */
+    /* conf.fg goes to the renderer because the tab bar's colours are mixed from the CONFIGURED palette: an
+       application may repaint its own cells but not the chrome that names its tab (see Render.fg).
+       conf.cursor_color goes with it for the same reason — a key that reaches no pixel is not one. */
     if (render_init(&rend, W.display, W.egl_window, init_w, init_h, conf.opacity, conf.bg,
                     conf.fg, conf.cursor_color, conf.selection_color, conf.cursor_width,
                     conf.bell == BELL_VISUAL) < 0) {
@@ -3472,10 +3272,10 @@ static void wayland_destroy(void)
 
 /* ---------------- main ---------------- */
 
-/* The launch surface is deliberately small: everything that describes how the terminal LOOKS is a persistent
-   preference in the config files, and the flags that stay are the per-launch ones. Flags dropped in the past
-   are not special-cased — an unknown option produces one generic message plus the option list. -c points at
-   kai-term.conf and -b at kai-term.bind, each searched for independently. */
+/* The launch surface is deliberately small: anything that describes how the terminal LOOKS is a
+   persistent preference in the config files, and the flags that stay are per-launch. An unknown option
+   produces one generic message plus the option list. -c points at kai-term.conf and -b at kai-term.bind,
+   each searched for independently. */
 static void usage(const char *argv0, FILE *out)
 {
     fprintf(out,
@@ -3579,25 +3379,23 @@ int main(int argc, char **argv)
         }
     }
 
-    /* -d must also cover the diagnostics the two config readers print, which run BEFORE the file's
-       own `log =` value is known: raise the level first, then settle on the final one (the CLI still
-       beats the file, see the opt_debug handling below and the session-43 precedence fix).
-       The binding file is read SECOND on purpose: for a name both files set, kai-term.bind wins. */
+    /* -d must also cover the diagnostics the two config readers print, which run BEFORE the file's own
+       `log =` value is known: raise the level first, then settle on the final one (the CLI still beats
+       the file). The binding file is read SECOND on purpose: for a name both files set, kai-term.bind
+       wins. */
     if (opt_debug)
         kai_term_loglevel = L_DEBUG;
 
-    /* `--import-theme` is a one-shot operation, not a launch: it reads one file, writes one file and exits.
-       It runs BEFORE config_load so the settings file's own log lines do not bury the import report, and it
-       needs no display — which is why tests/cli_test.sh can check it even with KAI_TERM_TEST_NO_WINDOW=1.
-       All the translation lives in src/theme.c; what is here is the flag, the question, and the report. */
+    /* `--import-theme` is a one-shot operation, not a launch: it reads one file, writes one file and
+       exits. It runs BEFORE config_load so the settings file's own log lines do not bury the import
+       report, and it needs no display. All the translation lives in src/theme.c. */
     if (opt_import) {
         char dest[4096];
         int rc = theme_import(opt_import, dest, sizeof dest, opt_force);
         if (rc == 1) {
-            /* The user's answer, s102 question 8: ask — do not silently overwrite and do not silently
-               refuse. Their wording, with the grammar tidied: "Warning a theme with the same name already
-               exist. Overwrite ? [y/N]". No answer to read (closed stdin, a script) is a refusal that says
-               how to get the other answer, rather than a guess. */
+            /* Ask — do not silently overwrite and do not silently refuse: "Warning a theme with the same
+               name already exist. Overwrite ? [y/N]". No answer to read (closed stdin, a script) is a
+               refusal that says how to get the other answer, rather than a guess. */
             fputs("Warning: a theme with the same name already exists. Overwrite? [y/N] ", stdout);
             fflush(stdout);
             char ans[128];
@@ -3618,11 +3416,9 @@ int main(int argc, char **argv)
 
     config_load(&conf, opt_config);
     config_load_binds(&conf, opt_binds);
-    /* The theme, if the settings file named one, is applied AFTER both files have been read: a colour the
-       user wrote in kai-term.conf beats it wherever that line sits, and a colour they never wrote is
-       filled in. Doing it here rather than line-by-line during config_load is what makes that true — see
-       src/theme.c and the s102 precedence decision. It must run before term_set_default_colors() below
-       (which hands ink and paper to src/vt.c) and before render_init() clears the window with them. */
+    /* The theme, if the settings file named one, is applied AFTER both files have been read: a colour the user
+       wrote in kai-term.conf beats it wherever that line sits, and a colour they never wrote is filled
+       in. It must run before term_set_default_colors() and before render_init() clears the window. */
     theme_apply_config(&conf);
     if (opt_debug)
         conf.loglevel = L_DEBUG;
@@ -3632,10 +3428,10 @@ int main(int argc, char **argv)
     /* Whether an application may repaint the terminal (OSC 4/10/11/104). Process-wide state in src/vt.c, set
        once here like the ink and paper below; `osc_colors = 0` makes the parser ignore all four. */
     term_set_osc_colors(conf.osc_colors);
-    /* Hand the configured ink and paper to src/vt.c BEFORE the first Term exists (mux_open below) and before
-       render_init() clears the window with them. This is what makes ONE `background =` line own both the
-       `padding` margin (glClear) and every blank cell (pass 1's quad); when the two halves read different
-       numbers the difference draws a frame around the grid — the s101 border the user reported. */
+    /* Hand the configured ink and paper to src/vt.c BEFORE the first Term exists (mux_open below) and
+       before render_init() clears the window with them. This is what makes ONE `background =` line own
+       both the `padding` margin (glClear) and every blank cell: when the two halves read different
+       numbers the difference draws a frame around the grid. */
     term_set_default_colors(conf.fg, conf.bg);
 
     /* Where the shell starts: -w DIR beats config working_dir, which beats $HOME. The path is
@@ -3692,11 +3488,9 @@ int main(int argc, char **argv)
         return 1;
 
     /* The window is asked for the grid PLUS the margin on both sides; the compositor may answer with a
-       different pixel size, and layout_apply() then recomputes the panes and cols/rows from what it got.
-       With `tab_bar = always` the bar is drawn even for the single starting session, so the window must also
-       hold its row and its gap — otherwise the grid would come up one row short of `rows`. That arithmetic
-       lives in layout_initial_size() (src/layout.c) because it is layout_compute()'s inverse and only a
-       linked test can prove the two agree. */
+       different pixel size, and layout_apply() recomputes the panes and cols/rows from what it got. With
+       `tab_bar = always` the window must also hold the bar's row and gap, or the grid comes up one row
+       short of `rows`; that arithmetic is layout_initial_size(). */
     int init_w, init_h;
     layout_initial_size(conf.cols, conf.rows, font.cell_w, font.cell_h, conf.padding, PANE_GAP,
                         conf.tab_bar, conf.fm_on, conf.fm_size, &init_w, &init_h);
@@ -3792,11 +3586,9 @@ int main(int argc, char **argv)
     struct epoll_event events[8];
 
     while (W.running) {
-        /* Canonical wayland+epoll pattern: dispatch anything already queued in
-           libwayland's buffer, then prepare a read so the later read_events() will
-           not block. The previous code called read_events() inside a drain loop AFTER
-           dispatch, which blocked on the display fd and starved the timerfd and
-           signalfd (no timer redraw, child exit never detected). */
+        /* Canonical wayland+epoll pattern: dispatch anything already queued in libwayland's buffer, then prepare
+           a read so the later read_events() will not block. Calling read_events() inside a drain loop
+           AFTER dispatch blocks on the display fd and starves the timerfd and signalfd. */
         while (wl_display_prepare_read(W.display) != 0) {
             if (wl_display_dispatch_pending(W.display) < 0) {
                 W.running = 0;
@@ -3820,10 +3612,9 @@ int main(int argc, char **argv)
             if (events[i].data.fd == wfd)
                 wl_ready = 1;
 
-        /* Finish the wayland read BEFORE any descriptor is handled. This is not cosmetic: eglSwapBuffers waits until
-           the compositor gives a buffer back, and that release can only be read from this thread, so while a
-           wl_display_prepare_read() is outstanding the swap blocks forever and the terminal freezes. Finishing
-           the read here also means a listener may draw, which is the preferred swap site. */
+        /* Finish the wayland read BEFORE any descriptor is handled: while a wl_display_prepare_read() is
+           outstanding a swap blocks forever and the terminal freezes (see the frame pacing rules).
+           Finishing the read here also means a listener may draw, which is the preferred swap site. */
         if (wl_ready) {
             if (wl_display_read_events(W.display) < 0) {
                 W.running = 0;
@@ -3848,11 +3639,10 @@ int main(int argc, char **argv)
                 for (;;) {
                     ssize_t r = read(tb->pty.mfd, rbuf, sizeof(rbuf));
                     if (r > 0) {
-                        /* New output is written relative to the LIVE view (the parser's cursor
-                           addresses row[live_off + cy]). If the user is scrolled back, those rows
-                           are currently on screen, so return the view to the live anchor first;
-                           otherwise the output would overwrite the lines being read. Per session:
-                           this is the tab that produced the output, visible or not. */
+                        /* New output is written relative to the LIVE view (the parser's cursor addresses
+                           row[live_off + cy]), so a scrolled-back view would have its lines overwritten:
+                           return the view to the live anchor first. Per producing session, visible or
+                           not. */
                         if (tb->term.g.scroll_off != tb->term.g.live_off)
                             snap_to_live(&tb->term);
                         term_parse(&tb->term, rbuf, (size_t)r);
@@ -3864,10 +3654,10 @@ int main(int argc, char **argv)
                             pty_write(&tb->pty, tb->term.resp, (size_t)tb->term.resp_len);
                             tb->term.resp_len = 0;
                         }
-                        /* An application changed the default ink or paper (OSC 10/11). vt.c already moved the process-wide defaults
-                           and swept THIS session's cells; finish the job — sweep the other sessions, re-point
-                           the renderer, and update conf so a new tab and an `ESC c` get the colour the
-                           application asked for rather than the one in the file. */
+                        /* An application changed the default ink or paper (OSC 10/11). vt.c moved the
+                           process-wide defaults and swept THIS session's cells; finish the job — sweep
+                           the other sessions, re-point the renderer, and update conf so a new tab gets
+                           the new colour. */
                         if (tb->term.colors_dirty) {
                             uint32_t of = tb->term.old_def_fg, ob = tb->term.old_def_bg;
                             uint32_t nf = term_default_fg(),   nb = term_default_bg();
@@ -3881,10 +3671,11 @@ int main(int argc, char **argv)
                             klog(L_INFO, "display: the window's ink and paper are now #%06x / #%06x — "
                                  "an application set them, not kai-term.conf", nf & 0xffffff, nb & 0xffffff);
                         }
-                        /* The program in this session rang a BEL. The model only says THAT it happened; here it becomes a moment on
-           this process's clock, which is all the renderer needs to draw a fading flash. The flag is cleared
-           because it is an EVENT: leaving it set would re-arm the flash on every later read of the same pty.
-           Marking the window dirty is gated on the session being DRAWN. */
+                        /* The program in this session rang a BEL. The model only says THAT it happened;
+                           here it becomes a moment on this process's clock, which is all the renderer
+                           needs to draw a fading flash. The flag is cleared because it is an EVENT:
+                           leaving it set would re-arm the flash on every later read. Marking the window
+                           dirty is gated on the session being DRAWN. */
                         if (tb->term.bell_rang) {
                             tb->term.bell_rang = 0;
                             if (bell_is_ours((long long)mono_ms(), tb->synth_ms, BELL_OURS_MS)) {
@@ -3906,10 +3697,9 @@ int main(int argc, char **argv)
                                changed, so redraw. A pane the user can already see needs no unread mark. */
                             W.dirty = 1;
                         } else if (mux_touch(&mux, ti)) {
-                            /* Nothing shows this session at all: do not touch its scroll position, but mark
-                               it in the bar and in the title, once, so the user can find the session that
-                               just finished something. With no bar the picture did not change at all, so
-                               there is nothing to redraw. */
+                            /* Nothing shows this session: do not touch its scroll position, but mark it
+                               in the bar and the title, once, so the user can find the session that just
+                               finished something. */
                             update_title();
                             if (g_layout.bar_on)
                                 W.dirty = 1;
@@ -3939,12 +3729,10 @@ int main(int argc, char **argv)
                 /* A click that landed on a web address opens once the double-click window has passed — see
                    url_tick(). No redraw is implied: nothing about it is drawn. */
                 url_tick();
-                /* Draw when something changed AND no frame callback is in flight (frame_cb == NULL means
-                   the compositor already showed the buffer we committed, so the swap has the best chance
-                   of not waiting for a buffer release). `resized` is in the condition because a size
-                   change is frequently the ONLY change — and the compositor will not settle until a
-                   buffer of the new size arrives, so waiting for `dirty` alone would freeze the display
-                   (that was the fullscreen bug). */
+                /* Draw when something changed AND no frame callback is in flight: frame_cb == NULL means
+                   the compositor already showed the buffer we committed, so the swap is least likely to
+                   wait for a release. `resized` is in the condition because a size change is often the
+                   only change. */
                 if ((W.dirty || W.resized) && !W.frame_cb)
                     redraw();
             } else if (fd == sfd) {
@@ -4051,10 +3839,9 @@ int main(int argc, char **argv)
 
     render_destroy(&rend);
     wayland_destroy();
-    /* Every session: close its master (which hangs up the shell), stop the child if it is still
-       running, free its grids. The running loop reaps shells through the signalfd; on the way out a
-       WNOHANG waitpid is enough and keeps a stubborn child from stalling the exit. mux keeps the
-       array dense, so this touches exactly the sessions that still exist. */
+    /* Every session: close its master (which hangs up the shell), stop the child if it is still running,
+       free its grids. The running loop reaps shells through the signalfd; on the way out a WNOHANG
+       waitpid is enough and keeps a stubborn child from stalling the exit. */
     for (int i = 0; i < mux_count(&mux); i++) {
         Tab *tb = &mux.tab[i];
         if (tb->pty.mfd >= 0) {

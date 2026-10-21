@@ -640,10 +640,10 @@ uint32_t render_bell(uint32_t bg, uint32_t fg, int strength)
     return mix_c(bg, fg, BELL_MIX_MAX * strength / 1000);
 }
 
-/* One place derives every CHROME colour of a frame. See the comment on Chrome in kai-term.h: the point of
-   making it a function is that a configured colour can then be checked where it becomes a vertex colour,
-   not only where it is parsed (the dead `cursor_color =` bug, ISSUES.md). Nothing here reads a font, a
-   Term or GL state, so bin/test_render.c can call it with no display and no context. */
+/* One place derives every CHROME colour of a frame. See the comment on Chrome in kai-term.h: the point
+   of making it a function is that a configured colour can then be checked where it becomes a vertex
+   colour, not only where it is parsed. Nothing here reads a font, a Term or GL state, so
+   bin/test_render.c can call it with no display and no context. */
 void render_chrome(const Render *r, Chrome *out)
 {
     out->sel_bg      = r->selection_color;
@@ -1496,8 +1496,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                 col2f(cellfg, fg);
                 col2f(cellbg, bg);
                 /* The glyph quad composites the ink over ITS OWN copy of the cell background, so that
-                   background must carry the window opacity exactly like pass 1's quad does. It used to stay
-                   at alpha 1, which is what made every glyph's bounding box opaque. */
+                   background must carry the window opacity exactly like the background quad does — at
+                   alpha 1 every glyph's bounding box would be opaque. */
                 bg[3] *= r->opacity;
 
                 float px = pd.gx + x * cw, py = (pd.nrows - 1 - y) * ch + pd.pad_gl;
@@ -1703,7 +1703,6 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
 
     /* Upload BOTH atlases here, after the quads were emitted and before the draw: the glyph lookups run inside
        pass 3, so a glyph shaped in THIS frame would otherwise be sampled before its texels exist. */
-    /* upload atlas if new glyphs were added */
     if (f->atlas_dirty) {
         if (!f->atlas_tex)
             glGenTextures(1, &f->atlas_tex);

@@ -747,7 +747,7 @@ typedef struct {
     KeyBind left;      /* go to the parent directory (the same action BackSpace has always had) */
     KeyBind right;     /* descend into the selected directory — and NOTHING on a file */
     KeyBind open;      /* Enter: descend into the selected directory, and NOTHING on a file — no key here
-                          writes at the prompt unless the user asked for exactly that */
+                          writes at the prompt unless that is the key's whole job */
     KeyBind path;      /* type the selected entry's quoted path at the prompt, without running it */
     KeyBind parent;    /* Backspace: go to the parent directory */
     KeyBind refresh;     /* re-read the current directory */
@@ -813,11 +813,11 @@ typedef struct Config {
    not the window margin: the margin is the same colour as the cells, so a margin-only flash would read as
    a smaller rectangle inside the terminal. */
     int  bell;
-    /* The cursor's shape is always the thin bar unless an application asks for another with DECSCUSR (there is
-   deliberately no `cursor_style` key — the user asked for one look). cursor_blink = the half-period in ms
-   the cursor is on, then off (0 = never blink, and an application cannot switch the blink back on);
-   blinking also stops while the window has no focus. cursor_width = how many pixels wide the bar is (and
-   how tall an underline can be); the renderer clamps it to a third of a cell and never below 1 px. */
+    /* The cursor's shape is always the thin bar unless an application asks for another with DECSCUSR
+       (there is deliberately no `cursor_style` key). cursor_blink = the half-period in ms the cursor is
+       on, then off (0 = never blink, and an application cannot switch the blink back on); blinking also
+       stops while the window has no focus. cursor_width = how many pixels wide the bar is (and how tall
+       an underline can be); the renderer clamps it to a third of a cell and never below 1 px. */
     int  cursor_blink;
     int  cursor_width;
     /* Kai-Term drives its own key repeat. repeat_delay = ms a key must be held before it starts repeating
@@ -1755,23 +1755,21 @@ void render_chrome(const Render *r, Chrome *out);
    the colour is checked where it is decided. */
 uint32_t render_bell(uint32_t bg, uint32_t fg, int strength);
 
-/* What ONE cursor cell is drawn as. The shape decision lives where a test can reach it, not inside the draw
-   loop (render_draw() is in no test binary). Four outputs, because the three passes of a frame each ask a
-   different question about the same cell and they MUST agree: a cursor that disagrees with the selection
-   band erases itself. Pure: no GL, no font, no Term, no allocation.
-
-   style    CUR_UNSET (no DECSCUSR seen — Kai-Term draws a bar) / CUR_BLOCK / CUR_BAR / CUR_UNDERLINE
+/* What ONE cursor cell is drawn as. The three parts of a frame (cell backgrounds, selection bands,
+   glyphs) each ask a different question about the same cell and they MUST agree: a cursor that
+   disagrees with the selection band erases itself. Pure: no GL, no font, no Term, no allocation.
+   style    CUR_UNSET (no DECSCUSR seen — a bar is drawn) / CUR_BLOCK / CUR_BAR / CUR_UNDERLINE
    visible  0 draws nothing at all: DEC 25l, a scrolled-back viewport, or the blink phase being off
-   band_on  a selection band is painted on this cell. A BLOCK steps aside for it (the ink is tinted with
-            the cursor colour instead); a BAR does not, because its quad is emitted after the bands.
-   invert   pass 3 swaps the ink with the cell's own background (a block over no band)
-   tint     pass 3 paints the ink IN the cursor colour (a block under a band)
+   band_on  a selection band is painted on this cell. A BLOCK steps aside for it (the ink is tinted
+            with the cursor colour instead); a BAR does not, because its quad is emitted after the bands.
+   invert   the glyph part swaps the ink with the cell's own background (a block over no band)
+   tint     the glyph part paints the ink IN the cursor colour (a block under a band)
    ascent_px, descent_px  the font's metrics for the cell size in use. Only the underline asks them:
-            "under the text" is a statement about the baseline, which sits cell_h - ascent_px above the
-            cell's bottom edge.
+            "under the text" is a statement about the baseline, which sits cell_h - ascent_px above
+            the cell's bottom edge.
    x,y,w,h  the separate quad's rect in cell-local pixels. x is px from the cell's LEFT edge; y is px
-            measured UP from the cell's BOTTOM edge, because the MVP maps buffer pixels with y growing
-            up. A BAR spans the whole height and cannot show the difference; an underline can. */
+            measured UP from the cell's BOTTOM edge, because the projection maps buffer pixels with y
+            growing up. A BAR spans the whole height and cannot show the difference; an underline can. */
 typedef struct CursorDraw {
     int block, quad, invert, tint;
     int x, y, w, h;

@@ -55,15 +55,15 @@ void config_default(Config *c)
    keys costs nothing that worked before. */
     c->wheel_sends_keys = 1;
     c->click_moves_cursor = 1;
-    /* Double click selects a word, triple click the whole logical line. On by default: the user asked for
-       it that way, and a single click still behaves exactly as before. */
+    /* Double click selects a word, triple click the whole logical line. On by default; a single click
+       still behaves exactly as before. */
     c->click_selects_word = 1;
-    /* Middle-click paste is OFF by default — the user asked for it as an option precisely because they dislike
-       it. Nothing about a middle click changes until this is turned on. */
+    /* Middle-click paste is OFF by default — some people want the middle button to stay the
+       application's. Nothing about a middle click changes until this is turned on. */
     c->middle_click_paste = 0;
-    /* A plain click opens a URL. ON by default — the user asked for the plain click, no modifier, and this is
-       the answer to that question rather than a new idea. It is still a key: the one behaviour in the tree that
-       starts a program, and a click that launches a browser is something a user must be able to turn off. */
+    /* A plain click opens a URL. ON by default. It is still a key: the one behaviour in the tree that
+       starts a program, and a click that launches a browser is something a user must be able to turn
+       off. */
     c->click_opens_url = 1;
     /* Visual by default: Kai-Term has no audio, so a BEL that is not drawn is a BEL nobody hears. */
     c->bell = BELL_VISUAL;
@@ -119,15 +119,14 @@ void config_default(Config *c)
     keybind_parse_plain("p",         &c->fm_key.path);
     keybind_parse_plain("BackSpace", &c->fm_key.parent);
     keybind_parse_plain("r",         &c->fm_key.refresh);
-    /* `p` used to be the preview toggle; it is the path key now (s95), and the toggle moved to `v`.
-       Both are rebindable, and `none` unbinds either. */
+    /* `p` is the path key and `v` the preview toggle. Both are rebindable, and `none` unbinds either. */
     keybind_parse_plain("v",         &c->fm_key.preview);
     keybind_parse_plain(".",         &c->fm_key.hidden);
     keybind_parse_plain("Escape",    &c->fm_key.quit);
     c->loglevel = L_WARN;
-    /* An application MAY repaint the terminal's own colours (OSC 4/10/11/104). On by default because the user
-       asked for the capability; the switch exists so it can be turned off without a rebuild (s102 question 2).
-       See Config.osc_colors in kai-term.h for what it lets a program do. */
+    /* An application MAY repaint the terminal's own colours (OSC 4/10/11/104). On by default; the switch
+       exists so it can be turned off without a rebuild. See Config.osc_colors in kai-term.h for what it
+       lets a program do. */
     c->osc_colors = 1;
 }
 
@@ -427,9 +426,8 @@ static int apply_bind_key(Config *c, const char *key, char *val)
            holding Right through a listing safe. Same on a file as fm_key_open. */
         set_fm_keybind(&c->fm_key.right, key, val);
     } else if (!strcmp(key, "fm_key_open")) {
-        /* Enter: descend into the selected directory. On a file it does nothing at all — typing the
-           path is fm_key_path's job now (s95), so no key in the band writes at the prompt by
-           accident. */
+        /* Enter: descend into the selected directory. On a file it does nothing at all — typing the path
+           is fm_key_path's job, so no key in the band writes at the prompt by accident. */
         set_fm_keybind(&c->fm_key.open, key, val);
     } else if (!strcmp(key, "fm_key_path")) {
         /* Type the selected entry's quoted path at the shell prompt, without a newline — the only
@@ -625,7 +623,7 @@ static void apply_setting(Config *c, const char *key, char *val)
     } else if (!strcmp(key, "theme")) {
         /* A name (looked up as NAME.theme in <config dir>/themes/) or a path. The theme is NOT applied
            here: it is applied after this file has been read in full, so a colour line anywhere in the
-           settings file beats it — see src/theme.c and the s102 precedence decision. */
+           settings file beats it (see src/theme.c). */
         snprintf(c->theme, sizeof(c->theme), "%s", val);
     } else {
         klog(L_WARN, "config: unknown key '%s'", key);

@@ -131,8 +131,8 @@ static uint8_t *img_decode_jpeg(const uint8_t *mem, size_t n, int *w, int *h)
     int nch = ci.output_components;    /* 3 with JCS_RGB, but never assume */
     while (ci.output_scanline < ci.output_height) {
         /* jpeg_read_scanlines() BUMPS output_scanline, so the row index has to be captured BEFORE the
-           read: using it afterwards wrote every row one line too low and ran past the end of `out`
-           on the last one (found by the s71 probe: `free(): invalid next size`). */
+           read: using it afterwards wrote every row one line too low and ran past the end of `out` on
+           the last one. */
         size_t y = (size_t)ci.output_scanline;
         JSAMPROW rp = row;
         if (jpeg_read_scanlines(&ci, &rp, 1) != 1)

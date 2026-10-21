@@ -1460,7 +1460,7 @@ static void entry_colour(const FmEntry *e, uint32_t fg, uint32_t *col, uint32_t 
 
 /* One line of the list pane. `sel` is the configured highlight colour (Config.selection_color), NOT the
    SEL_BG macro: the band is part of the terminal's palette, so a theme that changes the selection colour
-   must change it here too — two sources for one visual role is how the s101 frame happened. */
+   has to change it here too — one visual role must have one source. */
 static void paint_entry(FileMgr *fm, const FmEntry *e, int y, uint32_t fg, uint32_t bg,
                         uint32_t sel, int selected)
 {
@@ -1590,9 +1590,9 @@ void fm_preview_scroll(FileMgr *fm, int delta)
     if (want == fm->pv_scroll)
         return;
     fm->pv_scroll = want;
-    /* The selection names CELLS, and scrolling replaced every cell in the pane with different text — so a
-       selection that survives a scroll is a highlight over the wrong words. Same rule as a session's
-       viewport-relative selection (ISSUES.md "Selection is viewport-relative"). */
+    /* The selection names CELLS, and scrolling replaced every cell in the pane with different text — so
+       a selection that survives a scroll is a highlight over the wrong words. Same rule as a session's
+       viewport-relative selection. */
     fm_preview_select_clear(fm);
     fm->dirty = 1;
 }
@@ -1847,8 +1847,8 @@ static void paint_preview_text(FileMgr *fm, uint32_t fg, uint32_t bg, int row)
     const char *s = pv->text ? pv->text : "";
     size_t n = pv->len, i = 0;
     /* The wheel over this pane owns pv_scroll: walk that many lines off the front before painting
-       anything. A line is cut at the right edge rather than wrapped (see ISSUES.md), so one file line is
-       exactly one pane row and counting lines IS counting rows. */
+       anything. A line is cut at the right edge rather than wrapped, so one file line is exactly one
+       pane row and counting lines IS counting rows. */
     for (int skip = fm->pv_scroll; skip > 0 && i < n; skip--) {
         size_t eol = i;
         while (eol < n && s[eol] != '\n')

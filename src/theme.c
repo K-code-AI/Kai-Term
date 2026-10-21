@@ -923,7 +923,7 @@ int theme_parse_text(const char *text, int fmt, ThemeVals *v, const char *src_pa
             line[len] = 0;
             lineno++;
             /* '#' ends a trailing note in the two formats that use it; the shared rule keeps a `#RRGGBB`
-               value intact, which is the s99 lesson applied to a new file kind. Xresources comments with '!'. */
+               value intact. Xresources comments with '!'. */
             if (fmt == THF_KAI || fmt == THF_ALACRITTY)
                 config_strip_comment(line);
             else if (fmt == THF_XRES)
