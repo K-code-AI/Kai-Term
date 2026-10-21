@@ -2735,13 +2735,10 @@ static KImage *image_find(Term *t, const KittyTx *tx)
     return NULL;
 }
 
-/* The span an image covers, in cells. An explicit c=/r= wins; otherwise its pixel size divided by
-   the current cell size (ceil, at least one cell). With no cell size yet — a session that has
-   never been laid out — fall back to one cell per pixel so the arithmetic stays finite. When only
-   ONE of c=/r= was given the other follows the picture's own aspect ratio (the protocol scales the
-   picture into the cell area it named), and that has to be decided HERE rather than in the renderer:
-   the span is also what a=T moves the cursor past and what image_prune() measures, so a span that
-   disagreed with what is drawn would move the prompt to the wrong row. */
+/* The span an image covers, in cells: an explicit c=/r= wins, otherwise its pixel size divided by the current
+   cell size (ceil, at least one cell). With only ONE of c=/r= the other follows the picture's own aspect
+   ratio. Decided HERE rather than in the renderer: the span is also what a=T moves the cursor past and
+   what image_prune() measures, so a span disagreeing with what is drawn moves the prompt to the wrong row. */
 static int image_span_rows(const Term *t, const KImage *im)
 {
     if (im->rows > 0)
@@ -3204,15 +3201,10 @@ static void kitty_apc(Term *t, const char *s)
 /* ---------- APC / DCS parser states ---------- */
 
 /* Kai-Term's own APC channel: `ESC _ K ; kai-term ; <what> [ ; <text> ] ST`, written by the shell
-   integration script (src/shellint.c) to its own stdout, which is this session's pty. Two messages:
-   `integration;<kind>` — "this shell loaded the script, the fast path is available" — and `cd;<dir>` —
-   "I, the shell, changed my own directory to <dir>". The second is the only evidence Kai-Term gets that a
-   `cd` request actually reached a shell that was listening, which is what makes the request safe to prefer
-   over typing at the prompt: if it does not arrive, main.c falls back to the typed path. Nothing here is
-   trusted beyond "a shell of this kind is listening": the directory in an ack is compared with the one
-   Kai-Term asked for, never used as an instruction.
-   The two functions below are the whole of that channel — the clear main.c calls before asking, and the
-   parser's entry point for what comes back. */
+   integration script to its own stdout, which is this session's pty. `integration;<kind>` means a shell
+   loaded the script; `cd;<dir>` is the only evidence a cd request reached a listening shell, so if it does
+   not arrive main.c falls back to typing at the prompt. A directory in an ack is compared with the one
+   asked for, never used as an instruction. */
 
 /* The shell's `cd` ack is one slot, so it answers for exactly one request. main.c clears it before sending a
    new request; without that, a navigation back to a directory the shell entered earlier would be "confirmed"
@@ -3298,14 +3290,9 @@ static void apc_put(Parser *ps, uint8_t b)
     ps->apc[ps->apc_len++] = (char)b;
 }
 
-/* An OSC colour argument. Kai-Term's own forms (#RRGGBB, 0xRRGGBB, bare RRGGBB, AARRGGBB) go through
-   cfg_parse_color so the project keeps ONE colour syntax and a theme file can never accept a form the config
-   file rejects. The X11 `rgb:RR/GG/BB` and `rgb:RRRR/GGGG/BBBB` forms are what xterm, kitty and every
-   colour-picker tool actually send, so accepting only the hex forms would make the feature useless in practice.
-   X11 colour NAMES ("red", "wheat") are deliberately NOT accepted: that is a 700-entry table, and every tool
-   that can name a colour can also spell it in hex. A 0x00000000 result is "not a colour" — the same convention
-   src/theme.c uses, where it is sound because a 6-digit value always gets alpha 0xff and an 8-digit value with
-   alpha 00 is invisible by definition. */
+/* An OSC colour argument. Kai-Term's own forms go through cfg_parse_color so the project keeps ONE colour
+   syntax; the X11 `rgb:RR/GG/BB` and `rgb:RRRR/GGGG/BBBB` forms are what colour pickers actually send. X11
+   NAMES are deliberately not accepted: a 700-entry table, and any tool that can name a colour can spell it. */
 static int osc_color(const char *s, uint32_t *out)
 {
     if (!s || !*s)
@@ -3322,13 +3309,9 @@ static int osc_color(const char *s, uint32_t *out)
                 return 0;
             if (i == 0) width = (int)digits;
             else if ((int)digits != width) return 0;
-            /* 2 digits are a byte; 4 digits are a fraction of 0xffff and lose their low byte. No clamp is
-               needed and none is wanted: two hex digits are at most 0xff, and 0xffff >> 8 is 0xff, so a
-               component CANNOT exceed a byte here. It used to be written (d + 0x80) >> 8 to "round", and
-               0xffff + 0x80 is 0x1007f, which >> 8 gives 256 — 256 << 16 lands 0x01 in the green byte, so
-               `rgb:ffff/ffff/ffff`, the canonical X11 form of WHITE, painted #010100: near-black. Measured
-               (.scratch/s104/rgbround.c). That is the s102 cube bug in a new place — a computed colour that
-               overflows its channel — so the arithmetic is deliberately one shift. */
+            /* 2 digits are a byte; 4 digits are a fraction of 0xffff and lose their low byte. No clamp is needed:
+               two hex digits are at most 0xff and 0xffff >> 8 is 0xff. The old `(d + 0x80) >> 8` "rounding"
+               overflowed at 0xffff and painted the canonical form of WHITE near-black. */
             v[i] = digits == 2 ? (unsigned)d : (unsigned)(d >> 8);
             if (i < 2) {
                 if (*end != '/')
@@ -3535,16 +3518,11 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
 {
     Parser *ps = &t->ps;
     ps->t = t;
-    /* Was the input line already the remembered prompt BEFORE this burst? The end-of-burst rule below
-       needs the difference, not the state: only a burst that CHANGED the line into the prompt is evidence
-       that the line became empty. Measured 2026-10-19 (`.scratch/s86/follow2`): after the file manager
-       re-typed the user's text, fish's next burst repainted only prompt chrome (OSC 7 / OSC 0 / DECSET /
-       `ESC[K` / a cursor move) and touched the input row not at all, so the row still equalled the
-       snapshot; the old steady-state test called that "the prompt is back, the line is provably empty",
-       closed the echo window over bytes that had not been echoed yet, and every later burst then
-       RE-TOOK the snapshot — including the burst carrying the echo of the text Kai-Term itself had typed.
-       The snapshot became `prompt + the user's text`, so a prompt holding text answered `term_at_prompt()`
-       as EMPTY and the next navigation appended `cd <dir>` to it and ran the result. */
+    /* Was the input line already the remembered prompt BEFORE this burst? The end-of-burst rule needs the
+       difference, not the state: only a burst that CHANGED the line into the prompt proves it became empty.
+       A burst that repainted only prompt chrome would otherwise close the echo window over bytes that had
+       not been echoed yet, and the next burst would re-take the snapshot — including the echo of text
+       Kai-Term itself typed. */
     int prompt_matched_before = prompt_row_matches(t);
 
     for (size_t i = 0; i < len; i++) {
@@ -3655,14 +3633,10 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
             /* ESC cancels the sequence and starts a new escape (xterm does the same); the bytes after it
                belong to the new sequence, not to this one. */
             if (b == 0x1b) { ps->state = PS_ESC; continue; }
-            /* Any other C0 inside a control sequence is EXECUTED and the sequence KEEPS collecting --
-               DEC VT500 / xterm. It used to do `state = PS_GROUND; i--;`, which ended the sequence at the
-               control byte, so the mode it was setting was never applied AND its remaining bytes were
-               printed as text. Measured 2026-10-21 (.scratch/s97/hprobe2): ESC [ ? 2004 <TAB> h left
-               bracketed_paste at 0 and painted an `h` into the grid; ESC [ ? 1049 <TAB> h never entered the
-               alternate screen and painted `h`; ESC [ ? 1 <TAB> h left DECCKM off and painted `h`. A final
-               byte of `h` is what every mode-ENABLING sequence ends with, which is why the leaked character
-               the user sees is an `h`. */
+            /* Any other C0 inside a control sequence is EXECUTED and the sequence KEEPS collecting (DEC VT500 /
+               xterm). Ending the sequence at the control byte leaves the mode it was setting unset AND
+               prints the remaining bytes as text — and a mode-ENABLING sequence ends with `h`, which is the
+               character the user then sees in the grid. */
             if (b < 0x20) { exec_c0(t, b); continue; }
             continue;
 
@@ -3729,13 +3703,10 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
        sequence. */
     image_prune(t);
 
-    /* The prompt snapshot, once per burst for the same reason as image_prune() (see the prompt section
-       above). While input_pending is set the bytes arriving here are the echo of what the terminal sent,
-       or readline redrawing the line the user is typing — remembering THAT as "the prompt" would let the
-       file manager write on top of it, which is the whole bug this machinery exists to prevent. And while
-       the ALTERNATE screen is up, t->g is a full-screen application's screen, not the shell's: snapshotting
-       it is what used to force alt_screen_leave() to throw the snapshot away (and losing it disabled the
-       shell follow for the rest of the session, s76). The snapshot always describes the MAIN grid. */
+    /* The prompt snapshot, once per burst. While input_pending is set the bytes arriving here are the echo of
+       what the terminal sent, and remembering THAT as "the prompt" would let the file manager write on top
+       of it. While the alternate screen is up, t->g is an application's screen: the snapshot always
+       describes the MAIN grid. */
     if (t->alt_screen)
         ;
     else if (!t->input_pending)
