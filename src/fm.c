@@ -1,26 +1,8 @@
-/* Kai-Term — the file manager: the model, and nothing else.
- *
- * What this file is: a directory listing, a selection, a context-sensitive preview, and two grids of
- * ordinary Cells. What this file is NOT: no Wayland, no EGL, no threads, no rendering, no file
- * descriptors handed to anyone. That split is what makes the feature both testable and responsive —
- * tests/test_fm.c drives a real directory tree with no window, and src/main.c can call
- * fm_scan_build()/fm_preview_build() on a worker thread because those two functions touch nothing but
- * malloc, the filesystem and their own argument.
- *
- * The panes are Cell grids on purpose. The renderer already knows how to draw a Cell grid with the
- * configured font, colours and passes, so the file manager reads as part of the terminal instead of as
- * a picture of one. Nothing here invents a palette: the base ink and paper come from Config, and only
- * the accents (directory blue, string green, comment grey, ...) are fixed, the way ls colours are.
- *
- * Resource caps, all of them in kai-term.h so a test can name them: FM_ENTRIES_MAX entries per
- * listing, FM_PREVIEW_BYTES of text, FM_PREVIEW_DIR_MAX entries in a directory preview,
- * FM_PREVIEW_FILE_MAX bytes of image file, and the image decoders' own IMG_DIM_MAX/IMG_PIX_MAX.
- *
- * Failure policy: every filesystem call may fail (permission denied, a file that vanished between the
- * listing and the preview, a dangling symlink, an unreadable directory) and every failure ends up as a
- * line of text in a pane plus a log line. Nothing aborts a scan, nothing leaves the model half-updated,
- * and nothing here ever blocks longer than the caps above allow.
- */
+/* The file manager's model and nothing else: a directory listing, a selection, a preview, and two grids of
+ * ordinary Cells. No Wayland, no EGL, no rendering — so tests drive a real directory tree with no window,
+ * and the scan/preview builders can run on a worker thread because they touch nothing but malloc, the
+ * filesystem and their argument. Every filesystem call may fail; a failure becomes a line of text in a
+ * pane plus a log line, never a half-updated model. */
 #include "kai-term.h"
 
 #include <ctype.h>
@@ -291,13 +273,9 @@ FmScan *fm_scan_build_n(const char *dir, unsigned long seq, int max_entries)
         return s;
     }
 
-    /* ".." is the first row of every listing except the root's. It is what lets a single mouse click go
-       back a directory, it gives the pointer the same move the Left arrow and BackSpace have, and it makes
-       "up one level" a thing that can be seen. It is SYNTHESIZED rather than taken from readdir: then the
-       row is guaranteed to be there and to have the same shape on every filesystem. Its stat is the
-       parent's own, so the metadata the preview shows for it is real, not invented. At "/" the parent is
-       "/", so the row would be a lie about going anywhere and is left out — fm_parent() refuses the same
-       move, so the two agree. */
+    /* `..` is the first row of every listing except the root's, so one click can go back a level. Synthesized
+       rather than read from readdir, so the row is guaranteed and the same on every filesystem; at `/` the
+       parent is `/`, so the row would lie about going anywhere and is left out. */
     if (strcmp(s->dir, "/")) {
         FmEntry *e = &s->ent[s->n++];          /* cap is 64 here, so slot 0 always exists */
         memset(e, 0, sizeof *e);
@@ -384,10 +362,8 @@ void fm_init(FileMgr *fm, const char *dir)
     norm_path(dir && dir[0] ? dir : "/", fm->dir, sizeof fm->dir);
     fm->focus = FM_FOCUS_LIST;
     fm->preview_on = 1;
-    /* The same rule fm_go() uses: row 0 is the `..` row everywhere but the root, and the row the band
-       opens ON is the row the first Return / Right acts on. Opening on `..` meant the first key press
-       went UP a level (measured live, s76). fm_install_scan()'s clamp pulls it back to 0 for a directory
-       that holds nothing else. */
+    /* Row 0 is the `..` row everywhere but the root, so the band opens on row 1: opening on `..` makes the
+       first Return go up a level. */
     fm->sel = first_row_of(fm->dir);
     fm->dirty = 1;
 }
@@ -437,12 +413,8 @@ void fm_set_size(FileMgr *fm, int lc, int lr, int pc, int pr)
             fm->prev.cell = NULL;
         }
     }
-    /* Pull the preview's scroll back inside what the NEW pane can show, so a resize cannot leave the body
-       painted into blank rows. This has to come AFTER the allocation: fm_preview_scroll_max() measures
-       fm->prev.rows, the pane that actually EXISTS (the painter reads that same field), so until the
-       realloc above has run it still reports the OLD height — a clamp placed up with the requested sizes
-       measures the screen the user is leaving and changes nothing. Measured: a 40-line file scrolled to
-       its bottom in a 12-row pane (pv_scroll 30) and the pane grown to 40 rows left 28 rows of nothing. */
+    /* Pull the preview's scroll back inside the NEW pane. This has to come after the allocation:
+       fm_preview_scroll_max() measures fm->prev.rows, which is the new height only once the realloc ran. */
     fm->pv_scroll = iclamp_(fm->pv_scroll, 0, fm_preview_scroll_max(fm));
 
     /* A resize clears a preview-pane text selection, exactly as it clears a session's: the endpoints name
@@ -543,16 +515,11 @@ int fm_go(FileMgr *fm, const char *dir, unsigned long *seq)
     if (!strcmp(want, fm->dir) && fm->have_listing)
         return 0;              /* already showing it */
     snprintf(fm->dir, sizeof fm->dir, "%s", want);
-    /* A freshly entered directory selects its first REAL row. Position 0 is the ".." row everywhere but
-       the root, and landing there would make the first Right (or Enter) after a navigation go straight
-       back out again. The clamp in fm_install_scan() pulls it back to 0 for a directory that holds
-       nothing else. */
+    /* A freshly entered directory selects its first REAL row; landing on `..` would make the first Right after
+       a navigation go straight back out again. */
     fm->sel = first_row_of(want);
-    /* The entries still in ent[] belong to the directory the user LEFT. They stay painted while the new
-       listing loads (an empty browser for a moment reads as a broken window), but nothing may build a
-       PATH out of them: `fm_preview_request()` did exactly that and asked the worker to stat
-       `<new dir>/<name from the old listing>` for every single navigation (measured live, s76 —
-       `fm: preview: cannot stat …/dirA: No such file or directory` on every move). */
+    /* The old entries stay painted while the new listing loads, but nothing may build a path out of them: they
+       belong to the directory the user left. */
     fm->have_listing = 0;
     fm->seq++;
     fm->scan_req = fm->seq;
@@ -664,10 +631,8 @@ void fm_page(FileMgr *fm, int pages)
 void fm_home(FileMgr *fm) { fm_select(fm, 0); }
 void fm_end(FileMgr *fm)  { fm_select(fm, fm->nvis - 1); }
 
-/* Dotfiles on/off. The listing keeps every entry and marks the hidden ones, so this is a rebuild of the
-   index array, not a second opendir(): toggling a 8000-entry directory costs no disk access. The
-   selection stays a POSITION in the view (the same rule fm_install_scan applies), so it is clamped to
-   what the new view holds rather than remembered by name. */
+/* The listing keeps every entry and marks the hidden ones, so toggling is a rebuild of the index array and
+   costs no disk access. The selection stays a POSITION in the view, clamped to what the new view holds. */
 void fm_set_hidden(FileMgr *fm, int show)
 {
     show = show ? 1 : 0;
@@ -696,23 +661,9 @@ int fm_row_pos(const FileMgr *fm, int row)
     return pos;
 }
 
-/* Does this wheel gesture move the keyboard into the band? Lives here rather than in main.c for the
-   standing reason: main.c is in no test binary, so a rule written there cannot be checked (see
-   fm_row_pos() above, put in the same place for the same reason).
-
-   `hit`     FM_HIT_LIST / FM_HIT_PREVIEW — the caller has already excluded FM_HIT_NONE.
-   `steps`   the whole-cell steps the gesture produced. 0 means it scrolled NOTHING: a trackpad frame
-             with a sub-cell delta, a gesture shorter than one row, or a frame that arrived without
-             axis data. Such a gesture must never move the keyboard. That is not a policy choice — it
-             is the bug this function replaces: the old code called fm_focus_set() on its fifth line,
-             before steps was even computed, and returned early when steps was 0. The keyboard had
-             already jumped to whichever pane the pointer happened to be over, and nothing had
-             scrolled, which is exactly what reads to a user as "hovering steals the focus".
-   `on_hover` the `fm_focus_on_hover =` key. 0 (the default) = only a CLICK takes the keyboard, so a
-             scroll gesture walks the listing but leaves the keyboard where it is. 1 = the older
-             pointer-decides behaviour, kept for anyone who wants it.
-
-   Returns the FM_FOCUS_* to apply, or -1 for "leave the keyboard alone". */
+/* Does this wheel gesture move the keyboard into the band? `steps == 0` means it scrolled nothing (a
+   sub-cell trackpad frame, a gesture shorter than a row), and such a gesture must never move the keyboard
+   — that is the bug this function replaces. Returns the FM_FOCUS_* to apply, or -1 for "leave it alone". */
 int fm_wheel_focus(int hit, int steps, int on_hover)
 {
     if (steps == 0)
@@ -976,10 +927,8 @@ int fm_install_preview(FileMgr *fm, FmPreview *pv)
         fm_preview_free(pv);
         return 0;
     }
-    /* Every preview that becomes the installed one gets a fresh uid. The renderer keys the preview's GL
-       texture on it, so a recycled malloc address can never make it reuse the previous picture's texels.
-       Assigned HERE, on the main thread, not in fm_preview_build(): that one runs on the worker thread
-       and the counter must not be a race. */
+    /* Every preview that becomes the installed one gets a fresh uid, so the renderer cannot reuse the previous
+       picture's texture at a recycled malloc address. Assigned on the main thread, not in the builder. */
     static unsigned long uid_next;
     pv->uid = ++uid_next;
     fm_preview_free(fm->pv);
@@ -1574,12 +1523,9 @@ static void paint_list(FileMgr *fm, uint32_t fg, uint32_t bg, uint32_t sel)
     }
 }
 
-/* ---- the preview pane's row budget: ONE place decides which rows are whose ----
-   The picture is drawn by the renderer over the box fm_image_fit() reports, and the pane's glyphs are
-   emitted in the batch AFTER it. So the moment the painter and fm_image_fit() disagree about which rows
-   text owns, a text line lands on top of the picture — which is exactly the bug this section exists to
-   prevent: the header's size used to be a literal 3 in two functions, and the metadata rows were not
-   counted at all. Both the painter and the fit call these two helpers, so they cannot drift. */
+/* The preview pane's row budget: ONE place decides which rows are whose. The picture is drawn over the box
+   fm_image_fit() reports and the glyphs are emitted after it, so if painter and fit disagree about which
+   rows text owns, a text line lands on top of the picture. */
 static int preview_head_rows(const FmPreview *pv)
 {
     /* name; path + what it is; and the error line, when the preview has one. */
@@ -1598,10 +1544,8 @@ static int preview_meta_rows(const FileMgr *fm, int head_rows)
     return iclamp_(pv->nmeta, 0, imax_(room, 0));
 }
 
-/* How many lines the preview's BODY holds — everything below the header, which is what the wheel over
-   this pane moves through. An image and a plain metadata preview have no body to scroll (their rows are
-   the picture and the metadata, both laid out by the row budget above), so they answer 0 and
-   fm_preview_scroll() becomes a harmless no-op for them. */
+/* Lines the preview BODY holds, below the header — what the wheel over this pane moves through. An image and
+   a metadata-only preview have no body to scroll, so they answer 0. */
 static int preview_body_lines(const FileMgr *fm)
 {
     const FmPreview *pv = fm->pv;
@@ -1653,11 +1597,8 @@ void fm_preview_scroll(FileMgr *fm, int delta)
     fm->dirty = 1;
 }
 
-/* Rows one page of the preview body fills: everything below the header the pane can show. This is the
-   SAME arithmetic fm_preview_scroll_max() uses for "how much is already on screen", because a Page key
-   must move by exactly what the user can see — a page that is one row short leaves a gap between
-   presses, and one row too long skips a line. Kept as its own function so the keyboard path in main.c
-   never re-derives the header size (the standing rule: preview_head_rows() has one owner). */
+/* Rows one page of the body fills: the same arithmetic fm_preview_scroll_max() uses, because a page key must
+   move by exactly what the user can see — one row short leaves a gap, one row long skips a line. */
 int fm_preview_page_rows(const FileMgr *fm)
 {
     int visible = fm->prev.rows - preview_head_rows(fm->pv);
@@ -1685,11 +1626,9 @@ void fm_preview_bottom(FileMgr *fm)
     fm_preview_scroll(fm, fm_preview_scroll_max(fm) + 1);
 }
 
-/* ---------- a text selection inside the preview pane ----------
-   main.c owns the gesture (it has the pointer and the clock); everything about WHAT that gesture selects
-   is here, where a test can check it with no display and no mouse — the same reason the terminal's
-   word/line spans live in vt.c. Coordinates are the PREVIEW PANE's cells, inclusive at both ends,
-   normalised so a leftward or upward drag cannot produce an inverted range. */
+/* A text selection inside the preview pane. main.c owns the gesture; everything about WHAT it selects is
+   here, where a test can check it with no display. Coordinates are the pane's cells, inclusive at both
+   ends, normalised so a leftward or upward drag cannot invert. */
 
 void fm_preview_select(FileMgr *fm, int x0, int y0, int x1, int y1)
 {
@@ -1756,13 +1695,8 @@ int fm_preview_row_span(const FileMgr *fm, int y, int *out_x0, int *out_x1)
         return 0;
     }
     /* The whole row — but the row's OWN cells, not the pane's gutter. The preview indents its body by two
-       columns that were never written, so a span starting at column 0 would copy two spaces the file does
-       not contain and paste them into the user's shell. Measured (.scratch/s115/selprobe3): spanning 0..29
-       copied "  two-three, four."; spanning the used cells copies "two-three, four.". A line the FILE
-       indents is safe either way, because pane_puts() writes those spaces as real cells — so "the first cell
-       that holds something" is exactly where the file's own text starts.
-       The preview CUTS a long line at its right edge rather than wrapping it, so one file line is exactly
-       one pane row and there are no wrap marks to walk (unlike a session grid). */
+       columns that were never written, so a span from column 0 would copy two spaces the file does not
+       contain. A line the FILE indents is safe either way: those spaces are real cells. */
     const Cell *r = p->cell + (size_t)y * (size_t)p->cols;
     int first = -1, last = -1;
     for (int x = 0; x < p->cols; x++) {
@@ -1785,11 +1719,8 @@ int fm_preview_row_span(const FileMgr *fm, int y, int *out_x0, int *out_x1)
 int fm_preview_selection_text(const FileMgr *fm, char *out, size_t cap)
 {
     const FmPane *p = &fm->prev;
-    /* A zero-capacity buffer has no byte to terminate, and the terminating store below is
-       `out[n < cap ? n : cap - 1]`, which with cap == 0 is `out[-1]`. Measured, not assumed:
-       .scratch/s116/capzero.c calls this with cap 0 and ASan reports a WRITE one byte before the caller's
-       array (src/fm.c:1847). No caller in the tree passes 0 today, which is exactly why the guard belongs
-       here rather than in the callers: this is a public entry point in the header. */
+    /* A zero-capacity buffer has no byte to terminate: the store below becomes `out[-1]`. No caller passes 0
+       today, which is exactly why the guard belongs here rather than in the callers. */
     if (!cap)
         return 0;
     out[0] = 0;
@@ -1802,13 +1733,9 @@ int fm_preview_selection_text(const FileMgr *fm, char *out, size_t cap)
         return 0;
     for (int y = fm->pv_ay; y <= fm->pv_by; y++) {
         const Cell *r = p->cell + (size_t)y * (size_t)p->cols;
-        /* The row's used range, same scan fm_preview_row_span() uses. A multi-row selection covers a middle
-           row from column 0 (that is what makes it a LINE selection rather than a rectangle), and in this
-           pane column 0 and 1 are the gutter the painter never writes — so copying them as spaces pastes two
-           characters the file does not contain. Measured: a three-row drag copied "  \xe4\xbd\xa0\xe5\xa5\xbd..."
-           before this clamp and copies "\xe4\xbd\xa0\xe5\xa5\xbd..." after. A gap BETWEEN two used cells (the
-           space between an entry name and its right-aligned size) is still a space, because that gap is part
-           of the line the pane is showing. */
+        /* The row's used range. A middle row of a multi-row selection starts at column 0 — that is what makes it a
+           LINE selection — but columns 0 and 1 here are the gutter the painter never writes. A gap BETWEEN
+           two used cells stays a space, because that gap is part of the line the pane shows. */
         int first = -1, last = -1;
         for (int x = 0; x < p->cols; x++) {
             if (r[x].ch == 0 && !(r[x].attr & ATTR_WIDE))
@@ -1998,20 +1925,15 @@ static void paint_preview(FileMgr *fm, uint32_t fg, uint32_t bg, uint32_t sel)
     case FMP_DIR:  paint_preview_dir(fm, fg, bg, row); break;
     case FMP_TEXT: paint_preview_text(fm, fg, bg, row); break;
     case FMP_IMAGE:
-        /* The picture itself is drawn by the renderer over the box fm_image_fit() reports; the cells
-           under it stay blank so it composites against the pane background. The meta lines therefore get
-           only the rows preview_meta_rows() allows — the ones ABOVE that box — and a pane too short for
-           both drops the metadata rather than writing it across the image. */
+        /* The cells under the picture stay blank so it composites against the pane background, so the meta lines get
+           only the rows preview_meta_rows() allows — a pane too short for both drops the metadata. */
         paint_preview_meta(fm, fg, bg, row, preview_meta_rows(fm, row));
         break;
     default:       paint_preview_meta(fm, fg, bg, row, FM_META_LINES); break;
     }
-    /* The text-selection band, painted LAST so it sits over whatever the body wrote, and into the cell's
-       own bg exactly the way the list's selected row does — which is why the renderer needs no new path
-       and why a check can read the band straight out of the pane cells. Only a cell that HOLDS something
-       gets it (a glyph, a real space, or the continuation half of a wide glyph), so the band never floats
-       over the never-written space past the end of a line: the rule term_cell_highlightable() enforces in
-       a session. The foreground is left alone, so syntax colours survive the highlight. */
+    /* The text-selection band is painted LAST, into the cell's own bg exactly as the list's selected row does,
+       so the renderer needs no new path. Only a cell that HOLDS something gets it, and the foreground is
+       left alone so syntax colours survive the highlight. */
     for (int y = fm->pv_ay; fm->pv_sel_on && y <= fm->pv_by; y++) {
         for (int x = 0; x < p->cols; x++) {
             if (!fm_preview_selected(fm, x, y))
@@ -2073,10 +1995,8 @@ void fm_image_fit(const FileMgr *fm, int cell_w, int cell_h,
     *row = first + (avail_rows - *rows) / 2;
     if (*col < 0) *col = 0;
     if (*row < first) *row = first;
-    /* The box in PIXELS as well as in cells: ceil-dividing into cells can add up to one cell of slack,
-       and a picture drawn into the CELL box would be stretched by that slack. The renderer draws these
-       numbers into the cell box and centres them in it, so the aspect the fit computed is the aspect the
-       user sees. */
+    /* The box in PIXELS as well as in cells: ceil-dividing into cells can add up to one cell of slack, and a
+           picture drawn into the cell box would be stretched by that slack. */
     *px_w = w;
     *px_h = h;
 }
