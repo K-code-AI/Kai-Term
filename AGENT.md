@@ -21,8 +21,9 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s128 — **GREEN; the s128 bell fix is committed and pushed; read the
-commit state from git, never from here**)
+## Current Status (re-measured 2026-10-22, s131 — **GREEN; step 7 (a plain click opens a URL) is implemented,
+checked, A/B'd and COMMITTED; the s102 plan's seven steps are all closed; read the commit state from git, never
+from here**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -31,24 +32,27 @@ commit state from git, never from here**)
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites — green, s128 included.** Both builds clean (exit 0, 0 warning lines) and
-  `./bin/test_vt` reports **1516 checks, 0 failures** (the confirm-quit wording, the process name, the box
-  geometry, the four wrap cuts, the `middle_click_paste` and `bell` config groups, the 16-case
+- **Suites — green, s130 included.** Both builds clean (exit 0, 0 warning lines) and
+  `./bin/test_vt` reports **1632 checks, 0 failures** (the confirm-quit wording, the process name, the box
+  geometry, the four wrap cuts, the `middle_click_paste`, `bell` and `click_opens_url` config groups, the 16-case
   pointer-precedence table, the BEL-rings / BEL-terminates-a-string split, the `bell_strength` ladder, the 15-check
-  `mux_bell_live` drawn-vs-hidden group, and the 18-check `bell_is_ours` table for "a BEL that answers Kai-Term's
-  own click-keystrokes does not flash"). Everything else is green: `./bin/dbg` **MODEL OK (0
-  problems)**, `./bin/test_fm` **384 checks, 0 failures**, `./bin/test_render` **561 checks, 0 failures** (the
-  renderer's pure decisions — its colour choices, the cursor's shape, the question row's two colours, the box's
-  six, the bell's colour — plus the source scans that cover `main.c` and `render_draw()`, which are in no test
-  binary), and `CLI: 99 checks, 0 failures, 13 skipped` with `KAI_TERM_TEST_NO_WINDOW=1` — those 13 are the
+  `mux_bell_live` drawn-vs-hidden group, the 18-check `bell_is_ours` table, and the new **116-check `url` group**:
+  the run rule and its spans, the trailing-mark cut/keep table, the scheme rules, the non-ASCII/wide refusal, the
+  window-broke vs program-broke split (including a hard break AT the margin), a tab's gap, the alt screen, the
+  `URL_MAX` boundary on all three sides, the delimiter corpus, the scrolled-away limit, `url_is_openable`, the
+  9-case `url_click_opens` gate table, the `url_open_due` boundary against `term_click_count`, the two header
+  constants, and an end-to-end `url_spawn` through two stand-in openers). Everything else is green: `./bin/dbg`
+  **MODEL OK (0 problems)**, `./bin/test_fm` **384 checks, 0 failures**, `./bin/test_render` **575 checks, 0
+  failures** (the renderer's pure decisions — its colour choices, the cursor's shape, the question row's two
+  colours, the box's six, the bell's colour — plus the source scans that cover `main.c` and `render_draw()`, which
+  are in no test binary; s129 added 14 scans for the URL wiring), and `CLI: 99 checks, 0 failures, 13 skipped`
+  with `KAI_TERM_TEST_NO_WINDOW=1` — those 13 are the
   windowed group, last run for real in s124 (**149 checks, 0 failures, 0 skipped**, twice, ~15 real windows each
-  time; ask before running it again while the user is at the machine). `make asan` is green on THIS tree (re-run
-  in s128 after the click-mute landed): all four asan binaries exit 0, 0 warning lines, no LeakSanitizer or
-  UBSan report, same four counts. Command worth copying:
-  `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
-  `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'` — and **check the
-  build actually succeeded before quoting a number**: a failed link leaves the previous binary in `bin/` and
-  the suite happily prints its old total (s124 nearly recorded a 1412 that way).
+  time; ask before running it again while the user is at the machine). `make asan` is green on THIS tree (re-run in
+  s131 after step 7 landed): all four asan binaries exit 0, 0 warning lines, no LeakSanitizer or
+  UBSan report, same four counts. The whole set was then re-run on a **fresh clone of the step-7 commit**
+  (`.scratch/s131/verify_commit`) to prove the commit is self-contained: `src/url.c` is tracked, both builds exit 0
+  with 0 warning lines, and the four counts come out identical there.
 - **`make asan` is GREEN at `ab0809a` and again on the s121 tree — exit 0, 0 warning lines, no LeakSanitizer
   report** (s107, re-run s121). It was red
   when s106 closed, and both halves of the red came in with the uncommitted 1e work: two `-Wformat-truncation`
@@ -59,9 +63,9 @@ commit state from git, never from here**)
   cut, because the cut decides the file name an imported theme lands under; the leak went by freeing the two
   name lists. Both fixes are pinned: the C check asserts the exact 127-byte stem, the CLI group greps the log
   line.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **39** setting names (the
-  hard-coded `ns == 39` beside the derived one — 36 -> 37 in s120 for `confirm_quit`, 37 -> 38 in s125 for
-  `middle_click_paste`, 38 -> 39 in s126 for `bell`), the **24** binding names out of the two strcmp ladders
+- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **40** setting names (the
+  hard-coded `ns == 40` beside the derived one — 36 -> 37 in s120 for `confirm_quit`, 37 -> 38 in s125 for
+  `middle_click_paste`, 38 -> 39 in s126 for `bell`, 39 -> 40 in s129 for `click_opens_url`), the **24** binding names out of the two strcmp ladders
   in `src/config.c`, the **23** theme names out of `src/theme.c`'s `THEME_KEYS` table, and the **9** long options
   out of `usage()` in `src/main.c`, and
   compares each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's
@@ -111,15 +115,92 @@ commit state from git, never from here**)
   of a second and fades; with `bell = off` nothing is drawn at all. **And the s128 half: that a plain click in
   `less` no longer washes the pane** (it used to, because the click became Up presses and `less` belled at the
   beginning of the file), while a click in `nano` still moves the cursor and a BEL the program rings on its own
-  still flashes. Step 7 will add to the list as it lands.
+  still flashes. **And step 7's click is on the list now**: that a single left click on an `http(s)://` address in
+  their shell output actually brings up a window (Kai-Term proves it handed the address to `xdg-open`; whether the
+  desktop opens it is the desktop's), that a DOUBLE click on the same address selects the word and opens nothing,
+  that a click in `less`/`nano`/`man` still places their cursor, and that a wrapped address opening at the window
+  edge opens whole. Recipe: `printf 'see https://example.com/a?b=1\n'` then click it; `./bin/kai-term -d` logs
+  `url: a click asked xdg-open for …` (and, when a click is refused, why).
 
-## Current Task — the s128 bell bug report is CLOSED (one half fixed, one half measured and not a bug). Next:
-step 7, plain-click URLs
+## Current Task — NONE IN PROGRESS. Step 7 (plain-click URLs) is CLOSED: committed as `4610911` and pushed, so the
+s102 plan's seven steps are all done. What is owed now is the user's eye on the list in "Current Status", and
+"Next Steps" holds the rest. Steps 0-7 keep their sections below: they are the rules a change must not break.
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
 URLs, an interactive theme-overwrite prompt. The answers are under "Decisions already made" — do not re-ask
 them, and do not re-propose what was dropped.
+
+### s129 task block — step 7: a plain click opens a URL
+
+**Objective.** A single left click on an `http://`/`https://` run in a terminal pane opens it with the desktop's
+opener, with the gates the user's answer to question 7 already settled, and a key to turn the whole thing off.
+
+**Measured starting point (`.scratch/s129/urlprobe.c`, run 2026-10-21 against the tree at `bfaa749`; every
+number in the new checks is copied from that output, not guessed).**
+* `grep -rniE "url" src/ include/ tests/` → 11 hits, all incidental (`url_color` in the importer, one comment
+  each in vt.c and main.c). No URL handling of any kind, and no OSC 8.
+* A URL sits in the grid as ordinary cells, one codepoint each; the cells after the text are `ch == 0`, and a tab
+  leaves `ch == 0` gaps, so a run ends at a blank with no special case.
+* A soft-wrapped URL is ONE logical line: at 40 cols, `read https://example.org/a/very/long/path/that/wraps/
+  over/two/rows now` gives the span `(0,5)..(1,25)` from a click on EITHER row, and the wrap mark sits on the row
+  that was broken (`term_line_span` already walks it — reuse it, do not re-derive the direction).
+* A URL ending exactly at the margin wraps mid-host: `a https://example.com` at 20 cols → `(0,2)..(1,0)`.
+* A URL the PROGRAM broke with a newline is NOT joined: `https://example.com/\r\nwrapped-by-the-program` gives
+  `(0,0)..(0,19)` and the next row is its own line.
+* A run whose start has scrolled above the viewport is not found (`term_line_span` walks viewport rows only) —
+  the same limit the triple click has; it goes in ISSUES, not fixed.
+* A non-ASCII cell ends a run, which CUTS a URL in half: `https://ex\xc3\xa9.com` scanned naively returns
+  `https://ex` — a different page. So a run whose right neighbour is a non-ASCII or wide cell is REFUSED
+  (never open half a URL). A non-ASCII cell to the LEFT of the scheme is fine: the scheme match makes the start
+  unambiguous.
+* Trailing marks measured with the draft rule: `https://x.` → cut the `.`; `https://x,` → cut; `https://x?` → cut;
+  `(https://x/a(b)c)` → the leading `(` is outside (the run starts at the scheme) and the last `)` is cut as
+  unbalanced while `https://x/a(b)` keeps its balanced pair; `https://x/` KEEPS the slash (a trailing slash is
+  part of a URL, and cutting it changes the page); `"https://x"` and `<https://x>` end the run at the quote/bracket.
+* `http://` with nothing after it, `https://` followed by a space, `ftp://…` and `mailto:…` are refused; a scheme
+  mid-word (`xhttps://example.com`) matches from the `h` (that is what `grep -o 'https\?://[^ ]*'` does too).
+* The alt screen: the model still finds the run (`https://example.com/alt` → `(0,0)..(0,22)`) and
+  `term_wants_key_mouse()` answers 1 — so the gate, not the scan, is what keeps `less`/`nano`/`man` owning
+  their click.
+* A 3000-character run IS found by the scan (16 rows at 200 cols), so the opener needs a length ceiling.
+* `xdg-open` exists here (`/usr/bin/xdg-open`), `xdg-desktop-portal` is running, and glibc 2.43 has
+  `closefrom()` — all verified, not assumed.
+
+**Plan.** (1) `src/url.c` (a new file, so the whole feature — including the fork/exec — is in a binary the tests
+link; `main.c` is in none): the run rule, the logical-line span, the text extraction, the opener-argument
+validation, the click gate, the double-click wait, and the spawn. (2) `Config.click_opens_url` (default **1** —
+the user asked for the plain click), with the template line, the README row and the settings count 39 → 40.
+(3) `src/main.c`: the flags on release, a pending open that waits out `CLICK_DCLICK_MS` (so a double click on a
+URL selects the word and opens NOTHING — the plan's "after the double-click window says this was a single click"),
+re-validated at the deadline against the same cell, then `url_spawn("xdg-open", url)`; `url_tick()` joins
+`blink_tick()`/`bell_tick()` on the frame timer. (4) Checks in `tests/test_vt.c` (spans, refusals, gates, the
+wait, and an end-to-end spawn that proves the argument arrives and that Kai-Term's own descriptors are closed
+in the child) plus source scans in `tests/test_render.c` for the `main.c` wiring. (5) A mutant harness
+(`.scratch/s129/mutate.py`) to prove the new checks are not vacuous, A/B against a tree without the feature.
+(6) README + ISSUES, both builds, every suite, `make asan`, the headless CLI group, one commit, push.
+
+**Expected outcome.** `test_vt` up by roughly the 60-80 checks of a new `url` group, everything else unchanged,
+both builds at 0 warning lines, asan clean, and the honest note that whether the click OPENS a browser is owed to
+the user's eye — `url_spawn` is exercised end-to-end by a test with a script, but `xdg-open` launching their
+browser is a window-and-desktop fact.
+
+**What is already in the working tree when s130 opened (measured with `git status -sb` / `git diff --stat`, not
+remembered).** Plan steps (1)-(3) are WRITTEN but NOT committed and NOT yet journaled: `src/url.c` (334 lines,
+untracked), and modifications to `include/kai-term/kai-term.h` (+93: `URL_MAX`, `URL_OPENER_PROGRAM`, `UrlSpan`,
+`UrlClick`, `URL_OPEN_WAIT_MS`, the five function declarations, `Config.click_opens_url`), `src/config.c` (+9:
+default 1, the ladder entry), `config/kai-term.conf` (+13: the template block), `src/main.c` (+89: the `W` fields,
+the release-side flags, `url_tick()`, the frame-timer call), `Makefile` (+4/-4: `src/url.c` in `SRCS`, in
+`bin/test_vt`, in `bin/test_vt_asan`). Plan steps (4)-(6) — the checks, README/ISSUES, the harness, the
+verification, the commit — were NOT started. Verified state of that tree, measured 2026-10-21 (s130) before any
+edit: `make clean && make -j8` exit 0 with **0 warning lines** (so `closefrom()` really is declared on this
+host — glibc 2.43, and the link proves it, which an assumption could not), and
+`make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0 with **0 warning lines**, but
+**`./bin/test_vt` = 1516 checks, 2 failures**, both of them the doc-pinning gate noticing the new key:
+`FAIL tests/test_vt.c:3401: template: the parser accepts 39 settings and 24 bindings` and
+`FAIL: README's settings table does not document click_opens_url`. That is the tree s130 starts from: the feature
+exists in the code and is RED in the suite until the checks and the docs catch up. Nothing below "s129 task
+block" may be quoted as verified until it is re-measured.
 
 ### Where each step stands
 
@@ -196,6 +277,11 @@ Done work is listed here only to say it is done and where its rules live; the me
   `Tab.bell_ms` (the moment, on main.c's clock) + `bell_strength()` (the fade) + `render_bell()` (the colour) +
   `mux_bell_live()` (which sessions are on screen to flash) + one quad per drawn pane in batch A. The key
   `bell = visual|off`, default `visual`; settings names 37 -> 38 -> 39 across steps 5-6. Rules below.
+- **Step 7 — a plain click opens a web address (DONE, s129+s130+s131, `4610911`, pushed).** `src/url.c`: the run
+  rule (`term_url_span`), the text (`term_url_text`), the argument rules (`url_is_openable`), the gates as one
+  ordered decision (`url_click_opens`), the double-click wait (`url_open_due`) and the spawn (`url_spawn`). The key
+  `click_opens_url`, default **1**; settings names 39 -> 40. The opener's name is a header constant
+  (`URL_OPENER_PROGRAM`), not a key, on purpose. Rules below.
 
 ### 2. Cursor: a thin bar, classic blink — DONE (s112)
 
@@ -923,7 +1009,11 @@ answer to question 6).
   asked to scroll). The window is the caller's argument and the boundary is exclusive, matching
   `bell_strength()`, so the two time rules cannot disagree.
 
-### 7. URLs: plain click opens
+### 7. URLs: plain click opens — DONE (s129-s131, `4610911`)
+
+The design the plan predicted held, with one change worth keeping: no per-row run list is computed at all. The scan
+runs at click time over the ONE logical line `term_line_span()` already walks, so there is no storage, no reflow
+interaction and no per-frame cost — and the wrap marks have one owner instead of two.
 
 0 hits for OSC 8 and for any URL detection. **Do not store URIs in `Cell`** — `Cell` is allocated per column per
 row and reflow moves cells around; a per-row list of `(col_start, col_end)` runs computed lazily is the cheap
@@ -938,6 +1028,52 @@ double/triple click (that selects a word/line), it is not on the tab bar, not in
 program does not own the mouse (`term_wants_key_mouse` — nano/less/vim keep their click-to-place-cursor). So the
 URL test happens on RELEASE, after the double-click window says "this was a single click". Opening needs
 `xdg-open` — fork/exec from the terminal process.
+
+**The rules step 7 added, and where each is checked:**
+- **The scan never declines a click; the gate does.** `term_url_span()` finds the run (on the alternate screen too);
+  `url_click_opens()` is what refuses. A scanner that hid the address could not be tested for finding it, and the
+  refusal would be an absence instead of a decision — which is exactly the dead-`cursor_color` shape.
+- **One owner for the wrap marks.** `term_url_span()` walks the logical line with `term_line_span()`, the function a
+  triple click already uses; a second walk of `Grid.wrap` is a second answer about which rows are one line (a scan
+  pins that `src/url.c` calls it exactly once). The case that separates a WINDOW break from a PROGRAM break is a line
+  ended exactly AT the margin: the row is full, no wrap mark is set, and only the mark tells them apart —
+  `url_join_every_row` survived the first corpus because in every other program-broken case the blank cells ended the
+  run anyway.
+- **Never open half a URL.** A non-ASCII or wide cell to the RIGHT of the run refuses the whole run (the draft rule
+  opened `https://ex` for `https://ex<U+00E9>.com` — a different page); `term_url_text()` writes NOTHING when the
+  bytes do not fit the buffer; over `URL_MAX` it returns -1 and the caller logs instead of opening. A non-ASCII cell
+  on the LEFT is fine — the scheme match fixes where the run starts.
+- **The trailing-mark rule is a decision with a check on each side.** Cut `. , : ; ! ?` and a closer with no matching
+  opener inside the run; KEEP a trailing slash (`https://x/` and `https://x` are different pages, so cutting one is a
+  wrong answer, not a smaller one); keep a balanced pair. Quotes and angle brackets are deliberately NOT in the cut
+  list — `url_cell()` ends the run on them, and a branch that cannot be taken is a branch nobody can test.
+- **The address is data, never a command line.** `execvp` with `char *argv[3]` and no shell anywhere (five scans
+  assert `system`/`popen`/`execl`/`execlp`/`execve` are all absent); a leading `-` is refused because that is the one
+  way a URL could change what the opener DOES; the opener's name is `URL_OPENER_PROGRAM` in the header and never a
+  config key, because a key holding a program name is a way to make the terminal exec anything. Only `http`/`https`
+  reach it — `ftp://`, `mailto:`, `file://` open nothing.
+- **Four promises the spawn makes, each with a check that is not vacuous.** `setsid` (Ctrl+C at the prompt cannot
+  reach the opener), stdin/out/err on `/dev/null`, `closefrom` (every pty master, the Wayland socket, the timerfds,
+  the signalfd — none is close-on-exec, because `posix_openpt` is called without `O_CLOEXEC`), and the blocked
+  SIGCHLD mask cleared (a mask survives exec and the real opener is a shell script that waits for children). Two of
+  these checks were VACUOUS until probed: a pty MASTER shows in `/proc/self/fd` as `/dev/ptmx`, not `/dev/pts/N`, so
+  grepping for `pts` reported 0 for a child holding every master (`s129/fdprobe.c`); and `/bin/sh` normalises its own
+  signal mask at startup, so the mask half now runs against `/usr/bin/awk` (`s129/maskprobe.c`).
+- **The wait is the double-click window, and the two rules agree at the boundary.** `URL_OPEN_WAIT_MS` IS
+  `CLICK_DCLICK_MS`, and `url_open_due()` is strictly-greater because `term_click_count()` still calls a press at
+  exactly that instant the same gesture — a check pins the agreement at that millisecond. The stamp is cleared in
+  both places that end a wait (a new press, and the deadline); `url_tick()` rides the frame timer, because a wait
+  nothing drives never expires.
+- **The open is RE-ASKED at the deadline, not trusted from the click.** The tab may have closed (`mux_close` shifts
+  the later indices), the pane may have scrolled, the program may have repainted. `main.c` re-runs the scan on the
+  same cell and `strcmp`s the text; anything else opens nothing. Opening an address nobody clicked is worse than
+  opening nothing.
+- **`main.c` computes the flags, `src/url.c` owns the order.** No early-return chain in the event handler: "a drag
+  still selects", "the 2nd and 3rd click select a word/line", "Shift means selection", "the tab bar and the band are
+  not panes" and "a program that owns its screen keeps its click" are one table in a file the tests link. The pending
+  open is keyed to `mux_active(&mux)`, which is the clicked pane's tab because a press in a non-visible pane calls
+  `tab_switch()` before the release computes the cell. The forked opener is reaped by the existing signalfd loop
+  (`waitpid(-1)` then `tab_for_child()`, which answers -1 for a non-shell pid), so it cannot become a zombie.
 
 ### Decisions already made — do not re-ask, do not re-propose
 
@@ -1840,18 +1976,199 @@ numbers and the intermediate check counts are in git.
   pushed, and the push was verified from git after the fact, not assumed from the command's output.
   Next session: **step 7, plain-click URLs**.
 
+- **2026-10-21, s129-s130 — step 7, a plain click opens a URL (IN PROGRESS, nothing committed yet).** OBJECTIVE:
+  the last step of the s102 plan — a single left click on an `http(s)://` run in a terminal pane hands it to
+  `xdg-open`, gated so it never takes a click that already belongs to something else, with `click_opens_url` to
+  turn it off. The measured starting point and the plan are the s129 task block above (`.scratch/s129/urlprobe.c`,
+  re-run by s130 against the wired tree: every corpus line it prints is what the new checks copy).
+  WHAT s129 LEFT (see "What is already in the working tree" above): `src/url.c` and the `main.c`/`config.c`/
+  header/template/Makefile wiring, unjournaled and unverified beyond a clean build; the suite RED at 1516/2 because
+  the doc gate noticed the new key before any check for the feature existed.
+  WHAT s130 PLANS, in order: (1) the `url` group in `tests/test_vt.c` — the run rule and the spans against the
+  probe corpus, the refusals (non-ASCII cut, no scheme, empty authority, over-`URL_MAX`), `url_is_openable`, the
+  `url_click_opens` gate table, the `url_open_due` boundary against `term_click_count`'s window, and an
+  end-to-end `url_spawn` through a script that prints its argv and its open descriptors; (2) the settings count
+  39 -> 40, the template field check, and `src/url.c` added to the hex-escape scan list; (3) README's settings row
+  and the click prose; (4) the `main.c` wiring scans in `tests/test_render.c`; (5) ISSUES' limits (a run that
+  scrolled above the viewport, the non-ASCII refusal, the 2048 ceiling, the opener having to exist);
+  (6) `.scratch/s129/mutate.py` for non-vacuity plus the feature-absent A/B; (7) both builds, every suite,
+  `make asan`, the headless CLI group, one commit, push. EXPECTED: `test_vt` up by the new group, everything else
+  unchanged, and the honest note that a browser actually opening is owed to the user's eye.
+  STATUS RIGHT NOW: step (1) in progress; nothing verified beyond the two build commands and the 1516/2 above.
+  DONE (1) — the `url` group in `tests/test_vt.c` (inserted after the `ptr` precedence group, so the click
+  features sit together). Before writing a single number I ran a NEW probe, `.scratch/s129/realprobe.c`, against
+  the shipped `src/url.c` — because `.scratch/s129/urlprobe.c` measured a DRAFT rule and the two differ: the draft
+  answered `https://ex` for `https://ex<U+00E9>.com`, `src/url.c` refuses it. Two corpus numbers came from the draft
+  and were wrong for the shipped rule and were corrected from realprobe's output (the non-ASCII refusal, and
+  `a-b_c~d%20e` — urlprobe had fed a doubled `%%` and printed 32; the real run is 31). The group is 110 checks:
+  the run rule and its spans (plain, query+fragment, click anywhere in the run, out-of-range, NULL parameters, a
+  refused click leaving a ZEROED span, a too-small buffer writing nothing); every trailing mark cut and kept (the
+  slash kept is a decision with a check on it); scheme case-insensitivity, `http://` alone refused, ftp/mailto
+  refused, a scheme mid-word; the non-ASCII/wide refusal with the wide-pair setup pinned (`cellch(0,8) == 0x4F8B
+  && cellattr(0,9) & ATTR_WIDE`) and a wide glyph on the LEFT accepted; the soft-wrapped run found from either row
+  (61 bytes, break removed) against a program-broken one that is NOT joined; an address ending exactly at the
+  margin; a tab's `ch == 0` gap; the alt screen (the scan FINDS it, `term_wants_key_mouse()` is what declines —
+  pinning that division is the point); the `URL_MAX` ceiling measured on all three sides (2047 / 2048 / 2049) plus
+  the 3000-character run; the delimiter corpus (`<url>`, `[url]`, trailing `?` vs a `?` in a query, two runs on one
+  line, `#frag`, a balanced pair at the end, brackets and braces INSIDE a path, padded spaces); the scrolled-away
+  limit; `url_is_openable` (dash-option, empty, other schemes, space/control/DEL/non-ASCII, the length boundary);
+  the 9-case `url_click_opens` gate table; the `url_open_due` boundary WITH the check that the two rules agree at
+  exactly `CLICK_DCLICK_MS` (`term_click_count` still says 2 there and `url_open_due` still says not due); the
+  `click_opens_url` config group (default ON first, every spelling of both values fed after the opposite one, the
+  cfg_bool contract); and an end-to-end `url_spawn` through a stand-in opener that reports its own argv, its
+  session id, its `SigBlk` mask and its `/proc/self/fd` — the checks are argc=1, the address verbatim, `pts=0`
+  (a pty master the parent opened is NOT inherited — `posix_openpt` without `O_CLOEXEC`, the real condition),
+  SIGCHLD clear in the child's mask, a different session id, and a `;touch` in the address that never runs.
+  Also in the same edit: the settings count 39 -> 40, a template field check that the shipped line really is the
+  built-in **1** (a template shipping 0 would ship the feature off), and `src/url.c` added to the hex-escape scan
+  list. VERIFIED: `make bin/test_vt` 0 warning lines (after four `-Wshadow` fixes — `small` and three inner `n`
+  against `main()`'s `n`), `./bin/test_vt` **1626 checks, 1 failure**, and that one failure is the doc gate:
+  `FAIL: README's settings table does not document click_opens_url`. No SKIP lines; the spawn group leaves no
+  file behind in /tmp. NEXT: README's row and prose, then the `main.c` wiring scans in `tests/test_render.c`.
+  DONE (2) — README: a Features bullet, a new "### Clicking a web address" subsection (what the click never takes
+  away; what counts as an address, including the window-broke/program-broke split, the kept trailing slash, the
+  non-ASCII refusal and the http/https-only rule; and the two honest limits — whether a window appears is the
+  desktop's business, and a run scrolled above the top is not found), and the `click_opens_url` row in the settings
+  table. That row is what the doc gate was failing on: `./bin/test_vt` is now **1626 checks, 0 failures**.
+  DONE (3) — 14 source scans in `tests/test_render.c`'s `group_source_wiring()`, every count measured with the new
+  `.scratch/s129/scancount.py` (a replica of the C scanner) before it was written: main.c asks `url_click_opens`
+  once and feeds it `conf.click_opens_url`; the scan is asked twice (click + deadline) and the deadline compares
+  `strcmp(holds, clicked)`; `url_tick` defined and called; the wait uses `URL_OPEN_WAIT_MS` not a literal; the
+  pending stamp is cleared in both places that end a wait; exactly one `url_spawn` site, taking
+  `URL_OPENER_PROGRAM` and the re-validated text; the opener's name appears 3 times in main.c and ZERO times in
+  src/url.c; `url_is_openable` 0 in main.c / 2 in url.c; `term_line_span` used once by url.c; `closefrom`/`setsid`/
+  `sigprocmask` each present; `system`/`popen`/`execl`/`execlp`/`execve` all 0; one `char *argv[3]`.
+  VERIFIED: `make bin/test_render` 0 warning lines, `./bin/test_render` **575 checks, 0 failures** (was 561).
+  NEXT: ISSUES' limits, then the mutant harness, then the full re-measure (both builds, every suite, asan, CLI).
+  DONE (4) — ISSUES: a new "**A click on a web address**" block under Known limitations (the scan-never-declines /
+  gate-declines division, the scrolled-above-viewport limit, the non-ASCII refusal with the draft named as the
+  thing it replaces, the 2048 ceiling and its log line, the deadline re-validation and its log line, the opener
+  having to exist and why it is a header constant and not a key, and the honest "a browser opening is owed to the
+  user's eye").
+  HARNESS (5) — `.scratch/s129/mutate.py` (38 mutants: 11 run rule, 6 text/argument, 6 gate, 5 wait/header, 5
+  spawn, 2 key, 5 main.c wiring, plus the control), building and running BOTH `test_vt` and `test_render` in a
+  staging tree. Two things it found, both real:
+  (a) **the spawn check was vacuous.** `spawn_no_closefrom` survived `test_vt` (only the source scan killed it).
+      Cause measured with `.scratch/s129/fdprobe.c`: a pty MASTER fd in `/proc/self/fd` links to **/dev/ptmx**, not
+      `/dev/pts/N`, so `grep -c pts` reported 0 for a child that had inherited every master in the process — the
+      exact failure the check exists to catch. Fixed: the stand-in opener now counts `-e pts -e ptmx` and the check
+      reads `ptys=0`; the reason is written into the test so nobody "simplifies" it back. Re-measured: the real
+      tree still prints `ptys=0`, the mutant now prints `3 -> /dev/ptmx` and FAILS.
+  (b) **a corpus gap.** `url_join_every_row` (ignore the wrap marks, treat every viewport row as one line) survived
+      the first corpus, because in every program-broken case the blank cells between the two rows ended the run
+      anyway. The case that distinguishes them is a line the program ended AT the margin: the row is full, no wrap
+      mark is set, and only the mark tells a window's break from the program's. Measured with realprobe (section
+      6b: `wrap[0] == 0`, the run stops at column 19) and added as two checks. `test_vt` is now **1628 checks,
+      0 failures**, 0 warning lines.
+  (c) **the signal-mask check was vacuous too.** `spawn_no_unblock` survived `test_vt` as well. Measured with
+      `.scratch/s129/maskprobe.c`: `/bin/sh` normalises its own signal mask at startup, so a shell stand-in
+      reports `SigBlk: 0` whatever the parent blocked. The mask half of the spawn group now runs against
+      `/usr/bin/awk` (whose whole program IS the one argument, which also proves the argument arrives as data),
+      and it is not vacuous: the real tree reports `0000000000000000`, the mutant `0000000000010000`. Skipped
+      with a printed SKIP if `/usr/bin/awk` is not executable — verified present here, not assumed.
+  (d) **the header's constants were unpinned.** `hdr_url_max_small` (URL_MAX 2048 -> 64) survived because every
+      length check is written in terms of `URL_MAX` and follows it wherever a mutant moves it. Two checks added
+      (`URL_MAX == 2048`, `URL_OPENER_PROGRAM == "xdg-open"`), the way `CLICK_DCLICK_MS == 500` is pinned.
+  FULL HARNESS RUN (`.scratch/s129/mutate_run.txt`, 2026-10-21): **39 mutants — 38 KILLED, 1 control SURVIVED
+  (as it must) + 2 survivors that are equivalent by construction and now carry a comment in `src/url.c`**
+  (`url_openable_dash`: the scheme test makes a leading dash unreachable; `wait_no_clock_guard`: a backwards
+  clock makes the difference negative, which the return expression already refuses). Every mutant is built AND
+  run in a staging tree against BOTH `test_vt` and `test_render`; the harness's docstring records the four
+  vacuous/gap findings above so the next agent does not re-introduce them.
+
+- **2026-10-22, s131 — step 7 close-out: the full re-measure, then the commit (CLOSED).** OBJECTIVE: finish
+  plan step (7) of the s130 block — nothing in the tree is committed, and "Current Status" above claims a green
+  full re-measure that the Progress Journal never records running. So every number in this file is treated as
+  UNVERIFIED until re-measured on this tree, per the standing rule (a failed build leaves the old binary in
+  `bin/`). PLANNED, in order: (a) `make clean && make -j8` and the test-binary build, counting warning lines in
+  both; (b) run `test_vt`, `dbg`, `test_fm`, `test_render` and quote the counts only after checking each build
+  exited 0; (c) `make asan` (four binaries, watching for LeakSanitizer/UBSan text, not just exit 0); (d) the
+  headless CLI group with `KAI_TERM_TEST_NO_WINDOW=1` — no windows, the user may be at the machine; (e) re-check
+  the doc-pinning claims by reading the checks, not the prose (settings count, template line, README row);
+  (f) `git diff` review of every modified file for anything left over from the harness work; (g) one feature
+  commit + one journal commit, `git fetch` then push, then verify the push from git. EXPECTED: the counts the
+  harness control printed (`test_vt` 1632/0, `test_render` 575/0) hold; if any number differs, the status block
+  gets corrected, not the number. NOT planned: any new feature work, and the windowed CLI group (ask first).
+  RESULTS SO FAR, all measured on this tree at 2026-10-22 09:14:
+  (a) `make clean && make -j8` -> exit **0**, `grep -ciE 'warning|error'` -> **0**; and
+      `make bin/test_vt bin/dbg bin/test_fm bin/test_render` -> exit **0**, **0** warning lines. All five
+      binaries in `bin/` carry the same fresh mtime, so no stale-binary trap.
+  (b) `./bin/test_vt` **1632 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**; `./bin/test_fm`
+      **384 checks, 0 failures**; `./bin/test_render` **575 checks, 0 failures**. No FAIL lines, no SKIP lines.
+      These match the harness control run exactly, so the numbers "Current Status" claimed were real — they are
+      now re-verified rather than trusted.
+  NEXT: (c) `make asan`, (d) the headless CLI group.
+  (c) `make asan` -> build exit **0**, **0** warning lines; all four asan binaries exit **0** with the SAME four
+      counts (1632 / MODEL OK / 384 / 575) and no `LeakSanitizer`, `runtime error` or `SUMMARY` line anywhere in
+      their output.
+  (d) `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh ./bin/kai-term` -> exit **0**, **CLI: 99 checks, 0
+      failures, 13 skipped** (the 13 are the windowed group; no window was mapped, the user may be at the machine).
+  (e) The doc-pinning claims re-read at the checks, not the prose: `tests/test_vt.c:3998` asserts `ns == 40 &&
+      nb == 24`, `:3918` asserts the shipped template line equals the built-in **1**, and the README row is what
+      `readme_table_names_of()` diffs — all green, which is only meaningful because the same check went RED in s130
+      when the key existed without the row. The grep claims re-run: `TODO|FIXME|XXX` in src/include/tests returns
+      only `kai-term-int-XXXXXX` and two test fill strings; the probe-token grep returns only the three
+      string-concatenated lines in `tests/test_render.c` that WRITE a probe file.
+  (f) `git diff` read line by line (src/url.c in full, main.c, config.c, the header, the template, the Makefile,
+      both test files, README, ISSUES). Nothing left over from the harness work: no probe code, no debug print
+      beyond the four `klog` lines that are the feature's own diagnostics. Two things checked because they are the
+      kind of thing a diff hides: the pending open is keyed to `mux_active(&mux)` and that is correct because a
+      press in a non-visible pane calls `tab_switch()` BEFORE the release computes the cell, and the forked opener
+      is reaped by the existing signalfd loop (`waitpid(-1)` then `tab_for_child()`, which answers -1 for a
+      non-shell pid), so it cannot become a zombie.
+  (g) **The feature-absent A/B, which s130's harness did not run** (`.scratch/s131/ab_nourl/`: the whole tree with
+      `src/url.c` replaced by a stub answering "no URL" everywhere and a spawn that refuses; the header keeps the
+      vocabulary so the checks still compile). `test_vt`: **1628 checks, 52 failures** — every one inside the `url`
+      group. `test_render`: **575 checks, 4 failures**, all four the source scans reading the stub's `src/url.c`
+      (`closefrom`/`setsid`/`sigprocmask` absent, `char *argv[3]` absent, `url_is_openable` absent, `term_line_span`
+      absent). Two numbers to read honestly, per the standing rule about A/B counts: the stub tree runs **4 fewer**
+      checks than the real tree (1628 vs 1632) because the four spawn assertions live inside `if (appeared)` and a
+      spawn that fails never reports — and **60 of the group's 112 checks that DID run still passed**, because "a
+      non-ASCII run is refused", "`ftp://` is refused" and "`http://` alone is refused" are all satisfied by a tree
+      that refuses everything. Those are pinned by the MUTANTS (s129's 38-mutant run) and by the positive checks
+      beside them, not by this A/B. What this A/B does prove is that the positive half — the spans, the marks, the
+      wrap join, the gates, the wait, the spawn — has no coverage without `src/url.c`.
+  NEXT: the stale counts in this file's own "Project Files" section (1498/1320/555/506 -> the measured 1632/384/
+  575, and `src/url.c` was missing from the tree listing entirely), then the commit.
+  DONE — the stale counts were corrected (the tree listing had no `src/url.c` at all, and the four check counts were
+  two features out of date), `src/url.c` got its own entry in "What each file OWNS", and the `url` group and the 14
+  URL scans were written into the two test files' descriptions. ISSUES' re-measure block was two features stale
+  (1516/561) and now carries the measured 1632/575 plus the note that step 7 added a settings key and NO command-line
+  flag. "Current Task" now reads NONE IN PROGRESS, "Next Steps" item 1 says the s102 plan is finished, and the
+  owed-to-the-user's-eye list gained step 7's four verdicts with the `-d` recipe beside them.
+  COMMITTED AND PUSHED: `4610911 "URLs: a plain left click opens the address under it"` (10 files — the new
+  `src/url.c`, `main.c`, `config.c`, the header, the shipped template, the Makefile, both test files, README,
+  ISSUES). `git fetch` first: nothing had landed on GitHub since `bfaa749`. `git push` took `bfaa749..4610911`;
+  verified from git afterwards, not from the push output — `git log --oneline origin/main -1` is `4610911` and
+  `git status -sb` reads `main...origin/main` with nothing ahead. Then the commit itself was tested: a fresh clone of
+  it (`s131/verify_commit`) builds both targets at 0 warning lines and prints the same four counts, which is the only
+  way to know nothing needed was left untracked (`.scratch/` is not in `.gitignore`, so `git add -A` would have been
+  a mistake — the ten files were staged by name). This journal close-out is the commit after it.
+  NEXT SESSION: nothing is in progress and the s102 plan is closed. Ask the user what they want, or take a
+  housekeeping item (Next Steps item 5). The one thing genuinely outstanding is the user's eye on step 7's click —
+  and on steps 5 and 6, which are still owed the same.
+  ONE DOC BUG FOUND WHILE VERIFYING THE LOG LINES (fixed after the feature commit): README claimed `-d` logs "when
+  the click was refused, why". It does not, and `grep -n 'klog' src/main.c | grep url:` shows there are exactly six
+  `url:` lines, none of them for a refused click. That is deliberate — a click on a cell with no address is what
+  every ordinary click in a terminal is, so logging the refusal would fill the log — but the sentence promised a
+  diagnostic that does not exist. README now says what IS logged, and answers the real question the way the code
+  actually answers it: whether the `url: the click at (col,row) holds …` line appeared for that click. AGENT.md's
+  "Debugging this project" gained the six lines with what each one's absence means. Re-measured after the README
+  edit (README is read by the doc-pinning checks): test build 0 warning lines, `test_vt` **1632/0**, `dbg` MODEL OK,
+  `test_fm` **384/0**, `test_render` **575/0**.
+
 ## Next Steps
 
-1. **Now: step 7 of the s102 plan — plain-click URLs.** Steps 4, 5 and 6 are CLOSED as work: step 4 is confirmed by
-   the user in both forms, and steps 5 and 6 are committed and owed only their look to the user's eye. The step-6
-   BUG REPORT is closed too (s128): the click-caused flash was real and is fixed, and the "no flash on a failed
-   `less` search" half was measured to be `less` sending no `BEL` at all — nothing to fix, and README now says what
-   `less` actually bells for. Do not re-open it, re-ask about it, re-propose it, or re-derive the
-   foreground-group facts — the s120-s124 entries record the A/B and the mutants each stage was measured against,
-   and the s126-s128 entries the same for steps 5 and 6 (`test_vt` 1516/0, `test_render` 561/0, `test_fm` 384/0,
-   `dbg` MODEL OK, CLI 99/0/13 headless, asan clean).
-   Step 7's shape is written below ("7. URLs: plain click opens") and the user's answer to question 7 (a plain
-   click, with gates) is under "Decisions already made".
+1. **The s102 plan is FINISHED — all seven steps are built, checked and committed.** Nothing is in progress. Step 7
+   (the plain-click web address) closed in s131 as `4610911`, pushed and re-verified from a fresh clone of that
+   commit. Steps 4, 5 and 6: step 4 is confirmed by the user in both forms; steps 5, 6 and 7 are committed and owed
+   only their look to the user's eye (the list and the recipes are in "Current Status"). Do not re-open, re-ask
+   about or re-derive steps 0-7 — each section under "Current Task" records the A/B and the mutants it was measured
+   against, and the s120-s131 entries do the same for the sessions that built them.
+   **So the next thing to do is either ask the user what they want next, or take an item from "Housekeeping" below
+   (item 5) — not to invent a feature.** If a new feature is asked for, the standing survey rule applies: grep the
+   tree for it first (0 hits means absent, not wanted), then check what the user's own setup actually asks for
+   before ranking it.
 2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look
    (a 2 px bar at the left edge of the cell, one second on / one second off while the window has focus, steady
    with `cursor_blink = 0`), then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'`
@@ -1952,7 +2269,16 @@ numbers and the intermediate check counts are in git.
    SILENCE, counting `0x07` bytes and parser rings per gesture and timing the BEL's reply — every number in the
    s128 entry came off it; `bellprobe.c` and `bellprobe3.c` are the two wrong revisions, kept to show what was
    wrong) + `s128/mutate.py` + `s128/scancount.py` (the 18 click-mute mutants, and a replica of the
-   `tests/test_render.c` source scanners for MEASURING a scan count instead of guessing it). One fact
+   `tests/test_render.c` source scanners for MEASURING a scan count instead of guessing it),
+   `s129/urlprobe.c` (the DRAFT run rule — kept because the shipped rule differs from it in exactly one case, the
+   non-ASCII refusal, and the difference is a check) + `s129/realprobe.c` (the SHIPPED rule: every number in the
+   `url` group was printed by this before the check was written) + `s129/mutate.py` + `s129/mutate_run.txt` (step
+   7's 39-mutant run, both suites, and its docstring records the four vacuous-check findings) + `s129/fdprobe.c`
+   (why a pty MASTER shows as `/dev/ptmx`, not `/dev/pts/N` — the reason the spawn check greps for both) +
+   `s129/maskprobe.c` (why the signal-mask half needs a non-shell stand-in: `/bin/sh` normalises its own mask) +
+   `s129/scancount.py` (the scan-count replica for the 14 URL wiring pins) + `s131/ab_nourl/` (the feature-absent
+   A/B: the whole tree with `src/url.c` stubbed out) + `s131/verify_commit/` (a fresh `git clone` of the step-7
+   commit, built and run to prove the commit is self-contained). One fact
    to keep in mind: this file
    cites those paths and a fresh clone cannot run them — so anything that is a real regression gate belongs in
    `tests/` eventually.
@@ -1972,14 +2298,15 @@ Kai-Term/
 ├── config/kai-term.bind         # the shipped KEY-BINDING template: all 24 names at their built-in default
 ├── config/kai-term.theme        # the shipped THEME example: all 23 theme names at the built-in colours
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
-├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c font.c render.c main.c
-├── tests/test_vt.c              # 1498 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt
+├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c url.c font.c render.c main.c
+├── tests/test_vt.c              # 1632 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt
 │                                # machinery, click selection, confirm-quit (predicate, count, wording, notice
-│                                # geometry), the visual bell (the BEL event, the fade, drawn-vs-hidden sessions)
+│                                # geometry), the visual bell (the BEL event, the fade, drawn-vs-hidden sessions),
+│                                # the web-address click (the run rule, the gates, the wait, a real spawn)
 ├── tests/test_fm.c              # 384 checks: the file-manager model, previews, decoders, band geometry, pointer rules, the preview pane's text selection
-├── tests/test_render.c          # 555 checks: the renderer's pure decisions — colour choices, cursor shape, the question
-│                                # row's two colours, the bell's colour — plus the source scans that cover main.c's
-│                                # confirm-quit and visual-bell wiring
+├── tests/test_render.c          # 575 checks: the renderer's pure decisions — colour choices, cursor shape, the question
+│                                # row's two colours, the box's six, the bell's colour — plus the source scans that cover
+│                                # main.c's confirm-quit, visual-bell and URL wiring
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # drives the REAL bin/kai-term: 99 checks / 13 skipped headless (the 13 are the window
 │                                # groups; a display run was last measured at 149 in s124)
@@ -2023,6 +2350,17 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   it the string `shellint_argv()` built instead of the bare shell path. It does NOT touch termios — see the
   s75-s79 entry. Also the one tcgetpgrp call site: `pty_fg_busy()` (the wrapper) over the pure `fg_busy()` (the
   decision). No Wayland/EGL/font, so it links into the headless suites — see the Makefile comment.
+- `src/url.c` — the whole of step 7, deliberately in a file the tests link rather than in the event handler that
+  triggers it: the run rule (`term_url_span()` — ASCII-only cells, the scheme must be there, the trailing marks that
+  are cut and the trailing slash that is kept, the non-ASCII/wide cell that makes the whole run REFUSED rather than
+  shortened), the logical line walked with `term_line_span()` (one owner for the wrap marks, so a URL the WINDOW
+  broke is one run and one the PROGRAM broke with a newline is two), `term_url_text()` (writes nothing when the
+  bytes do not fit — half an address is never opened), `url_is_openable()` (the argument rules: scheme, no control
+  character, no leading `-`, the `URL_MAX` ceiling), `url_click_opens()` (the gates as ONE ordered decision, so a
+  test can flip each flag), `url_open_due()` (the double-click wait, strictly-greater boundary matching
+  `term_click_count()`), and `url_spawn()` (fork + setsid + /dev/null + `closefrom` + the signal mask cleared +
+  `execvp` with one argument — never a shell). No Wayland/GL, so all of it, the spawn included, is checked in
+  `tests/test_vt.c`.
 - `src/theme.c` — themes: a file of COLOURS only, in kai-term.conf's `key = value` syntax (and kitty's
   `key value`). `theme_find()`, `theme_apply_file()`, and the `--import-theme` importer (`theme_sniff`,
   `theme_parse_text`, `ThemeVals`, `theme_write_file`, `theme_dest_dir`, `theme_name_of_path`, `theme_import`).
@@ -2047,7 +2385,7 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   sequence and the measurements that chose it, and the command line `tab_spawn()` hands `pty_spawn()`. Nothing
   here talks to the shell except through those files and the pty; the protocol's other half is `kai_apc()` in
   `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 1320 checks. Groups: parser (C0 inside a control sequence; a CSI sequence split across two
+- `tests/test_vt.c` — 1632 checks. Groups: parser (C0 inside a control sequence; a CSI sequence split across two
   bursts), clipboard text policy (`paste_repair`, `clipboard_mime_rank`), grid, selection, alt screen,
   `live_off`, emoji clusters, CSI 3 J, bracketed paste, `term_init` guard, reflow, `term_grid_geometry`,
   zoom/alt-screen row-shrink, `mouse_sgr_button`/`mouse_wheel_button` (the SGR order and the 64/65 wheel codes),
@@ -2068,7 +2406,14 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   the shell-integration scripts as they land on disk, and the
   prompt machinery the follow is built from (`term_at_prompt()`, `term_prompt_line()`,
   `term_prompt_line_typed()`, `term_prompt_line_is()`, the echo window and its transition rule, the clear ->
-  `cd` -> re-populate sequence as the model sees it). `main.c` itself is in no test binary — that machine is
+  `cd` -> re-populate sequence as the model sees it). The **`url` group** (step 7, 116 checks, sitting next to the
+  pointer-precedence group so the click features stay together) covers the run rule and its spans, the trailing-mark
+  cut/keep table, the scheme rules, the non-ASCII/wide refusal, the window-broke vs program-broke split, a tab's gap,
+  the alternate screen (the scan FINDS the address; the gate declines the click), the `URL_MAX` boundary on all three
+  sides, the delimiter corpus, the scrolled-away limit, `url_is_openable`, the 9-case `url_click_opens` gate table,
+  the `url_open_due` boundary against `term_click_count`, the two header constants, the `click_opens_url` key and an
+  end-to-end `url_spawn` through two stand-in openers that report their own argv, session id, signal mask and open
+  descriptors. `main.c` itself is in no test binary — that machine is
   covered by `.scratch/s86/follow2.c` and the live harness. Two invariants with dedicated checkers: the `row[]`
   permutation (also `tests/dbg.c`) and the startup-size round trip.
 - `tests/test_fm.c` — 384 checks against a real temporary directory tree (dirs, a dotfile, a dangling symlink, a
@@ -2083,7 +2428,7 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   (`band_mismatches()`), the copy's buffer bounds including `cap == 0`, the invalidation on scroll / resize / a
   new preview, a directory preview's entry list being selectable too, and what a row wider than the pane can
   copy (28 cells of a 130-character line).
-- `tests/test_render.c` — 506 checks, the only coverage of the renderer's decisions that needs no display. It
+- `tests/test_render.c` — 575 checks, the only coverage of the renderer's decisions that needs no display. It
   links `render.o` (plus `fm.o font.o img.o vt.o shellint.o layout.o mux.o config.o`, which is what `render.o`
   needs to LINK) and calls only the pure functions — never `render_init()`, never a GL call. Colour: the
   configured `cursor_color` is what an active pane's cursor is drawn with, an inactive session's cursor is that
@@ -2102,7 +2447,12 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   lines). The wiring pins (`conf.cursor_width` reaches `render_init()`, `rend.cursor_on = W.cursor_on` exists,
   `render_cursor` appears 4× in `src/render.c`, `cursor_on` 3×, and the six confirm-quit counts in `src/main.c`:
   the window gate 2×, the tab gate 3×, the answer 3×, `confirm_clear` 4×, the row handed to the layout 1+1×, the
-  shared predicate 2+2×) are text counts — re-diff them, they are not executed.
+  shared predicate 2+2×) are text counts — re-diff them, they are not executed. The 14 URL scans (s129) pin that
+  `src/main.c` CONSULTS `src/url.c` instead of keeping its own copy: the gate asked once with
+  `conf.click_opens_url`, the scan asked twice (click + deadline) with `strcmp(holds, clicked)` at the deadline,
+  `url_tick` defined and called, the wait using `URL_OPEN_WAIT_MS` not a literal, the pending stamp cleared in both
+  places that end a wait, one `url_spawn` site taking `URL_OPENER_PROGRAM`, and in `src/url.c` the presence of
+  `closefrom`/`setsid`/`sigprocmask` beside the absence of `system`/`popen`/`execl`/`execlp`/`execve`.
 - `Makefile` — pkg-config-driven; `-Iinclude/kai-term -Ibuild/generated`; output dirs via order-only
   prerequisites so they never force rebuilds; generates xdg-shell bindings with `wayland-scanner`.
 
@@ -2598,6 +2948,16 @@ hit-tested bar then panes.
   the config asked for: absent means no `0x07` ever arrived (the program did not ring — check the program, not the
   renderer); present with no visible flash means the drawing half, not the parser. A session the layout does not
   draw logs the same line and deliberately flashes nothing — the tab bar's `*` is its mark.
+- **The web-address click.** `url: the click at (col,row) holds <address> — waiting out the double-click window`
+  (debug) is logged at the release and proves the scan found a run and the gate accepted the click; absent means the
+  run rule or a gate declined it. `url: a click asked xdg-open for <address>` (info) is the open itself — present
+  means Kai-Term handed it over, and if nothing appeared the desktop's opener is the thing to look at, not the
+  terminal. A click that was accepted and then dropped says why: `url: the text under the click changed while the
+  click waited — nothing opened` (the line was repainted, the pane scrolled or the session closed) or
+  `url: the session the click was in is gone — nothing opened`. Over the ceiling is
+  `url: a run of more than 2048 characters is not something to open`, and a failed `fork` is
+  `url: could not start xdg-open: <reason>` — the child's own failure to exec is invisible by design (its output is
+  `/dev/null`), so the log records what was ASKED for, not what happened.
 - `./bin/dbg` — scripted scroll/resize/reflow/zoom stages; each prints `scroll_off/live_off/rows/rcap/used` plus
   one 2-character token per slot (`v` viewport / `s` scrollback, then the row's first cell), and asserts `row[]`
   is a NULL-free, duplicate-free permutation.
@@ -2836,3 +3196,10 @@ hit-tested bar then panes.
   grepped every candidate feature first (all 0 hits) and two of the proposals were still wrong, because the
   user's own setup did not ask for them (scaling at 1, and OSC 52 vs the local clipboard they already use).
   Check what their setup actually asks for before ranking a feature.
+- **A sentence in README about a log line is a claim about the code, and it goes false the same way a feature claim
+  does.** s131 found README promising that `-d` says "when the click was refused, why"; `grep -n klog src/main.c |
+  grep url:` returns six lines and none of them is a refusal. There is a good reason none exists — a click on a cell
+  with no address is what every ordinary click in a terminal is, so logging it would fill the log — but the sentence
+  had been written as if the diagnostic did. Grep for the string before documenting it; when the honest answer is
+  "nothing is logged here", replace the promise with the evidence that DOES answer the question (for the URL click:
+  whether the `url: the click at (col,row) holds …` line appeared at all).
