@@ -670,7 +670,7 @@ void term_select_clear(Term *t);
 
    BELL_FLASH_MS is how long a bell stays on screen. A chosen number, not one measured from another terminal:
    long enough to be noticed by someone who is not looking at the cell that rang, short enough that a program
-   ringing BEL repeatedly (readline's ambiguous completion, `less` on a failed search, sudo on a wrong
+   ringing BEL repeatedly (readline's ambiguous completion, `less` on an unknown command, sudo on a wrong
    password) reads as feedback rather than as a strobe. BELL_MIX_MAX is how far the field moves toward the ink
    at full strength, in percent — deliberately small, because the flash is one quad UNDER the glyphs and the
    text has to stay readable through it (there is no GL blending in this renderer, so "fade" means mixing the
@@ -684,6 +684,27 @@ void term_select_clear(Term *t);
    milliseconds since boot (CLOCK_MONOTONIC) and are long long on purpose: an `int` ms counter wraps after 24.8
    days, and a terminal left open over a weekend is not an edge case. */
 int bell_strength(long long now_ms, long long rang_ms, int dur_ms);
+
+/* BELL_OURS_MS: how long after Kai-Term turns a CLICK into cursor-key presses a BEL still counts as that
+   program's answer to the presses rather than a message to the user. Measured 2026-10-20
+   (.scratch/s128/bellprobe4 click): the BEL arrives 0-1 ms after the write. 250 ms is ~250x that headroom —
+   it survives a loaded machine and a slow program — and it is far below what a person can do after a click,
+   so a bell the program rang about something the user actually typed is still shown. It is a separate number
+   from BELL_FLASH_MS on purpose: one is how long a flash lasts, the other how long a mute lasts, and they
+   have nothing to do with each other beyond the coincidence. */
+#define BELL_OURS_MS 250
+
+/* 1 when a BEL arriving at `now_ms` is the program's answer to keystrokes Kai-Term synthesized for a click at
+   `synth_ms`, so the pane must NOT flash for it. The rule, and the reason it is a rule and not a guess about
+   pagers: Kai-Term typed those keys, so the program's complaint about them is not addressed to the user.
+   Measured: `less` leaves its cursor on its status line (row 23 of 24), so a click anywhere in its text area is
+   "press Up N times", and at the top of the file that is exactly the scroll-before-the-beginning `less` bells
+   for — the pane flashed for a complaint about Kai-Term's own typing.
+   0 for: nothing ever synthesized (`synth_ms` 0, which is also what a fresh Tab holds, so the common case costs
+   no branch), a clock that went backwards, a window of 0, or a press burst old enough that the BEL belongs to
+   something else. The parser still raises Term.bell_rang either way — the BEL really happened, and muting the
+   FLASH is a decision about the picture, not about the model. */
+int bell_is_ours(long long now_ms, long long synth_ms, int window_ms);
 
 /* Setting for CSI 3 J ("erase saved lines"): 1 (default) lets it drop the scrollback buffer, 0 keeps
    the history. It is a process-wide setting rather than Term state because `ESC c` / RIS rebuilds the
@@ -846,7 +867,12 @@ typedef struct Config {
        keeps scrolling its scrollback.
        The honest caveat on click_moves_cursor: it is keystroke synthesis, not mouse support, so a program
        that uses the arrow keys for something other than moving a cursor reacts to a click (alsamixer
-       would change the slider it is on). That is why it is a switch and not a law. */
+       would change the slider it is on). That is why it is a switch and not a law. One consequence is
+       pinned rather than left to be discovered: a program that CANNOT honour one of those presses answers
+       with a BEL (`less` at the top of its file, asked to scroll before the beginning — measured 2026-10-20,
+       .scratch/s128), and Kai-Term does not flash for a bell it caused by its own typing; see bell_is_ours().
+       The wheel path keeps flashing, because there the user asked to scroll and "there is nothing further"
+       is a message addressed to them. */
     int  wheel_sends_keys, click_moves_cursor;
     /* 1 (default): a second left click in the same cell within CLICK_DCLICK_MS selects the WORD under the
        pointer and a third selects the whole LOGICAL line (a soft-wrapped line is one line, so every row it
@@ -1134,6 +1160,12 @@ typedef struct Tab {
        the Tab when mux_close() shifts the array — the same reason `attention` is here. render_draw() asks
        bell_strength() with it, per pane, so in side-by-side view only the pane whose session rang flashes. */
     long long bell_ms;
+    /* The CLOCK_MONOTONIC ms of the last cursor-key burst Kai-Term synthesized for a CLICK in this session
+       (0 = never). Stamped by main.c where the presses are sent, read by bell_is_ours() where a BEL is turned
+       into a flash. Like bell_ms it is window state on main.c's clock — the model reads no clock — and it has
+       to travel with the Tab when mux_close() shifts the array. The WHEEL path is deliberately not stamped:
+       see the click_moves_cursor caveat above. */
+    long long synth_ms;
 } Tab;
 
 typedef struct Mux {

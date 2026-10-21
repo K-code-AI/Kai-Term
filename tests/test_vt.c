@@ -2426,6 +2426,82 @@ int main(void)
         CHECK(mono, "bell: it never gets brighter as time passes — one fade, no flicker");
     }
 
+    /* --- a BEL that answers Kai-Term's own click-keystrokes does not flash (bell_is_ours) ---------
+       The user's report, verbatim: "clicking the terminal when "less" is active makes it flash. while it
+       shouldn't". Measured (.scratch/s128/bellprobe4 click): `less` leaves the model's cursor on its STATUS
+       line (row 23 of 24), so term_click_arrow_keys() answers a click anywhere in its text area with Up
+       presses; at the top of the file that is a scroll before the beginning, which `less` answers with a BEL
+       arriving 0-1 ms after the write. Kai-Term typed those keys, so the complaint is not addressed to the
+       user and the pane must not wash. The rule is program-agnostic on purpose — nothing in src/ may learn
+       what `less` is — and it mutes the FLASH only: the parser still records the BEL. */
+    {
+        CHECK(bell_is_ours(1000, 0, BELL_OURS_MS) == 0,
+              "bell ours: a session that never had a click become keystrokes flashes as usual — 0 is what a "
+              "fresh Tab holds, so the ordinary case costs one comparison");
+        CHECK(bell_is_ours(100, 0, BELL_OURS_MS) == 0,
+              "bell ours: and it still flashes when the clock itself reads inside the window — without the "
+              "'never stamped' guard, every bell in the first BELL_OURS_MS ms after boot would be muted");
+        CHECK(bell_is_ours(1000, 1000, BELL_OURS_MS) == 1,
+              "bell ours: a BEL in the same millisecond as the presses IS the answer to them");
+        CHECK(bell_is_ours(1001, 1000, BELL_OURS_MS) == 1,
+              "bell ours: the measured 1 ms reply lag is inside the window");
+        CHECK(bell_is_ours(1000 + BELL_OURS_MS - 1, 1000, BELL_OURS_MS) == 1,
+              "bell ours: the last millisecond inside the window is still muted");
+        CHECK(bell_is_ours(1000 + BELL_OURS_MS, 1000, BELL_OURS_MS) == 0,
+              "bell ours: at the window the mute is over — the same EXCLUSIVE boundary bell_strength() uses, so "
+              "the two time rules cannot disagree about what 'within the window' means");
+        CHECK(bell_is_ours(1000 + BELL_OURS_MS + 30000, 1000, BELL_OURS_MS) == 0,
+              "bell ours: a bell long after the click belongs to whatever the user did next, and it flashes");
+        CHECK(bell_is_ours(999, 1000, BELL_OURS_MS) == 0,
+              "bell ours: a clock that went backwards mutes nothing — a stamp read as being in the future would "
+              "otherwise mute the session forever");
+        CHECK(bell_is_ours(1500, -5, BELL_OURS_MS) == 0, "bell ours: a negative stamp is no stamp");
+        CHECK(bell_is_ours(1000, 1000, 0) == 0, "bell ours: a window of 0 mutes nothing");
+        CHECK(bell_is_ours(1000, 1000, -10) == 0, "bell ours: a negative window mutes nothing either");
+        /* The window is the CALLER's, not a number baked into the answer: the same two timestamps give the
+           opposite verdict for two windows. This is what kills a definition that ignores its argument. */
+        CHECK(bell_is_ours(1300, 1000, 500) == 1 && bell_is_ours(1300, 1000, 100) == 0,
+              "bell ours: 300 ms after the presses — muted for a 500 ms window, flashing for a 100 ms one, so "
+              "the window really is the argument and not a constant");
+        CHECK(bell_is_ours(1300, 1000, BELL_OURS_MS) == (BELL_OURS_MS > 300 ? 1 : 0),
+              "bell ours: the header's own window answers consistently with a hand-picked one");
+        CHECK(BELL_OURS_MS >= 50 && BELL_OURS_MS <= 1000,
+              "bell ours: the window sits orders of magnitude above the measured 0-1 ms reply and below what a "
+              "person can type after a click — it cannot be tuned into a permanent mute");
+
+        /* The mute is a decision about the PICTURE, not about the model: the same byte still rings. If this
+           ever stopped ringing, a hidden session would lose its tab-bar `*` too, and that mark is the only way
+           a bell in an unseen session is findable at all. */
+        term_destroy(&T);
+        term_init(&T, 10, 20, 100);
+        T.bell_rang = 0;
+        feed("\x07");
+        CHECK(T.bell_rang == 1,
+              "bell ours: the BEL itself is still recorded — what is skipped is the flash, not the event");
+        T.bell_rang = 0;
+
+        /* A reused slot must not inherit the previous session's stamp: close a tab, open one in its place, and
+           the new session's first real bell has to flash. mux_close() shifts the array, so this is about the
+           slot AND about the shift. */
+        Mux MX4;
+        mux_init(&MX4, 4);
+        int s0 = mux_open(&MX4, 6, 20, 50);
+        int s1 = mux_open(&MX4, 6, 20, 50);
+        CHECK(s0 == 0 && s1 == 1, "bell ours: two tabs to exercise the slot and the shift");
+        MX4.tab[s1].synth_ms = 12345;
+        MX4.tab[s0].synth_ms = 23456;
+        mux_close(&MX4, s0);            /* tab 1 shifts down into slot 0, carrying its stamp */
+        CHECK(mux_count(&MX4) == 1 && MX4.tab[0].synth_ms == 12345,
+              "bell ours: a stamp travels with its Tab when the array shifts — the session that clicked keeps "
+              "its own mute, not the slot it happens to sit in");
+        mux_close(&MX4, 0);
+        int s2 = mux_open(&MX4, 6, 20, 50);
+        CHECK(mux_count(&MX4) == 1 && MX4.tab[s2].synth_ms == 0,
+              "bell ours: a reused slot starts with no stamp — a stale one would mute the new session's first "
+              "real bell");
+        mux_close(&MX4, 0);
+    }
+
     /* --- emoji grapheme clusters + wide emoji (color emoji support) --- */
     term_destroy(&T);
     term_init(&T, 10, 20, 100);

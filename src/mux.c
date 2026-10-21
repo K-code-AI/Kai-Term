@@ -70,8 +70,10 @@ int mux_open(Mux *m, int rows, int cols, int scrollback)
     t->int_dead = 0;
     t->int_gen = 0;        /* matches the fresh Term's shell_int_gen = 0: nothing announced yet */
     /* Same rule for the visual bell: a reused slot must not inherit the previous session's ring, or a new tab
-       could come up mid-flash of a BEL that belonged to a shell that is already gone. */
+       could come up mid-flash of a BEL that belonged to a shell that is already gone. The click-synthesis stamp
+       goes the same way: a stale stamp would mute the new session's first real bell. */
     t->bell_ms = 0;
+    t->synth_ms = 0;
     m->active = i;      /* a new tab is the one the user is looking at */
     return i;
 }

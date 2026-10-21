@@ -25,10 +25,10 @@ working by the user 2026-10-19 (s107's feature), so the theme import carries no 
 confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
 with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-20 (s127, from `make clean`, on the tree that added the visual bell): `make -j8` exit 0 with
-**0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
-**0 warning lines**; `./bin/test_vt` **1498 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
-`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **555 checks, 0 failures**; `make asan` exit 0 with
+Re-measured 2026-10-20 (s128, from `make clean`, on the tree that stopped the click-caused bell flash): `make -j8`
+exit 0 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0
+with **0 warning lines**; `./bin/test_vt` **1516 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **561 checks, 0 failures**; `make asan` exit 0 with
 the same four counts, **0 warning lines** and no LeakSanitizer/UBSan report. `sh tests/cli_test.sh` with
 `KAI_TERM_TEST_NO_WINDOW=1` reports **CLI: 99 checks, 0 failures, 13 skipped** — the 13 are the windowed group,
 which was last run for real in s124 (**CLI: 149 checks, 0 failures, 0 skipped**, twice). That group maps ~15 real
@@ -57,6 +57,37 @@ The full investigation of each — the probes, the wrong theories, the measureme
 Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
 the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**A click inside `less` flashed the pane, and a failed search in `less` flashed nothing (2026-10-20, s128 — one
+user report, two halves, only one of them a bug).** The report, verbatim: *"the bell feature doesn't work
+properly, Failling a search with less trigger no flash. while it should. But clicking the terminal when "less"
+is active makes it flash. while it shouldn't"*.
+
+*The flash that should not happen.* Cause in one line: `click_moves_cursor` answers a click in a program that owns
+its screen by synthesizing cursor-key presses measured from the model's cursor, and `less` keeps that cursor on its
+**status line** (measured: row 23 of 24, column 39 with `LESS=-M`) — so a click anywhere in its text area is "press
+Up N times", and at the top of the file that is exactly the scroll-before-the-beginning `less` bells for; the BEL
+arrives 0-1 ms after Kai-Term's own write, and the pane washed for a complaint about Kai-Term's typing. Fix: one
+rule, program-agnostic — `bell_is_ours(now, synth_ms, BELL_OURS_MS)` (src/vt.c, next to `bell_strength()`) answers
+whether a BEL is the answer to keystrokes Kai-Term synthesized for a click, `main.c` stamps the moment on that
+session's `Tab` where it sends the presses, and the BEL hand-off asks before it flashes. The parser still records
+the BEL (the event is real; only the picture changes), a reused `Tab` slot clears the stamp, and the **wheel** path
+is deliberately not stamped — there the user asked to scroll, so "there is nothing further" is addressed to them.
+What keeps it out: a 15-check table for the decision in `tests/test_vt.c` (never stamped, the measured 1 ms lag,
+the exclusive boundary it shares with `bell_strength()`, a clock that went backwards, a window of 0, and the window
+being the caller's argument rather than a constant), a mux check that a reused slot starts un-stamped, and six
+source scans in `tests/test_render.c` for the `main.c` wiring no test binary links. `.scratch/s128/mutate.py`:
+**18 mutants, 16 KILLED**, the two survivors being the control and one guard no input can reach; the
+feature-absent tree (`bell_is_ours` answering 0, i.e. the reported bug back) fails **4** checks.
+
+*The flash that does not happen is not a bug, and was measured rather than argued.* `less` sends **no `0x07` at
+all** for a failed search: `.scratch/s128/bellprobe4 search` runs the real `less` 704 in a real pty with
+`TERM=xterm-256color` and drains until 400 ms of silence (an earlier probe stopped at the first `EAGAIN` and could
+have missed a late BEL), across six `$LESS` values including the user's own `-R -M --shift 5` — every one answers
+`/zzzzz`, `n` and `/[` with **0 BEL bytes and 0 parser rings** and the bottom row reading `Pattern not found:
+zzzzz  (press RETURN)`. What `less` does bell for, and what Kai-Term does flash for, is an unknown command, `Up`
+at the top of the file and `Down` at the end (1 byte, 1 ring each) — and with `LESS=-q`/`-Q` those bells are gone,
+which a terminal cannot undo. README said `less`/`man` bell for a failed search; it now says what they bell for.
 
 **A wrapped sentence in the close-confirmation box could drop a character and start the next line mid-character
 (2026-10-20, s124 — caught by the mutant harness before it ever shipped).** No user saw it: the box it lives in was
@@ -461,6 +492,12 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   rang washes. The rule is `mux_bell_live()` in `src/mux.c` (15 checks in `tests/test_vt.c`); it lives there
   because it used to sit in `main.c`, which no test binary links, and a mutant that scanned every TAB instead of
   every PANE then survived every check in the tree (s127).
+- **A `BEL` that answers the cursor keys a click became is not flashed** (s128). Inside a full-screen program that
+  never asked for the mouse, a click is answered by synthesizing cursor-key presses; a program that cannot honour
+  one (`less` at the top of its file, asked to scroll before the beginning) rings, and that bell is about
+  Kai-Term's own typing. The window is `BELL_OURS_MS` (250 ms) measured against a reply that arrives 0-1 ms after
+  the write, the rule is `bell_is_ours()` in `src/vt.c`, and the parser still records the `BEL` either way. The
+  WHEEL keeps its bell: there you asked to scroll, so "there is nothing further" is addressed to you.
 - **The flash is one quad UNDER the text**, so a line stays readable while it fades, and it never touches the
   window's margin — the margin is the paper colour (s101), so a margin-only flash would read as a smaller
   rectangle inside the terminal. The colour is the paper mixed `BELL_MIX_MAX` (25 %) toward the ink at full

@@ -607,6 +607,37 @@ static void group_source_wiring(void)
     CHECK(src_word_count("src/mux.c", "bell_ms") == 2,
           "src/mux.c names the ring time twice and only twice: mux_open() clears a reused slot (a new tab cannot "
           "inherit a dead session's bell) and mux_bell_live() reads it");
+    /* ---- the bell a click caused: main.c asks one decision, and stamps one moment (s128) -------
+       The user's report: "clicking the terminal when 'less' is active makes it flash. while it shouldn't".
+       Measured (.scratch/s128/bellprobe4): a click in `less` becomes Up presses, `less` cannot scroll before the
+       beginning of its file, and its BEL arrives 0-1 ms later. The decision itself — bell_is_ours() — is checked
+       as a table in tests/test_vt.c; what these scans pin is that main.c consults it, that the stamp exists on
+       BOTH sides of the pair, and that the WHEEL path stays unstamped (there the user asked to scroll, so "there
+       is nothing further" is a message addressed to them). Counts measured on the wired tree with
+       .scratch/s128/scancount.py — re-measure, do not copy. */
+    CHECK(src_word_count("src/main.c", "bell_is_ours") == 1,
+          "src/main.c asks the mute decision exactly once, where a BEL becomes a flash — one owner for the rule "
+          "that Kai-Term does not flash for its own typing");
+    CHECK(src_call_passes_arg("src/main.c", "bell_is_ours", "BELL_OURS_MS") == 1,
+          "the call passes the header's window, not a literal — the number is measured (0-1 ms reply) and pinned "
+          "by a check, so a second copy could silently disagree with it");
+    CHECK(src_word_count("src/main.c", "synth_ms") == 2,
+          "the stamp is written once (the click that became keystrokes) and read once (the BEL hand-off) — THREE "
+          "would mean the wheel path stamps too, which is the deliberate other half of the rule, and ONE would "
+          "mean a mute that nothing sets or nothing consults");
+    CHECK(src_word_count("src/vt.c", "bell_is_ours") == 1 && src_word_count("src/vt.c", "BELL_OURS_MS") == 0,
+          "src/vt.c defines the decision once and never names the window itself: the length of a mute is the "
+          "caller's, exactly like mux_bell_live()'s duration — and the parser still records every BEL either way");
+    CHECK(src_word_count("src/mux.c", "synth_ms") == 1,
+          "src/mux.c clears the stamp for a reused slot, so a new tab cannot inherit a closed session's mute and "
+          "lose its first real bell");
+    /* Which session gets the stamp matters: the mute is per session, and the session that was clicked is the one
+       whose Tab mux_cur() returns — the same one cur_term() handed the keystrokes to. Two scans pin the pair;
+       a mutant that stamps mux.tab[0] instead breaks the second. */
+    CHECK(src_sub_count("src/main.c", "Tab *st = mux_cur(&mux);") == 1
+          && src_sub_count("src/main.c", "st->synth_ms") == 1,
+          "the stamp is written through the CURRENT session's Tab — the one the click sent its presses to, not a "
+          "slot index that would mute whichever tab happens to be first");
     /* The one link a headless test cannot execute: main() handing the configured value to the renderer and
        to the band's painter. The call string includes the '&' so a COMMENT that merely names the function
        (main.c has two) cannot start the scan. */

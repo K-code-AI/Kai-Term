@@ -25,8 +25,9 @@ Kai-Term is currently a working prototype. It builds cleanly, runs a shell, and 
   (`ESC[1 q` block, `ESC[3 q` bar, `ESC[5 q` underline) — what `vim`, `neovim` and `fish` do — and can ask
   for a steady cursor, but it cannot switch the blink back on once you turned it off.
 - **A bell you can see** — Kai-Term has no audio, so a `BEL` is drawn instead: that session's field washes
-  briefly toward the text colour and fades out. It is how `less` and `man` say a search found nothing, how
-  `sudo` says the password was wrong, how the shell says a `Tab` is ambiguous and how `vim` says no. In
+  briefly toward the text colour and fades out. It is how `less` and `man` say a command was unknown or that
+  there is nothing further to scroll to, how `sudo` says the password was wrong, how the shell says a `Tab` is
+  ambiguous and how `vim` says no. In
   side-by-side view only the pane whose program rang washes, and a session you are not looking at is marked
   by the tab bar's `*` instead — `bell = off` draws nothing at all.
 - **Scrollback** — Retains history (2000 lines by default) and scrolls with the mouse wheel or the
@@ -398,6 +399,11 @@ Two things worth knowing, because they decide what you will see:
   before.
 - **A click past the end of a line lands at the end of that line**, not on the row below, and a click in the
   empty space of a blank row lands at its start.
+- **A program that cannot honour one of those presses answers with a `BEL`, and Kai-Term does not flash for
+  it.** A pager like `less` keeps its cursor on its own status line, so a click in its text area becomes "press
+  Up N times"; at the top of the file that is a scroll before the beginning, which `less` reports with a bell.
+  Kai-Term typed the keys, so that bell is not a message to you and the pane stays as it is. The wheel keeps
+  its bell: there you asked to scroll, and "there is nothing further" is addressed to you.
 
 A program that *did* ask for the mouse — `vim`, `htop`, `tmux`, `nano --mouse` — is untouched by all of this:
 it keeps receiving mouse reports, including the wheel, and Kai-Term sends it the wheel code those programs
@@ -499,7 +505,7 @@ the program.
 | `click_moves_cursor` | `1` | In that same state, a left click that does not drag walks the program's own cursor to the clicked cell (`0` means a click only ever selects text). A drag always selects, and `Shift` + click always selects |
 | `click_selects_word` | `1` | A second left click in the same cell selects the **word** under the pointer, a third the whole **line** (`0` leaves every click selecting one cell, extended by dragging). A word is everything up to the next space with punctuation at the END cut off, so double-clicking `file.txt,` selects `file.txt`; punctuation at the START stays, so `/etc/passwd` comes over whole. The line a triple click takes is the line the program wrote, so one that wrapped at the window edge is selected in every row it occupies. A word or line gesture never sends the program cursor keys, so it selects inside `nano` and `less` instead of walking their cursor twice |
 | `middle_click_paste` | `0` | `1` makes a **middle click in the terminal area** paste the clipboard (`Ctrl`+`Shift`+`V` does that either way). Off by default, and off it changes nothing: a middle click in the terminal area does nothing at all. It never changes what a middle click means anywhere else — on a tab in the bar it still **closes** that session (asking first if something is running), in the file-manager band it still picks a file, and a program that asked for the mouse (`nano --mouse`, vim, `less`, tmux) keeps its middle button because it asked for it |
-| `bell` | `visual` | What a `BEL` does. `visual` washes that session's field briefly toward the text colour and fades it out; `off` draws nothing. Kai-Term has no audio, so this is the only bell there is — and `BEL` is how `readline` (an ambiguous Tab), `less`/`man` (a failed search), `sudo` (a wrong password) and vim (an error) say "no". The flash covers that session's own pane (in side-by-side view only the pane whose program rings flashes), sits **under** the text so the line stays readable, and never touches the window's margin. `1`/`on` and `0`/`off` are accepted spellings; any other word warns and keeps the current value |
+| `bell` | `visual` | What a `BEL` does. `visual` washes that session's field briefly toward the text colour and fades it out; `off` draws nothing. Kai-Term has no audio, so this is the only bell there is — and `BEL` is how `readline` (an ambiguous Tab), `less`/`man` (an unknown command, or scrolling past the end of the file), `sudo` (a wrong password) and vim (an error) say "no". A `BEL` that answers the cursor-key presses a click became is not flashed — Kai-Term caused it. The flash covers that session's own pane (in side-by-side view only the pane whose program rings flashes), sits **under** the text so the line stays readable, and never touches the window's margin. `1`/`on` and `0`/`off` are accepted spellings; any other word warns and keeps the current value |
 | `cursor_blink` | `1000` | Cursor blink half-period in ms: the bar is drawn for this long, then hidden for this long (`0` = steady). Your setting is the ceiling — a program can ask for a steady cursor with DECSCUSR but cannot switch the blink back on. Blinking also stops while the window has no focus (clamped to 0–10000) |
 | `cursor_width` | `2` | Pixels wide the bar cursor is — and how tall an underline is, when a program asks for one. Never wider than a third of a cell, so a large value cannot turn the bar back into a block (clamped to 1–64) |
 | `repeat_delay` | `300` | Milliseconds a key must be held before it starts repeating (`0` disables repeating) |

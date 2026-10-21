@@ -886,6 +886,25 @@ int bell_strength(long long now_ms, long long rang_ms, int dur_ms)
     return (int)((1000 * (dur_ms - elapsed)) / dur_ms);
 }
 
+/* Did this BEL come from the program answering keystrokes Kai-Term synthesized for a click? See the header:
+   the rule is that Kai-Term does not flash for a complaint about its own typing, and the window is measured
+   (the reply comes back 0-1 ms after the write; BELL_OURS_MS gives it two orders of magnitude of headroom and
+   stays far under what a person can type after a click). Every early return is a case a check names:
+   * window <= 0 — a caller that wants no mute gets none (and the division-free comparison below is skipped).
+   * synth <= 0 — this session never had a click turned into keystrokes; 0 is what a fresh Tab holds, so the
+     ordinary case is one comparison, not a branch chain.
+   * now < synth — the clock went backwards, or a stale stamp outlives the moment; muting on that reading is how
+     a session would go permanently mute.
+   * elapsed >= window — the presses are old news; a BEL now belongs to something the user did.
+   The boundary is EXCLUSIVE at the window, exactly like bell_strength()'s deadline: at `elapsed == window` the
+   mute is over, so the two time rules cannot disagree about what "within the window" means. */
+int bell_is_ours(long long now_ms, long long synth_ms, int window_ms)
+{
+    if (window_ms <= 0 || synth_ms <= 0 || now_ms < synth_ms)
+        return 0;
+    return now_ms - synth_ms < (long long)window_ms;
+}
+
 /* The wheel code an application that asked for the mouse expects. See the header: 4/5 (which Kai-Term sent
    until s96) is read by ncurses as button 1, so the wheel did nothing in vim, htop, tmux and `nano --mouse`;
    64/65 is what every other terminal sends and what measurably scrolls those programs. */

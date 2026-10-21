@@ -2747,6 +2747,17 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                 if (n > 0) {
                     term_select_clear(cur_term());   /* the cursor moved; leave no stray highlight */
                     send_str(seq, (size_t)n);
+                    /* Stamp the moment on THIS session's Tab: a program that cannot honour one of these presses
+                       answers with a BEL (`less` at the top of its file, asked to scroll before the beginning —
+                       measured 0-1 ms later, .scratch/s128/bellprobe4), and the pty-read path below asks whether a
+                       BEL is the answer to these very presses before it turns one into a flash, so the pane never
+                       washes for a complaint about Kai-Term's own typing. The wheel path is NOT stamped: there the
+                       user asked to scroll. (The token naming that decision is kept out of this comment on
+                       purpose: the scan that pins the call reads main.c top-down with strstr and does not skip
+                       comments, so a comment naming it would start the scan here — the s126 harness artifact.) */
+                    Tab *st = mux_cur(&mux);
+                    if (st)
+                        st->synth_ms = (long long)mono_ms();
                     klog(L_DEBUG, "mouse: click at (%d,%d) became %d cursor key press(es) for the "
                                   "application", col, row, n / 3);
                     W.dirty = 1;
@@ -3874,11 +3885,19 @@ int main(int argc, char **argv)
            no field to flash, and the bar's `*` (set just below, by the same read) is how the user finds it. */
                         if (tb->term.bell_rang) {
                             tb->term.bell_rang = 0;
-                            tb->bell_ms = (long long)mono_ms();
-                            if (layout_pane_of_tab(&g_layout, ti) >= 0)
-                                W.dirty = 1;
-                            klog(L_DEBUG, "bell: session %d/%d rang%s", ti + 1, mux_count(&mux),
-                                 conf.bell == BELL_VISUAL ? " — its pane flashes" : " (bell = off: nothing drawn)");
+                            if (bell_is_ours((long long)mono_ms(), tb->synth_ms, BELL_OURS_MS)) {
+                                /* The program rang this at Kai-Term's request: a click became cursor-key
+                                   presses and this is the answer to them. The BEL is real and the flag is
+                                   cleared either way — only the flash is skipped. */
+                                klog(L_DEBUG, "bell: session %d/%d rang, but that answers the cursor keys a "
+                                     "click became — no flash", ti + 1, mux_count(&mux));
+                            } else {
+                                tb->bell_ms = (long long)mono_ms();
+                                if (layout_pane_of_tab(&g_layout, ti) >= 0)
+                                    W.dirty = 1;
+                                klog(L_DEBUG, "bell: session %d/%d rang%s", ti + 1, mux_count(&mux),
+                                     conf.bell == BELL_VISUAL ? " — its pane flashes" : " (bell = off: nothing drawn)");
+                            }
                         }
                         if (ti == mux_active(&mux) || layout_pane_of_tab(&g_layout, ti) >= 0) {
                             /* The visible session, or one drawn NEXT TO it in side-by-side view: the picture

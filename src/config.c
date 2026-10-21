@@ -69,7 +69,8 @@ void config_default(Config *c)
        it. Nothing about a middle click changes until this is turned on. */
     c->middle_click_paste = 0;
     /* The bell is VISUAL by default. Kai-Term has no audio, so a BEL that is not drawn is a BEL nobody hears:
-       readline's ambiguous completion, `less` on a failed search and sudo on a wrong password all say "no" with
+       readline's ambiguous completion, `less` on an unknown command or a scroll past the end of its file, and sudo
+       on a wrong password all say "no" with
        a BEL and would otherwise say nothing at all. The user's answer to question 6 was "on by default". */
     c->bell = BELL_VISUAL;
     /* The cursor: a thin bar (there is no `cursor_style` key — the user asked for one look) that is on for
