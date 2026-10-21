@@ -1682,7 +1682,7 @@ typedef struct Render {
     long long bell_ms[TAB_MAX];
     /* The address the pointer is over, as the frame sees it: `hover_tab` is the TAB whose pane carries the
        underline (-1 = none), `hover_span` is the run in that session's VIEWPORT rows and columns — the
-       space render_draw()'s passes walk. Window state copied per frame, never Term state: it must not
+       space render_draw() paints in. Window state copied per frame, never Term state: it must not
        survive a tab switch, a scroll or a resize it has no business surviving. */
     int hover_tab;
     UrlSpan hover_span;

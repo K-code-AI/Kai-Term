@@ -1,8 +1,7 @@
-/* EGL + OpenGL 2.x, one textured-quad batch per frame. A frame is whatever layout.c says it is: the tab bar
- * strip, then one Cell grid per pane, plus the file-manager band's two grids, drawn by the same passes.
- * Two vertex batches with one draw per application picture between them: GL blending is never enabled, so
- * draw order is the only way to put a picture over the cell backgrounds and under the text. Hardware
- * instancing is used when the driver advertises it; either way it is a single draw call per batch. */
+/* EGL + OpenGL 2.x. A frame is whatever layout.c says it is: the tab bar strip, one Cell grid per
+ * pane, and the file-manager band's two grids, all drawn the same way. GL blending is never enabled,
+ * so draw order alone puts a picture over the cell backgrounds and under the text — hence two vertex
+ * batches, with one draw per application picture between them. */
 /* GL/glext.h only declares the GL 2.x entry points when GL_GLEXT_PROTOTYPES is
    set; must be defined before any GL header is included. */
 #define GL_GLEXT_PROTOTYPES 1
@@ -704,10 +703,9 @@ void render_cursor(int style, int visible, int band_on, int cell_w, int cell_h, 
         style = CUR_BAR;
 
     if (style == CUR_BLOCK) {
-        /* Today's behaviour, unchanged: the block is the cell's own background, so a selection band that
-           covers this cell paints over it — pass 1 must therefore step aside exactly where pass 2 paints
-           (the two must match, or a selection ending on an empty cursor cell erases the cursor without
-           replacing it), and the ink is tinted with the cursor colour instead of inverted. */
+        /* The block IS the cell's own background, so a band that covers this cell paints over it: the
+           background step has to skip exactly the cells the band step paints, or a selection ending on
+           an empty cursor cell erases the cursor without replacing it. The ink is tinted, not inverted. */
         o->block  = band_on ? 0 : 1;
         o->invert = band_on ? 0 : 1;
         o->tint   = band_on ? 1 : 0;
@@ -860,7 +858,7 @@ static void emit_border(float **vp, float x, float y, float w, float h, float t,
               white, bg, 0.0f, 0.0f, 0.0f);
 }
 
-/* Everything one pane needs in all three passes, computed once per pane per frame. */
+/* Everything one pane needs to draw, computed once per pane per frame. */
 typedef struct {
     Term *t;
     Grid *g;
@@ -982,7 +980,7 @@ static int draw_images(Render *r, Term *t, const PaneGeom *pg, const PaneDraw *p
 
 /* ---------- the file-manager band ---------- */
 
-/* One of the two band panes, in the shape the passes want. which: 0 = the browser, 1 = the preview.
+/* The rectangle of one of the two band panes. which: 0 = the browser, 1 = the preview.
    Returns 0 when that pane is not part of this frame (band off, preview toggled away). */
 static int fm_pane_rect(const FmGeom *fg, int which, int *x, int *y, int *w, int *h)
 {
@@ -1112,8 +1110,8 @@ static int draw_fm_preview(Render *r, const FileMgr *fm, const Layout *lay, floa
     float v0 = (ct - y0) / (float)px_h, v1 = (cb - y0) / (float)px_h;
 
     /* No GL blending, so the quad composites against its own copy of the background under it: the
-       preview pane's cell there, which pass 1 already painted. fm.c leaves the cells under a picture
-       blank on purpose so the picture sits on the pane background. */
+       preview pane's cell there, which the cell-background step already painted. fm.c leaves the cells
+       under a picture blank on purpose so the picture sits on the pane background. */
     int crow = iclamp_(row, 0, fm->prev.rows - 1);
     int ccol = iclamp_(col, 0, fm->prev.cols - 1);
     const Cell *anchor = &fm->prev.cell[(size_t)crow * (size_t)fm->prev.cols + (size_t)ccol];
@@ -1186,14 +1184,14 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     int nquads = 0;
     float bg[4], fg[4];
 
-    /* Three passes, back to front, over EVERY pane: backgrounds, selection bands, glyphs. All backgrounds go
-       before any glyph because a wide glyph's quad spans into the next cell. Passes 1 and 2+3 are two draw
-       calls with the pictures drawn between them, since a picture must be over the background and under
+    /* Back to front over EVERY pane: cell backgrounds, selection bands, cursor and hover quads, glyphs.
+       All backgrounds go before any glyph because a wide glyph's quad spans into the next cell. The two
+       draw calls are split there so the application pictures land between them: over the paper, under
        the text. */
 
-    /* Pass 1: cell backgrounds (always, so every pane is fully painted). An unselected BLOCK cursor paints
-       its block here; a bar or an underline does not — it is its own quad in batch B (see render_cursor).
-       A selected cursor cell keeps its own background either way (the band in pass 2 marks it). */
+    /* Cell backgrounds (always, so every pane is fully painted). An unselected BLOCK cursor paints its
+       block here; a bar or an underline does not — it is its own quad in batch B (see render_cursor).
+       A selected cursor cell keeps its own background either way: the selection band marks it. */
     for (int p = 0; p < lay->npane; p++) {
         Term *t = pane_term(terms, lay->pane[p].tab);
         if (!t)
@@ -1216,9 +1214,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                     if (pd.sel_on) {
                         float h0, hw;
                         sel_band_pixels(&pd.selspan, pd.g->cols, x, y, cw, &h0, &hw);
-                        /* must match pass 2 exactly: the block cursor is only hidden where a band is
-                           actually painted, otherwise a selection covering the (empty) cursor cell would
-                           erase the cursor without replacing it with a highlight */
+                        /* must match the selection bands exactly: the block cursor is hidden
+                           only where a band is actually painted, otherwise a selection covering
+                           the (empty) cursor cell would erase the cursor without replacing it */
                         hl_on = hw > 0.0f && term_cell_highlightable(t, x, y);
                     }
                     CursorDraw cd;
@@ -1237,10 +1235,10 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
-    /* Pass 1b: the visual bell — at most one quad per pane, over that pane's cell backgrounds and under
-       everything batch B draws, so the text stays readable while the field fades. Per PANE, not per window:
-       only the pane whose session rang washes out. The rect is the pane's own, so the leftover pixels at
-       its right and bottom flash with the cells. */
+    /* The visual bell — at most one quad per pane, over that pane's cell backgrounds and under
+       everything batch B draws, so the text stays readable while the field fades. Per PANE, not
+       per window: only the pane whose session rang washes out, and the whole pane rect including
+       its leftover pixels at the right and bottom. */
     for (int p = 0; p < lay->npane; p++) {
         int tab = lay->pane[p].tab;
         if (tab < 0 || tab >= TAB_MAX || !pane_term(terms, tab))
@@ -1260,7 +1258,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         nquads++;
     }
 
-    /* The file-manager band, pass 1: cell backgrounds. fm.c painted these grids with the CONFIGURED
+    /* The file-manager band's cell backgrounds. fm.c painted these grids with the CONFIGURED
        fg/bg plus its own accents, so the band sits inside the terminal's palette. No cursor and no
        selection live here, which is all that distinguishes a band pane from a session pane. */
     if (fm && fm->on) {
@@ -1324,7 +1322,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
        and everything after this point (bands, glyphs, labels, border) goes on top of the pictures. */
     int nq_bg = nquads;
 
-    /* Pass 2: selection bands, over the background and under the glyphs, drawn for every covered cell that holds
+    /* Selection bands, over the background and under the glyphs, drawn for every covered cell that holds
        something — including the cursor cell — so the highlight always matches what term_selection_text()
        copies. hl0 is already an absolute pixel x; do NOT add px again. */
     for (int p = 0; p < lay->npane; p++) {
@@ -1354,9 +1352,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
-    /* Pass 2b: the bar/underline cursor, after the selection bands and before the glyphs: over the bands so a bar
+    /* The bar/underline cursor, after the selection bands and before the glyphs: over the bands so a bar
        stays visible where a selection ends on the cursor cell, under the glyphs so a character is never
-       hidden behind its own cursor. A BLOCK cursor is the cell's own background from pass 1. */
+       hidden behind its own cursor. A BLOCK cursor is a cell background instead. */
     for (int p = 0; p < lay->npane; p++) {
         Term *t = pane_term(terms, lay->pane[p].tab);
         if (!t)
@@ -1390,10 +1388,10 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         nquads++;
     }
 
-    /* Pass 2c: the hover underline — one quad per cell of the address the pointer is on, in the ONE pane the
-       pointer is over (-1 draws nothing). Same place in the order as pass 2b, so the line is over the paper
+    /* The hover underline — one quad per cell of the address the pointer is on, in the ONE pane the
+       pointer is over (-1 draws nothing). Drawn where the cursor quad is, so the line is over the paper
        and a glyph is never hidden behind it. The colour is the CELL's own ink, so an address printed in
-       blue underlines in blue. Whether the underline is DESERVED is decided before this pass is filled. */
+       blue underlines in blue. */
     for (int p = 0; p < lay->npane; p++) {
         if (r->hover_tab < 0 || lay->pane[p].tab != r->hover_tab)
             continue;
@@ -1427,7 +1425,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                     continue;                /* nothing drawn there; a wide cell is never part of a URL run */
                 uint32_t ink = c->fg;
                 if (c->attr & ATTR_INVERSE)
-                    ink = c->bg;             /* the swap pass 3 makes, so the line matches the ink on screen */
+                    ink = c->bg;             /* the swap the glyph quads make, so the ink matches */
                 col2f(ink, fg);
                 fg[3] *= r->opacity;         /* a decoration quad, exactly like the cursor quad above */
                 float px = pd.gx + x * cw + (float)hd.x;
@@ -1440,7 +1438,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
-    /* Pass 3: glyph quads (topmost), per pane. Continuation cells of a wide char are skipped (the wide
+    /* Glyph quads (topmost), per pane. Continuation cells of a wide char are skipped (the wide
        glyph is drawn from its anchor cell). The glyph quad carries the cell's own background; the
        fragment shader picks the selection colour per-fragment where the glyph's pixel x falls inside
        [band0,band1), giving true sub-glyph selection without GL blending. */
@@ -1477,10 +1475,10 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                                 x == t->cx && y == t->cy;
                 uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? chrome.cursor : chrome.cursor_off;
                 if (is_cursor) {
-                    /* The same decision pass 1 and pass 2b made, so the three of them cannot disagree.
-                       A block inverts the ink (and tints it when a band covers the cell); a bar or an
-                       underline leaves the ink exactly as the cell's pen set it, because the bar is a
-                       separate quad and has nothing to invert. */
+                    /* the same decision the cell-background and cursor-quad steps made, so the three
+                       cannot disagree. A block inverts the ink (and tints it when a band covers the
+                       cell); a bar or an underline leaves the ink as the cell's pen set it, because
+                       the bar is a separate quad and has nothing to invert. */
                     int phase = (lay->pane[p].tab == lay->active_tab) ? r->cursor_on : 1;
                     CursorDraw cd;
                     render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch, r->cursor_width,
@@ -1508,7 +1506,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
-    /* The file-manager band, pass 3: glyphs. Same helper, same font, same emoji rules — a file name can
+    /* The file-manager band's glyphs. Same helper, same font, same emoji rules — a file name can
        contain any codepoint, and fm.c already gave a wide one the ATTR_WIDE continuation cell vt.c
        uses, so the wide/cluster logic above applies to it unchanged. No selection band here (the file
        manager has no text selection), hence band0 == band1 == 0. */
@@ -1526,7 +1524,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                     if (!c->ch || (c->attr & ATTR_WIDE))
                         continue;
                     uint32_t cbg = c->bg, cfg = c->fg;
-                    if (c->attr & ATTR_INVERSE) {   /* same swap pass 1 applies, so an inverted cell
+                    if (c->attr & ATTR_INVERSE) {   /* same swap the cell backgrounds apply, so an inverted cell
                                                        cannot get ink over ink */
                         uint32_t tmp = cbg;
                         cbg = cfg;
@@ -1701,8 +1699,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
-    /* Upload BOTH atlases here, after the quads were emitted and before the draw: the glyph lookups run inside
-       pass 3, so a glyph shaped in THIS frame would otherwise be sampled before its texels exist. */
+    /* Upload BOTH atlases here, after the quads were emitted and before the draw: the glyph lookups run
+       while the glyph quads are emitted, so a glyph shaped in THIS frame would otherwise be sampled
+       before its texels exist. */
     if (f->atlas_dirty) {
         if (!f->atlas_tex)
             glGenTextures(1, &f->atlas_tex);
