@@ -140,8 +140,8 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
   `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — s137 IN PROGRESS: MAJOR comment cleanup across `src/` and `include/` (the user's request
-2026-10-21). No feature work. See the s137 task block.
+## Current Task — s138 IN PROGRESS: continue the comment cleanup (the user's request 2026-10-21, still going
+2026-10-22). No feature work. See the s137 task block for the rule and the method; s138's plan is below it.
 
 ### s137 task block — comments: self-explanatory code, 1-2 lines, no jargon
 
@@ -189,8 +189,18 @@ lines**, `test_vt` **1673/0**, `test_render` **617/0**, `test_fm` **384/0**, `db
 skipped** — the counts not moving is the proof no code changed. One code change was made in the header on purpose:
 `int wheel_sends_keys, click_moves_cursor;` became two declarations so each switch carries its own note (17 comment
 lines -> 9), and `BELL_FLASH_MS`/`BELL_MIX_MAX` gained trailing comments when the section essay shrank.
-**Remaining:** a second pass on `main.c` (1072 comment lines, 128 blocks of 4+) and `vt.c` (764, 72 blocks), then
-`tests/` (1,896 comment lines across the four C test files) if the user wants the suites cleaned too.
+**Remaining:** a second pass on `main.c` and `vt.c`, then `tests/` (1,896 comment lines across the four C test files)
+if the user wants the suites cleaned too.
+
+**s138 plan (2026-10-22).** The tree found at session start was 8 comment commits ahead of `origin/main` with a
+second pass on `main.c`/`vt.c` UNCOMMITTED across 8 files. Order of work: (1) re-measure that uncommitted pass before
+trusting it — both builds at 0 warning lines, the four headless suites at their unchanged counts, and
+`.scratch/cmpcode.py` (strip every comment with the real tokenizer, compare the remaining code lines with HEAD) to
+prove no code moved; (2) commit it; (3) keep going file by file — `main.c` and `vt.c` to a 3rd line average, the
+header's remaining 4+ blocks, and `render.c`'s `pass 1/2/3` wording, which is journal vocabulary in a source comment
+and reads as jargon to a newcomer (`.scratch/jargon.py` is the scanner); (4) re-measure and commit each group. Every
+commit is checked the same way: `cmpcode.py` says "code identical to HEAD", the suites print the SAME counts as
+before, and that equality is the proof no behaviour changed.
 
 **Tooling built for this (in `.scratch/`, not shipped):** `reblock.py` — a C tokenizer that finds comments (it skips
 string literals, so a shell `${X%/*}` inside a script constant is never mistaken for a comment) and replaces a block
@@ -2559,6 +2569,55 @@ numbers and the intermediate check counts are in git.
   No file of the shipped tree changed in s136 — documentation only, so no rebuild or suite re-run was owed; the
   doc-pinning checks in `tests/test_vt.c` read README/ISSUES/config templates, and AGENT.md is not one of the files
   they read, which is why this edit needs no re-measure to be honest about.
+- **2026-10-22, s138 — comment cleanup continues (in progress).** Found at session start: 8 comment commits ahead of
+  `origin/main`, and s137's second pass on `main.c`/`vt.c` UNCOMMITTED across 8 files. Re-measured it before trusting
+  it: both builds exit 0 / **0 warning lines**, `test_vt` **1673/0**, `dbg` **MODEL OK**, `test_fm` **384/0**,
+  `test_render` **617/0**, `CLI: 99/0, 13 skipped` — every count unchanged, and `.scratch/cmpcode.py` (strip comments
+  with the real tokenizer, compare the code lines with HEAD) says "code identical" for all eight. Committed as
+  `6ddac6c` (`main.c` 1072 -> 859, `vt.c` 764 -> 702, plus the session tags and "the user asked" prose out of
+  `config.c`, `fm.c`, `img.c`, `render.c`, `theme.c` and the header).
+  **`src/render.c` then lost its last jargon (`9390379`):** `.scratch/jargon.py` reported 18 lines there, all of them
+  the frame's pass numbering — `pass 1`, `pass 2b`, `pass 3`. That is the journal's vocabulary sitting in a source
+  file: it names a loop only for someone who already knows the loop's name, and it made the cross-references useless
+  ("must match pass 2 exactly" constrains nothing until the reader knows pass 2 is the band loop). Every one now names
+  what is drawn — cell backgrounds, selection bands, the cursor quad, the hover underline, the glyph quads — and the
+  two draw calls keep the names `batch A`/`batch B` because both are labelled at their draw site (`nq_bg`). The
+  header's "the space render_draw()'s passes walk" went the same way. `jargon.py` over the whole tree: **0 lines**.
+  Measured after: code identical to HEAD, both builds 0 warning lines, the four suites at **1673/0, MODEL OK,
+  384/0, 617/0**. `render.c` is 347 comment lines, average **2.10**.
+  **The header's 4+ blocks then went (`3cefa2a`): 1094 -> 1061 comment lines**, in three batches (`.scratch/hp1.py`,
+  `hp2.py`, `hp3.py`). What was cut is the restatement of the declaration below the comment; what stayed is the
+  invariant, the units/coordinate convention, the hazard and the protocol form. Side effect: lines over 108 columns
+  fell from 66 to 53, because the rewrite tool re-wraps to a width budget. Re-measured after: code identical to HEAD,
+  both builds 0 warning lines, **1673/0, MODEL OK, 384/0, 617/0, CLI 99/0 with 13 skipped**.
+  The tree ALSO carried an unrecorded in-progress pass on `main.c` (859 -> 839 comment lines). Re-measured it the same
+  way before trusting it — code identical to HEAD, both builds 0 warning lines, **1673/0, MODEL OK, 384/0, 617/0,
+  CLI 99/0 with 13 skipped** — and committed it as `9af042c`.
+  **Next:** a further pass on `main.c` (839 comment lines, avg 1.97; 107 blocks of 3, 24 of 4-5, 1 of 6) and `vt.c`
+  (702, avg 1.96; 83 of 3, 36 of 4-5, 4 of 6-9); `tests/` (1,896 lines in the four C test files) only if the user
+  asks for the suites cleaned too.
+  **`main.c`'s 4+ blocks then went (`8ee9bbc`): 839 -> 790 comment lines, average 1.85, no block left over 3 lines**
+  (`.scratch/m4a.py`). One comment was DELETED for being false rather than long: it told the reader not to name the
+  BEL-mute check in a comment because "the scan that pins this call reads main.c as plain text" — but
+  `src_word_count()` in `tests/test_render.c` tracks `/* */` and stops at `//`, so a comment can never move that
+  count. One fact moved instead of being cut: "for a name both files set, kai-term.bind wins" now sits on the
+  `config_load`/`config_load_binds` pair, where the order is what carries it. Re-measured: code identical to HEAD,
+  both builds 0 warning lines, **1673/0, MODEL OK, 384/0, 617/0, CLI 99/0 with 13 skipped**.
+  **`vt.c`'s 4+ blocks (`0088e55`): 702 -> 642 comment lines, average 1.79** (`.scratch/v8.py`, `v9.py`), and
+  **`render.c`'s (`8401d7f`): 347 -> 311, average 1.88** (`.scratch/rc2.py`). What survived in both is what the code
+  cannot show: the grid's row-slot diagram, the kitty APC sequence form, the vertex record's float layout, the GL 2.1
+  reason for `GL_LUMINANCE`, the "a quad's y is its BOTTOM edge measured UP" convention, and the hazards (a draw that
+  samples an unallocated texture faults inside libnvidia-eglcore; a swap that failed must not arm a frame callback).
+  What went: xterm's DECSCUSR shape table (the switch below spells it out), the UBSan anecdote in the base64 decoder,
+  the half-typed-command hazard at the input-line banner (the header states it beside `term_at_prompt()`), and every
+  sentence that restated the declaration under it. Re-measured after each: code identical to HEAD, both builds 0
+  warning lines, **1673/0, MODEL OK, 384/0, 617/0, CLI 99/0 with 13 skipped**.
+  **`jargon.py` now reports 2 lines tree-wide, and both are false positives** — "whatever the user asked to run" and
+  "there the user asked to scroll" are plain English, not journal vocabulary; the scanner's `the user asked` pattern
+  catches them. Do not "fix" them.
+  **Now in progress: the header's 51 remaining blocks of 4+ lines** (`src/` has 7 left: 6 in `vt.c` — the grid
+  diagram, the graphics-protocol banner, the APC channel, the clipboard-policy banner — and 1 in `fm.c`).
+  **Next after that:** `tests/` (1,896 lines in the four C test files) only if the user asks for the suites cleaned.
 
 ## Next Steps
 
