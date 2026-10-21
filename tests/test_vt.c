@@ -2740,6 +2740,219 @@ int main(void)
 #undef UC
         }
 
+        /* --- and the SAME table answers WHY, because a refusal that cannot be named cannot be
+           debugged. s131 shipped the gates as a chain of early returns and logged nothing for a refused
+           click; s132 got "it's not clickable" from the user and could not tell from any amount of
+           reading which gate fired. Each refusal is now a value, and the value has words. */
+        {
+            UrlClick c;
+#define UC(A, B, C, D, E, F, G) (memset(&c, 0, sizeof c), c.enabled = (A), c.released = (B), \
+            c.single = (C), c.no_drag = (D), c.shift = (E), c.app_owns_click = (F), \
+            c.url_found = (G), &c)
+            CHECK(url_refusal(UC(1, 1, 1, 1, 0, 0, 1)) == URL_REFUSE_NONE,
+                  "url/refuse: the good click is refused by nothing");
+            CHECK(url_refusal(UC(0, 1, 1, 1, 0, 0, 1)) == URL_REFUSE_OFF,
+                  "url/refuse: the switch names itself — the user turned it off, and the log can say so");
+            CHECK(url_refusal(UC(1, 0, 1, 1, 0, 0, 1)) == URL_REFUSE_NOT_RELEASE,
+                  "url/refuse: a press says it is a press, not that there is no address");
+            CHECK(url_refusal(UC(1, 1, 0, 1, 0, 0, 1)) == URL_REFUSE_GESTURE,
+                  "url/refuse: a double click reports the GESTURE it took instead — that is what the user "
+                  "did and it is not a failure");
+            CHECK(url_refusal(UC(1, 1, 1, 0, 0, 0, 1)) == URL_REFUSE_MOVED,
+                  "url/refuse: a pointer that changed cell reports that it MOVED — the one refusal a user "
+                  "cannot see, so the log has to say it");
+            CHECK(url_refusal(UC(1, 1, 1, 1, 1, 0, 1)) == URL_REFUSE_SHIFT,
+                  "url/refuse: Shift names itself");
+            CHECK(url_refusal(UC(1, 1, 1, 1, 0, 1, 1)) == URL_REFUSE_APP,
+                  "url/refuse: a full-screen program names itself — the answer to \"why won't it open in "
+                  "less\" is a sentence, not a guess");
+            CHECK(url_refusal(UC(1, 1, 1, 1, 0, 0, 0)) == URL_REFUSE_NO_ADDRESS,
+                  "url/refuse: no address under the pointer names itself");
+            CHECK(url_refusal(NULL) == URL_REFUSE_NO_ADDRESS,
+                  "url/refuse: a NULL decision is answered, not crashed");
+            /* The order is a decision: with several gates failing at once the report must be the one the
+               user caused first, and it must not depend on which flag happens to be read last. */
+            CHECK(url_refusal(UC(0, 0, 0, 0, 1, 1, 0)) == URL_REFUSE_OFF,
+                  "url/refuse: everything wrong at once reports the SWITCH, because that is the gate asked "
+                  "first and the one the user can change");
+            CHECK(url_refusal(UC(1, 1, 1, 0, 1, 0, 0)) == URL_REFUSE_MOVED,
+                  "url/refuse: a moved pointer outranks Shift and \"no address\" — the drag is what happened");
+            CHECK(url_refusal(UC(1, 1, 1, 1, 0, 1, 0)) == URL_REFUSE_APP,
+                  "url/refuse: a program that owns the click outranks \"no address\" — the scan was never "
+                  "the reason");
+            /* Two gates wrong at once, in every pair the tree can actually produce. Without these the
+               reported reason depends on the order the branches happen to be written in — s132's mutant
+               `gate_order_swapped` survived the first table because no row had single = 0 AND
+               app_owns_click = 1 together, which is exactly the case that decides which one is named. */
+            CHECK(url_refusal(UC(1, 1, 0, 1, 0, 1, 1)) == URL_REFUSE_GESTURE,
+                  "url/refuse: a second click IN a full-screen program reports the GESTURE — it is what the "
+                  "user did, and it is asked before the program-owns gate");
+            CHECK(url_refusal(UC(1, 1, 0, 0, 1, 0, 1)) == URL_REFUSE_GESTURE,
+                  "url/refuse: a second click after a move reports the GESTURE, not the move");
+            CHECK(url_refusal(UC(1, 1, 1, 0, 1, 1, 1)) == URL_REFUSE_MOVED,
+                  "url/refuse: a moved pointer in a full-screen program reports the MOVE — the drag is what "
+                  "the user did, and the program gate comes after it");
+            CHECK(url_refusal(UC(1, 0, 0, 0, 1, 1, 0)) == URL_REFUSE_NOT_RELEASE,
+                  "url/refuse: a press with everything else wrong still reports that it is a press");
+            /* url_click_opens must stay exactly `refusal == NONE`, or the two could drift and the log would
+               describe a decision the click did not make. */
+            const int flags[9][7] = { { 1,1,1,1,0,0,1 }, { 0,1,1,1,0,0,1 }, { 1,0,1,1,0,0,1 },
+                                      { 1,1,0,1,0,0,1 }, { 1,1,1,0,0,0,1 }, { 1,1,1,1,1,0,1 },
+                                      { 1,1,1,1,0,1,1 }, { 1,1,1,1,0,0,0 }, { 0,0,0,0,0,0,0 } };
+            int agree = 1;
+            for (int i = 0; i < 9; i++) {
+                UrlClick v;
+                memset(&v, 0, sizeof v);
+                v.enabled = flags[i][0]; v.released = flags[i][1]; v.single = flags[i][2];
+                v.no_drag = flags[i][3]; v.shift = flags[i][4]; v.app_owns_click = flags[i][5];
+                v.url_found = flags[i][6];
+                if (url_click_opens(&v) != (url_refusal(&v) == URL_REFUSE_NONE))
+                    agree = 0;
+            }
+            CHECK(agree, "url/refuse: url_click_opens is exactly `refusal == NONE` on every row of the table");
+#undef UC
+            /* The words. A name for every reason, none empty, none shared, and the two a user is most
+               likely to read pinned exactly — README quotes them, so they are a contract. */
+            const char *nm[] = { url_refusal_name(URL_REFUSE_NONE), url_refusal_name(URL_REFUSE_OFF),
+                                 url_refusal_name(URL_REFUSE_NOT_RELEASE), url_refusal_name(URL_REFUSE_GESTURE),
+                                 url_refusal_name(URL_REFUSE_MOVED), url_refusal_name(URL_REFUSE_SHIFT),
+                                 url_refusal_name(URL_REFUSE_APP), url_refusal_name(URL_REFUSE_NO_ADDRESS) };
+            int words_ok = 1;
+            for (int i = 0; i < 8; i++) {
+                if (!nm[i] || !nm[i][0])
+                    words_ok = 0;
+                for (int j = i + 1; j < 8; j++)
+                    if (nm[i] == nm[j] || !strcmp(nm[i], nm[j]))
+                        words_ok = 0;
+            }
+            CHECK(words_ok, "url/refuse: every reason has its own words — a shared string would make the log "
+                            "as undecidable as no log");
+            CHECK(url_refusal_name(999) != NULL && url_refusal_name(-1) != NULL,
+                  "url/refuse: an out-of-range reason still answers with words");
+            CHECK(!strcmp(url_refusal_name(URL_REFUSE_MOVED),
+                          "the pointer changed cell between the press and the release, so it is a drag and a drag selects"),
+                  "url/refuse: the MOVED wording is pinned — it is the line that answers \"I clicked and "
+                  "nothing happened\", and README quotes it");
+            CHECK(!strcmp(url_refusal_name(URL_REFUSE_APP),
+                          "the program owns its own screen and keeps that click"),
+                  "url/refuse: the APP wording is pinned — it is the answer to \"not clickable in less\" and "
+                  "README quotes it");
+            CHECK(!strcmp(url_refusal_name(URL_REFUSE_NO_ADDRESS), "no http(s) address under the pointer"),
+                  "url/refuse: the NO-ADDRESS wording is pinned — it is the commonest line and must not read "
+                  "like an error");
+        }
+
+        /* --- the HOVER underline (s133): the SAME gates, seen from the pointer ------------------
+           The user asked for "a visual feedback on the link to show it's clickable on hover". An underline is a
+           PROMISE that a plain click here opens the address, so the one way it can lie is to disagree with the gate
+           the click obeys — which is why url_hover_shows() calls url_click_opens() instead of keeping its own list
+           of ifs. These checks pin both halves: every gate on its own, and the agreement over every combination of
+           the flags the two decisions share. */
+        {
+            UrlHover h;
+#define UH(A, B, C, D, E) (memset(&h, 0, sizeof h), h.enabled = (A), h.in_pane = (B), h.dragging = (C), \
+            h.shift = (D), h.app_owns_click = (E), h.url_found = 1, &h)
+            CHECK(url_hover_shows(UH(1, 1, 0, 0, 0)) == 1,
+                  "url/hover: an address in a plain pane under a still pointer is underlined");
+            CHECK(url_hover_shows(UH(0, 1, 0, 0, 0)) == 0,
+                  "url/hover: `click_opens_url = 0` underlines nothing — a hint that promises an open the switch "
+                  "refuses is the dead-key bug wearing the opposite face");
+            CHECK(url_hover_shows(UH(1, 0, 0, 0, 0)) == 0,
+                  "url/hover: the tab bar, the file-manager band, a margin and the confirm-quit box are not panes, "
+                  "so nothing there is underlined");
+            CHECK(url_hover_shows(UH(1, 1, 1, 0, 0)) == 0,
+                  "url/hover: a live selection drag underlines nothing — the pointer is selecting, and the click "
+                  "this hover would promise selects too");
+            CHECK(url_hover_shows(UH(1, 1, 0, 1, 0)) == 0,
+                  "url/hover: Shift held underlines nothing — that click means selection");
+            CHECK(url_hover_shows(UH(1, 1, 0, 0, 1)) == 0,
+                  "url/hover: `less`, `nano` and `man` keep their clicks, so they get no underline either");
+            CHECK(url_hover_shows(NULL) == 0, "url/hover: a NULL decision is answered, not crashed");
+#undef UH
+        }
+        {
+            UrlHover h;
+            UrlClick c;
+            int agree = 1, shown = 0, off_pane = 0;
+            for (int m = 0; m < 32; m++) {       /* the five gates the two decisions share, every combination */
+                int en = m & 1, dr = (m >> 1) & 1, sh = (m >> 2) & 1, ap = (m >> 3) & 1, ur = (m >> 4) & 1;
+                memset(&h, 0, sizeof h);
+                h.enabled = en; h.in_pane = 1; h.dragging = dr; h.shift = sh;
+                h.app_owns_click = ap; h.url_found = ur;
+                memset(&c, 0, sizeof c);
+                c.enabled = en; c.released = 1; c.single = 1; c.no_drag = !dr;
+                c.shift = sh; c.app_owns_click = ap; c.url_found = ur;
+                int hv = url_hover_shows(&h);
+                if (hv != url_click_opens(&c))
+                    agree = 0;
+                shown += hv;
+                h.in_pane = 0;
+                off_pane += url_hover_shows(&h);
+            }
+            CHECK(agree,
+                  "url/hover: over all 32 combinations of the shared gates the underline agrees with the click — "
+                  "an underline promising an open the gate refuses is the bug this pins");
+            CHECK(shown == 1,
+                  "url/hover: and exactly ONE of those 32 shows it (switch on, no drag, no Shift, the program not "
+                  "owning the click, an address found) — the table is not vacuous in either direction");
+            CHECK(off_pane == 0,
+                  "url/hover: with the pointer off a pane NO combination underlines anything — no flag combination "
+                  "can walk the hint onto the bar, the band or the box");
+        }
+
+        /* --- which cells of a span sit on which row: ONE owner, asked by the text AND the underline.
+           term_url_text() spells an address out with this and pass 2c of render_draw() draws the hover underline
+           with it, so the line under an address can never cover a cell the opener would not read. A second reading
+           of the same rule in the renderer would be a second answer about a soft-wrapped run — the same mistake
+           step 7 refused to make twice with the wrap marks. */
+        {
+            UrlSpan one = { 3, 5, 3, 20 };
+            int ra = -1, rb = -1;
+            CHECK(url_span_row(&one, 3, 80, &ra, &rb) && ra == 5 && rb == 20,
+                  "url/row: a one-row span is its own c0..c1");
+            UrlSpan two = { 2, 40, 3, 12 };
+            CHECK(url_span_row(&two, 2, 80, &ra, &rb) && ra == 40 && rb == 79,
+                  "url/row: the FIRST row of a wrapped run runs to the margin — that is where the break happened");
+            CHECK(url_span_row(&two, 3, 80, &ra, &rb) && ra == 0 && rb == 12,
+                  "url/row: the LAST row starts at the first cell and ends at c1");
+            UrlSpan three = { 2, 40, 4, 12 };
+            CHECK(url_span_row(&three, 3, 80, &ra, &rb) && ra == 0 && rb == 79,
+                  "url/row: a row in the MIDDLE of a three-row run is whole");
+            CHECK(!url_span_row(&three, 1, 80, &ra, &rb) && !url_span_row(&three, 5, 80, &ra, &rb),
+                  "url/row: a row outside the span holds none of it — the renderer must not draw an underline there");
+            CHECK(!url_span_row(&two, 3, 10, &ra, &rb),
+                  "url/row: a span whose c1 is past the grid is refused rather than silently clipped — the same "
+                  "answer term_url_text() gives when it cannot spell the run out");
+            CHECK(!url_span_row(NULL, 0, 80, &ra, &rb) && !url_span_row(&one, 3, 80, NULL, &rb),
+                  "url/row: a NULL argument is answered, not crashed");
+        }
+        {
+            /* The same question on a REAL grid, because a hand-written span cannot prove the reading matches the
+               model: the cells pass 2c underlines must add up to exactly the bytes term_url_text() hands the
+               opener. A run the WINDOW broke is the case that would split a second reading of the rule — the first
+               row runs to the margin, the next starts at column 0. */
+            term_destroy(&T);
+            term_init(&T, 12, 40, 100);
+            feed("\x1b[2J\x1b[H");
+            feed("read https://example.org/a/very/long/path/that/wraps/over/two/rows now\r\n");
+            if (term_url_span(&T, 6, 0, &us)) {
+                int cells = 0, ra = 0, rb = 0;
+                for (int r = us.r0; r <= us.r1; r++)
+                    if (url_span_row(&us, r, T.g.cols, &ra, &rb))
+                        cells += rb - ra + 1;
+                int uln = term_url_text(&T, &us, utxt, sizeof utxt);
+                CHECK(uln == 61 && cells == uln,
+                      "url/row: on a real wrapped grid the cells the underline covers ARE the bytes that get "
+                      "opened (35 on the first row, 26 on the second) — one owner, so they cannot drift");
+                CHECK(!url_span_row(&us, us.r1 + 1, T.g.cols, &ra, &rb) &&
+                      !url_span_row(&us, us.r0 - 1, T.g.cols, &ra, &rb),
+                      "url/row: the rows above and below the run hold none of it — no underline one row too far");
+            } else {
+                CHECK(0, "url/row: setup — the wrapped run is found on the 40-column grid");
+            }
+            term_destroy(&T);
+        }
+
         /* --- the wait: a double click on an address selects the word and opens NOTHING --------
            The boundary is STRICTLY past the window, and it has to be: term_click_count() counts a press
            at exactly CLICK_DCLICK_MS as still the same gesture, so if the open fired at that instant the

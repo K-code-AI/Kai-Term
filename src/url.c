@@ -186,9 +186,17 @@ int term_url_span(Term *t, int col, int row, UrlSpan *sp)
 }
 
 /* Cells of the span on one row: the first row starts at c0, the last ends at c1, the rows between are whole —
-   which is what a soft-wrapped run looks like, since the break happened AT the margin. */
-static int url_row_range(const UrlSpan *sp, int r, int cols, int *from, int *to)
+   which is what a soft-wrapped run looks like, since the break happened AT the margin. This is the ONE owner of
+   that reading: term_url_text() spells the address out with it and the renderer's hover underline (pass 2c in
+   src/render.c) draws with it, so the line under an address and the bytes handed to the opener cannot disagree
+   about which cells belong to the run. `cols` is the grid the span was found in — pass the Term's own cols, not a
+   pane's, or a pane that has not caught up with a resize answers a different question than the click did. */
+int url_span_row(const UrlSpan *sp, int r, int cols, int *from, int *to)
 {
+    if (!sp || !from || !to)
+        return 0;
+    if (r < sp->r0 || r > sp->r1)
+        return 0;                            /* this row holds none of the run */
     int a = r == sp->r0 ? sp->c0 : 0;
     int b = r == sp->r1 ? sp->c1 : cols - 1;
     if (a < 0 || b < a || b >= cols)
@@ -209,7 +217,7 @@ int term_url_text(Term *t, const UrlSpan *sp, char *out, size_t cap)
     size_t len = 0;
     for (int r = sp->r0; r <= sp->r1; r++) {
         int a, b;
-        if (!url_row_range(sp, r, cols, &a, &b))
+        if (!url_span_row(sp, r, cols, &a, &b))
             return 0;
         len += (size_t)(b - a + 1);
     }
@@ -221,7 +229,7 @@ int term_url_text(Term *t, const UrlSpan *sp, char *out, size_t cap)
     for (int r = sp->r0; r <= sp->r1; r++) {
         const Cell *rc = grid_vprow(&t->g, r);
         int a, b;
-        if (!url_row_range(sp, r, cols, &a, &b)) {
+        if (!url_span_row(sp, r, cols, &a, &b)) {
             out[0] = 0;
             return 0;
         }
@@ -271,21 +279,76 @@ int url_is_openable(const char *url)
     return 0;                                  /* ftp, mailto, file, magnet: not ours to open */
 }
 
-int url_click_opens(const UrlClick *c)
+/* Why a plain click does not open, in the order the gates are asked. This is a VALUE and not a chain of early
+   returns because "I clicked on an address and nothing happened" is the one report this feature will get, and a
+   refusal that logs nothing makes it undecidable (s131 shipped exactly that, and s132 could not tell which gate
+   fired from any amount of reading). The first gate that refuses is the one reported, so the answer is the real
+   reason rather than the last one. */
+int url_refusal(const UrlClick *c)
 {
     if (!c)
-        return 0;
-    if (!c->enabled || !c->released)
-        return 0;
+        return URL_REFUSE_NO_ADDRESS;
+    if (!c->enabled)
+        return URL_REFUSE_OFF;
+    if (!c->released)
+        return URL_REFUSE_NOT_RELEASE;
     if (!c->single)
-        return 0;          /* the second and third click of a gesture select a word / a line */
+        return URL_REFUSE_GESTURE;          /* the second and third click select a word / a line */
     if (!c->no_drag)
-        return 0;          /* a drag selects text; that rule is older and louder than this one */
+        return URL_REFUSE_MOVED;            /* a drag selects text; that rule is older and louder than this one */
     if (c->shift)
-        return 0;          /* Shift + click means selection, here as everywhere else */
+        return URL_REFUSE_SHIFT;            /* Shift + click means selection, here as everywhere else */
     if (c->app_owns_click)
-        return 0;          /* less / nano / man keep their click-to-place-cursor */
-    return c->url_found;
+        return URL_REFUSE_APP;              /* less / nano / man keep their click-to-place-cursor */
+    if (!c->url_found)
+        return URL_REFUSE_NO_ADDRESS;
+    return URL_REFUSE_NONE;
+}
+
+/* The refusal in words. Written here so the line the user reads and the line a check pins cannot drift apart.
+   Every one of these names a thing the user can act on or at least understand — "it moved" is a different answer
+   from "that program keeps its clicks", and a report that says which one is a report that can be fixed. */
+const char *url_refusal_name(int why)
+{
+    switch (why) {
+    case URL_REFUSE_NONE:       return "nothing refused it";
+    case URL_REFUSE_OFF:        return "click_opens_url = 0";
+    case URL_REFUSE_NOT_RELEASE:return "only a release can open — a press cannot know whether a second click follows";
+    case URL_REFUSE_GESTURE:    return "it was the second or third click, which selects a word or a line instead";
+    case URL_REFUSE_MOVED:      return "the pointer changed cell between the press and the release, so it is a drag and a drag selects";
+    case URL_REFUSE_SHIFT:      return "Shift was held, which means selection";
+    case URL_REFUSE_APP:        return "the program owns its own screen and keeps that click";
+    case URL_REFUSE_NO_ADDRESS: return "no http(s) address under the pointer";
+    default:                    return "unknown";
+    }
+}
+
+int url_click_opens(const UrlClick *c)
+{
+    return url_refusal(c) == URL_REFUSE_NONE;
+}
+
+/* Should the run under the pointer be underlined? Written as the CLICK's decision rather than as its own list of
+   ifs, on purpose: an underline is a promise that a plain click here opens the address, so the one way it can lie is
+   to disagree with the gate the click obeys. The three gates a hover cannot have (a release, a single click, a
+   pointer that never moved) are filled in as a hover implies; `dragging` answers the click's MOVED gate because it
+   is the same fact seen from the other side — the pointer is selecting text, so the click this hover would promise
+   selects too. `in_pane` is the one gate with no click equivalent: the click path never reaches the URL code when it
+   lands on the bar, the band, a margin or the confirm-quit box, while a hover has to say so itself. */
+int url_hover_shows(const UrlHover *h)
+{
+    if (!h)
+        return 0;
+    if (!h->in_pane)
+        return 0;                              /* the bar, the band, a margin and the box are not panes */
+    UrlClick c = { .enabled = h->enabled,
+                   .released = 1,
+                   .single = 1,
+                   .no_drag = !h->dragging,
+                   .shift = h->shift,
+                   .app_owns_click = h->app_owns_click,
+                   .url_found = h->url_found };
+    return url_click_opens(&c);
 }
 
 int url_open_due(long long now_ms, long long press_ms, int window_ms)

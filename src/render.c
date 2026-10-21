@@ -260,6 +260,10 @@ int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, flo
     memset(r, 0, sizeof(*r));
     r->vw = w;
     r->vh = h;
+    /* Nothing is hovered until main.c says so. The field is a TAB index, so the memset's 0 would otherwise read as
+       "the run under the pointer is in tab 0" — and a frame drawn before redraw() filled the field in would underline
+       a run nobody is pointing at. */
+    r->hover_tab = -1;
 
     PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform =
         (PFNEGLGETPLATFORMDISPLAYEXTPROC)(uintptr_t)eglGetProcAddress("eglGetPlatformDisplayEXT");
@@ -720,6 +724,48 @@ void render_chrome(const Render *r, Chrome *out)
     out->dialog_btn_bg = r->bg;
 }
 
+/* ONE rule for "a horizontal line under the characters of a cell", asked by both underlines this renderer can
+   draw — the DECSCUSR underline cursor and the hover underline. It is a function of its own because the two
+   callers used to spell the same position out separately, and both spelled it WRONG in the same way.
+
+   THE COORDINATE SPACE, which is what went wrong once and must not go wrong again: a quad's y is its BOTTOM edge
+   measured UP from the cell's bottom edge. render_init()'s MVP is the plain pixel ortho (2/vw, 2/vh, no flip) and
+   every call site in render_draw() computes py as `(nrows-1-y)*ch + pad_gl`, where pad_gl is the GL y of the bottom
+   of the last drawn row. So `y = cell_h - h` — which reads like "flush with the bottom edge" to anyone thinking in
+   window pixels, where y grows down — is a line across the TOP of the cell, i.e. a strikethrough. The user met
+   exactly that on the hover underline (2026-10-22: "it's over the text instead of under it"); the underline cursor
+   had the same defect since s112 and nobody saw it because no application they run asks for `ESC[5 q`.
+
+   WHERE the line goes, in that space: at the bottom of the font's DESCENDER band, which is the band between the
+   baseline and the deepest a glyph of this font reaches below it. `ascent_px`/`descent_px` are the font's own
+   metrics for the current pixel size (Font.ascent/Font.descent, scaled like the cell box), so the baseline sits at
+   `cell_h - ascent_px` above the cell's bottom edge. Three cases, all of them the same two lines of arithmetic:
+   - a font whose descender is deeper than the room the cell leaves under the baseline (the installed monospace,
+     Liberation Mono, at every size: at 14 px cell_h 16, ascent 12, descent 5, so 4 px under the baseline against a
+     5 px descender) gets the line flush with the cell's bottom edge — measured, that is 3 px below the baseline,
+     exactly where a 'p' of that size stops, and it is also where the font's own OS/2 underline position puts it
+     (-435/2048 em = 3 px at 14 px), which is the cross-check that the rule is not an opinion;
+   - a font whose cell has LEADING under the baseline (cell_h > ascent + descent) gets the line under the TEXT,
+     not under the empty leading at the bottom of the row — a bottom-of-the-cell rule would drift away from the
+     letters for such a font;
+   - a cell too short to have a descender band at all (cell_h <= ascent, or a band thinner than the line) keeps the
+     line inside the cell, touching the baseline. A line that touches the text is ugly; a line drawn outside the
+     cell, or no line at all, is worse.
+   The line's own thickness is NOT decided here — the cursor takes it from `cursor_width`, the hover underline from
+   a fraction of the cell — because that is the one thing the two underlines are allowed to disagree about. */
+static int underline_y(int cell_h, int ascent_px, int descent_px, int h)
+{
+    int baseline = cell_h - ascent_px;      /* px from the cell's bottom edge up to the baseline */
+    if (baseline < 0)
+        baseline = 0;                       /* a cell shorter than the ascent: the baseline is the floor */
+    int lo = baseline - (descent_px > 0 ? descent_px : 0);   /* the bottom of the descender band */
+    if (lo > baseline - h)                  /* the band is thinner than the line: keep it under the baseline */
+        lo = baseline - h;
+    if (lo < 0)
+        lo = 0;                             /* never below the cell */
+    return lo;
+}
+
 /* One place decides what a cursor cell LOOKS like. See the comment on CursorDraw in kai-term.h: the shape
    rule lives here, next to render_chrome(), for the same reason the colours do — the draw loop is in no test
    binary, so a rule written there cannot be checked (the dead `cursor_color =` bug, ISSUES.md s102).
@@ -731,9 +777,13 @@ void render_chrome(const Render *r, Chrome *out)
 
    The clamp is the whole geometry: a bar wider than a third of the cell is a block wearing a hat, so
    `cursor_width` is cut to cell/3 — and the floor of 1 matters because a cell can be narrower than 3 px at
-   a small font, where cell/3 would be 0 and a clamp of (1, 0) would draw nothing at all. */
+   a small font, where cell/3 would be 0 and a clamp of (1, 0) would draw nothing at all.
+
+   `ascent_px`/`descent_px` are only used by the underline shape, and only to ask underline_y() where the line
+   goes; a BAR spans the whole cell height, where the sign of y cannot show, which is why this defect survived
+   s112 through every cursor check this tree has. */
 void render_cursor(int style, int visible, int band_on, int cell_w, int cell_h, int width_px,
-                   CursorDraw *o)
+                   int ascent_px, int descent_px, CursorDraw *o)
 {
     o->block = o->quad = o->invert = o->tint = 0;
     o->x = o->y = o->w = o->h = 0;
@@ -767,9 +817,41 @@ void render_cursor(int style, int visible, int band_on, int cell_w, int cell_h, 
             cap = 1;
         if (w > cap)
             w = cap;
-        o->x = 0; o->y = cell_h - w; o->w = cell_w; o->h = w;
+        o->x = 0; o->y = underline_y(cell_h, ascent_px, descent_px, w);
+        o->w = cell_w; o->h = w;
     }
     o->quad = 1;                              /* its own quad, emitted after the bands */
+}
+
+/* The hover underline's rect (see HoverDraw in kai-term.h for why this is a function at all).
+   The shape is deliberately the CUR_UNDERLINE shape above — full cell width, and the position asked of the SAME
+   underline_y() the cursor asks — so the two underlines this renderer can draw cannot disagree about where a line
+   under a character goes, which is what they used to disagree about (in the same wrong direction). Full width is
+   what makes a run read as ONE underlined address rather than a row of dashes: neighbouring cells' quads touch,
+   because the cell box is an integer number of pixels (Font.scale is 1.0 — font.c sets it and nothing else does —
+   so `cw` and `ch` in render_draw() are exact).
+   The thickness is a fraction of the cell, not `cursor_width`: that key belongs to the cursor, and a link hint that
+   changes thickness when someone restyles their cursor is a coincidence. The floor of 1 px matters for the same
+   reason it does in render_cursor(): a cell can be shorter than 12 px at a small font, where cell_h/12 would be 0 and
+   a 0 px quad draws nothing at all. The cap of cell_h/3 is the same one the underline cursor obeys: past that it is
+   a block wearing a hat, not an underline. */
+void render_hover(int cell_w, int cell_h, int ascent_px, int descent_px, HoverDraw *o)
+{
+    o->x = o->y = o->w = o->h = 0;
+    if (cell_w <= 0 || cell_h <= 0)
+        return;                              /* no cell to underline */
+    int h = cell_h / 12;
+    if (h < 1)
+        h = 1;
+    int cap = cell_h / 3;
+    if (cap < 1)
+        cap = 1;
+    if (h > cap)
+        h = cap;
+    o->x = 0;
+    o->y = underline_y(cell_h, ascent_px, descent_px, h);   /* under the baseline, inside the cell */
+    o->w = cell_w;
+    o->h = h;
 }
 
 /* Decode one UTF-8 sequence of a tab-bar label. A tab's title arrives through OSC 0/2, so a label is
@@ -1180,6 +1262,10 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     float cw = (float)f->cell_w * f->scale;
     float ch = (float)f->cell_h * f->scale;
     float ascent = (float)f->ascent * f->scale;
+    /* The font's own descent, scaled exactly like the cell box. The glyphs need only `ascent` (a glyph's quad is
+       placed from the baseline, which is cell_top - ascent); the two UNDERLINES need the descent too, because "under
+       the text" means under the baseline by as much as this font's descenders reach — see underline_y(). */
+    float descent = (float)f->descent * f->scale;
     const float white[4] = { 1, 1, 1, 1 };
     const float du = 1.0f / (float)f->atlas_w, dv = 1.0f / (float)f->atlas_h;
 
@@ -1215,11 +1301,15 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     }
     /* +8: the focus border is 4 quads, and with the file manager on a pane border and a band border can
        both be in the same frame. +npane: the visual bell is at most ONE quad per drawn pane (see pass 1b) —
-       a budget that forgets a pass is a buffer overrun waiting for a wide window. */
+       a budget that forgets a pass is a buffer overrun waiting for a wide window. +URL_MAX: the hover underline is
+       at most ONE quad per cell of the hovered run (pass 2c), and a run longer than URL_MAX is refused by
+       term_url_text() before it can ever reach Render.hover_span, so URL_MAX cells is the real ceiling — not the
+       pane's cell count, which at a huge window would be far larger and would be a number no run can reach. */
     int maxq = 3 * cells + 3 * fmcells + lay->nitem * (BAR_LABEL_MAX + 2)
              + (lay->notice_on ? NOTICE_MAX + 1 : 0)
              + (lay->dialog.on ? DIALOG_LINES * DIALOG_LINE_MAX + 2 * DIALOG_BTN_MAX + 7 : 0)
              + lay->npane
+             + URL_MAX
              + 8;
     float *vdata = ensure_vdata(r, maxq);
     float *vp = vdata;
@@ -1269,7 +1359,7 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                     }
                     CursorDraw cd;
                     render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch,
-                                  r->cursor_width, &cd);
+                                  r->cursor_width, (int)ascent, (int)descent, &cd);
                     if (cd.block)
                         cellbg = cur_col;
                 }
@@ -1435,7 +1525,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
         int phase = (lay->pane[p].tab == lay->active_tab) ? r->cursor_on : 1;
         CursorDraw cd;
-        render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch, r->cursor_width, &cd);
+        render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch, r->cursor_width,
+                      (int)ascent, (int)descent, &cd);
         if (!cd.quad)
             continue;
         uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? chrome.cursor : chrome.cursor_off;
@@ -1446,6 +1537,62 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                   du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f,
                   white, bg, 0.0f, 0.0f, 0.0f);
         nquads++;
+    }
+
+    /* Pass 2c: the hover underline — one quad per cell of the address the pointer is on, in the ONE pane the
+       pointer is over (Render.hover_tab names it; -1 draws nothing). It sits after the selection bands and after the
+       cursor quad and before the glyphs for the same reason pass 2b does: batch B is one draw call with no GL
+       blending in which the later quad simply wins, so the line is over the paper and over a highlight, and a glyph
+       is never hidden behind it. (The ink and the underline are the SAME colour, so where a descender crosses the
+       line the order is invisible either way — it is only the glyph-on-top rule that has to stay true.)
+       The colour is the CELL's own ink, so an address a program printed in blue underlines in blue and a theme needs
+       no new key; an inverted cell takes the ink pass 3 would draw. Nothing here decides whether the underline is
+       DESERVED: main.c asked url_hover_shows() before it filled Render.hover_span, and this pass draws what it is
+       told — the same division that keeps render_cursor()'s shape rule out of the loop. */
+    for (int p = 0; p < lay->npane; p++) {
+        if (r->hover_tab < 0 || lay->pane[p].tab != r->hover_tab)
+            continue;
+        Term *t = pane_term(terms, lay->pane[p].tab);
+        if (!t)
+            continue;
+        PaneDraw pd;
+        pane_prepare(r, t, &lay->pane[p], f, &pd);
+        const UrlSpan *sp = &r->hover_span;
+        if (sp->r0 > sp->r1 || sp->c0 > sp->c1)
+            continue;                        /* an empty span draws nothing */
+        HoverDraw hd;
+        render_hover((int)cw, (int)ch, (int)ascent, (int)descent, &hd);
+        if (hd.w <= 0 || hd.h <= 0)
+            continue;                        /* render_hover() found no cell to underline */
+        int y0 = sp->r0 < 0 ? 0 : sp->r0;
+        int y1 = sp->r1 > pd.nrows - 1 ? pd.nrows - 1 : sp->r1;
+        for (int y = y0; y <= y1; y++) {
+            const Cell *row = grid_vprow(pd.g, y);
+            /* Which cells of the run are on this row — the SAME function term_url_text() spells the address with,
+               so the underline can never cover a cell the opener would not read (a run that crossed the window's
+               edge is one run: first row from c0, last row to c1, the rows between whole). */
+            int x0 = 0, x1 = 0;
+            if (!url_span_row(sp, y, pd.g->cols, &x0, &x1))
+                continue;
+            if (x1 > pd.ncols - 1)
+                x1 = pd.ncols - 1;           /* never draw past what THIS pane holds (a grid mid-resize) */
+            for (int x = x0; x <= x1; x++) {
+                const Cell *c = &row[x];
+                if (!c->ch || (c->attr & ATTR_WIDE))
+                    continue;                /* nothing drawn there; a wide cell is never part of a URL run */
+                uint32_t ink = c->fg;
+                if (c->attr & ATTR_INVERSE)
+                    ink = c->bg;             /* the swap pass 3 makes, so the line matches the ink on screen */
+                col2f(ink, fg);
+                fg[3] *= r->opacity;         /* a decoration quad, exactly like the cursor quad above */
+                float px = pd.gx + x * cw + (float)hd.x;
+                float py = (pd.nrows - 1 - y) * ch + pd.pad_gl + (float)hd.y;
+                emit_quad(&vp, px, py, (float)hd.w, (float)hd.h,
+                          du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f,
+                          white, fg, 0.0f, 0.0f, 0.0f);
+                nquads++;
+            }
+        }
     }
 
     /* Pass 3: glyph quads (topmost), per pane. Continuation cells of a wide char are skipped (the wide
@@ -1491,7 +1638,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                        separate quad and has nothing to invert. */
                     int phase = (lay->pane[p].tab == lay->active_tab) ? r->cursor_on : 1;
                     CursorDraw cd;
-                    render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch, r->cursor_width, &cd);
+                    render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch, r->cursor_width,
+                                  (int)ascent, (int)descent, &cd);
                     if (cd.tint) {
                         cellfg = cur_col;      /* selected block cursor: tint glyph, band already drawn */
                     } else if (cd.invert) {

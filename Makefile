@@ -72,7 +72,10 @@ bin/test_fm: tests/test_fm.c build/fm.o build/vt.o build/img.o build/config.o bu
 # fork, ioctl) — no Wayland, no EGL, no font — and the headless suites never call it: a test hands mux_running()
 # a Tab whose pty.mfd is -1, which answers "idle" before any syscall. Linking it is cheaper than forking a
 # second copy of the busy-check that the shipped code does not use.
-bin/test_render: tests/test_render.c build/render.o build/fm.o build/font.o build/img.o build/vt.o build/shellint.o build/layout.o build/mux.o build/config.o build/theme.o build/pty.o $(HDRS) | bin
+# build/url.o joined it in s133 for the same reason in the opposite direction: the hover underline in render_draw()
+# asks url_span_row() which cells of a run sit on a row, and a renderer that calls a function the test binary does
+# not link is a renderer that does not build.
+bin/test_render: tests/test_render.c build/render.o build/fm.o build/font.o build/img.o build/vt.o build/shellint.o build/layout.o build/mux.o build/config.o build/theme.o build/pty.o build/url.o $(HDRS) | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 test: bin/test_vt bin/dbg bin/test_fm bin/test_render test-cli
@@ -102,8 +105,8 @@ bin/dbg_asan: tests/dbg.c src/vt.c src/img.c src/mux.c src/layout.c src/config.c
 bin/test_fm_asan: tests/test_fm.c src/fm.c src/vt.c src/img.c src/config.c src/shellint.c $(HDRS) | bin
 	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_fm.c src/fm.c src/vt.c src/img.c src/config.c src/shellint.c $(LDLIBS)
 
-bin/test_render_asan: tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c src/pty.c $(HDRS) | bin
-	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c src/pty.c $(LDLIBS)
+bin/test_render_asan: tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c src/pty.c src/url.c $(HDRS) | bin
+	$(CC) $(CFLAGS) $(ASANFLAGS) -o $@ tests/test_render.c src/render.c src/fm.c src/font.c src/img.c src/vt.c src/shellint.c src/layout.c src/mux.c src/config.c src/theme.c src/pty.c src/url.c $(LDLIBS)
 
 asan: bin/test_vt_asan bin/dbg_asan bin/test_fm_asan bin/test_render_asan
 	./bin/test_vt_asan

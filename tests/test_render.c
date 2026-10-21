@@ -337,6 +337,47 @@ static int src_call_passes_arg(const char *path, const char *call, const char *a
     return found;
 }
 
+/* Does the first CODE occurrence of `first` come before the first code occurrence of `second`? Comments are
+   skipped exactly as the two counters skip them, so the needles have to be code. This is how a DRAW ORDER gets
+   pinned: with no GL blending, a later quad simply wins, so "the underline is after the selection bands and
+   before the glyphs" is a rule the frame depends on and no headless test can run — the passes of render_draw()
+   are in no test binary. A needle that appears once per pass makes the comparison about the passes. */
+static int src_code_before(const char *path, const char *first, const char *second)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return -1;
+    char buf[262144];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    /* Blank the comments, then look for the two needles in what is left. */
+    for (size_t i = 0; i + 1 < n; ) {
+        if (buf[i] == '/' && buf[i + 1] == '*') {
+            size_t j = i + 2;
+            while (j + 1 < n && !(buf[j] == '*' && buf[j + 1] == '/')) {
+                if (buf[j] == '\n')
+                    j++;
+                else
+                    buf[j++] = ' ';
+            }
+            i = j < n ? j + 2 : n;
+            continue;
+        }
+        if (buf[i] == '/' && buf[i + 1] == '/') {
+            size_t j = i + 2;
+            while (j < n && buf[j] != '\n')
+                buf[j++] = ' ';
+            i = j;
+            continue;
+        }
+        i++;
+    }
+    char *p = strstr(buf, first);
+    char *q = strstr(buf, second);
+    return p && q && p < q ? 1 : 0;
+}
+
 /* ---------- the cursor's shape: one pure decision, the whole truth table ----------
    The other half of the s102 lesson. The SHAPE rule used to be implicit in the draw loop (the cursor was
    always the cell's own background), and the draw loop is in no test binary — exactly where a colour rule
@@ -350,21 +391,22 @@ static void group_cursor_shape(void)
 {
     CursorDraw d;
     const int cw = 9, ch = 18;          /* a plausible cell at font_size 14 */
+    const int asc = 13, desc = 5;       /* its font's metrics: the baseline sits 5 px above the cell's bottom */
 
     /* 1. The default is the bar the user asked for: a separate quad, not the cell's background. */
-    render_cursor(CUR_UNSET, 1, 0, cw, ch, 2, &d);
+    render_cursor(CUR_UNSET, 1, 0, cw, ch, 2, asc, desc, &d);
     CHECK(d.quad == 1 && d.block == 0 && d.invert == 0 && d.tint == 0,
           "no DECSCUSR seen: a separate quad, and NOT the cell's background");
     CHECK(d.x == 0 && d.y == 0 && d.w == 2 && d.h == ch,
           "a 2 px bar at the LEFT edge of the cell, the full height of it");
-    render_cursor(CUR_BAR, 1, 0, cw, ch, 2, &d);
+    render_cursor(CUR_BAR, 1, 0, cw, ch, 2, asc, desc, &d);
     CHECK(d.quad == 1 && d.x == 0 && d.y == 0 && d.w == 2 && d.h == ch,
           "an application asking for a bar explicitly gets exactly the default");
 
     /* 2. Not visible (DEC 25l, scrolled back, or the blink phase off) draws NOTHING, in every shape. */
     const int styles[] = { CUR_UNSET, CUR_BLOCK, CUR_BAR, CUR_UNDERLINE };
     for (unsigned i = 0; i < sizeof styles / sizeof styles[0]; i++) {
-        render_cursor(styles[i], 0, 0, cw, ch, 2, &d);
+        render_cursor(styles[i], 0, 0, cw, ch, 2, asc, desc, &d);
         CHECK(d.block == 0 && d.quad == 0 && d.invert == 0 && d.tint == 0 &&
               d.x == 0 && d.y == 0 && d.w == 0 && d.h == 0,
               "an invisible cursor emits no block, no quad and no ink change, whatever the shape");
@@ -373,40 +415,50 @@ static void group_cursor_shape(void)
     /* 3. The width clamp. Wider than a third of a cell is a block wearing a hat, and 0 px would be no
        cursor at all — so the clamp has two ends and the lower one matters at a small font size, where a
        cell can be narrower than 3 px and cell/3 would be 0. */
-    render_cursor(CUR_BAR, 1, 0, cw, ch, 40, &d);
+    render_cursor(CUR_BAR, 1, 0, cw, ch, 40, asc, desc, &d);
     CHECK(d.w == cw / 3 && d.h == ch, "a 40 px bar in a 9 px cell is cut to a third of the cell (3 px)");
-    render_cursor(CUR_BAR, 1, 0, cw, ch, 1, &d);
+    render_cursor(CUR_BAR, 1, 0, cw, ch, 1, asc, desc, &d);
     CHECK(d.w == 1, "a 1 px bar stays 1 px");
-    render_cursor(CUR_BAR, 1, 0, 2, ch, 2, &d);
+    render_cursor(CUR_BAR, 1, 0, 2, ch, 2, asc, desc, &d);
     CHECK(d.w == 1, "in a 2 px-wide cell the bar is 1 px — never 0, which would draw nothing");
-    render_cursor(CUR_BAR, 1, 0, 1, ch, 2, &d);
+    render_cursor(CUR_BAR, 1, 0, 1, ch, 2, asc, desc, &d);
     CHECK(d.w == 1, "and in a 1 px cell it is still 1 px, so the cursor cannot vanish");
 
-    /* 4. The underline DECSCUSR asks for: full cell width, at the bottom, as thick as the bar. */
-    render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, 2, &d);
-    CHECK(d.quad == 1 && d.x == 0 && d.w == cw && d.h == 2 && d.y == ch - 2,
-          "an underline is the full width of the cell, 2 px tall, on its bottom edge");
-    render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, 40, &d);
-    CHECK(d.h == ch / 3 && d.y == ch - ch / 3,
-          "a 40 px underline is cut to a third of the cell's HEIGHT (6 px), still on the bottom edge");
-    render_cursor(CUR_UNDERLINE, 1, 0, cw, 2, 2, &d);
-    CHECK(d.h == 1 && d.y == 1, "in a 2 px-tall cell the underline is 1 px — never 0");
+    /* 4. The underline DECSCUSR asks for: full cell width, UNDER the baseline, as thick as the bar.
+       This is the s134 fix. The quad's y is its bottom edge measured UP from the cell's bottom edge, so the
+       old answer `y == ch - 2` put the line in the top two pixel rows of the cell — a strikethrough, which is
+       what the user reported on the hover underline ("it's over the text instead of under it"). The check is
+       now written against the BASELINE of the cell (ch - asc = 5 px above the bottom edge), not against the
+       cell's edges, because "under the text" is a statement about the baseline. */
+    render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, 2, asc, desc, &d);
+    CHECK(d.quad == 1 && d.x == 0 && d.w == cw && d.h == 2 && d.y == 0,
+          "an underline is the full width of the cell, 2 px tall, at the bottom of the descender band");
+    CHECK(d.y + d.h <= ch - asc,
+          "an underline never rises above the baseline — the check that the old one could not be, because it "
+          "restated the implementation's own (wrong) idea of 'the bottom edge'");
+    CHECK(d.y + d.h < ch,
+          "and it is not the top of the cell either — the s134 report, pinned by name");
+    render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, 40, asc, desc, &d);
+    CHECK(d.h == ch / 3 && d.y == 0,
+          "a 40 px underline is cut to a third of the cell's HEIGHT (6 px), still at the bottom of the band");
+    render_cursor(CUR_UNDERLINE, 1, 0, cw, 2, 2, 2, 0, &d);
+    CHECK(d.h == 1 && d.y == 0, "in a 2 px-tall cell the underline is 1 px — never 0, and never outside the cell");
 
     /* 5. A block is today's behaviour, unchanged: it IS the cell's background (pass 1), so it steps aside
        where a selection band is painted and the ink is tinted with the cursor colour instead. */
-    render_cursor(CUR_BLOCK, 1, 0, cw, ch, 2, &d);
+    render_cursor(CUR_BLOCK, 1, 0, cw, ch, 2, asc, desc, &d);
     CHECK(d.block == 1 && d.invert == 1 && d.tint == 0 && d.quad == 0 && d.w == 0,
           "a block over no band: pass 1 paints the cell background and pass 3 inverts the ink");
-    render_cursor(CUR_BLOCK, 1, 1, cw, ch, 2, &d);
+    render_cursor(CUR_BLOCK, 1, 1, cw, ch, 2, asc, desc, &d);
     CHECK(d.block == 0 && d.invert == 0 && d.tint == 1 && d.quad == 0,
           "a block under a band steps aside for it and tints the ink — the rule that must not change");
 
     /* 6. A bar or an underline does NOT step aside: its quad is emitted in batch B AFTER the bands, so it
        survives where a selection ends on the cursor cell. That is the whole reason it is a separate quad. */
-    render_cursor(CUR_BAR, 1, 1, cw, ch, 2, &d);
+    render_cursor(CUR_BAR, 1, 1, cw, ch, 2, asc, desc, &d);
     CHECK(d.quad == 1 && d.block == 0 && d.tint == 0 && d.invert == 0,
           "a bar under a band still emits its quad and leaves the ink alone");
-    render_cursor(CUR_UNDERLINE, 1, 1, cw, ch, 2, &d);
+    render_cursor(CUR_UNDERLINE, 1, 1, cw, ch, 2, asc, desc, &d);
     CHECK(d.quad == 1 && d.block == 0 && d.tint == 0 && d.invert == 0,
           "and so does an underline");
 
@@ -423,7 +475,9 @@ static void group_cursor_shape(void)
             for (int band = 0; band <= 1; band++)
                 for (unsigned c2 = 0; c2 < sizeof cells / sizeof cells[0]; c2++) {
                     int w_px = 2 + (int)c2;      /* every configured width from 2 to 8 */
-                    render_cursor(styles[s], vis, band, cells[c2][0], cells[c2][1], w_px, &d);
+                    int cwh = cells[c2][1];
+                    render_cursor(styles[s], vis, band, cells[c2][0], cwh, w_px,
+                                  cwh * 3 / 4, cwh / 4, &d);
                     CHECK(!(d.block && d.quad),
                           "invariant: a cell is never both a block and a separate quad");
                     CHECK(!d.invert || d.block,
@@ -431,9 +485,152 @@ static void group_cursor_shape(void)
                     CHECK(!vis || d.block || d.quad || d.tint,
                           "invariant: a visible cursor always paints something in one of the three passes");
                     CHECK(d.x >= 0 && d.y >= 0 && d.x + d.w <= cells[c2][0] &&
-                          d.y + d.h <= cells[c2][1],
+                          d.y + d.h <= cwh,
                           "invariant: the cursor's rect never leaves its own cell");
                 }
+}
+
+/* ---------- the hover underline's rect: the same seam, one pure decision (s133, position fixed s134) ----------
+   The user asked for a link that "gets underlined when a cursor is on it". WHETHER it is underlined is src/url.c's
+   decision (the `url/hover` checks in tests/test_vt.c); what is checked here is the rect one cell of it draws,
+   because that decision lives in render.c next to render_cursor() and for the same reason: the draw loop is in no
+   test binary, so a rule written inside it is a claim. Three rules matter, and all three are the kind that break
+   by arithmetic and show up only as a look: never 0 px tall (a 0 px quad draws NOTHING — a feature that silently
+   stopped existing), never so thick it reads as a block, and the full cell width so a run reads as ONE underlined
+   address instead of a row of dashes.
+   THE FOURTH RULE IS THE POSITION, and s133 got it wrong in a way these checks could not see: they asserted
+   `y + h == cell_h` ("flush with the cell's bottom edge") in a space where y grows UP, which is the cell's TOP edge,
+   and the user's report was "it's over the text instead of under it". A check that restates the implementation's own
+   assumption tests the assumption, not the world. So the checks below are written against the BASELINE of the cell,
+   and their numbers come from the font this machine really draws with: `font = monospace` resolves to Liberation
+   Mono, and every (cell_h, ascent, descent) triple below is copied from `.scratch/s134/metrics.c`, which asks the
+   shipped loader — not from any assumption made inside render.c. */
+static void group_hover_shape(void)
+{
+    HoverDraw d;
+
+    /* 1. A plausible cell (9x18, ascent 13, descent 5, so the baseline sits 5 px above the cell's bottom edge):
+          a hairline at the bottom of the descender band, which for such a font IS the cell's bottom edge. */
+    const int cw = 9, ch = 18, asc = 13, desc = 5;
+    render_hover(cw, ch, asc, desc, &d);
+    CHECK(d.x == 0 && d.w == cw,
+          "hover: the line spans the WHOLE cell width, so neighbouring cells join into one underline");
+    CHECK(d.h == 1 && d.y == 0,
+          "hover: 1 px at that size, at the bottom of the descender band — the CUR_UNDERLINE position, asked of the "
+          "same underline_y() the cursor asks, so the two underlines cannot disagree about where the line is");
+    CHECK(d.y + d.h <= ch - asc,
+          "hover: the line's top edge never rises above the baseline — 'under the text' is a statement about the "
+          "baseline, not about the cell's edges, which is the distinction s133 got wrong");
+    CHECK(d.y + d.h < ch,
+          "hover: and it is NOT the top row of the cell — the s134 report (\"over the text instead of under it\"), "
+          "pinned so the old formula cannot come back");
+
+    /* 2. The invariants, over the installed font at 7 pixel sizes AND over faces this machine has not got: one with
+          leading under the baseline, one whose ascent fills the cell (no descender band at all), one whose descender
+          is deeper than the cell, and cells from 1 px to 36 px tall. THE TABLE IS SORTED BY cell_h, because the last
+          invariant compares each row with the one before it. */
+    const int cells[][4] = {   /* cell_w, cell_h, ascent, descent — Liberation Mono at px 10,12,14,16,20,24,32 */
+        { 1, 1, 1, 0 }, { 3, 4, 4, 1 },
+        { 6, 11, 9, 3 }, { 7, 14, 10, 4 }, { 8, 16, 12, 5 },
+        { 10, 18, 14, 5 }, { 10, 18, 18, 0 }, { 10, 18, 15, 20 },
+        { 10, 21, 13, 4 },     /* leading under the baseline: cell_h > ascent + descent */
+        { 12, 23, 17, 6 }, { 14, 27, 20, 8 }, { 40, 30, 22, 8 },
+        { 10, 36, 30, 2 },     /* a hairline face: the descender band is THINNER than the line */
+        { 19, 36, 27, 10 }
+    };
+    int bad_zero = 0, bad_cap = 0, bad_in = 0, bad_base = 0, bad_band = 0, bad_w = 0, thinner = 0;
+    int prev_h = -1;
+    for (size_t i = 0; i < sizeof cells / sizeof cells[0]; i++) {
+        int cwh = cells[i][0], chh = cells[i][1], a = cells[i][2], de = cells[i][3];
+        render_hover(cwh, chh, a, de, &d);
+        int baseline = imax_(chh - a, 0);
+        if (d.h < 1)
+            bad_zero++;
+        if (d.h > imax_(1, chh / 3))
+            bad_cap++;
+        if (d.y < 0 || d.y + d.h > chh)
+            bad_in++;
+        if (baseline >= d.h && d.y + d.h > baseline)
+            bad_base++;
+        if (baseline - de >= 0 && de >= d.h && d.y != baseline - de)
+            bad_band++;
+        if (d.x != 0 || d.w != cwh)
+            bad_w++;
+        if (d.h < prev_h)
+            thinner++;
+        prev_h = d.h;
+    }
+    CHECK(bad_zero == 0,
+          "hover invariant: never 0 px tall at any cell size — a 0 px quad is an invisible feature, not a thin one");
+    CHECK(bad_cap == 0, "hover invariant: never thicker than a third of the cell, the same cap the underline cursor obeys");
+    CHECK(bad_in == 0, "hover invariant: the rect is always inside its own cell (0 <= y, and y + h <= cell_h)");
+    CHECK(bad_base == 0,
+          "hover invariant: whenever the cell has room under the baseline the whole line fits under it — at every "
+          "size in the table, including the faces with no descender band and a descender deeper than the cell");
+    CHECK(bad_band == 0,
+          "hover invariant: when the cell has LEADING under the baseline the line sits at the bottom of the "
+          "DESCENDER band, not at the bottom of the cell — a bottom-of-the-cell rule drifts off the text for such a font");
+    CHECK(bad_w == 0, "hover invariant: x is 0 and w is the whole cell, at every size");
+    CHECK(thinner == 0, "hover invariant: the line never gets thinner as the cell gets taller");
+
+    /* 3. The measured thickness AND the measured place, written out, because "how thick is it, and where, at MY font
+          size" is the question the user asks and a table is the answer. The first seven rows are Liberation Mono at
+          px 10..32 (cell_h, ascent, descent from .scratch/s134/metrics.c): the ladder is 1 px up to a 23 px cell, then
+          one more px per 12 px of cell. Every one of those faces has a descender deeper than the room its cell leaves
+          under the baseline, so y is 0 — the line is the bottom pixel row of the cell. The last row is the leading
+          case: the line lifts off the cell's bottom edge and follows the text instead. */
+    const int want[][5] = {   /* cell_h, ascent, descent, want h, want y */
+        { 11, 9, 3, 1, 0 }, { 14, 10, 4, 1, 0 }, { 16, 12, 5, 1, 0 }, { 18, 14, 5, 1, 0 },
+        { 23, 17, 6, 1, 0 }, { 27, 20, 8, 2, 0 }, { 36, 27, 10, 3, 0 },
+        { 21, 13, 4, 1, 4 },   /* leading: the line follows the text, 4 px up from the cell's bottom edge */
+        { 36, 30, 2, 3, 3 }    /* a band thinner than the line: it hangs from the baseline, not from the band */
+    };
+    int ladder_ok = 1;
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        render_hover(10, want[i][0], want[i][1], want[i][2], &d);
+        if (d.h != want[i][3] || d.y != want[i][4])
+            ladder_ok = 0;
+    }
+    CHECK(ladder_ok,
+          "hover: the measured thickness AND place at every installed font size — 1/1/1/1/1/2/3 px, all of them on "
+          "the cell's bottom edge, 4 px up from that edge for a font with leading under the baseline, and hanging "
+          "from the baseline for a face whose band is thinner than the line");
+
+    /* 3b. The cross-check that the rule is not an opinion. At the default font_size 14 the line's top edge lands 3 px
+          below the baseline (cell_h 16, ascent 12 -> baseline 4; y + h = 1). Liberation Mono's own OS/2 table says
+          usUnderlinePosition = -435 units at upm 2048 = 3 px below the baseline, and a 'p' of that size reaches 3 px
+          below it (.scratch/s134/desc.c) — so Kai-Term underlines where the font says to underline, and clear of the
+          descender in the address of the user's screenshot. */
+    render_hover(8, 16, 12, 5, &d);
+    CHECK(16 - 12 - (d.y + d.h) == 3,
+          "hover at font_size 14: the line is 3 px under the baseline — the font's own underline position and the "
+          "depth of a 'p', measured rather than guessed");
+
+    /* 4. No cell, no line. A zero or negative cell answers an EMPTY rect: a quad with a negative size is a
+          rectangle drawn somewhere else in the window, and the caller's `h <= 0` guard is what skips the pass. */
+    render_hover(0, 18, asc, desc, &d);
+    CHECK(d.x == 0 && d.y == 0 && d.w == 0 && d.h == 0, "hover: a 0-wide cell draws nothing");
+    render_hover(9, 0, asc, desc, &d);
+    CHECK(d.w == 0 && d.h == 0, "hover: a 0-tall cell draws nothing");
+    render_hover(-5, -40, -1, -1, &d);
+    CHECK(d.w == 0 && d.h == 0, "hover: a negative cell draws nothing — never a quad with a negative size");
+
+    /* 5. The thickness does NOT come from `cursor_width`: that key is the cursor's, and a link hint that changed
+          when someone restyled their cursor would be a coincidence. render_hover() takes no width argument, and the
+          pass that calls it passes the cell box, the font's metrics and nothing else — pinned by the scan in the
+          next group. */
+    render_hover(cw, ch, asc, desc, &d);
+    CHECK(d.h == 1 && d.y == 0,
+          "hover: the rect is a function of the cell and its font alone — nothing else in the renderer can move it");
+
+    /* 6. The two underlines agree. The cursor's underline shape takes its thickness from `cursor_width`, so ask it
+          for exactly the hover thickness and the two rects must come out the same rect: one rule, two callers.
+          Before s134 they did agree — both wrong, in the same direction, which is exactly why the rule is ONE
+          function now instead of two copies of an expression. */
+    CursorDraw cd;
+    render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, d.h, asc, desc, &cd);
+    CHECK(cd.quad && cd.x == d.x && cd.y == d.y && cd.w == d.w && cd.h == d.h,
+          "the DECSCUSR underline cursor and the hover underline are the same rect at the same thickness");
 }
 
 /* The wiring a headless test cannot execute is pinned by the source scans in the next group. */
@@ -502,8 +699,9 @@ static void group_source_wiring(void)
     CHECK(src_sub_count("src/main.c", "rq.dialog_on") == 1
           && src_sub_count("src/main.c", "rq.dialog_text") == 1,
           "src/main.c feeds the box to the layout — without it the box is never drawn");
-    CHECK(src_sub_count("src/main.c", "g_layout.dialog.on") == 2,
-          "src/main.c reads the box back twice: the visibility rule that stops a close, and the pointer gate");
+    CHECK(src_sub_count("src/main.c", "g_layout.dialog.on") == 3,
+          "src/main.c reads the box back three times: the visibility rule that stops a close, the pointer gate, "
+          "and the hover rule (a box owns the pointer, so nothing behind it is underlined)");
     CHECK(src_word_count("src/main.c", "layout_hit_dialog") == 1,
           "src/main.c hit-tests the buttons — a box nobody can click is only half a box");
     CHECK(src_word_count("src/main.c", "pty_fg_name") == 1,
@@ -645,16 +843,30 @@ static void group_source_wiring(void)
        key parsed, stored and tested at the parser while nothing at the pixel end reads it, and the URL
        version of that would be a click that opens nothing (or opens something the gate refused).
        Every count measured on the wired tree with .scratch/s129/scancount.py — re-measure, do not copy. */
-    CHECK(src_word_count("src/main.c", "url_click_opens") == 1,
-          "src/main.c asks the gate exactly once — the order of the flags is src/url.c's decision, so "
-          "re-deriving it in the event handler could drift from the table the checks flip");
-    CHECK(src_word_count("src/main.c", "click_opens_url") == 1,
-          "src/main.c feeds conf.click_opens_url to that decision — a key nothing reads is the dead "
-          "cursor_color shape again");
-    CHECK(src_word_count("src/main.c", "term_url_span") == 2 &&
-          src_word_count("src/main.c", "term_url_text") == 2,
-          "the scan is asked TWICE: once at the click and once at the deadline, when the session may have "
-          "closed, scrolled or repainted the line");
+    CHECK(src_word_count("src/main.c", "url_refusal") == 1 &&
+          src_word_count("src/main.c", "url_refusal_name") == 1 &&
+          src_word_count("src/main.c", "url_click_opens") == 0,
+          "src/main.c asks the gate exactly once and asks it for a REASON — the order of the flags is "
+          "src/url.c's decision, so re-deriving it in the event handler could drift from the table the "
+          "checks flip (and main.c must not keep a second predicate that could disagree with the log line)");
+    CHECK(src_sub_count("src/main.c", "url_refusal_name(why)") == 1,
+          "and the reason is LOGGED — s131 shipped a refusal that logged nothing and the user's \"it's not "
+          "clickable\" was undecidable; a decision with no trace is a decision nobody can debug");
+    CHECK(src_sub_count("src/main.c", "if (uc.enabled)") == 1,
+          "the refusal line is gated on the switch: with click_opens_url = 0 the user asked for no opens, so "
+          "there is nothing to explain on every click");
+    CHECK(src_sub_count("src/url.c", "url_refusal(c) == URL_REFUSE_NONE") == 1,
+          "url_click_opens is defined as `refusal == NONE` in one place — two predicates could disagree with "
+          "the reason the log prints");
+    CHECK(src_word_count("src/main.c", "click_opens_url") == 3,
+          "src/main.c feeds conf.click_opens_url to the click AND to the hover (twice there: the flag, and the "
+          "scan guard that keeps the work off every frame when the switch is off) — a key nothing reads is the "
+          "dead cursor_color shape again");
+    CHECK(src_word_count("src/main.c", "term_url_span") == 3 &&
+          src_word_count("src/main.c", "term_url_text") == 3,
+          "the scan is asked THREE times: at the click, at the deadline when the session may have closed, scrolled "
+          "or repainted the line, and every frame for the hover underline — which is what makes a stale underline "
+          "impossible");
     CHECK(src_sub_count("src/main.c", "strcmp(holds, clicked)") == 1,
           "and the deadline compares the text it re-read with the text the click saw — an address the user "
           "never clicked is never opened");
@@ -692,6 +904,87 @@ static void group_source_wiring(void)
           "no shell and no second exec path anywhere in the feature — the argument is data, always");
     CHECK(src_sub_count("src/url.c", "char *argv[3]") == 1,
           "the opener is started with exactly one argument and a NULL terminator");
+    /* ---- the HOVER underline's wiring (s133): the frame asks, the renderer draws, url.c decides ----
+       Every count measured on the wired tree with .scratch/s129/scancount.py — re-measure, do not copy. */
+    CHECK(src_word_count("src/main.c", "url_hover_shows") == 1 &&
+          src_word_count("src/url.c", "url_hover_shows") == 1 &&
+          src_word_count("src/render.c", "url_hover_shows") == 0,
+          "the hover is decided exactly once, in src/url.c, and the renderer never re-decides it — an underline "
+          "the draw loop judged for itself would drift from the gate the click obeys");
+    CHECK(src_word_count("src/main.c", "hover_update") == 3 &&
+          src_sub_count("src/main.c", "hover_update();") == 1,
+          "the run under the pointer is recomputed in ONE place, called from redraw() — not cached on the motion "
+          "event, which is what would leave an underline on a run that scrolled, repainted or resized away");
+    CHECK(src_word_count("src/main.c", "hover_motion") == 5 &&
+          src_sub_count("src/main.c", "hover_motion();") == 3,
+          "and the frame is asked for by all three pointer listeners — enter, motion and LEAVE. Without the leave "
+          "the underline stays on screen after the pointer is gone, because ptr_x/ptr_y keep their last value");
+    CHECK(src_sub_count("src/main.c", "W.ptr_in = 1") == 1 && src_sub_count("src/main.c", "W.ptr_in = 0") == 1,
+          "the pointer's presence on the surface is set in exactly the two listeners that can know it");
+    /* …and OBED by the mapping that asks for the cell. A mutant that deleted this guard survived every s133 check
+       (measured, .scratch/s134/mutate_run.txt): pinning the two assignments is not pinning the gate that reads them. */
+    CHECK(src_sub_count("src/main.c", "if (!W.ptr_in)") == 1,
+          "the pointer's presence is the FIRST question the cell mapping asks — wl_pointer.leave does not clear "
+          "ptr_x/ptr_y, so without this the last cell the pointer was over keeps its underline after the hand leaves "
+          "the window");
+    CHECK(src_sub_count("src/main.c", "rend.hover_tab = -1") == 2 &&
+          src_sub_count("src/main.c", "rend.hover_span = sp") == 1,
+          "every frame starts from \"nothing hovered\" and sets the span in exactly one place — a frame that "
+          "forgot to clear would keep the previous frame's run");
+    CHECK(src_word_count("src/main.c", "hover_cell") == 4,
+          "the pointer-to-cell mapping is one function, asked by the frame and by the motion gate — two mappings "
+          "would be two answers about which cell the pointer is on (the sel_cell()/render agreement rule)");
+    CHECK(src_word_count("src/render.c", "render_hover") == 2 &&
+          src_sub_count("src/render.c", "render_hover((int)cw, (int)ch, (int)ascent, (int)descent, &hd)") == 1,
+          "the underline's shape is one function asked once per pane per frame, with the CELL BOX and the font's "
+          "metrics and nothing else — no cursor_width, so restyling the cursor cannot restyle the link hint, and no "
+          "made-up baseline, so the line is placed by the font that is actually drawn");
+    /* The position rule, which is what the user's report was about. ONE helper answers "where in the cell does a
+       line under the characters go", and BOTH underlines ask it: 3 = the definition + the cursor's underline branch
+       + the hover rect. And the wrong answer is pinned absent, by its own text: `cell_h - h` is the expression that
+       put the line across the letters ("it's over the text instead of under it", 2026-10-22), and a scan is the only
+       check that can see it, because no headless test draws a pixel. */
+    CHECK(src_word_count("src/render.c", "underline_y") == 3,
+          "the two underlines ask ONE position rule (definition + both call sites) — two copies of the expression "
+          "is how they came to be wrong in the same direction");
+    CHECK(src_sub_count("src/render.c", "cell_h - h") == 0 &&
+          src_sub_count("src/render.c", "cell_h - w") == 0,
+          "and neither underline computes its y from the cell's TOP edge any more — the s134 defect, pinned absent");
+    CHECK(src_sub_count("src/render.c", "float descent = (float)f->descent * f->scale;") == 1 &&
+          src_sub_count("src/render.c", "(int)ascent, (int)descent, &cd") == 3,
+          "the font's own descent reaches render_draw() and all THREE cursor passes take it — a metric that stops "
+          "in Font is not implemented (the s102 lesson, one level down)");
+    CHECK(src_word_count("src/render.c", "url_span_row") == 1 &&
+          src_word_count("src/url.c", "url_span_row") == 3 &&
+          src_word_count("src/main.c", "url_span_row") == 0,
+          "which cells of a run sit on which row has ONE owner in src/url.c (definition + the two uses in "
+          "term_url_text), asked once by the renderer and by nobody in main.c — the underline and the opened bytes "
+          "cannot disagree about the range");
+    CHECK(src_sub_count("src/render.c", "lay->pane[p].tab != r->hover_tab") == 1,
+          "the underline is drawn in the ONE pane the pointer is over — in side-by-side view the other pane's "
+          "text stays untouched");
+    CHECK(src_sub_count("src/render.c", "col2f(ink, fg)") == 1,
+          "the line takes the CELL's own ink, not a chrome colour: an address printed in blue underlines in blue, "
+          "and no new colour key is needed");
+    /* The same claim by its own text, because the check above cannot see WHERE `ink` came from — a mutant that fed
+       it a chrome colour instead of the cell's survived every s133 check (measured). */
+    CHECK(src_sub_count("src/render.c", "uint32_t ink = c->fg;") == 1 &&
+          src_sub_count("src/render.c", "ink = c->bg;") == 1,
+          "and the ink is read from the CELL — its own fg, swapped to its bg exactly where the cell is inverted, the "
+          "same swap pass 3 makes so the line matches the ink the eye sees");
+    CHECK(src_word_count("src/render.c", "URL_MAX") == 1,
+          "the frame's quad budget counts the hover pass (at most URL_MAX cells) — a budget that forgets a pass "
+          "is a staging-buffer overrun waiting for a long address");
+    /* The draw ORDER, which no headless test can run and the frame depends on: with no GL blending the later quad
+       simply wins, so the underline must be after the selection bands and the cursor quad (or a highlight eats it)
+       and before the glyphs (or it hides a character). Each needle appears once in render_draw(). */
+    CHECK(src_code_before("src/render.c", "if (!term_cell_highlightable", "render_hover((int)cw") == 1,
+          "the underline is emitted AFTER the selection bands, so a highlight never paints over it");
+    CHECK(src_code_before("src/render.c", "if (!cd.quad)", "render_hover((int)cw") == 1,
+          "and after the bar/underline cursor quad, so the two lines in one cell cannot disagree by draw order");
+    CHECK(src_code_before("src/render.c", "render_hover((int)cw",
+                          "emit_cell_glyph(f, c, px, py, cw, ch, ascent, fg, bg, band0, band1, &vp)") == 1,
+          "and BEFORE the glyphs, so a character is never hidden behind its own underline");
     /* The one link a headless test cannot execute: main() handing the configured value to the renderer and
        to the band's painter. The call string includes the '&' so a COMMENT that merely names the function
        (main.c has two) cannot start the scan. */
@@ -759,6 +1052,7 @@ int main(void)
 {
     group_cursor_color();
     group_cursor_shape();
+    group_hover_shape();
     group_bell_color();
     group_source_wiring();
     group_scanner_selfcheck();

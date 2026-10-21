@@ -103,6 +103,15 @@ typedef struct Wayland {
        last half-faded flash forever. */
     int bell_live;
     int32_t ptr_x, ptr_y;       /* last pointer position in surface coords (px) */
+    /* 1 while the pointer is on this surface. wl_pointer.leave does NOT clear ptr_x/ptr_y — the last position
+       stays — so without this a pointer that left the window would keep naming the cell it last touched, and the
+       hover underline would sit on screen after the pointer is gone. */
+    int ptr_in;
+    /* The pane/cell the last pointer event named, remembered ONLY to decide whether a motion event deserves a
+       frame: a compositor sends one motion per pixel and a full frame per pixel is a storm for nothing. -1 = the
+       pointer was over no pane. This is not the underline itself — that is recomputed every frame in redraw() —
+       just the cheap part of the question. */
+    int hover_tab, hover_col, hover_row;
     int ptr_btn;                /* held button mapped to SGR index (0/1/2), or -1 */
     int selecting;              /* 1 while a left-button text selection drag is in progress */
     int pv_selecting;           /* 1 while a drag is extending a selection INSIDE the file manager's
@@ -363,6 +372,15 @@ static void update_title(void);
 /* The preview pane's cell under the pointer, defined with the other pointer mappers further down but needed
    by the band's click handler above them. */
 static int pv_cell(int *x, int *y);
+/* The hover underline's three helpers, defined with the other pointer mappers further down. hover_update() runs in
+   every redraw() (the run under the pointer is a fact about the frame, not about the motion event that happened to
+   precede it), and hover_motion() runs in the pointer listener to decide whether a motion deserves a frame. */
+static int hover_cell(int *tab, int *col, int *row);
+static void hover_motion(void);
+static void hover_update(void);
+/* Is Shift down right now? Defined with the pointer listener that asks it; hover_update() needs it too, because an
+   underline promises a plain click and Shift + click means selection. */
+static int ptr_shift_held(void);
 /* Declared here because the file manager's `cd` and typed path (further up) go through it: it is the one
    place that tells the model "these bytes are INPUT, expect an echo" (term_note_input, src/vt.c). */
 static void input_write(Term *t, Pty *p, const void *buf, size_t len);
@@ -620,6 +638,9 @@ static void redraw(void)
     rend.now_ms = (long long)mono_ms();
     for (int i = 0; i < TAB_MAX; i++)
         rend.bell_ms[i] = i < mux_count(&mux) ? mux.tab[i].bell_ms : 0;
+    /* The hover underline of this frame, asked the same way: main.c owns the pointer and the layout, the renderer
+       is handed the run. After layout_apply() (the pane rects are what map the pointer) and before render_draw(). */
+    hover_update();
     int drew = render_draw(&rend, &font, &g_layout, terms, &g_fm);
     if (drew < 0) {
         /* The renderer could not put the glyph atlas in GPU memory even after dropping every picture
@@ -2395,6 +2416,93 @@ static int pv_cell(int *x, int *y)
     return 1;
 }
 
+/* The pane the pointer is over and the cell of THAT pane's grid it names. This is sel_cell() per pane rather than
+   for the visible session: in side-by-side view the pointer can be over a session the keyboard is not talking to,
+   and the underline has to sit on the grid the pointer is actually on. Exact for the same reason sel_cell() is —
+   render_draw() draws column x of a pane at [pg->x + x*cw, pg->x + (x+1)*cw) — and it answers 0 for the tab bar,
+   the file-manager band, the padding margin, the whole-cell remainder below the last row, and a pointer that is not
+   on the surface at all (W.ptr_in), which is exactly the set of places a plain click never reaches a URL. */
+static int hover_cell(int *tab, int *col, int *row)
+{
+    if (!W.ptr_in)
+        return 0;
+    int pi = layout_hit_pane(&g_layout, W.ptr_x, W.ptr_y);
+    if (pi < 0)
+        return 0;
+    const PaneGeom *pg = &g_layout.pane[pi];
+    if (pg->cols <= 0 || pg->rows <= 0)
+        return 0;                            /* a pane with no grid has no cell to name */
+    int cw = font.cell_w > 0 ? font.cell_w : 1;
+    int ch = font.cell_h > 0 ? font.cell_h : 1;
+    *tab = pg->tab;
+    *col = iclamp_((W.ptr_x - pg->x) / cw, 0, pg->cols - 1);
+    *row = iclamp_((W.ptr_y - pg->y) / ch, 0, pg->rows - 1);
+    return 1;
+}
+
+/* A pointer event just happened: if the CELL under the pointer changed, the frame has to be redrawn. Only the
+   cheap half of the question is asked here (a pane index and a cell, no scan); the run itself is recomputed in
+   hover_update(). A motion inside one cell asks for nothing, which is what keeps a dragged mouse from turning
+   into a frame storm. */
+static void hover_motion(void)
+{
+    int tab = -1, col = 0, row = 0;
+    if (!hover_cell(&tab, &col, &row))
+        tab = -1;                            /* over no pane: one state, whatever the stale coords say */
+    if (tab == W.hover_tab && col == W.hover_col && row == W.hover_row)
+        return;
+    W.hover_tab = tab;
+    W.hover_col = col;
+    W.hover_row = row;
+    W.dirty = 1;
+}
+
+/* The address the pointer is over, copied into Render for the frame about to be built. Recomputed EVERY frame
+   rather than remembered from the motion event, and that is the whole design: a scroll, new output, a resize, a
+   zoom, a tab switch or a pane closing changes what is under the pointer without a single pointer event, and an
+   underline left on a run that is no longer there is the one failure this feature has. The cost is one scan of one
+   logical line per frame — the same walk a triple click makes — and it buys the answer being true by construction.
+   Whether the underline is DESERVED is not decided here: url_hover_shows() in src/url.c answers it from the same
+   gates url_refusal() answers for a click, so the hint can never promise an open the click would refuse. */
+static void hover_update(void)
+{
+    rend.hover_tab = -1;
+    rend.hover_span.r0 = rend.hover_span.c0 = rend.hover_span.r1 = rend.hover_span.c1 = 0;
+
+    int tab = -1, col = 0, row = 0;
+    int got = hover_cell(&tab, &col, &row);
+    /* The confirm-quit box owns the pointer while it is up (ptr_press_action() answers PTR_DIALOG for every
+       press), so a click behind it answers the question and opens nothing — no underline. */
+    if (got && g_layout.dialog.on)
+        got = 0;
+    if (!got || tab < 0 || tab >= mux_count(&mux))
+        return;
+
+    Term *t = &mux.tab[tab].term;
+    UrlSpan sp;
+    sp.r0 = sp.c0 = sp.r1 = sp.c1 = 0;
+    int found = 0;
+    if (conf.click_opens_url && term_url_span(t, col, row, &sp)) {
+        char url[URL_MAX + 1];
+        url[0] = 0;
+        /* The SAME two questions the click asks, so the underline appears exactly on a run that would be opened:
+           0 from term_url_text() means it refused (a character it cannot spell, a run that does not fit) and -1
+           means it is longer than anything to hand an opener. Both answer "no underline". */
+        if (term_url_text(t, &sp, url, sizeof url) > 0)
+            found = 1;
+    }
+    UrlHover hv = { .enabled = conf.click_opens_url,
+                    .in_pane = 1,
+                    .dragging = W.selecting || W.pv_selecting,
+                    .shift = ptr_shift_held(),
+                    .app_owns_click = term_wants_key_mouse(t),
+                    .url_found = found };
+    if (!url_hover_shows(&hv))
+        return;
+    rend.hover_tab = tab;
+    rend.hover_span = sp;
+}
+
 /* Set both selection endpoints: the anchor cell and the cell the pointer is on now.
    Whole glyphs only: an endpoint is always a cell EDGE, never a point inside a
    glyph, so a highlighted range always covers complete cells and half a letter cannot be highlighted.
@@ -2439,6 +2547,8 @@ static void ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
        and jumps in huge increments instead of tracking the pointer. */
     W.ptr_x = wl_fixed_to_int(x);
     W.ptr_y = wl_fixed_to_int(y);
+    W.ptr_in = 1;
+    hover_motion();
     if (!W.cursor_theme && W.shm) {
         const char *name = getenv("XCURSOR_THEME");
         W.cursor_theme = wl_cursor_theme_load(name ? name : "left_ptr", 24, W.shm);
@@ -2470,6 +2580,10 @@ static void ptr_leave(void *d, struct wl_pointer *p, uint32_t serial, struct wl_
 {
     (void)d; (void)serial; (void)surf;
     wl_pointer_set_cursor(p, 0, NULL, 0, 0);
+    /* The pointer is gone but ptr_x/ptr_y keep their last value, so this is the only thing that can stop the
+       hover underline from staying on the screen after the hand left the window. */
+    W.ptr_in = 0;
+    hover_motion();
 }
 
 static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t x, wl_fixed_t y)
@@ -2520,6 +2634,12 @@ static void ptr_motion(void *d, struct wl_pointer *p, uint32_t time, wl_fixed_t 
         mouse_cell(&col, &row);
         mouse_send(W.ptr_btn + 32, col, row, 'M');
     }
+    /* The hover underline follows the pointer CELL, not every motion event: a compositor sends one event per
+       pixel, and a frame per pixel would be a storm for nothing. The run itself is recomputed in redraw(), which
+       is what keeps the underline honest when the TEXT moves under a pointer that never moved (a scroll, new
+       output, a resize). The selection-drag paths above returned before this: during a drag the underline is off
+       by url_hover_shows()'s own rule, and those paths already mark the window dirty. */
+    hover_motion();
 }
 
 /* Is Shift down right now? The pointer events carry no modifier state, but the keyboard listener keeps
@@ -2780,7 +2900,8 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                 else if (ul > 0)
                     uc.url_found = 1;
             }
-            if (url_click_opens(&uc)) {
+            int why = url_refusal(&uc);
+            if (why == URL_REFUSE_NONE) {
                 W.url_press_ms = (long long)mono_ms();
                 W.url_tab = mux_active(&mux);
                 W.url_col = col;
@@ -2792,6 +2913,15 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                 W.dirty = 1;
                 return;
             }
+            /* A plain click in a pane that did NOT open something says why, at debug level. This line exists
+               because "I clicked an address and nothing happened" is the report this feature will get and there
+               was no way to answer it: s131 shipped a refusal that logged nothing, and s132 could not tell from
+               any amount of reading whether the address was not found, the pointer drifted a cell, Shift was
+               down or the program owns its screen. With the switch off it stays quiet — the user asked for no
+               opens, so there is nothing to explain. */
+            if (uc.enabled)
+                klog(L_DEBUG, "url: the click at (%d,%d) opened nothing — %s",
+                     col, row, url_refusal_name(why));
             if (no_drag && !W.click_word && conf.click_moves_cursor && !ptr_shift_held() &&
                 term_wants_key_mouse(cur_term())) {
                 char seq[3 * TERM_ARROW_MAX + 8];
@@ -3834,6 +3964,11 @@ int main(int argc, char **argv)
     }
     W.cursor_on = 1;                  /* steady until blink_update() decides otherwise */
     rend.cursor_on = 1;
+    /* Nothing is hovered at startup, and -1 is what "nothing" means in both places that ask: Render.hover_tab (the
+       renderer draws the underline in that pane only) and W.hover_tab (the remembered cell). The zeroed globals
+       would otherwise read as "tab 0, cell 0,0", which is a real cell. */
+    W.hover_tab = -1;
+    rend.hover_tab = -1;
 
     ev = (struct epoll_event){ .events = EPOLLIN, .data.fd = wfd };
     epoll_ctl(ep, EPOLL_CTL_ADD, wfd, &ev);

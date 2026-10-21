@@ -749,6 +749,13 @@ int term_url_span(Term *t, int col, int row, UrlSpan *sp);
    is written in that case — half a URL must never be opened), and -1 when the run is longer than URL_MAX. */
 int term_url_text(Term *t, const UrlSpan *sp, char *out, size_t cap);
 
+/* Which cells of a span sit on viewport row `r`: the first row starts at c0, the last ends at c1, and the rows a
+   soft-wrapped run crosses are whole (the break happened AT the margin). 0 = this row holds none of it. ONE owner
+   for that reading, asked by term_url_text() when it spells the address out and by the renderer's hover underline
+   when it draws the line, so the underline can never cover cells the opener would not read. `cols` must be the
+   grid the span was found in (Term.g.cols), not a pane's drawn width — clip to the pane afterwards. */
+int url_span_row(const UrlSpan *sp, int r, int cols, int *from, int *to);
+
 /* Is this string something to hand the opener? 1 = yes. It must carry a scheme Kai-Term opens for, hold no
    control character, no space and no DEL, be no longer than URL_MAX, and not start with '-' — an argument
    starting with a dash would be read as an OPTION by the opener, which is the one way a URL could change what
@@ -767,7 +774,49 @@ typedef struct {
     int app_owns_click;   /* term_wants_key_mouse(): the program that owns its screen keeps its click */
     int url_found;        /* term_url_span() + term_url_text() answered a URL */
 } UrlClick;
+
+/* WHY a plain click did not open, one of these. The refusal is a VALUE rather than an early return because a
+   user reporting "I clicked and nothing happened" needs an answer, and s131 left the tree logging nothing for a
+   refused click — the report was undecidable. The order is the order of the gates: the first one that refuses is
+   what gets reported. URL_REFUSE_NONE means every gate passed. */
+enum {
+    URL_REFUSE_NONE = 0,
+    URL_REFUSE_OFF,          /* click_opens_url = 0 */
+    URL_REFUSE_NOT_RELEASE,  /* a press cannot know whether a second click follows */
+    URL_REFUSE_GESTURE,      /* the 2nd or 3rd click: it selects a word or a line instead */
+    URL_REFUSE_MOVED,        /* the pointer changed cell between press and release: that is a drag, and a drag selects */
+    URL_REFUSE_SHIFT,        /* Shift + click means selection */
+    URL_REFUSE_APP,          /* the program owns its own screen: less/nano/man keep click-to-place-cursor */
+    URL_REFUSE_NO_ADDRESS    /* nothing under the pointer is an http(s) address */
+};
+int url_refusal(const UrlClick *c);
+
+/* The same answer in words, for the log. Kept here rather than written at the call site so the wording a check
+   pins and the wording the user reads are one thing. */
+const char *url_refusal_name(int why);
+
+/* 1 = this click opens. Exactly `url_refusal(c) == URL_REFUSE_NONE`, and pinned to be so. */
 int url_click_opens(const UrlClick *c);
+
+/* The same gates seen from the pointer instead of from a click: 1 = draw the hover underline on the run under the
+   pointer. It is a SEPARATE struct because a hover has gates a click does not (the pointer may be over the bar, the
+   file-manager band, a margin or the confirm-quit box; a selection drag may be live) and lacks others (there is no
+   press, no release, no click count) — but the ANSWER comes from `url_refusal()`, the same function the click asks,
+   with the click-only gates filled in as a hover implies (a hover is always a release, always a single click, and
+   never a moved drag). That is deliberate: an underline is a PROMISE that a plain click there opens, so a hover rule
+   written next to the click rule but not the same rule is a lie waiting to drift. A check pins the agreement over
+   every combination of the shared flags.
+   There is deliberately NO `url_hover =` key: the underline promises exactly what `click_opens_url` already decides,
+   and a second key could disagree with it (an underline that opens nothing, or an openable address with no hint). */
+typedef struct {
+    int enabled;          /* conf.click_opens_url — the same switch the click obeys */
+    int in_pane;          /* the pointer is over a terminal pane, not the bar, the band, a margin or the box */
+    int dragging;         /* a selection drag is live: the pointer is selecting text, not aiming at a link */
+    int shift;            /* Shift is held, so the click this hover promises would select instead */
+    int app_owns_click;   /* term_wants_key_mouse(): less/nano/man keep that click */
+    int url_found;        /* term_url_span() + term_url_text() answered an address that would be opened */
+} UrlHover;
+int url_hover_shows(const UrlHover *h);
 
 /* The click waits out the double-click window before it opens, so double-clicking a URL selects the word and
    opens NOTHING. 1 when the wait is over. The boundary is STRICTLY greater than `window_ms` on purpose: it is
@@ -1986,6 +2035,16 @@ typedef struct Render {
        Indexed by TAB index, like `terms` and PaneGeom.tab. */
     long long now_ms;
     long long bell_ms[TAB_MAX];
+    /* The address the pointer is over, as the frame sees it: `hover_tab` is the TAB whose pane carries the
+       underline (-1 = none), `hover_span` is the run in that session's VIEWPORT rows and columns — the same
+       coordinate space the passes of render_draw() walk, because term_url_span() answers in viewport rows.
+       Window state, copied per frame by main.c's redraw() exactly like cursor_on and bell_ms, and never Term state:
+       a run is a fact about the pointer and this window's layout, not about the session, so it must not survive a
+       tab switch, a scroll or a resize it has no business surviving. main.c recomputes it every frame rather than
+       caching it on the motion event, which is what makes "the underline is on a run that is no longer there"
+       impossible. */
+    int hover_tab;
+    UrlSpan hover_span;
     void *ecfg;                  /* EGLConfig */
     void *nwin;                  /* EGLNativeWindowType (wl_egl_window) */
     /* Texture uploads fail when the GPU is out of memory (this box runs a local LLM that holds most of
@@ -2084,13 +2143,37 @@ uint32_t render_bell(uint32_t bg, uint32_t fg, int strength);
             does not step aside, because its quad is emitted in batch B AFTER the bands, so it survives.
    invert   pass 3 swaps the ink with the cell's own background (a block over no band)
    tint     pass 3 paints the ink IN the cursor colour (a block under a band)
-   x,y,w,h  the separate quad's rect in cell-local pixels, origin at the cell's top-left */
+   ascent_px, descent_px  the font's own metrics for the cell size in use (Font.ascent/Font.descent, scaled like
+            cell_w/cell_h). Only the underline shape asks them: "under the text" is a statement about the baseline,
+            and the baseline of this renderer's cell box sits `cell_h - ascent_px` above the cell's bottom edge.
+   x,y,w,h  the separate quad's rect in cell-local pixels. THE SPACE: x is px from the cell's LEFT edge, and y is px
+            from the cell's BOTTOM edge measured UP — a quad's y is its bottom edge, because the MVP maps buffer
+            pixels with y growing up (see the comment on underline_y() in src/render.c, which is where this went
+            wrong once: `y = cell_h - h` reads like "the bottom edge" only in window pixels, where y grows down).
+            A BAR spans the whole height, so it cannot show the difference; an underline can. */
 typedef struct CursorDraw {
     int block, quad, invert, tint;
     int x, y, w, h;
 } CursorDraw;
 void render_cursor(int style, int visible, int band_on, int cell_w, int cell_h, int width_px,
-                   CursorDraw *out);
+                   int ascent_px, int descent_px, CursorDraw *out);
+
+/* One place decides what the HOVER UNDERLINE looks like — the rect of one cell of the address the pointer is on.
+   Same reason `render_cursor()` is a function: the draw loop is in no test binary, so a rule written there is a
+   claim, and the two rules that matter (never 0 px tall, never so tall it reads as a block) are checkable here.
+   The shape is the CUR_UNDERLINE shape of render_cursor() — full cell width, and the position asked of the same
+   underline_y() the cursor asks — because two underlines in one cell that sit at different heights are two answers
+   to one question (and before s134 they were, both wrong: the line was drawn across the letters, which is what the
+   user reported: "it's over the text instead of under it"). `ascent_px`/`descent_px` are the font's metrics for the
+   cell size in use, for the same reason render_cursor() takes them.
+   The thickness is NOT `cursor_width`: that key is the cursor's, and a link hint
+   that changes when the user restyles their cursor is a coincidence, not a rule. It is a fraction of the cell, with
+   the same floor of 1 px, so it stays a hairline at a small font and stays a line rather than a bar at a huge one.
+   Pure: no GL, no font, no Term, no allocation. */
+typedef struct {
+    int x, y, w, h;      /* px inside the cell; y is measured UP from the cell's bottom edge */
+} HoverDraw;
+void render_hover(int cell_w, int cell_h, int ascent_px, int descent_px, HoverDraw *out);
 
 int  render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
                  uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color,
