@@ -1832,6 +1832,12 @@ numbers and the intermediate check counts are in git.
   OWED NOW: the user's eyes on the click no longer flashing (recipe in "Current Status"), plus the rest of that
   list. NOT fixed deliberately: a click in `less` still sends the presses, so it still scrolls the file and can
   move `less`'s horizontal column — the documented `click_moves_cursor` caveat, and not what was reported.
+  COMMITTED AND PUSHED: `1fc5867 "Bell: a click's own BEL no longer flashes the pane"` (10 files — src, header,
+  tests, the shipped template, README, ISSUES) and `0d735b3 "Journal: s128 -- the bell report closed, both halves
+  with numbers"`. `git fetch` first: nothing had landed on GitHub since `632065b`. `git push` took
+  `632065b..0d735b3`; `git status -sb` now reads `main...origin/main` with nothing ahead, and the only untracked
+  thing is `.scratch/`, which was never `git add`-ed. Every measurement above was taken on the tree that was
+  pushed, and the push was verified from git after the fact, not assumed from the command's output.
   Next session: **step 7, plain-click URLs**.
 
 ## Next Steps
