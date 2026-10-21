@@ -316,11 +316,8 @@ static void wl_flush(void)
 }
 
 /* ---- frame pacing ----
-   A wl_frame callback is armed only with a commit that attaches a NEW buffer: armed on an empty
-   commit it can stay pending forever, and every draw path here is gated on "no callback in
-   flight". A swap must never run while wl_display_prepare_read() is outstanding, because
-   eglSwapBuffers waits for a wl_buffer.release only this thread can read. The first configure
-   must attach a buffer: a window is not mapped until a commit carries one. */
+   A frame callback is armed only by a commit that attaches a NEW buffer: armed on an empty commit
+   it can stay pending forever, and every draw path here waits on there being no callback in flight. */
 static void request_frame(void)
 {
     if (W.frame_cb || !W.surface)
@@ -700,9 +697,8 @@ static void tab_open(void)
 }
 
 /* ---------------- confirm-quit: asking before a close throws work away ----------------
-   The predicate is pty_fg_busy(): the terminal's foreground process group. A job backgrounded
-   with `&` keeps the shell in that group, so it reads idle — this gate protects a foreground
-   command, not a daemon. */
+   The gate asks pty_fg_busy(): a job backgrounded with `&` leaves the shell in the foreground group,
+   so it reads idle. This protects a foreground command, not a daemon. */
 
 /* Take the question down. layout_apply() runs because the row costs a grid row: without it the panes stay
    one row short after the question is gone. */
@@ -2181,10 +2177,8 @@ static void ptr_enter(void *d, struct wl_pointer *p, uint32_t serial,
                       struct wl_surface *surf, wl_fixed_t x, wl_fixed_t y)
 {
     (void)d; (void)surf;
-    /* wl_pointer.enter/motion surface_x/surface_y are wl_fixed_t (16.16/8.8 fixed point, NOT pixels).
-       Convert to integer surface pixels before storing: sel_cell/mouse_cell map the pointer with plain
-       `ptr / cell` division, so a raw fixed-point value (~256x too large) clamps every click to the last
-       row/column. */
+    /* surface_x/surface_y are wl_fixed_t, not pixels: the cell mapping divides by the cell size, so a
+       raw fixed-point value (~256x too large) clamps every click to the last row and column. */
     W.ptr_x = wl_fixed_to_int(x);
     W.ptr_y = wl_fixed_to_int(y);
     W.ptr_in = 1;
@@ -2317,10 +2311,8 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         return;
     }
 
-    /* One decision says which surface owns this press: main.c computes the FLAGS (it owns the geometry,
-       the model and the config) and ptr_press_action() in src/vt.c owns the ORDER, which is the part a
-       user feels and a test can flip. Every branch below is gated on that answer. `cur_term()` is
-       guarded: this runs before the last tab closes. */
+    /* Which surface owns this press is decided by ptr_press_action() in src/vt.c — the ORDER is what a
+       user feels and what a test can flip; this only fills the flags. */
     int bi = layout_hit_bar(&g_layout, W.ptr_x, W.ptr_y);
     int fm_hit = g_fm.on ? layout_hit_fm(&g_layout, W.ptr_x, W.ptr_y) : FM_HIT_NONE;
     Term *pt = cur_term();
@@ -2333,10 +2325,8 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                     .middle_paste = conf.middle_click_paste };
     int act = ptr_press_action(&pp);
 
-    /* The confirm-quit BOX owns the pointer while it is up, checked before the bar, the band and the
-       panes: a click on Yes must answer the question and not also close the tab underneath. Press and
-       release are both swallowed — a release that fell through would reach code assuming the press was
-       its own. Only a press ON A BUTTON answers. */
+    /* The confirm box is checked before the bar, the band and the panes: a click on Yes answers the
+       question and must not also close the tab underneath. Both press and release are swallowed. */
     if (act == PTR_DIALOG) {
         if (pressed) {
             int hi = layout_hit_dialog(&g_layout, W.ptr_x, W.ptr_y);
@@ -2355,10 +2345,8 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
         return;
     }
 
-    /* The tab bar is chrome, not terminal: a left click shows that session, a middle click closes it,
-       and neither reaches the application or starts a selection. Checked BEFORE the mouse-reporting
-       branch on purpose — an application that grabbed the mouse must not be able to eat the bar that
-       names its tab. */
+    /* The tab bar is chrome, not terminal, and is checked before the mouse-reporting branch: an
+       application that grabbed the mouse must not be able to eat the bar that names its tab. */
     if (act == PTR_BAR) {
         int tab = g_layout.item[bi].tab;
         W.selecting = 0;
@@ -2522,10 +2510,8 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                 W.dirty = 1;
                 return;
             }
-            /* A plain click that did NOT open something says why, at debug level: "I clicked an address
-               and nothing happened" is unanswerable without knowing whether the address was not found,
-               the pointer drifted, Shift was down or the program owns its screen. With the switch off it
-               stays quiet. */
+            /* A refused click logs which of its checks failed — without that, a click on an address that
+               did nothing leaves nothing in the log to look at. */
             if (uc.enabled)
                 klog(L_DEBUG, "url: the click at (%d,%d) opened nothing — %s",
                      col, row, url_refusal_name(why));
@@ -2536,11 +2522,8 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
                 if (n > 0) {
                     term_select_clear(cur_term());   /* the cursor moved; leave no stray highlight */
                     send_str(seq, (size_t)n);
-                    /* Stamp the moment on THIS session's Tab: a program that cannot honour one of these
-                       presses answers with a BEL, and the pty-read path asks whether a BEL answers these
-                       presses before turning one into a flash. The wheel path is NOT stamped — there the
-                       user asked to scroll. Do not name that pty-read check in a comment: the scan that
-                       pins this call reads main.c as plain text. */
+                    /* Stamped so a BEL answering these presses is not mistaken for one the program rang
+                       on its own. The wheel path is not stamped — there the user asked to scroll. */
                     Tab *st = mux_cur(&mux);
                     if (st)
                         st->synth_ms = (long long)mono_ms();
@@ -2565,10 +2548,8 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t 
     }
 }
 
-/* The wheel inside a program that owns its own screen and never asked for the mouse: it has no terminal
-   scrollback to move, and it must NOT get a mouse report, because a program with no mouse protocol reads
-   one as typed text. So the gesture becomes cursor-key presses, with fractional (trackpad) motion
-   accumulated into whole presses. */
+/* A program that owns its screen and never asked for the mouse has no scrollback to move, and a mouse
+   report would reach it as typed text — so the wheel becomes cursor-key presses. */
 static int app_wheel(Term *t, double delta_lines)
 {
     if (!conf.wheel_sends_keys || !term_wants_key_mouse(t)) {
@@ -2770,9 +2751,8 @@ static void paste_watch_disarm(void)
 }
 
 /* ---------- the cursor blink ----------
-   A tick flips W.cursor_on and marks the frame dirty; the swap happens on the normal frame path inside
-   redraw(), never inside a Wayland listener. The user's `cursor_blink =` is the ceiling: DECSCUSR can
-   only make the cursor LESS flashy, and blinking is gated on the window having focus. */
+   The user's `cursor_blink =` is the ceiling: DECSCUSR can only make the cursor LESS flashy, and a
+   blink needs the window to have focus. */
 static int cbfd = -1;
 static int cbfd_half;                 /* the half-period currently armed; 0 = disarmed */
 static Term *cbfd_term;               /* the session that half-period was decided for */
@@ -2818,20 +2798,16 @@ static void blink_update(void)
     klog(L_DEBUG, "cursor blink: half-period %d ms (%s)", half, half > 0 ? "blinking" : "steady");
 }
 
-/* Is a visual-bell flash on screen right now? The rule is mux_bell_live()'s (src/mux.c) — it is the one
-   that knows only a DRAWN session has a field to wash out. The duration is handed in rather than read by
-   the callee, so `bell = off` needs no branch and the renderer and this tick cannot disagree about when
-   a flash ends. */
+/* mux_bell_live() (src/mux.c) owns the rule — it knows only a DRAWN session has a field to wash out. The
+   duration is handed in so this and the renderer cannot disagree. */
 static int bell_live(void)
 {
     return mux_bell_live(&mux, &g_layout, (long long)mono_ms(),
                          conf.bell == BELL_VISUAL ? BELL_FLASH_MS : 0);
 }
 
-/* The frame timer's bell tick, beside blink_update() because a flash changes on a schedule and nothing
-   else in the loop wakes on one. While it is live the window redraws every frame or the fade is one
-   frozen colour; the frame the last flash ends redraws once more, because the screen still holds the
-   previous wash. */
+/* The frame timer's bell tick: while a flash is live the window redraws every frame or the fade freezes,
+   and the frame it ends on redraws once more to clear the wash. */
 static void bell_tick(void)
 {
     int live = bell_live();
@@ -2840,10 +2816,8 @@ static void bell_tick(void)
     W.bell_live = live;
 }
 
-/* The frame timer's URL tick, beside bell_tick() because a wait expires on a schedule. The open is RE-
-   ASKED at the deadline rather than trusted from the click: the tab may have closed, the pane may have
-   scrolled, or the program may have repainted the line. Anything other than the same answer for the same
-   cell is dropped. */
+/* The frame timer's URL tick. The open is re-checked at the deadline rather than trusted from the click:
+   the tab may have closed, the pane scrolled, or the line repainted since. */
 static void url_tick(void)
 {
     if (!W.url_press_ms)
@@ -2981,20 +2955,16 @@ static int clipboard_paste(const char *why)
     return 1;
 }
 
-/* Send the buffered clipboard text to the PTY, wrapped in the bracketed-paste delimiters when the
-   application asked for mode 2004 (bash/zsh/vim then insert the block instead of running every line as
-   it arrives). Each write stays under the PTY's input buffer so a big paste is never cut in half by the
-   tty layer — a split block would lose the delimiters' pairing. */
+/* Wrapped in bracketed-paste delimiters when the application asked for mode 2004, and each write stays
+   under the tty's input buffer so a large paste is never split mid-block. */
 static void paste_flush(void)
 {
     if (!paste_len)
         return;
     if (fm_cd_state != FMCD_IDLE)
         fm_cd_abort("a paste was inserted at the prompt");
-    /* A NUL byte must never reach the pty. Firefox on Wayland serves UTF-16 code units under a UTF-8
-       label: bash's bracketed-paste reader stops at the first NUL, so a pasted URL arrives as a single
-       `h`, and zsh paints every NUL as `^@`. Repair the block — decode UTF-16 to UTF-8, otherwise drop
-       the NULs — before any of it is written. */
+    /* A NUL must never reach the pty: Firefox on Wayland serves UTF-16 code units under a UTF-8 label,
+       and bash's bracketed-paste reader stops at the first NUL. */
     if (memchr(paste_buf, 0, paste_len)) {
         size_t cap = paste_len * 3 / 2 + 8;
         char *tmp = malloc(cap);
@@ -3138,10 +3108,8 @@ static void registry_global(void *d, struct wl_registry *reg, uint32_t id,
     } else if (!strcmp(iface, wl_shm_interface.name)) {
         W.shm = wl_registry_bind(reg, id, &wl_shm_interface, 1);
     } else if (!strcmp(iface, wl_seat_interface.name)) {
-        /* Bind at v5 so the derived wl_pointer carries axis_discrete/axis_source/axis_stop/frame (all
-           SINCE_VERSION 5), needed for smooth wheel and touchpad scrolling. The compositor's advertised
-           version caps this. wl_keyboard has no events above v4, so a v5 seat adds no unhandled keyboard
-           events. */
+        /* Bound at v5 because axis_discrete/axis_source/axis_stop/frame are version-5 events and smooth
+           wheel needs them. wl_keyboard has no events above v4, so v5 adds no unhandled keyboard events. */
         W.seat = wl_registry_bind(reg, id, &wl_seat_interface, imin_(version, 5));
         wl_seat_add_listener(W.seat, &seat_listener, NULL);
     } else if (!strcmp(iface, xdg_wm_base_interface.name)) {
@@ -3252,10 +3220,8 @@ static void wayland_destroy(void)
 
 /* ---------------- main ---------------- */
 
-/* The launch surface is deliberately small: anything that describes how the terminal LOOKS is a
-   persistent preference in the config files, and the flags that stay are per-launch. An unknown option
-   produces one generic message plus the option list. -c points at kai-term.conf and -b at kai-term.bind,
-   each searched for independently. */
+/* Flags are per-launch; anything about how the terminal LOOKS belongs in the config files. -c points at
+   kai-term.conf and -b at kai-term.bind, each searched for independently. */
 static void usage(const char *argv0, FILE *out)
 {
     fprintf(out,
@@ -3359,10 +3325,8 @@ int main(int argc, char **argv)
         }
     }
 
-    /* -d must also cover the diagnostics the two config readers print, which run BEFORE the file's own
-       `log =` value is known: raise the level first, then settle on the final one (the CLI still beats
-       the file). The binding file is read SECOND on purpose: for a name both files set, kai-term.bind
-       wins. */
+    /* Raise the log level before the config readers run — their own `log =` line is not known yet — then
+       settle on the final one (the CLI still beats the file). */
     if (opt_debug)
         kai_term_loglevel = L_DEBUG;
 
@@ -3394,6 +3358,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* Binds are read second: for a name both files set, kai-term.bind wins. */
     config_load(&conf, opt_config);
     config_load_binds(&conf, opt_binds);
     /* The theme, if the settings file named one, is applied AFTER both files have been read: a colour the user
@@ -3408,16 +3373,12 @@ int main(int argc, char **argv)
     /* Whether an application may repaint the terminal (OSC 4/10/11/104). Process-wide state in src/vt.c, set
        once here like the ink and paper below; `osc_colors = 0` makes the parser ignore all four. */
     term_set_osc_colors(conf.osc_colors);
-    /* Hand the configured ink and paper to src/vt.c BEFORE the first Term exists (mux_open below) and
-       before render_init() clears the window with them. This is what makes ONE `background =` line own
-       both the `padding` margin (glClear) and every blank cell: when the two halves read different
-       numbers the difference draws a frame around the grid. */
+    /* Set in src/vt.c before the first Term exists and before render_init(): if the padding margin and
+       the blank cells read different colours, the difference draws a frame around the grid. */
     term_set_default_colors(conf.fg, conf.bg);
 
-    /* Where the shell starts: -w DIR beats config working_dir, which beats $HOME. The path is
-       resolved and validated in the PARENT so a bad path produces one clean warning instead of a
-       chdir failure inside the child; a file manager can pass the directory it is showing, and the
-       option never changes what later launches do (the config file stays the persistent setting). */
+    /* Where the shell starts: -w DIR beats config working_dir beats $HOME. The path is resolved in the
+       PARENT so a bad one warns once instead of failing chdir inside the child. */
     char wdir[4096];
     expand_tilde(opt_wdir && opt_wdir[0] ? opt_wdir : conf.working_dir, wdir, sizeof(wdir));
     if (!wdir[0]) {
@@ -3467,10 +3428,8 @@ int main(int argc, char **argv)
     if (mux_open(&mux, conf.rows, conf.cols, conf.scrollback) < 0)
         return 1;
 
-    /* The window is asked for the grid PLUS the margin on both sides; the compositor may answer with a
-       different pixel size, and layout_apply() recomputes the panes and cols/rows from what it got. With
-       `tab_bar = always` the window must also hold the bar's row and gap, or the grid comes up one row
-       short of `rows`; that arithmetic is layout_initial_size(). */
+    /* Ask for the grid plus the margin on both sides — plus the bar's row and gap when `tab_bar =
+       always`, or the grid comes up a row short. layout_initial_size() does that arithmetic. */
     int init_w, init_h;
     layout_initial_size(conf.cols, conf.rows, font.cell_w, font.cell_h, conf.padding, PANE_GAP,
                         conf.tab_bar, conf.fm_on, conf.fm_size, &init_w, &init_h);
@@ -3619,10 +3578,8 @@ int main(int argc, char **argv)
                 for (;;) {
                     ssize_t r = read(tb->pty.mfd, rbuf, sizeof(rbuf));
                     if (r > 0) {
-                        /* New output is written relative to the LIVE view (the parser's cursor addresses
-                           row[live_off + cy]), so a scrolled-back view would have its lines overwritten:
-                           return the view to the live anchor first. Per producing session, visible or
-                           not. */
+                        /* The parser addresses rows relative to the LIVE view, so a scrolled-back view
+                           would be overwritten: return the view to the live anchor first. */
                         if (tb->term.g.scroll_off != tb->term.g.live_off)
                             snap_to_live(&tb->term);
                         term_parse(&tb->term, rbuf, (size_t)r);
@@ -3634,10 +3591,8 @@ int main(int argc, char **argv)
                             pty_write(&tb->pty, tb->term.resp, (size_t)tb->term.resp_len);
                             tb->term.resp_len = 0;
                         }
-                        /* An application changed the default ink or paper (OSC 10/11). vt.c moved the
-                           process-wide defaults and swept THIS session's cells; finish the job — sweep
-                           the other sessions, re-point the renderer, and update conf so a new tab gets
-                           the new colour. */
+                        /* An application changed the default ink or paper (OSC 10/11). vt.c did this
+                           session's cells; the other sessions, the renderer and conf still need it. */
                         if (tb->term.colors_dirty) {
                             uint32_t of = tb->term.old_def_fg, ob = tb->term.old_def_bg;
                             uint32_t nf = term_default_fg(),   nb = term_default_bg();
@@ -3651,11 +3606,8 @@ int main(int argc, char **argv)
                             klog(L_INFO, "display: the window's ink and paper are now #%06x / #%06x — "
                                  "an application set them, not kai-term.conf", nf & 0xffffff, nb & 0xffffff);
                         }
-                        /* The program in this session rang a BEL. The model only says THAT it happened;
-                           here it becomes a moment on this process's clock, which is all the renderer
-                           needs to draw a fading flash. The flag is cleared because it is an EVENT:
-                           leaving it set would re-arm the flash on every later read. Marking the window
-                           dirty is gated on the session being DRAWN. */
+                        /* A timestamp is all the renderer needs to fade a flash. The flag is cleared
+                           because leaving it set would re-arm the flash on every later read. */
                         if (tb->term.bell_rang) {
                             tb->term.bell_rang = 0;
                             if (bell_is_ours((long long)mono_ms(), tb->synth_ms, BELL_OURS_MS)) {
@@ -3709,10 +3661,9 @@ int main(int argc, char **argv)
                 /* A click that landed on a web address opens once the double-click window has passed — see
                    url_tick(). No redraw is implied: nothing about it is drawn. */
                 url_tick();
-                /* Draw when something changed AND no frame callback is in flight: frame_cb == NULL means
-                   the compositor already showed the buffer we committed, so the swap is least likely to
-                   wait for a release. `resized` is in the condition because a size change is often the
-                   only change. */
+                /* Draw when something changed and no frame callback is in flight: with frame_cb == NULL
+                   the compositor has already shown the last buffer, so the swap is least likely to
+                   block. */
                 if ((W.dirty || W.resized) && !W.frame_cb)
                     redraw();
             } else if (fd == sfd) {
