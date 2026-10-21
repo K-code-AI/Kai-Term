@@ -1,7 +1,6 @@
-/* EGL + OpenGL 2.x. A frame is whatever layout.c says it is: the tab bar strip, one Cell grid per
- * pane, and the file-manager band's two grids, all drawn the same way. GL blending is never enabled,
- * so draw order alone puts a picture over the cell backgrounds and under the text — hence two vertex
- * batches, with one draw per application picture between them. */
+/* EGL + OpenGL 2.x. A frame is whatever layout.c says it is: the tab bar strip, one Cell grid per pane,
+   * and the file-manager band's two grids, all drawn the same way. GL blending is never enabled, so draw
+   * order alone does the layering — hence two vertex batches with the pictures drawn between them. */
 /* GL/glext.h only declares the GL 2.x entry points when GL_GLEXT_PROTOTYPES is
    set; must be defined before any GL header is included. */
 #define GL_GLEXT_PROTOTYPES 1
@@ -15,8 +14,7 @@
 
 /* Per-instance record layout (19 floats): origin(2) size(2) tex0(2) tex1(2) fg(4) bg(4) glyph(1)
    band0(1) band1(1). Per-vertex expanded layout (21 floats): corner(2) + the 19-float record.
-   band0/band1 are the selection band's absolute pixel x edges (0 when no band); the fragment
-   shader uses them to pick the background behind a glyph per-fragment (true sub-glyph selection). */
+   band0/band1 are the selection band's absolute pixel x edges (0 when there is no band). */
 #define FLOATS_PER_INST 19
 #define FLOATS_PER_VERT 21
 
@@ -66,10 +64,9 @@ static const char *fs_src =
     "varying float v_band0;\n"
     "varying float v_band1;\n"
     "void main(void) {\n"
-    /* No GL blending: the shader composites as premul + bg*(1-a), picking the background per fragment so a
-       partially selected glyph highlights only over the covered part. v_bg.a carries the window opacity;
-       ink must NOT be translucent. A Wayland EGL ARGB buffer is premultiplied, so the colour channels must
-       already carry the alpha. */
+    /* No GL blending: the shader composites as premul + bg*(1-a), picking the background per fragment.
+       v_bg.a carries the window opacity; ink must NOT be translucent, and the ARGB buffer is
+       premultiplied. */
     "    vec4 bg = v_bg;\n"
     "    if (v_glyph > 0.5 && v_px >= v_band0 && v_px < v_band1)\n"
     "        bg = u_sel;\n"
@@ -89,10 +86,9 @@ static const char *fs_src =
     "    }\n"
     "    float a = texture2D(u_atlas, v_tex).r;\n"
     "    a *= v_glyph;\n"
-    /* Source-over in premultiplied space. The alpha is the ink's coverage PLUS whatever of the
-       (translucent) background is still visible under it -- NOT max(a, bg.a): that forced alpha 1 for
-       every fragment inside a glyph quad's rectangle, so the bitmap bounding box (the counter of an
-       'o', the margins around a thin glyph) was painted opaque near-black on a transparent window. */
+    /* Source-over in premultiplied space: the alpha is the ink's coverage PLUS whatever of the
+       (translucent) background is still visible under it. NOT max(a, bg.a) — that forced alpha 1 across
+       the whole quad rectangle and painted a glyph's bounding box near-black on a transparent window. */
     "    gl_FragColor = vec4(v_fg.rgb * a + bgp * (1.0 - a), a + bg.a * (1.0 - a));\n"
     "}\n";
 
@@ -513,10 +509,8 @@ static unsigned img_tex(Render *r, KImage *im, int frame)
                      GL_RGBA, GL_UNSIGNED_BYTE, im->rgba);
         GLenum err = glGetError();
         if (err != GL_NO_ERROR) {
-            /* The texture has NO texels. Returning it anyway is not "the picture is missing": a draw
-               that samples a texture the GPU never allocated faults inside libnvidia-eglcore and takes
-               the process with it. draw_images() skips tex 0, and version/w/h stay at their old values
-               so the next frame tries the upload again. */
+            /* A draw that samples a texture with no storage faults inside libnvidia-eglcore. version/w/h
+               keep their old values so the next frame retries the upload. */
             if (log_rate(&r->img_upload_fails))
                 klog(L_WARN, "image glTexImage2D failed: 0x%x (%dx%d) — the picture is skipped",
                      err, im->w, im->h);
@@ -639,10 +633,8 @@ uint32_t render_bell(uint32_t bg, uint32_t fg, int strength)
     return mix_c(bg, fg, BELL_MIX_MAX * strength / 1000);
 }
 
-/* One place derives every CHROME colour of a frame. See the comment on Chrome in kai-term.h: the point
-   of making it a function is that a configured colour can then be checked where it becomes a vertex
-   colour, not only where it is parsed. Nothing here reads a font, a Term or GL state, so
-   bin/test_render.c can call it with no display and no context. */
+/* One place derives every CHROME colour, so a configured colour can be checked where it becomes a vertex
+   colour, not only where it is parsed (see Chrome in kai-term.h). */
 void render_chrome(const Render *r, Chrome *out)
 {
     out->sel_bg      = r->selection_color;
@@ -653,16 +645,12 @@ void render_chrome(const Render *r, Chrome *out)
     out->cursor      = r->cursor_color;
     out->cursor_off  = mix_c(r->cursor_color, r->bg, 55);
     out->border      = r->selection_color;
-    /* The confirm-quit row: the highlight colour for the field, the default ink for the text. One value
-       (Config.selection_color) therefore owns every "this is the thing in this window" signal — the band,
-       the active tab item, the focus border and the question — which is the rule `selection_color =`
-       became the single key for. */
+    /* Config.selection_color owns every "this is the thing in this window" signal — the band, the active
+       tab item, the focus border and this question. */
     out->notice_bg   = r->selection_color;
     out->notice_fg   = r->fg;
-    /* The confirm-quit dialog: a box drawn over the terminal. The field is a LIFTED paper — with no GL blending,
-       "in front of" has to be earned by a colour that differs from what is behind it. The border and the
-       Yes label take the colour that owns every "this is the thing here" signal; No takes the palette's
-       red, so a theme or an OSC 4 repaint moves it. */
+    /* With no GL blending, "in front of" has to be earned by a colour that differs from what is behind.
+       No takes the palette's red, so a theme or an OSC 4 repaint moves it. */
     out->dialog_bg     = mix_c(r->bg, r->fg, 15);
     out->dialog_border = r->selection_color;
     out->dialog_fg     = r->fg;
@@ -671,10 +659,9 @@ void render_chrome(const Render *r, Chrome *out)
     out->dialog_btn_bg = r->bg;
 }
 
-/* ONE rule for a horizontal line under a cell's characters, asked by both underlines this renderer draws.
-   A quad's y is its BOTTOM edge measured UP from the cell's bottom edge, so `cell_h - h` is the TOP of the
-   cell — a strikethrough. The line goes at the bottom of the font's descender band: never above the
-   baseline, never below the cell. The two callers may disagree only about thickness. */
+/* ONE rule for a line under a cell's characters, asked by both underlines this renderer draws. A quad's
+   y is its BOTTOM edge measured UP from the cell's bottom edge, so `cell_h - h` is the TOP of the cell —
+   a strikethrough. */
 static int underline_y(int cell_h, int ascent_px, int descent_px, int h)
 {
     int baseline = cell_h - ascent_px;      /* px from the cell's bottom edge up to the baseline */
@@ -688,10 +675,9 @@ static int underline_y(int cell_h, int ascent_px, int descent_px, int h)
     return lo;
 }
 
-/* One place decides what a cursor cell looks like: the draw loop is in no test binary, so a rule written
-   there cannot be checked. The default is a bar and there is no `cursor_style` key; an application asks for
-   another shape with DECSCUSR. The clamp is the whole geometry — a bar wider than cell/3 is a block
-   wearing a hat, and the floor of 1 matters because a cell can be narrower than 3 px. */
+/* The default is a bar and there is no `cursor_style` key; an application asks for another shape with
+   DECSCUSR. The clamp is the whole geometry: a bar wider than cell/3 is a block wearing a hat, and the
+   floor of 1 matters because a cell can be narrower than 3 px. */
 void render_cursor(int style, int visible, int band_on, int cell_w, int cell_h, int width_px,
                    int ascent_px, int descent_px, CursorDraw *o)
 {
@@ -954,10 +940,8 @@ static int draw_images(Render *r, Term *t, const PaneGeom *pg, const PaneDraw *p
         float u0 = (cl - x0) / w_px, u1 = (cr - x0) / w_px;
         float v0 = (ct - y0) / h_px, v1 = (cb - y0) / h_px;
 
-        /* No GL blending, so the quad composites against its OWN copy of the background behind it: the
-           colour of the cell its top-left visible corner sits in, which is what batch A already painted
-           there. A picture spanning cells with different backgrounds blends against only one of them —
-           the price of never enabling blending (see fs_src). */
+        /* No GL blending, so a picture composites against its OWN copy of the background — the colour of
+           the cell its top-left visible corner sits in, even when it spans cells with different ones. */
         const Cell *anchor = &grid_vprow(pd->g, iclamp_(view[i].crow, 0, pd->nrows - 1))
                                 [iclamp_(view[i].ccol, 0, pd->ncols - 1)];
         uint32_t cellbg = (anchor->attr & ATTR_INVERSE) ? anchor->fg : anchor->bg;
@@ -1154,10 +1138,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     col2f(chrome.sel_bg, selc);
     selc[3] *= r->opacity;
 
-    /* The rest of the chrome colours come from render_chrome() (see Chrome in kai-term.h): the visible
-       session's bar item uses the selection highlight, the others a background nudged toward the
-       foreground with dimmed text, and the cursor of a session that is DRAWN but not the visible one is
-       dimmed too — so a side-by-side window still shows which session the keyboard talks to. */
+    /* The rest of the chrome colours come from render_chrome() (see Chrome in kai-term.h). The cursor of
+       a session that is DRAWN but not the visible one is dimmed, so a side-by-side window still shows
+       which session the keyboard talks to. */
 
     /* Staging space: at most 3 quads per grid cell, (BAR_LABEL_MAX + 2) per bar item, NOTICE_MAX + 1 for the
        confirm-quit row, the same argument for the dialog's lines and labels, and 4 for the border. */
@@ -1185,9 +1168,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     float bg[4], fg[4];
 
     /* Back to front over EVERY pane: cell backgrounds, selection bands, cursor and hover quads, glyphs.
-       All backgrounds go before any glyph because a wide glyph's quad spans into the next cell. The two
-       draw calls are split there so the application pictures land between them: over the paper, under
-       the text. */
+       All backgrounds go before any glyph because a wide glyph's quad spans into the next cell, and the
+       two draws are split there so the pictures land between them — over the paper, under the text. */
 
     /* Cell backgrounds (always, so every pane is fully painted). An unselected BLOCK cursor paints its
        block here; a bar or an underline does not — it is its own quad in batch B (see render_cursor).
@@ -1235,10 +1217,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
-    /* The visual bell — at most one quad per pane, over that pane's cell backgrounds and under
-       everything batch B draws, so the text stays readable while the field fades. Per PANE, not
-       per window: only the pane whose session rang washes out, and the whole pane rect including
-       its leftover pixels at the right and bottom. */
+    /* One quad per pane, over the cell backgrounds and under the glyphs, so the text stays readable
+       while the field fades. Per PANE, not per window: only the pane whose session rang washes out. */
     for (int p = 0; p < lay->npane; p++) {
         int tab = lay->pane[p].tab;
         if (tab < 0 || tab >= TAB_MAX || !pane_term(terms, tab))
@@ -1333,10 +1313,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         pane_prepare(r, t, &lay->pane[p], f, &pd);
         for (int y = 0; y < pd.nrows; y++) {
             for (int x = 0; x < pd.ncols; x++) {
-                /* No band over empty space. A cell that was never written (ch == 0) has nothing to
-                   highlight, so a selection that reaches past the end of a line stops at the last glyph
-                   instead of painting the whole window. A real space (' ') and the continuation cell of a
-                   wide glyph DO get the band — see term_cell_highlightable. */
+                /* No band over a cell that was never written: a selection past the end of a line stops
+                   at the last glyph instead of painting the whole window. See term_cell_highlightable. */
                 if (!term_cell_highlightable(t, x, y))
                     continue;
                 float hl0 = 0, hlw = 0;
@@ -1388,10 +1366,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         nquads++;
     }
 
-    /* The hover underline — one quad per cell of the address the pointer is on, in the ONE pane the
-       pointer is over (-1 draws nothing). Drawn where the cursor quad is, so the line is over the paper
-       and a glyph is never hidden behind it. The colour is the CELL's own ink, so an address printed in
-       blue underlines in blue. */
+    /* One quad per cell of the address the pointer is on, in the ONE pane the pointer is over (-1 draws
+       nothing). The colour is the CELL's own ink, so an address printed in blue underlines in blue. */
     for (int p = 0; p < lay->npane; p++) {
         if (r->hover_tab < 0 || lay->pane[p].tab != r->hover_tab)
             continue;
@@ -1438,10 +1414,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
-    /* Glyph quads (topmost), per pane. Continuation cells of a wide char are skipped (the wide
-       glyph is drawn from its anchor cell). The glyph quad carries the cell's own background; the
-       fragment shader picks the selection colour per-fragment where the glyph's pixel x falls inside
-       [band0,band1), giving true sub-glyph selection without GL blending. */
+    /* Glyph quads (topmost), per pane. A wide char's continuation cells are skipped — the glyph is drawn
+       from its anchor cell. The quad carries the cell's own background and the band edges, which the
+       fragment shader uses to pick the selection colour per-fragment. */
     for (int p = 0; p < lay->npane; p++) {
         Term *t = pane_term(terms, lay->pane[p].tab);
         if (!t)
@@ -1475,10 +1450,9 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                                 x == t->cx && y == t->cy;
                 uint32_t cur_col = (lay->pane[p].tab == lay->active_tab) ? chrome.cursor : chrome.cursor_off;
                 if (is_cursor) {
-                    /* the same decision the cell-background and cursor-quad steps made, so the three
-                       cannot disagree. A block inverts the ink (and tints it when a band covers the
-                       cell); a bar or an underline leaves the ink as the cell's pen set it, because
-                       the bar is a separate quad and has nothing to invert. */
+                    /* The same decision the cell-background and cursor-quad steps made, so the three
+                       cannot disagree. A block inverts the ink; a bar or underline has nothing to
+                       invert. */
                     int phase = (lay->pane[p].tab == lay->active_tab) ? r->cursor_on : 1;
                     CursorDraw cd;
                     render_cursor(t->cur_style, phase, hl_on, (int)cw, (int)ch, r->cursor_width,
@@ -1506,10 +1480,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
         }
     }
 
-    /* The file-manager band's glyphs. Same helper, same font, same emoji rules — a file name can
-       contain any codepoint, and fm.c already gave a wide one the ATTR_WIDE continuation cell vt.c
-       uses, so the wide/cluster logic above applies to it unchanged. No selection band here (the file
-       manager has no text selection), hence band0 == band1 == 0. */
+    /* Same helper, same font, same wide/emoji rules: fm.c gives a wide glyph the same ATTR_WIDE
+       continuation cell vt.c uses. No selection band here, hence band0 == band1 == 0. */
     if (fm && fm->on) {
         for (int q = 0; q < 2; q++) {
             int x, y, w, h;
@@ -1707,10 +1679,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
             glGenTextures(1, &f->atlas_tex);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, f->atlas_tex);
-        /* GL_LUMINANCE (not GL_R8/GL_RED): the context is GL 2.1, where GL_R8 (a GL 3.0+
-           internal format) and GL_RED (a legacy channel constant) are invalid and make
-           glTexImage2D fail with GL_INVALID_ENUM. GL_LUMINANCE is valid GL 1.1+ and replicates
-           the single channel to RGB, so the shader's texture2D(...).r works. */
+        /* GL_LUMINANCE, not GL_R8/GL_RED: the context is GL 2.1, where those fail glTexImage2D with
+           GL_INVALID_ENUM. It replicates the single channel to RGB, so the shader reads .r. */
         glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, f->atlas_w, f->atlas_h, 0,
                      GL_LUMINANCE, GL_UNSIGNED_BYTE, f->atlas);
         GLenum terr = glGetError();
@@ -1779,10 +1749,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
     }
 
     glViewport(0, 0, r->vw, r->vh);
-    /* Clear every frame: the padding margin, the gaps between panes and the whole-cell remainders are
-       outside every quad, so nothing else writes them, and after a resize the new back buffer has no
-       defined contents. Cleared ONCE per frame — clearing again between the batches would erase the
-       batch already drawn. */
+    /* The margin, pane gaps and whole-cell remainders are outside every quad, so nothing else writes
+       them. Cleared ONCE per frame — clearing between the batches would erase the batch already drawn. */
     set_clear_color(r);
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -1826,10 +1794,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
        have used them, before the buffer is presented */
     img_tex_sweep(r, frame);
 
-    /* Returns 1 when the buffer really was attached (eglSwapBuffers succeeded) and 0 otherwise.
-       main.c needs that: a wl_surface_frame callback may only be armed together with a commit that
-       attaches a buffer, so a failed swap must NOT arm one (the caller retries from its timer
-       instead — see the frame-pacing invariant in main.c). */
+    /* 1 only when the buffer really was attached: main.c may arm a wl_surface_frame callback only with a
+       commit that attaches a buffer, so a failed swap must not arm one. */
     if (!eglSwapBuffers(r->edpy, r->esurf)) {
         klog(L_ERROR, "eglSwapBuffers failed: 0x%x", eglGetError());
         return 0;
@@ -1839,10 +1805,8 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
 
 void render_resize(Render *r, int w, int h)
 {
-    /* On Wayland the EGL window surface tracks the wl_egl_window's buffer size
-       automatically; wl_egl_window_resize() (main.c) already resized the native window.
-       The surface must NOT be destroyed and re-created here (can return EGL_BAD_MATCH and
-       leave esurf == EGL_NO_SURFACE, so nothing is ever painted). Just record the size. */
+    /* The EGL window surface tracks the wl_egl_window's buffer size, so only the size is recorded here:
+       re-creating the surface can return EGL_BAD_MATCH and leave nothing to paint with. */
     if (r->edpy == EGL_NO_DISPLAY)
         return;
     r->vw = w;
