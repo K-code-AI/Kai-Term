@@ -178,10 +178,9 @@ int cluster_is_wide(const uint32_t *seq, int n)
     return 0;
 }
 
-/* The ink and the paper of a cell nothing has painted. Process-wide rather than a Term field because
-   term_init() memsets the whole Term and the blank/erase/scroll/reflow paths have no Config pointer. ONE
-   value does two jobs and must stay one: the colour drawn for a never-written cell, and the sentinel
-   cell_pristine() compares against. Split them and reflow counts trailing blanks as content. */
+/* Process-wide: term_init() memsets the whole Term and the erase/scroll/reflow paths have no Config
+   pointer. One value serves two jobs — the colour of a never-written cell and the sentinel
+   cell_pristine() compares against — and splitting them makes reflow count trailing blanks as content. */
 static uint32_t g_def_fg = DEF_FG, g_def_bg = DEF_BG;
 
 /* The 256-colour palette, process-wide for the same reason: term_init() memsets the Term, so palette state
@@ -257,10 +256,8 @@ void term_palette_entry_reset(int idx)
     g_palette[idx] = palette_builtin_entry(idx);
 }
 
-/* Whether an application may repaint the terminal's OWN colours (OSC 4 / 10 / 11 / 104). Process-wide
-   like the palette and the two defaults below: it is a property of the window, not of a session. With
-   `osc_colors = 0` nothing running inside the terminal can change a colour, which is the security-
-   relevant half of the feature. */
+/* Process-wide like the palette: it is a property of the window, not of a session. With `osc_colors = 0`
+   nothing running inside can change a colour. */
 static int g_osc_colors = 1;
 
 void term_set_osc_colors(int on) { g_osc_colors = on ? 1 : 0; }
@@ -431,8 +428,8 @@ void grid_init(Grid *g, int rows, int cols, int scrollback)
    row[scroll_off .. scroll_off+rows-1]   viewport
    row[scroll_off+rows .. rcap-1]         free slots (cleared before they re-enter the viewport)
    with 0 <= scroll_off <= live_off <= sb_limit(g) == min(scrollback_max, rcap - rows): growing the
-   viewport shrinks the scrollback that fits. live_off follows the newest output, user scrolling moves
-   scroll_off below it, and grid_init never frees a row buffer, so every content move is a rotation
+   viewport shrinks the scrollback that fits. live_off follows the newest output and user scrolling
+   moves scroll_off below it. grid_init never frees a row buffer, so every content move is a rotation
    and row[] stays a permutation of those buffers. */
 Cell *grid_vprow(Grid *g, int y)
 {
@@ -440,9 +437,9 @@ Cell *grid_vprow(Grid *g, int y)
 }
 
 /* ---------------- reflow (column-count change) ----------------
- * Join the physical rows back into the logical lines the application wrote (using the Grid.wrap marks) and
- * re-break at the new width, so a width change is loss-free; a wide glyph's anchor and its continuation
- * are never split. Re-breaking can need more slots, so the OLDEST rows are evicted like overflow. */
+   * Join the physical rows back into the logical lines the application wrote, using the Grid.wrap marks
+   * (set where a row was broken by the right margin), and re-break at the new width. Re-breaking can
+   * need more slots, so the OLDEST rows are evicted like overflow. */
 /* A cell that was never written to and carries no colour of its own. */
 static int cell_pristine(const Cell *c)
 {
@@ -602,10 +599,8 @@ static void grid_reflow(Grid *g, int new_cols, int *slot, int *col)
     /* the newest content stays anchored at the bottom of the viewport */
     g->live_off = iclamp_(kept - g->rows, 0, sb_limit(g));
     g->scroll_off = g->live_off;
-    /* Re-number the document rows: the newest row keeps its absolute number, so slot kept-1 must still
-       be document row row_base + used - 1. Narrowing makes `kept` grow (row_base falls), widening merges
-       rows (row_base rises), so images anchored to a document row keep their distance from the newest
-       text. */
+    /* The newest row keeps its absolute number, so slot kept-1 is still document row row_base + used -
+       1. That is what keeps an image anchored to a document row the same distance from the newest text. */
     g->row_base += (int64_t)used - kept;
 
     if (slot) {
@@ -622,10 +617,9 @@ static void grid_reflow(Grid *g, int new_cols, int *slot, int *col)
         klog(L_DEBUG, "reflow: %d -> %d rows at %d cols (%d evicted)", used, kept, new_cols, kept - used);
 }
 
-/* Viewport height change: the rows math, shared by the reflowing and the plain resize. cur_slot is the
-   absolute row[] slot of the tracked cell (the cursor), or -1. It decides WHICH end of the viewport
-   loses rows on a shrink — get it wrong and the cursor moves off its line and the old copy stays on
-   screen. */
+/* cur_slot is the row[] slot of the tracked cell (the cursor), or -1. It decides which end of the
+   viewport loses rows on a shrink — get it wrong and the cursor moves off its line while the old copy
+   stays on screen. */
 static void grid_resize_rows(Grid *g, int rows, int cur_slot)
 {
     /* Resize math below assumes the slots below the viewport are free, which is only true
@@ -633,10 +627,8 @@ static void grid_resize_rows(Grid *g, int rows, int cur_slot)
        live bottom first (the scrollback content itself is preserved). */
     g->scroll_off = g->live_off;
     if (rows < g->rows) {
-        /* Shrink: drop rows from the BOTTOM while the cursor has rows below it — everything under the
-           cursor is spare, so it keeps its slot and viewport row and the shell's SIGWINCH repaint lands
-           on its own prompt. Once the cursor is on the bottom row the TOP row goes instead, as the
-           newest scrollback line. */
+        /* Drop from the BOTTOM while the cursor has rows below it — those are spare. Once the cursor is
+           on the bottom row the TOP row goes instead, becoming the newest scrollback line. */
         while (g->rows > rows) {
             int used = g->scroll_off + g->rows;
             int cy = cur_slot >= 0 ? cur_slot - g->scroll_off : -1;   /* cursor's viewport row */
@@ -739,10 +731,9 @@ int mouse_sgr_button(uint32_t evdev_code)
     }
 }
 
-/* Which surface owns a pointer press, in the order the user expects: the confirm-quit BOX, then the TAB
-   BAR and the FILE-MANAGER BAND (a program that grabbed the mouse must not eat the chrome that names its
-   tab or its files), then the application that asked for the mouse, then the pane. NULL answers
-   PTR_NONE. */
+/* The order a user expects: the confirm box, then the tab bar and the file-manager band (a program that
+   grabbed the mouse must not eat the chrome that names its tab), then the application that asked for the
+   mouse, then the pane. */
 int ptr_press_action(const PtrPress *p)
 {
     if (!p)
@@ -874,10 +865,8 @@ int term_click_arrow_keys(const Term *t, int col, int row, char *out, size_t cap
     if (col < 0 || row < 0 || col >= t->g.cols || row >= t->g.rows)
         return 0;
 
-    /* A click right of the line's text means "put me at the end of that line": sending more Right
-       presses than the line holds walks into the NEXT line — a click at column 60 of a 58-column line
-       lands on the row below. Clamping to the last glyph + 1 is the position a program leaves its cursor
-       at when the line ends. */
+    /* A click right of the line's text means "put me at the end of that line": more Right presses than
+       the line holds walk into the NEXT line, so the count is clamped to the last glyph + 1. */
     int last = row_last_col(t, row);
     int want_col = col > last + 1 ? last + 1 : col;
     if (want_col < 0)
@@ -964,10 +953,9 @@ void term_grid_geometry(int win_w, int win_h, int cell_w, int cell_h, int pad,
     int mx = imin_(pad, imax_((win_w - cell_w) / 2, 0));
     int my = imin_(pad, imax_((win_h - cell_h) / 2, 0));
 
-    /* The offset is the margin itself; the pixels that do not fill a whole cell are left at the
-       right/bottom on purpose — the pointer mapping is col = (ptr_x - xoff) / cell_w clamped to cols-1,
-       and moving the remainder to the top/left makes it name the row BELOW the pointer for most of each
-       row's height. */
+    /* The pixels that do not fill a whole cell are left at the right/bottom on purpose: the pointer
+       mapping divides (ptr_x - xoff) by the cell size, so a top/left remainder would name the row BELOW
+       the pointer. */
     if (xoff) *xoff = mx;
     if (yoff) *yoff = my;
     if (cols) *cols = imax_(1, (win_w - 2 * mx) / cell_w);
@@ -975,11 +963,9 @@ void term_grid_geometry(int win_w, int win_h, int cell_w, int cell_h, int pad,
 }
 
 /* ---------- the shell's input line ----------
-   Writing at the prompt on top of a half-typed command mangles it and then RUNS the mangled result,
-   so main.c asks term_at_prompt() first. Nothing tells where a prompt ENDS — the tty's echo arrives
-   through the same fd as any other output — so what is told apart is WHO caused the output: bytes
-   Kai-Term sent are tracked in input_pending, and the cursor-row snapshot is re-taken at the end of a
-   burst only while none of them are outstanding. */
+   Nothing says where a prompt ENDS — the tty's echo arrives through the same fd as any other output,
+   so what is told apart is WHO caused the bytes: input_pending tracks what Kai-Term sent, and the
+   cursor-row snapshot is re-taken at the end of a burst only while none of it is outstanding. */
 
 /* Can this payload NOT put a character on the shell's input line? A whitelist, so the answer is "it can"
    for anything not recognised — text, UTF-8, a paste, Tab, Up/Down, Ctrl+R/S, F-keys, a truncated
@@ -1175,10 +1161,9 @@ static int prompt_line_text(Term *t, char *out, size_t cap, int strict_right)
             if (!prompt_cell_same(&row[x], &t->prompt_row[x]))
                 return 0;
 
-    /* What is between the end of the prompt and the cursor is what the user typed. Wide glyphs own two
-       cells (the second is an empty ATTR_WIDE continuation) and a cluster's extra codepoints belong to
-       the anchor, so re-typing the bytes reproduces the line. Built locally and copied only at the end,
-       so a caller that gets 0 finds its buffer untouched. */
+    /* Wide glyphs own two cells (the second is an ATTR_WIDE continuation) and a cluster's extra
+       codepoints belong to the anchor, so re-typing the bytes reproduces the line. The buffer is only
+       written on success. */
     char tmp[FM_LINE_MAX];
     size_t n = 0;
     for (int x = t->prompt_cx; x < t->cx; x++) {
@@ -1230,18 +1215,14 @@ int term_prompt_line_is(Term *t, const char *text)
 
 void term_resize(Term *t, int rows, int cols)
 {
-    /* A resize moves and re-wraps rows, so a snapshot taken before it names cells that no longer exist.
-       The clean/dirty answer must survive anyway — a user who has typed nothing should still be able to
-       use the file manager after dragging the window — so it is read BEFORE the rows move and re-taken
-       AFTER them if it was clean. */
+    /* A resize re-wraps rows, so a snapshot taken before it names cells that no longer exist; the
+       clean/dirty answer is read before the rows move and re-taken after them if it was clean. */
     int was_clean = term_at_prompt(t);
     int old_live = t->g.live_off;
     int old_cy = t->cy;
     int old_cols = t->g.cols;
-    /* A DIRTY line is the one the file manager has to DESCRIBE before it erases and re-types, and
-       opening the band resizes the grid — which would destroy that description. Keeping it is only
-       honest when the resize did not touch the line: same width, cursor ON the snapshot row, and the row
-       under the cursor matches cell for cell. */
+    /* Keeping a dirty snapshot across the resize that opens the band is only honest when the resize did
+       not touch the line: same width, cursor ON the snapshot row, and that row matching cell for cell. */
     Cell *saved = NULL;
     if (!was_clean && t->prompt_valid && t->prompt_row && cols == old_cols &&
         old_cy == t->prompt_cy && old_cols > 0) {
@@ -1259,10 +1240,8 @@ void term_resize(Term *t, int rows, int cols)
        surviving line). Without reflow the slot does not move. */
     int slot = old_live + old_cy, col = t->cx;
     if (t->alt_screen) {
-        /* While the alternate screen is active t->g IS that screen and t->alt holds the parked MAIN grid
-           — the opposite of what the names suggest. A full-screen application gets SIGWINCH and repaints
-           itself, so the alt screen must NOT be re-wrapped; the parked main screen is reflowed like any
-           other width change. */
+        /* t->g IS the alternate screen while it is active and t->alt holds the parked MAIN grid — the
+           opposite of the names. The alt screen is not re-wrapped; the application repaints itself. */
         grid_resize_plain(&t->g, rows, cols, slot);
         grid_resize(&t->alt, rows, cols, NULL, NULL);
     } else {
@@ -1318,10 +1297,9 @@ void term_selection_span(Term *t, SelSpan *s)
     }
 }
 
-/* Covered sub-range of cell (col,row) in cell-fraction units, clamped to [col,col+1]; 1 when covered
-   (then *b > *a). Rows strictly between the span rows are fully covered, the top/bottom rows start and
-   end at the sub-cell edges. A click with no movement covers the whole cell, so a single click still
-   selects a glyph. */
+/* Coverage is in cell-fraction units clamped to [col,col+1], and 1 is returned when anything is covered
+   (then *b > *a). Rows strictly between the span's rows are fully covered; a click with no movement
+   covers its whole cell. */
 int sel_span_cover(const SelSpan *s, int cols, int col, int row, double *a, double *b)
 {
     *a = 0.0;
@@ -1389,10 +1367,8 @@ int term_selected(Term *t, int col, int row)
     return term_selection_cover(t, col, row, &a, &b);
 }
 
-/* Should the highlight band actually be PAINTED over this cell? ch == 0 means nothing was ever written,
-   so no band: a selection running past the end of a line stops at the last real glyph. A real space DOES
-   get one, which is what shows a multi-line selection is still connected, and a wide continuation cell
-   keeps its band or the right half of a CJK/emoji glyph loses its highlight. */
+/* ch == 0 means nothing was ever written, so a selection running past the end of a line stops at the
+   last real glyph. A real space, and a wide glyph's continuation cell, DO get a band. */
 int term_cell_highlightable(Term *t, int col, int row)
 {
     if (row < 0 || row >= t->g.rows || col < 0 || col >= t->g.cols)
@@ -1436,10 +1412,8 @@ static int trailing_punct(uint32_t ch)
     }
 }
 
-/* The word at (col,row): the maximal run of word cells around the clicked cell, then the trailing
-   punctuation cut off. Leading punctuation STAYS, so a path like `/etc/passwd` keeps its first
-   character. Returns 0 only when (col,row) is not a cell at all; a click on a blank returns the clicked
-   cell. */
+/* The maximal run of word cells around the click, with trailing punctuation cut and leading punctuation
+   KEPT so `/etc/passwd` keeps its first character. A click on a blank returns that cell. */
 int term_word_span(Term *t, int col, int row, int *out_c0, int *out_c1)
 {
     if (!out_c0 || !out_c1)
@@ -1664,10 +1638,8 @@ static void alt_screen_leave(Term *t, int restore_cursor)
     t->cx = iclamp_(t->cx, 0, t->g.cols - 1);
     t->cy = iclamp_(t->cy, 0, t->g.rows - 1);
     t->wrap_next = 0;
-    /* Back from the alternate screen the snapshot is STILL the one taken before the application ran, and
-       that is right: the main grid and the cursor are restored byte-for-byte. Re-taking it here would
-       record the cursor where the user left it, which makes a half-typed command look like an EMPTY
-       prompt. The end-of-burst snapshot is skipped while the alt screen is active. */
+    /* The snapshot is still the one taken before the application ran — the main grid is restored byte
+       for byte. Re-taking it here would make a half-typed command look like an empty prompt. */
 }
 
 static void linefeed(Term *t)
@@ -1740,10 +1712,8 @@ static void putch(Term *t, uint32_t cp)
 
     if (t->wrap_next && t->cx >= t->g.cols) {
         t->cx = 0;
-        /* The line the cursor is leaving was broken by the RIGHT MARGIN, not by the application. Mark it
-           BEFORE the linefeed: this is the only information that lets a later width change join the two
-           physical rows back into one logical line. linefeed() may scroll, and the rotation moves the
-           mark with its row. */
+        /* Mark it BEFORE the linefeed — it is the only record that the row was broken by the right
+           margin, which a later width change needs to join the rows back. */
         t->g.wrap[t->g.scroll_off + t->cy] = 1;
         linefeed(t);
     }
@@ -1870,10 +1840,8 @@ void term_set_clear_scrollback(int on)
     g_clear_scrollback = on ? 1 : 0;
 }
 
-/* Build the bytes a paste of `text` is sent to the PTY as (see kai-term.h). With bracketed paste mode
-   on, the block is delimited by ESC[200~ / ESC[201~: bash/zsh/readline/vim then insert it literally,
-   newlines included, instead of letting every CR run a command. The caller writes the delimiters as
-   separate writes so a huge paste never needs prefix+text+suffix in one buffer. */
+/* With bracketed paste mode on the block is delimited by ESC[200~ / ESC[201~, so bash/zsh/vim insert it
+   literally instead of letting every CR run a command. The caller writes the delimiters separately. */
 int paste_wrap(int bracketed, const char *text, size_t len, char *out, size_t cap)
 {
     size_t need = len;
@@ -1897,11 +1865,9 @@ int paste_wrap(int bracketed, const char *text, size_t len, char *out, size_t ca
 }
 
 /* ---------- clipboard text policy (pure, unit-testable) ----------
-   Two independent defects live at the clipboard boundary, both reported as "a stray character when
-   I paste": WHICH TYPE TO ASK FOR (a source may advertise several, and keeping the last advertised
-   is an accident of enumeration order, so clipboard_mime_rank() makes the choice explicit) and WHAT
-   BYTES COME BACK (Firefox serves UTF-16 code units under a UTF-8 label, and a NUL reaching the pty
-   truncates the paste or paints it as ^@). */
+   Two separate things go wrong at this boundary: WHICH type to ask for, and WHAT BYTES come back
+   (Firefox serves UTF-16 code units under a UTF-8 label, and a NUL reaching the pty truncates the
+   paste). */
 
 /* Preference order for a text mime type: 0 = not text, higher = ask for this one. */
 int clipboard_mime_rank(const char *mime)
@@ -2032,10 +1998,8 @@ int paste_repair(const char *in, size_t len, char *out, size_t cap)
     return (int)o;
 }
 
-/* CSI 3 J — "erase saved lines" (the terminfo E3 capability; `clear` emits ESC[2J then ESC[3J). It drops
-   the SCROLLBACK and leaves the viewport exactly as it is, so the prompt stays on screen. row[] must
-   stay a permutation of the allocated row buffers, so the rearrangement goes through a validated scratch
-   array. */
+/* Drops the SCROLLBACK and leaves the viewport as it is, so the prompt stays on screen (`clear` emits
+   ESC[2J then ESC[3J). The rearrangement goes through a scratch array so row[] stays a permutation. */
 static void erase_scrollback(Term *t)
 {
     Grid *g = &t->g;
@@ -2302,10 +2266,9 @@ static void csi_dispatch(Term *t, int fin)
     case 's': t->save_cx = t->cx; t->save_cy = t->cy; break;
     case 'u': set_cursor_pos(t, t->save_cy, t->save_cx); break;
     case 't': {
-        /* xterm window-geometry queries. `ESC[16t` asks for one CELL in px, `ESC[14t` for the text area;
-           an image application uses them when it cannot read the PTY winsize (over ssh, for example).
-           Answered only once main.c has told us the cell size, so a tool falls back the way it does for
-           a terminal that has no answer. */
+        /* `ESC[16t` asks for one CELL in px, `ESC[14t` for the text area — used by applications that
+           cannot read the winsize (over ssh). Answered only once the cell size is known, so a tool falls
+           back as it would for a terminal with no answer. */
         if (t->cell_w > 0 && t->cell_h > 0) {
             if (def1 == 16)
                 TERM_RESP(t, "\x1b[6;%d;%dt", t->cell_h, t->cell_w);
@@ -2419,10 +2382,8 @@ static void csi_dispatch(Term *t, int fin)
             /* Cursor Position Report (CPR) query: ESC[6n -> respond ESC[{row};{col}R */
             TERM_RESP(t, "\x1b[%d;%dR", t->cy + 1, t->cx + 1);
         } else if (def1 == 5) {
-            /* DSR status report: ESC[5n -> ESC[0n ("terminal in functioning state"). Applications use it
-               as a cheap "is anyone there" probe — timg sends ESC[>q ESC[5n as its first query and sits
-               in a 250 ms timeout until something answers. Not answering is only slow; answering is what
-               every terminal does. */
+            /* A cheap "is anyone there" probe: timg sends ESC[>q ESC[5n as its first query and sits in a
+               250 ms timeout until something answers. */
             TERM_RESP(t, "\x1b[0n");
         }
         break;
@@ -2439,10 +2400,7 @@ static void csi_dispatch(Term *t, int fin)
         break;
     case 'q':
         /* DECSCUSR — `CSI Ps SP q` sets the cursor shape and its blink. The SPACE is part of the
-           sequence: the parser used to drop intermediate bytes, so `ESC[3 q` arrived indistinguishable
-           from `ESC[3q` and nothing acted on it; requiring the space also keeps `CSI Ps q`, a different
-           spelling, out. xterm's table: 1 blinking block, 2 steady block, 3 blinking bar, 4 steady bar,
-           5 blinking underline, 6 steady underline. */
+           sequence, which is also what keeps the different spelling `CSI Ps q` out. */
         if (t->ps.inter == ' ') {
             int p = t->ps.par[0];
             int style = 0, blink = 0;
@@ -2469,13 +2427,11 @@ static void csi_dispatch(Term *t, int fin)
 }
 
 /* ================= graphics: the kitty image protocol =================
-   An application draws an image with one or more APC sequences:
-       ESC _ G  key=value ; ... ; key=value : <base64 payload>  ESC \
+   ESC _ G  key=value ; ... ; key=value : <base64 payload>  ESC \
    `m` is the "more chunks follow" flag and a continuation chunk carries no a= or i=. The protocol
-   overloads `r`: height in px for the raw formats, rows of the grid for the self-describing ones. It
-   never says how many CELLS an image covers, which is why main.c pushes the cell size into
-   Term.cell_w/cell_h and the PTY winsize. An image is anchored to an ABSOLUTE grid row, so it
-   scrolls with the text it was printed next to and comes back when the user scrolls up. */
+   overloads `r`: pixels for the raw formats, grid rows for the self-describing ones. It never says how
+   many CELLS an image covers, which is why main.c pushes the cell size into Term.cell_w/cell_h. An
+   image is anchored to an ABSOLUTE grid row, so it scrolls with the text it was printed next to. */
 
 #define IMAGE_BYTES_MAX (64LL << 20)     /* decoded bytes one session keeps */
 #define IMAGE_COUNT_MAX 256              /* images one session keeps */
@@ -2493,11 +2449,8 @@ static int b64_val(int c)
     return -1;
 }
 
-/* Decode n base64 chars into out (room for (n/4+1)*3 bytes). Returns the byte count. Anything
-   outside the alphabet ends the stream, which covers padding and any stray whitespace.
-   The mask after each emitted byte is not cosmetic: without it `acc` keeps every bit it ever
-   collected, and by the fifth character `acc << 6` overflows int (UBSan caught it on the first
-   4-chunk payload this file feeds). Kept in unsigned so the shifts are defined anyway. */
+/* Anything outside the alphabet ends the stream, which covers padding and any stray whitespace. The mask
+   after each emitted byte is not cosmetic: unmasked, `acc << 6` overflows int by the fifth character. */
 static size_t b64_decode(const char *s, size_t n, uint8_t *out)
 {
     size_t o = 0;
@@ -2684,10 +2637,9 @@ static KImage *image_find(Term *t, const KittyTx *tx)
     return NULL;
 }
 
-/* The span an image covers, in cells: an explicit c=/r= wins, otherwise its pixel size divided by the
-   current cell size (ceil, at least one cell); with only ONE of c=/r= the other follows the picture's
-   aspect ratio. Decided HERE, not in the renderer: the span is also what a=T moves the cursor past and
-   what image_prune() measures. */
+/* An explicit c=/r= wins; otherwise pixels divided by the current cell size (ceil, at least one cell),
+   the missing one following the picture's aspect ratio. This is also the span a=T moves the cursor past
+   and image_prune() measures. */
 static int image_span_rows(const Term *t, const KImage *im)
 {
     if (im->rows > 0)
@@ -2822,10 +2774,8 @@ static void image_place(Term *t, KImage *im, int move_cursor)
     im->shown = 1;
     if (!move_cursor)
         return;
-    /* a=T transmits, displays AND moves the cursor below the picture: timg emits the image and then a
-       single CR LF, so the terminal has to leave the prompt under it. linefeed() is used rather than cy
-       += rows because a picture taller than the viewport must scroll the screen, exactly like printing
-       that many lines. */
+    /* linefeed() rather than cy += rows: a picture taller than the viewport must scroll the screen,
+       exactly like printing that many lines, which leaves the prompt under it. */
     int rows = image_span_rows(t, im);
     for (int i = 0; i < rows; i++)
         linefeed(t);
@@ -2888,10 +2838,9 @@ static void kitty_ctl_reset(KittyTx *tx)
     tx->del = 0;
 }
 
-/* Parse `k=v;k=v;...` — and, because timg 1.6.3 writes `k=v,k=v,...`, ',' is accepted as a separator
-   too. Returns 1 when an action (a=) was named, which is how a continuation chunk is recognised: timg's
-   second chunk carries only q= and m=, so everything else is inherited from the chunk that started the
-   transmission. */
+/* ',' is accepted as a separator as well as ';' because timg 1.6.3 writes it that way. The return value
+   says whether an action (a=) was named, which is how a continuation chunk is recognised — its other
+   keys are inherited from the chunk that started the transmission. */
 static int kitty_ctl_parse(KittyTx *tx, const char *ctl)
 {
     int saw_act = 0, ttype = 0;
@@ -3066,10 +3015,9 @@ static void kitty_apc(Term *t, const char *s)
     Parser *ps = &t->ps;
     KittyTx *tx = &ps->tx;
 
-    /* Split control block from payload. The protocol says the payload follows a ':', but timg writes
-       `a=T,i=...,f=100,m=0;<base64>` — a ';' — and separates the keys with ','. So: walk control
-       elements (`letter=value`, separated by ';' or ','), and the payload is whatever follows the last
-       of them, or everything after the first ':'. Base64 holds no ':', ';' or ','. */
+    /* The payload follows a ':' in the protocol, but timg writes `a=T,i=...,f=100,m=0;<base64>`. So it
+       is whatever follows the last `letter=value` element, or everything after the first ':' — base64
+       holds no ':', ';' or ','. */
     const char *ctl_end = s + strlen(s);
     const char *payload = NULL;
     {
@@ -3145,10 +3093,9 @@ static void kitty_apc(Term *t, const char *s)
 /* ---------- APC / DCS parser states ---------- */
 
 /* Kai-Term's own APC channel: `ESC _ K ; kai-term ; <what> [ ; <text> ] ST`, written by the shell
-   integration script to its own stdout, which is this session's pty. `integration;<kind>` means a shell
-   loaded the script; `cd;<dir>` is the only evidence a cd request reached a listening shell, so if it
-   does not arrive main.c falls back to typing at the prompt. An acked directory is compared with the one
-   asked for, never obeyed. */
+   integration script to its own stdout. `cd;<dir>` is the only evidence a cd request reached a listening
+   shell, so if it does not arrive main.c falls back to typing at the prompt. An acked directory is
+   compared with the one asked for, never obeyed. */
 
 /* The shell's `cd` ack is one slot, so it answers for exactly one request. main.c clears it before sending a
    new request; without that, a navigation back to a directory the shell entered earlier would be "confirmed"
@@ -3312,10 +3259,9 @@ static void osc_end(Parser *ps)
 
     switch (cmd) {
     case 4: {
-        /* `OSC 4;N;colour` and the multi form `OSC 4;N;colour;M;colour;...` both occur in the wild.
-           Entries 0-255 are all settable here, unlike a theme file: the setter is general by design (the
-           theme layer is what restricts a file to 0-15), and `osc_colors = 0` is the switch for anyone
-           who does not want an application touching the cube. */
+        /* Both the single and the multi form occur in the wild. Entries 0-255 are all settable here —
+           the theme layer is what restricts a file to 0-15 — and `osc_colors = 0` turns the whole thing
+           off. */
         char *p = (char *)s;
         int set = 0;
         while (p && *p) {
@@ -3423,10 +3369,9 @@ static void exec_c0(Term *t, uint8_t b)
 {
     switch (b) {
     case 0x07:
-        /* BEL: an event, not a pixel. The model only records that it happened; main.c turns it into a
-           timestamp on its own clock and decides whether anything is drawn. Keeping the flag here rather
-           than a deadline lets a test pin the parser half without a clock, and it is why a BEL that
-           TERMINATES a string does not ring: the OSC / APC / DCS states consume 0x07 as ST. */
+        /* An event, not a pixel: the model only records that it happened, and main.c decides whether
+           anything is drawn. It is why a BEL that TERMINATES a string does not ring — the OSC/APC/DCS
+           states consume 0x07 as ST. */
         t->bell_rang = 1;
         break;
     case 0x08:                                           /* BS */
@@ -3458,10 +3403,9 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
 {
     Parser *ps = &t->ps;
     ps->t = t;
-    /* Was the input line already the remembered prompt BEFORE this burst? The end-of-burst rule needs
-       the difference, not the state: only a burst that CHANGED the line into the prompt proves it became
-       empty. Otherwise a burst that repainted only prompt chrome closes the echo window over bytes that
-       were never echoed. */
+    /* The end-of-burst rule needs the difference, not the state: only a burst that CHANGED the line into
+       the prompt proves it became empty. A burst that merely repainted prompt chrome proves nothing
+       about the bytes we sent. */
     int prompt_matched_before = prompt_row_matches(t);
 
     for (size_t i = 0; i < len; i++) {
@@ -3516,10 +3460,9 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
             case '7': t->save_cx = t->cx; t->save_cy = t->cy; break;
             case '8': set_cursor_pos(t, t->save_cy, t->save_cx); break;
             case 'c': {
-                /* A reset rebuilds Term from scratch. The shell integration announcement is the one
-                   piece of state that must survive it: the script announces ONCE, at shell startup, so
-                   dropping it here would silently disable the integration path for the rest of the
-                   session after any program sends ESC c. */
+                /* The shell integration announcement is the one piece of state that must survive a
+                   reset: the script announces ONCE at shell startup, so dropping it here would disable
+                   the integration path for the rest of the session. */
                 int saved_int = t->shell_int;
                 int saved_gen = t->shell_int_gen;
                 char saved_ack[FM_PATH_MAX];
@@ -3572,9 +3515,8 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
                belong to the new sequence, not to this one. */
             if (b == 0x1b) { ps->state = PS_ESC; continue; }
             /* Any other C0 inside a control sequence is EXECUTED and the sequence KEEPS collecting (DEC
-               VT500 / xterm). Ending the sequence at the control byte leaves the mode it was setting
-               unset AND prints the remaining bytes as text — and a mode-ENABLING sequence ends with `h`,
-               the character the user then sees in the grid. */
+               VT500 / xterm). Ending it at the control byte leaves the mode unset and prints the rest as
+               text, including the `h` that enables it. */
             if (b < 0x20) { exec_c0(t, b); continue; }
             continue;
 
@@ -3641,18 +3583,16 @@ void term_parse(Term *t, const uint8_t *buf, size_t len)
        sequence. */
     image_prune(t);
 
-    /* The prompt snapshot, once per burst. While input_pending is set the bytes arriving here are the
-       echo of what the terminal sent, and remembering THAT as "the prompt" would let the file manager
-       write on top of it. While the alternate screen is up, t->g is an application's screen: the
-       snapshot always describes the MAIN grid. */
+    /* While input_pending is set these bytes are the echo of what the terminal sent, and remembering
+       them as the prompt would let the file manager write on top of them. The snapshot always describes
+       the MAIN grid. */
     if (t->alt_screen)
         ;
     else if (!t->input_pending)
         prompt_snapshot(t);
     else if (prompt_matched_before == 0 && prompt_row_matches(t))
-        /* The application has CHANGED the row into the remembered prompt — the line is provably empty
-           again (readline's erase, an arrow-key redraw, the shell's repaint after Ctrl+U). Close the
-           echo window on that evidence only: a burst that leaves the row exactly as it was proves
-           nothing about the bytes we sent, and an application that shows nothing leaves it open. */
+        /* The application CHANGED the row into the remembered prompt, so the line is provably empty
+           again. Close the echo window on that evidence only: a burst that leaves the row as it was
+           proves nothing about the bytes we sent. */
         t->input_pending = 0;
 }
