@@ -133,9 +133,8 @@ typedef struct Wayland {
 } Wayland;
 
 static Wayland W;
-/* Multiplexing: every session this window hosts — each with its own Term and its own shell on its own
-   PTY — plus which one is visible. The two accessors below read mux.active on every call, so there is
-   no second copy of that state to drift. They return NULL only when the last tab has just been closed. */
+/* Multiplexing: every session this window hosts, plus which one is visible. The two accessors below read
+   mux.active on every call, so there is no second copy of that state to drift. */
 static Mux mux;
 static Font font;
 static Render rend;
@@ -153,21 +152,18 @@ static int g_int_seq;
 static int base_font_size;      /* configured size, restored by Ctrl+0 */
 
 /* How this window's pixels are shared: the tab-bar strip, one rect per session, and the grid size every
-   session gets. src/layout.c computes it, render_draw() draws exactly it, the pointer hit tests use it.
-   layout_apply() recomputes it on any change to size, font, session list, visible session or view mode. */
+   session gets. src/layout.c computes it, render_draw() draws exactly it, the pointer hit tests use it. */
 static Layout g_layout;
 static int layout_mode = LAYOUT_TABS;   /* LAYOUT_TABS (one session fills the window) / LAYOUT_SPLIT */
 /* The confirm-quit question. confirm_kind doubles as "is a question up?", so no question kind may be 0:
    CONFIRM_QUIT = 0 would read as "nothing asked", draw nothing and swallow the close. */
 static int  confirm_kind = CONFIRM_NONE;
 static int  confirm_tab = -1;
-/* One buffer for both questions. DIALOG_MAX is the larger of the two limits, so neither the row's text nor
-   the box's sentence can ever be cut by the buffer it travels in — only by the width of the window, which is
-   layout_compute()'s decision and has a field on it. */
+/* One buffer for both questions. DIALOG_MAX is the larger of the two limits, so neither the row's text
+   nor the box's sentence can ever be cut by the buffer it travels in. */
 static char confirm_text[DIALOG_MAX];
 /* px between panes, and between the tab bar and the grid. Deliberately not a config key: Config.padding
-   already sets the margin around everything, and a gap of 0 would let the focus border of one pane draw
-   over its neighbour. */
+   already sets the margin, and a gap of 0 would let one pane's focus border draw over its neighbour. */
 #define PANE_GAP 8
 
 /* The in-window file manager: only the wiring lives here — which region owns the keyboard, the worker
@@ -186,8 +182,8 @@ static FmReq fm_req[FMQ_KINDS];
 static int fm_quit;                 /* the worker must leave its cond_wait and exit */
 static int fm_worker_up;
 /* The directory the shell is believed to be in (fm_follow) — the one fact every follow decision is made
-   from. One per window, because one window has one file manager; a session switch clears it so the newly
-   visible shell is re-synced on the next navigation. tab_switch() resets it, so it is declared here. */
+   from. One per window; tab_switch() clears it so a newly visible shell is re-synced on the next
+   navigation. */
 static char fm_last_cd[FM_PATH_MAX];
 
 /* The clear -> `cd` -> re-populate sequence, one step per parsed pty burst: the erase must be PROVEN before
@@ -457,9 +453,8 @@ static void scroll_apply(double delta_lines)
         W.scroll_accum = 0;   /* hit the top/bottom: drop any pending remainder */
 }
 
-/* Return the view to the live bottom (used when the user sends any key to the PTY, or when
-   new output arrives). Also drops any pending fractional scroll so it cannot linger. Per session:
-   scrolling in one tab must not move another tab's view. */
+/* Return the view to the live bottom, and drop any pending fractional scroll so it cannot linger. Per
+   session: scrolling in one tab must not move another tab's view. */
 static void snap_to_live(Term *t)
 {
     W.scroll_accum = 0;
@@ -469,9 +464,9 @@ static void snap_to_live(Term *t)
     }
 }
 
-/* Zoom: re-rasterize the font at a new pixel size (window px unchanged, so cols/rows change). layout_apply()
-   gives every session a new grid and vt.c blanks what the smaller font reveals with the configured colours,
-   so there is nothing to re-paint here and existing text is left intact. */
+/* Zoom: re-rasterize the font at a new pixel size (window px unchanged, so cols/rows change).
+   layout_apply() gives every session a new grid, so existing text is left intact and nothing here re-
+   paints. */
 static void zoom_apply(int newpx)
 {
     newpx = iclamp_(newpx, 6, 256);
@@ -574,9 +569,8 @@ static int apply_pending_resize(void)
 
 /* ---------------- multiplexing: the sessions of this window ---------------- */
 
-/* The tab state in the window title: the renderer draws cells, not chrome, so the title is the only place a
-   user sees which session they are in, how many there are, and whether a hidden one has unread output. One
-   session, an unchanged title. */
+/* The tab state in the window title: the renderer draws cells, not chrome, so the title is the only
+   place a user sees which session they are in, how many there are, and whether a hidden one has output. */
 static void update_title(void)
 {
     if (!W.toplevel)
@@ -586,9 +580,8 @@ static void update_title(void)
     xdg_toplevel_set_title(W.toplevel, ttl);
 }
 
-/* Fold the ASCII letters to lowercase: a binding names the KEY, and the Shift state is a modifier of
-   its own, so "Ctrl+Shift+T" is written with a T but the press arrives as 'T' with Shift already in
-   the modifier mask. config.c folds the spec the same way. */
+/* Fold the ASCII letters to lowercase: a binding names the KEY, and Shift is a modifier of its own, so
+   "Ctrl+Shift+T" is written with a T but the press arrives as 'T'. config.c folds it the same way. */
 static xkb_keysym_t norm_sym(xkb_keysym_t s)
 {
     if (s >= XKB_KEY_A && s <= XKB_KEY_Z)
@@ -627,9 +620,8 @@ static int tab_for_child(pid_t pid)
     return -1;
 }
 
-/* Start a session's shell and put its master in epoll. With shell_integration on a recognised shell is started
-   through shellint_argv(), which is what lets a later navigation ask the shell to change its own directory;
-   everything else (an unsupported shell, `-e COMMAND`, integration off) is spawned exactly as before. */
+/* Start a session's shell and put its master in epoll. With shell_integration on a recognised shell is
+   started through shellint_argv(); everything else is spawned exactly as before. */
 static int tab_spawn(Tab *tb)
 {
     /* The cell size goes into the Pty BEFORE the spawn: pty_spawn's first TIOCSWINSZ is the geometry the child
@@ -803,9 +795,9 @@ static int confirm_gate_tab(int idx)
     return confirm_show(CONFIRM_CLOSE_TAB, idx);
 }
 
-/* Close one session. The Pty is captured BEFORE mux_close(): the tab after it slides into this slot,
-   and the one being closed owns the descriptor. Closing the master hangs up the shell; the explicit
-   SIGHUP covers a shell that somehow survives that, and the SIGCHLD path reaps the child. */
+/* Close one session. The Pty is captured BEFORE mux_close(): the tab after it slides into this slot.
+   Closing the master hangs up the shell, the explicit SIGHUP covers one that survives, and the SIGCHLD
+   path reaps the child. */
 static void tab_close(int idx)
 {
     if (idx < 0 || idx >= mux_count(&mux))
@@ -886,9 +878,8 @@ static void tab_switch(int idx)
     W.dirty = 1;
 }
 
-/* Flip between "one session fills the window" (tab view) and "the sessions sit side by side" (split view).
-   Nothing else changes — the same sessions, shells, scrollback and selection; only which of them are drawn
-   and how wide each pane is. layout_apply() logs the new shape, which is the evidence a live run leaves. */
+/* Flip between "one session fills the window" (tab view) and "the sessions sit side by side" (split
+   view). Nothing else changes — the same sessions, shells, scrollback and selection. */
 static void layout_toggle(void)
 {
     layout_mode = (layout_mode == LAYOUT_SPLIT) ? LAYOUT_TABS : LAYOUT_SPLIT;
@@ -1004,8 +995,7 @@ static int fm_ask(int kind, const char *path, unsigned long seq)
 }
 
 /* Ask for whatever the model says should be previewed now. fm_preview_request() compares it with what is
-   installed and says whether anything has to be built at all, so moving the selection onto the entry
-   that is already previewed costs no disk access. */
+   installed, so moving the selection onto the entry already previewed costs no disk access. */
 static void fm_ask_preview(void)
 {
     if (!g_fm.preview_on)
@@ -1047,9 +1037,8 @@ static void fm_drain_results(void)
     }
 }
 
-/* Quote one path for the shell: single quotes, with an embedded quote written the shell's way as '\\''.
-   Nothing else needs escaping inside single quotes, and a quoted path cannot glob or be read as a
-   leading-dash option. Returns the number of bytes written (NUL included at out[n]). */
+/* Quote one path for the shell: single quotes, with an embedded quote written the shell's way as '\''. A
+   quoted path cannot glob or be read as a leading-dash option. Returns the bytes written. */
 static size_t shell_quote(char *out, size_t cap, const char *path)
 {
     if (cap < 3)
@@ -1068,9 +1057,8 @@ static size_t shell_quote(char *out, size_t cap, const char *path)
     return n;
 }
 
-/* Hand the shell the directory the browser moved into, so the prompt lands where the user is looking. Never
-   sent to a session on the alternate screen: vim, htop and less would receive it as typing. Only for a
-   directory not already told it about — otherwise the refresh key types and runs `cd` at the prompt again. */
+/* Hand the shell the directory the browser moved into, so the prompt lands where the user is looking.
+   Never sent to a session on the alternate screen: vim, htop and less would receive it as typing. */
 
 /* The cursor's row in the grid's document numbering (slot 0 = row_base, cursor slot = live_off + cy). A
    viewport row says nothing across a scroll: the grid rotates under it. */
@@ -1149,9 +1137,8 @@ static void fm_send_cd(const char *dir)
         return;
     if (!dir[0])
         return;
-    /* A sequence is already in flight for this session. Do NOT abort it — the erase may already have happened, and
-       dropping it then would throw the user's text away. Re-target it: the newest directory is what the
-       shell must end up in, and the machine re-checks it at every step. */
+    /* A sequence is already in flight for this session. Do NOT abort it — the erase may already have
+       happened, and dropping it then would throw the user's text away. Re-target it instead. */
     if (fm_cd_state != FMCD_IDLE) {
         if (fm_cd_tab == mux_active(&mux)) {
             snprintf(fm_cd_dir, sizeof fm_cd_dir, "%s", dir);
@@ -1335,9 +1322,8 @@ static void fm_cd_advance(int ti, int burst)
     }
 }
 
-/* Checked from the frame timer, because a shell that never answers produces no output to advance on. The
-   timer also advances CDING once output stops (FMCD_QUIET_MS): the END of output is that step's evidence,
-   and no burst is coming to trigger it. */
+/* Checked from the frame timer: a shell that never answers produces no output to advance on, and the END
+   of output (FMCD_QUIET_MS) is CDING's evidence — no burst is coming to trigger it. */
 static void fm_cd_tick(void)
 {
     if (fm_cd_state == FMCD_IDLE)
@@ -1378,9 +1364,8 @@ static void fm_open(void)
     klog(L_DEBUG, "fm: opened on %s", g_fm.dir);
 }
 
-/* Closing leaves the terminal as it was: the band's rects go to 0x0 and the model keeps its listing, so
-   reopening is instant. The worker stays alive but idle — killing it would race with an answer already in
-   the pipe. */
+/* Closing leaves the terminal as it was: the band's rects go to 0x0 and the model keeps its listing. The
+   worker stays alive but idle — killing it would race with an answer already in the pipe. */
 static void fm_close(void)
 {
     if (!g_fm.on)
@@ -1404,9 +1389,9 @@ static void fm_toggle(void)
         fm_open();
 }
 
-/* Which region the keyboard drives. The border render.c draws around the focused region is what makes a
-   switch visible, so a switch that changes nothing on screen is deliberately not allowed: focusing the
-   preview pane when it is toggled away does nothing at all. */
+/* Which region the keyboard drives. The border render.c draws is what makes a switch visible, so a
+   switch that changes nothing on screen is not allowed — focusing a toggled-away preview pane does
+   nothing. */
 static void fm_focus_set(int f)
 {
     if (!g_fm.on)
@@ -1451,9 +1436,8 @@ static void fm_preview_toggle(void)
     fm_ask_preview();
 }
 
-/* Types the selected entry's path and NOTHING else — no newline, so Kai-Term never runs a file it was only
-   asked to name. The gate is the NON-STRICT predicate: this inserts at the cursor and erases nothing, so
-   demanding blank cells right of it only caused refusals. */
+/* Types the selected entry's path and NOTHING else — no newline, so Kai-Term never runs a file it was
+   only asked to name. The gate is the NON-STRICT predicate: this inserts and erases nothing. */
 static void fm_send_path(void)
 {
     Term *t = cur_term();
@@ -1490,8 +1474,7 @@ static void fm_sel_changed(void)
 }
 
 /* Open the selected entry: descend into a directory, and on anything else do NOTHING — typing a file's
-   path is fm_key_path's job. One function because the `open` key and the second click of a double-click
-   must never drift apart. */
+   path is fm_key_path's job. One function so the `open` key and a double-click cannot drift apart. */
 static void fm_open_sel(void)
 {
     unsigned long seq = 0;
@@ -1583,8 +1566,8 @@ static void fm_pointer_select(int hit, int btn, uint32_t time)
         if (cur_term())
             term_select_clear(cur_term());
         /* The same gesture as the terminal pane, counted by term_click_count against the same
-           CLICK_DCLICK_MS: second click selects the WORD, third the ROW. conf.click_selects_word switches
-           both, not one per pane. */
+           CLICK_DCLICK_MS: second click selects the WORD, third the ROW. conf.click_selects_word
+           switches both at once. */
         int same = (x == fm_pv_click_x && y == fm_pv_click_y);
         fm_pv_click_count = conf.click_selects_word
                           ? term_click_count(time, fm_pv_click_ms, same, fm_pv_click_count)
@@ -1671,8 +1654,7 @@ static int fm_wheel(void)
 }
 
 /* Stop the worker and free everything the feature owns. Draining the pipe AFTER the join is what makes
-   this leak-free: the worker cannot write another answer once it is joined, so whatever it managed to
-   write is either already installed or freed here. */
+   this leak-free: the worker cannot write another answer once it is joined. */
 static void fm_shutdown(void)
 {
     if (fm_worker_up) {
@@ -1790,8 +1772,7 @@ static const struct xdg_toplevel_listener toplevel_listener = {
 };
 
 /* Every byte Kai-Term sends to the application AS INPUT goes through here, so the model knows an echo is
-   coming — what tells the shell's own prompt from a prompt plus typed text. CR/LF or Ctrl+C submits the
-   line and closes the window; a query answer or a mouse report is output, not input. */
+   coming — what tells a bare prompt from a prompt plus typed text. */
 static void input_write(Term *t, Pty *p, const void *buf, size_t len)
 {
     if (!p)
@@ -1810,9 +1791,8 @@ static void send_str(const char *s, size_t n)
     input_write(cur_term(), cur_pty(), s, n);
 }
 
-/* Translate one key press and act on it. Returns 1 when the press is something the user expects to
-   keep going while the key is held (a keystroke delivered to the PTY, or scrollback navigation) and 0
-   for the terminal-local one-shot actions (zoom, copy, paste), which must never auto-repeat. */
+/* Translate one key press and act on it. Returns 1 when the press should keep going while the key is
+   held (a keystroke to the PTY, or scrollback navigation) and 0 for terminal-local one-shots. */
 static int send_key(uint32_t key, uint32_t serial)
 {
     if (!W.keymap || !W.xkb_state)
