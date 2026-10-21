@@ -8,10 +8,13 @@ Invariants" — read those, not the history.
 
 ## Open
 
-**No open bug.** The last two found were both colour plumbing: `cursor_color =` being dead config, and the 256-colour
-cube's top level overflowing. Both fixed and A/B'd in s102 (the first two entries under "Fixed"). The shape worth
-remembering: a config key is not implemented at the parser, it is implemented where the value is used — and a
-computed colour must be measured, not assumed.
+**No open bug.** The last one found was an underline drawn across the letters instead of under them (s134 — the first
+entry under "Fixed", and the second half of it, the `ESC[5 q` underline cursor, had been there since s112 without
+anyone seeing it). Before that, two colour-plumbing bugs: `cursor_color =` being dead config, and the 256-colour
+cube's top level overflowing, both fixed and A/B'd in s102. The shape worth remembering, which applies to all three:
+a config key is not implemented at the parser, it is implemented where the value is used; a computed colour must be
+measured, not assumed; and a check written from the implementation's own idea of a coordinate space tests that idea
+instead of the screen.
 
 The frame around the grid — the `padding` margin and the blank cells reading two different background colours — was
 fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed").
@@ -25,10 +28,11 @@ working by the user 2026-10-19 (s107's feature), so the theme import carries no 
 confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
 with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-22 (s131, from `make clean`, on the tree that added the plain-click web address): `make -j8`
-exit 0 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0
-with **0 warning lines**; `./bin/test_vt` **1632 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
-`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **575 checks, 0 failures**; `make asan` exit 0 with
+Re-measured 2026-10-21 (s135's close-out, from `make clean`, on the committed tree `24638cc` that fixed the
+underline's position; the s134 run of the same set is in AGENT.md's journal): `make -j8` exit 0
+with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
+**0 warning lines**; `./bin/test_vt` **1673 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **617 checks, 0 failures**; `make asan` exit 0 with
 the same four counts, **0 warning lines** and no LeakSanitizer/UBSan report. `sh tests/cli_test.sh` with
 `KAI_TERM_TEST_NO_WINDOW=1` reports **CLI: 99 checks, 0 failures, 13 skipped** — the 13 are the windowed group,
 which was last run for real in s124 (**CLI: 149 checks, 0 failures, 0 skipped**, twice). That group maps ~15 real
@@ -59,6 +63,44 @@ The full investigation of each — the probes, the wrong theories, the measureme
 Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
 the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**An underline was drawn across the letters instead of under them (2026-10-22, s134 — the hover underline the user
+had just asked for, and the DECSCUSR underline cursor with it, which had had the same defect since s112).** The
+report, verbatim: *"The Links now get visual feedback but it's over the text instead of under it. It would be better
+under"* — with a screenshot of `printf 'see https://example.com/a?b=1 now'` showing the line crossing the letters.
+
+Cause in one line: in this renderer a quad's `y` is its BOTTOM edge measured UP from the cell's bottom edge (the MVP
+is a plain pixel ortho with no flip, and every call site computes `py = (nrows-1-y)*ch + pad_gl`, where `pad_gl` is
+the GL y of the bottom drawn row), and the underline rect was written `y = cell_h - h` — the TOP of the cell in that
+space. It was copied from `render_cursor()`'s underline branch, whose header comment says "origin at the cell's
+top-left"; the comment two lines below it, for `HoverDraw`, says the truth. The default bar cursor spans the whole
+cell height, where the sign of y cannot show, which is why the cursor work of s112 never exposed it — but `ESC[5 q`
+(an underline cursor, what some applications ask for) has been drawing a strikethrough since then.
+
+Fix: ONE rule, `underline_y(cell_h, ascent_px, descent_px, h)` in `src/render.c`, asked by both underlines; it puts
+the line at the bottom of the font's DESCENDER band — never above the baseline, never below the cell, and not sunk
+into the empty leading of a font whose cell is taller than its glyphs. `render_cursor()` and `render_hover()` take the
+font's `ascent`/`descent` (scaled like the cell box) to ask it. Measured through the shipped loader with the font
+`font = monospace` resolves to here (Liberation Mono): at the default `font_size = 14` the cell is 16 px tall, the
+baseline sits 4 px above the cell's bottom edge, a `p` reaches 3 px below the baseline, and the line lands in the
+bottom pixel row — 3 px under the baseline, which is also where that font's own OS/2 `usUnderlinePosition`
+(−435/2048 em) puts it, so the rule is the font's answer and not an opinion.
+
+What keeps it out: the two checks that had pinned the bug (`d.y == ch - 2`, `d.y + d.h == cell_h`) are gone — a check
+written from the implementation's own assumption restates the assumption instead of testing it — and the shape group
+now asserts against the measured metrics of the installed face at 7 pixel sizes plus three faces this machine has not
+got (leading under the baseline, no descender band, a descender deeper than the cell): never above the baseline when
+the cell has room, never outside the cell, at the bottom of the descender band when the cell has leading, and the two
+underlines are the SAME rect at the same thickness. `cell_h - h` / `cell_h - w` are pinned absent in `src/render.c`
+by text scan, `underline_y` is counted 3 (one rule, both callers), and the font's descent is counted where it must
+reach. `.scratch/s134/mutate.py`: **36 mutants, 34 killed** — the report's own formula put back fails 11 checks, the
+cursor's version 8, each arm of the rule 2-11. The two survivors are honest: `hover_no_cap` (the thickness cap in
+`render_hover()` cannot be reached, because `cell_h/12` is never over `cell_h/3` — it is a guard for a future ladder,
+not a live branch) and `renderer_adds_own_rule` (a renderer inventing its own rule about spans is exactly what a
+source scan cannot see; the pixel stays owed to the user's eye). That run also caught **two s133 checks that were
+vacuous**: the s133 harness's control run had been red, which made every mutant look killed, and with a green control
+deleting the `if (!W.ptr_in)` guard in `hover_cell()` and feeding the underline a chrome colour instead of the cell's
+ink both survived. Both are pinned by their own text now.
 
 **A click inside `less` flashed the pane, and a failed search in `less` flashed nothing (2026-10-20, s128 — one
 user report, two halves, only one of them a bug).** The report, verbatim: *"the bell feature doesn't work
@@ -516,6 +558,18 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   too (checked: `https://example.com/alt` is found while `term_wants_key_mouse()` answers 1), and
   `url_click_opens()` is what refuses it. That division is deliberate — a scanner that hid the address could not
   be tested for finding it, and the refusal would then be an absence rather than a decision.
+- **A refusal names itself (s132).** `url_refusal()` returns WHY a plain click did not open — off / a press, not a
+  release / the second or third click / the pointer changed cell / Shift / the program owns the click / no address
+  there — and `url_refusal_name()` puts the wording in the same file so the log line and the check that pins it
+  cannot drift. `main.c` logs it at debug. This exists because s131 shipped the gates as a chain of early returns
+  that logged NOTHING, and the report "it's not clickable" was then undecidable: no amount of reading the source
+  could say which gate fired. `url_click_opens()` is now exactly `url_refusal() == URL_REFUSE_NONE`, pinned.
+- **"The click never moved" means the same CELL, not the same pixel.** `no_drag` compares the release cell with the
+  press cell, and `ptr_motion()` holds the anchor while the far end follows the pointer — so a press and release
+  inside one cell is a click (up to a whole cell of slop), while crossing a cell boundary is a drag and a drag
+  selects. At a 16 px font that is a threshold of roughly one glyph width; a touchpad flick can cross it. The
+  refusal says so (`… opened nothing — the pointer changed cell between the press and the release…`), which is the
+  only way to tell that case from the others. Not changed without a measurement naming it.
 - **A run whose start has scrolled above the viewport is not found.** `term_line_span()` walks viewport rows only,
   so scrolling back to the line is what makes it clickable. The triple click has the same limit and it is pinned
   by a check (`url/scroll`) so it cannot be mistaken for a URL-only bug.

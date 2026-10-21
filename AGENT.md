@@ -4,6 +4,12 @@ Read this + ISSUES.md before touching the project. User-facing docs: README.md. 
 "Open". Root causes of long-fixed bugs: git history, not this file — `git show d5afe4a:ISSUES.md`.
 Host/tool facts: `/home/kaida/Project/ENVIRONMENT.md` (outside the repo on purpose — not project documentation).
 
+**The user always tests with the freshly built binary from `/home/kaida/Project/Kai-Term/bin/kai-term`.** When they
+report that a feature does not work, that binary and that source tree are what they mean. Never suggest they are
+running an older or installed copy, never go looking at an installed binary or a launcher for it, and never touch
+their `~/.config/kai-term/desktop-terminal.conf`, its `.desktop` entry or anything under `/usr/local/bin` — that is
+their own setup and off-limits. A report is a bug in THIS tree until a measurement in THIS tree says otherwise.
+
 Renamed 2026-10-16 (s59): `K-Term`/`k-term` -> `Kai-Term`/`kai-term` (dir, header, config path, app id). Old
 entries and git history keep the old spelling — they record what was really run.
 
@@ -21,9 +27,9 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s131 — **GREEN; step 7 (a plain click opens a URL) is implemented,
-checked, A/B'd and COMMITTED; the s102 plan's seven steps are all closed; read the commit state from git, never
-from here**)
+## Current Status (re-measured 2026-10-21, s135 — **GREEN; the s102 plan's seven steps are all closed and the hover
+underline the user then asked for is built, checked and fixed (it was drawing across the letters) — committed as
+`24638cc` and pushed; read the commit state from git, never from here**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -32,24 +38,32 @@ from here**)
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites — green, s130 included.** Both builds clean (exit 0, 0 warning lines) and
-  `./bin/test_vt` reports **1632 checks, 0 failures** (the confirm-quit wording, the process name, the box
+- **Suites — green, s133/s134 included, every number below re-run at s135's close-out.** Both builds clean (exit 0, 0 warning lines) and
+  `./bin/test_vt` reports **1673 checks, 0 failures** (the confirm-quit wording, the process name, the box
   geometry, the four wrap cuts, the `middle_click_paste`, `bell` and `click_opens_url` config groups, the 16-case
   pointer-precedence table, the BEL-rings / BEL-terminates-a-string split, the `bell_strength` ladder, the 15-check
-  `mux_bell_live` drawn-vs-hidden group, the 18-check `bell_is_ours` table, and the new **116-check `url` group**:
+  `mux_bell_live` drawn-vs-hidden group, the 18-check `bell_is_ours` table, and the **157-check `url` groups**:
   the run rule and its spans, the trailing-mark cut/keep table, the scheme rules, the non-ASCII/wide refusal, the
   window-broke vs program-broke split (including a hard break AT the margin), a tab's gap, the alt screen, the
   `URL_MAX` boundary on all three sides, the delimiter corpus, the scrolled-away limit, `url_is_openable`, the
-  9-case `url_click_opens` gate table, the `url_open_due` boundary against `term_click_count`, the two header
-  constants, and an end-to-end `url_spawn` through two stand-in openers). Everything else is green: `./bin/dbg`
-  **MODEL OK (0 problems)**, `./bin/test_fm` **384 checks, 0 failures**, `./bin/test_render` **575 checks, 0
-  failures** (the renderer's pure decisions — its colour choices, the cursor's shape, the question row's two
+  9-case gate table, the **16-case `url_refusal` table (s132 — every reason named, the order the reasons are asked
+  in, and `url_click_opens` pinned to `refusal == NONE`)**, the `url_open_due` boundary against `term_click_count`, the
+  two header
+  constants, an end-to-end `url_spawn` through two stand-in openers, and s133's **`url/hover` gate table (7 cases + a
+  32-combination agreement loop: the underline shows exactly when a plain click would open)** and **`url/row` group**
+  (which cells of a soft-wrapped run sit on which row — the underlined cells must equal the bytes that get opened).
+  Everything else is green: `./bin/dbg`
+  **MODEL OK (0 problems)**, `./bin/test_fm` **384 checks, 0 failures**, `./bin/test_render` **617 checks, 0
+  failures** (the renderer's pure decisions — its colour choices, the cursor's shape, the hover underline's rect
+  against the MEASURED font metrics, the question row's two
   colours, the box's six, the bell's colour — plus the source scans that cover `main.c` and `render_draw()`, which
-  are in no test binary; s129 added 14 scans for the URL wiring), and `CLI: 99 checks, 0 failures, 13 skipped`
+  are in no test binary; s129 added 14 scans for the URL wiring, s132 3 more for the refusal reason, s133 14 for the
+  hover wiring and s134 5 for the position rule), and
+  `CLI: 99 checks, 0 failures, 13 skipped`
   with `KAI_TERM_TEST_NO_WINDOW=1` — those 13 are the
   windowed group, last run for real in s124 (**149 checks, 0 failures, 0 skipped**, twice, ~15 real windows each
-  time; ask before running it again while the user is at the machine). `make asan` is green on THIS tree (re-run in
-  s131 after step 7 landed): all four asan binaries exit 0, 0 warning lines, no LeakSanitizer or
+  time; ask before running it again while the user is at the machine). `make asan` is green on THIS tree (re-run at
+  s135 on the committed tree): all four asan binaries exit 0, 0 warning lines, no LeakSanitizer or
   UBSan report, same four counts. The whole set was then re-run on a **fresh clone of the step-7 commit**
   (`.scratch/s131/verify_commit`) to prove the commit is self-contained: `src/url.c` is tracked, both builds exit 0
   with 0 warning lines, and the four counts come out identical there.
@@ -115,16 +129,125 @@ from here**)
   of a second and fades; with `bell = off` nothing is drawn at all. **And the s128 half: that a plain click in
   `less` no longer washes the pane** (it used to, because the click became Up presses and `less` belled at the
   beginning of the file), while a click in `nano` still moves the cursor and a BEL the program rings on its own
-  still flashes. **And step 7's click is on the list now**: that a single left click on an `http(s)://` address in
-  their shell output actually brings up a window (Kai-Term proves it handed the address to `xdg-open`; whether the
-  desktop opens it is the desktop's), that a DOUBLE click on the same address selects the word and opens nothing,
-  that a click in `less`/`nano`/`man` still places their cursor, and that a wrapped address opening at the window
-  edge opens whole. Recipe: `printf 'see https://example.com/a?b=1\n'` then click it; `./bin/kai-term -d` logs
-  `url: a click asked xdg-open for …` (and, when a click is refused, why).
+  still flashes. **Step 7's click is CONFIRMED — the user had eyes on it 2026-10-22 (s133): "The link clicking now
+  works and open as expected."** Nothing in step 7 is owed to their eye any more. Recipe, for anyone re-checking it:
+  `printf 'see https://example.com/a?b=1\n'` then click it; `./bin/kai-term -d` logs
+  `url: a click asked xdg-open for …` and, when a click is refused, why.
+  **What is on the list from s133: the look of the hover underline** — that the address under the pointer gains an
+  underline that READS as an underline at their font size (its thickness and its place in the cell), that it follows
+  the pointer cell for cell, that it is gone when the pointer leaves the address, the pane, or the window, and that it
+  does NOT appear where a click would not open (`less`/`nano`/`man`, `Shift` held, a drag in progress, or
+  `click_opens_url = 0`). Every one of those is a decision with a check; none has a check on the pixel.
 
-## Current Task — NONE IN PROGRESS. Step 7 (plain-click URLs) is CLOSED: committed as `4610911` and pushed, so the
-s102 plan's seven steps are all done. What is owed now is the user's eye on the list in "Current Status", and
-"Next Steps" holds the rest. Steps 0-7 keep their sections below: they are the rules a change must not break.
+## Current Task — s135 CLOSED (2026-10-21): close out s134 — the final verification ISSUES.md already claims, then the
+commit and the push. RESULT: every claim verified by a run in this session (see the s135 journal entry), feature
+committed as `24638cc` and pushed, `origin/main` re-read from git. Nothing is in progress; the hover underline is
+owed to the user's eye.
+
+### s135 task block — verify the claims, then commit s132+s133+s134
+
+**State found at session start (from git, not from the prose).** HEAD is `124983c` (s131 journal). The working tree
+carries ALL of s132 (refusal logging), s133 (hover underline) and s134 (underline position fix) uncommitted:
+`AGENT.md ISSUES.md Makefile README.md config/kai-term.conf include/kai-term/kai-term.h src/main.c src/render.c
+src/url.c tests/test_render.c tests/test_vt.c` modified, nothing staged. The s134 journal entry ends at STEP 5 DONE
+and says the ISSUES entry "is written after the final measurement below" — but ISSUES.md ALREADY carries the
+final-looking numbers (both builds 0 warnings, test_vt 1673/0, dbg MODEL OK, test_fm 384/0, test_render 617/0,
+`make asan` clean, CLI 99/0/13). The journal records no run producing the asan or CLI numbers. So those claims are
+UNVERIFIED until re-measured in this session; if a measurement disagrees, ISSUES.md gets corrected, not defended.
+
+**Plan, in order.** (1) `make clean && make -j8` and the test build, counting warning lines in both. (2) Run
+`./bin/test_vt`, `./bin/dbg`, `./bin/test_fm`, `./bin/test_render`; the counts must match what ISSUES/AGENT claim.
+(3) `make asan` (build + run all four asan binaries; watch for LeakSanitizer/UBSan reports). (4) Headless CLI group
+only — `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh ./bin/kai-term` — the windowed group stays skipped, the user
+is not at the machine to consent to ~15 mapped windows. (5) Re-run `.scratch/s134/mutate.py` only if any source
+changed during verification (none expected). (6) Correct any doc number that disagrees; update this file's Current
+Status/Current Task and the Progress Journal; commit the feature and the journal in the repo's usual two-commit
+shape; push to `origin` and verify the push from git. (7) Record what stays owed to the user's eye: the underline
+reading as an underline at their font size.
+
+**Expected outcome.** Every number in ISSUES.md and Current Status confirmed by a run in THIS session, or corrected.
+Tree committed and pushed; s132/s133/s134 closed; nothing left half-documented.
+
+**RESULT (s135, all runs in this session, host clock 2026-10-21).** `make clean && make -j8` exit 0 / 0 warning
+lines; test build exit 0 / 0 warning lines; `test_vt` **1673/0**, `dbg` **MODEL OK (0 problems)**, `test_fm`
+**384/0**, `test_render` **617/0**; `make asan` exit 0, 0 warning lines, **0** AddressSanitizer/LeakSanitizer/UBSan
+reports, same four counts; `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh ./bin/kai-term` → **CLI: 99 checks, 0
+failures, 13 skipped**; `.scratch/s134/mutate.py` re-run: **CONTROL green** (1673/0, 617/0), **36 mutants, 34
+killed, 2 survivors** (`hover_no_cap`, `renderer_adds_own_rule` — the two honest ones ISSUES names). Every number
+ISSUES.md and Current Status carry was produced by a run in this session — none needed correcting. README's
+refusal-log promise was grepped against the code before committing (s131's lesson): `main.c` logs
+`url: the click at (%d,%d) opened nothing — %s` and `url.c` names all six reasons verbatim. Feature commit
+`24638cc` (src, include, tests, Makefile, config templates, README — s132+s133+s134 in one commit, as the s134
+block planned; their hunks share files and were not surgically separable), pushed, `git log --oneline origin/main -1`
+reads `24638cc`. No source changed during verification, so the mutant run above doubles as the s133-mutant re-run
+the s134 plan owed (the harness re-anchors every s133 mutant).
+
+---
+
+The s134 report and plan (CLOSED by `24638cc`; kept for the measured font ladder and the coordinate-space facts,
+which the journal entry references):
+the hover underline drew ACROSS the text, not under it (the user's report
+2026-10-22; the measurement and the plan are in the s134 journal entry). s133's hover underline and s132's
+refusal-naming are in the working tree, green (`test_vt` 1673/0, `test_render` 604/0, re-measured at the head of the
+s134 entry), uncommitted, and get committed together with this fix. Step 7 (plain-click URLs) is CLOSED and
+CONFIRMED by the user's eye (2026-10-22: "The link clicking now works and open as expected"); the hover underline is
+back on the owed-to-their-eye list until they say the line reads as an underline. The s102 plan's seven steps are all
+done. "Next Steps" holds the rest. Steps 0-7 keep their sections below: they are the rules a change must not break.
+
+### s134 task block — the underline is over the text instead of under it
+
+**The report.** "The Links now get visual feedback but it's over the text instead of under it. It would be better
+under" — with a screenshot of `printf 'see https://example.com/a?b=1 now'` showing the line crossing the letters.
+
+**Measured starting point (`.scratch/s134/metrics.c`, `metrics2.c`, `desc.c`, run 2026-10-22 against the working
+tree; every number below is copied from that output).**
+* **The quad's y grows UP.** `render_init`'s MVP is the plain pixel ortho `2/vw`, `2/vh` with no flip, and every call
+  site in `render_draw()` computes `py = (nrows-1-y)*ch + pad_gl`, where `pad_gl = vh - pg->y - nrows*ch` is
+  documented as "the GL y of the bottom of the last drawn row". So a quad's `y` is its BOTTOM edge measured up from
+  the cell's bottom edge, and `y = cell_h - h` — which reads like "the bottom edge" only to someone assuming y grows
+  down — paints the line in the TOP h pixels of the cell. That is the report.
+* `HoverDraw`'s own comment in the header says "y is measured UP from the cell's bottom edge" (right); the
+  `CursorDraw` comment above it says "origin at the cell's top-left" (wrong), and `render_hover()` was written from
+  `render_cursor()`'s `CUR_UNDERLINE` branch, which uses that wrong convention. **So the DECSCUSR underline cursor
+  (`ESC[5 q`) has been drawn at the top of the cell since s112** — same defect, never seen because no app the user
+  runs asks for an underline cursor and the default bar spans the whole cell height, where the sign of y cannot show.
+* The checks PINNED the bug: `tests/test_render.c` asserts `d.y + d.h == cell_h` ("always flush with the cell's
+  bottom edge") and `d.y == ch - 2` for the underline cursor. A check that restates the implementation's assumption
+  cannot catch it.
+* The font, measured through the shipped loader (`font_init("monospace", px)` → Liberation Mono, what
+  `font = monospace` resolves to here): px 10 → cell_h 11, ascent 9, descent 3; px 12 → 14/10/4; **px 14 (the
+  default `font_size`) → cell_h 16, ascent 12, descent 5**; px 16 → 18/14/5; px 20 → 23/17/6; px 24 → 27/20/8;
+  px 32 → 36/27/10. `cell_h - ascent` is the room the cell leaves under the baseline: 4 px at 14 px, 7 px at 24 px.
+  Note `cell_h < ascent + descent` at every size — this font's descender is deeper than the cell's own leading.
+* The glyphs of the URL in the screenshot, measured the same way: `p` reaches **3 px below the baseline at 14 px**
+  (5 px at 24 px); every other character of `https://example.com/a?b=1` stops at the baseline. So at the default size
+  the whole descender band is 3 px deep and the cell has 4 px under the baseline — an underline belongs in that last
+  pixel row, clear of the `p`.
+* The font's own OS/2 answer agrees: `underline_position` −435 units / `underline_thickness` 84 units at upm 2048
+  (font units, NOT pixels — they do not change with px, which is what the first probe got wrong) → 3 px below the
+  baseline, 1 px thick at 14 px. Not used by the fix (it would need two new `Font` fields and a fallback for faces
+  that report 0); recorded because it is the cross-check that the rule below lands where the font designer put it.
+* `f->scale` is 1.0 and stays 1.0 (only `font_init` writes it); zoom goes through `font_resize()`, which calls
+  `font_metrics()` again, so `ascent`/`descent` are always the metrics of the CURRENT pixel size.
+
+**Plan.** (1) `src/render.c`: ONE static rule for "a horizontal line under the characters of a cell" —
+`underline_y(cell_h, ascent_px, descent_px, h)` — used by both underlines, so they cannot drift again; it puts the
+line at the bottom of the DESCENDER band (`baseline - descent`), never below the cell and never above the baseline,
+which is what keeps a font with generous leading from getting its line under the empty leading instead of under the
+text. (2) `render_hover()` and `render_cursor()` take the font's `ascent`/`descent` (scaled) — the three
+`render_cursor()` call sites in `render_draw()` already have them. (3) The header: fix the `CursorDraw` comment
+(top-left origin → the quad's y is its bottom edge, measured up) and say what `ascent`/`descent` are for. (4) Checks:
+replace the two pinned-the-bug assertions with the real invariants (never above the baseline when the cell has room,
+never below the cell, at the bottom of the descender band when the cell has leading) plus the measured Liberation
+Mono ladder at 10/12/14/16/20/24/32 px, for BOTH underlines, and scans that both call the one helper and that the
+font's descent actually reaches the draw loop. (5) Mutants in `.scratch/s134/` — including the exact old formula.
+(6) README/ISSUES/this file, both builds, every suite, `make asan`, the headless CLI group, commit, push — which also
+closes the verification s133 left unfinished (`dbg`, `test_fm`, asan, the CLI group, the s133 mutants).
+
+**Expected outcome.** `test_render` up by the position table and the new scans; `test_vt` unchanged (the position is
+a render.c decision); both builds at 0 warning lines; asan clean. What stays owed to the user's eye: that the line
+now reads as an underline at their font size — the checks pin the rect against the measured font metrics, and no
+check pins the pixel.
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -1122,7 +1245,8 @@ counts every time — do not copy them from this file. Probe first, then write t
 printed. **A/B every new check against the code that lacks the feature and report the failure count** — a check
 that has never failed pins nothing. Measure BOTH builds (`src` and the test binaries). Do not map windows while
 the user is at the machine: `KAI_TERM_TEST_NO_WINDOW=1`, and hand the visual verdicts (theme colours, cursor
-look, bell flash) to the user.
+look, bell flash) to the user. **And when a report arrives, the user is testing `bin/kai-term` from this tree — say
+nothing about other binaries, look at nothing outside this tree, and go find the failing stage with a measurement.**
 
 ## Progress Journal (era entries; root causes of fixed bugs: git history)
 
@@ -2157,14 +2281,218 @@ numbers and the intermediate check counts are in git.
   edit (README is read by the doc-pinning checks): test build 0 warning lines, `test_vt` **1632/0**, `dbg` MODEL OK,
   `test_fm` **384/0**, `test_render` **575/0**.
 
+- **2026-10-22, s132 — the user reports step 7 does not work: "it's not clickable" (IN PROGRESS).**
+  FIRST, A CORRECTION TO HOW I OPENED THIS: my first move was to look for an older installed binary and at the
+  user's `desktop-terminal` setup. That was an assumption, not a measurement, and it is now a standing rule at the
+  top of this file: **the user tests `bin/kai-term` from this tree; nothing outside the tree is fair game.**
+  MEASURED SO FAR, all headless, no window mapped:
+  (a) **The model half is correct on REAL shell output, not just on the synthetic text the suite feeds.**
+      `.scratch/s132/clickprobe.c` runs the user's own shell (fish) through the real `src/pty.c` and the real
+      `term_parse()`, with the parser's queued replies written back to the pty the way `main.c` does (without that
+      the shell paints NOTHING — the s97 trap, and the probe's first run hit it), then asks the three questions at
+      the cell the address is really printed at: `printf 'see https://example.com/a?b=1 now'` lands at cell (26,2),
+      `term_url_span` -> span (26,2)..(50,2), `term_url_text` -> 25 bytes `https://example.com/a?b=1`,
+      `url_is_openable` -> 1, `url_click_opens` with a plain click's flags -> 1, and a click at the middle, at the
+      first cell and at the LAST cell of the run all find the same run. So the scan, the text and the gate table are
+      not the failure.
+  (b) **The spawn machinery is fine in THIS session.** `.scratch/s132/spawnprobe.c` blocks SIGCHLD the way main.c
+      does, calls the shipped `url_spawn(URL_OPENER_PROGRAM, …)` and waits for the child. With a scheme `xdg-open`
+      refuses (so nothing can appear on the user's desktop) the child exits 0, i.e. `execvp` found and ran it — not
+      127. Environment: `XDG_CURRENT_DESKTOP=niri`, `WAYLAND_DISPLAY=wayland-1`, `DISPLAY=:0`, PATH contains
+      /usr/bin, and `xdg-settings get default-web-browser` answers `firefox-bin.desktop`.
+  (c) `bin/kai-term` (the binary the user runs) contains the feature: `strings` finds 8 of the `xdg-open` /
+      `click_opens_url` / `url:` strings in it.
+  SO THE DECLINE IS IN A GATE — and here is the real problem, which is also a product gap: **a refused click logs
+  NOTHING** (s131 documented exactly that). The user cannot tell me what happened and neither can I. PLAN: make the
+  refusal name itself. `url_refusal()` in src/url.c returns WHY (off / not a release / a gesture / the pointer moved
+  / Shift / the program owns the click / no address there) with `url_click_opens()` reduced to "refusal == NONE", and
+  `url_refusal_name()` keeps the wording in the same file so it is checkable; `main.c` logs it at debug. Then the
+  report becomes one line of log instead of a guess. NOT changing any gate until a measurement says which one fired.
+  CLOSED 2026-10-22 by the user's own report: **"The link clicking now works and open as expected."** That is step 7's
+  verdict from the user's eye, so it leaves the owed-to-their-eye list (the click opens, and a double click on the same
+  address selecting the word was part of what they saw). The refusal-naming half is in the working tree, green
+  (`test_vt` 1654/0, `test_render` 578/0 — measured by s133 below, not by s132), and is committed with s133's work.
+  What s132 actually fixed is the DIAGNOSABILITY, not a gate: no gate was changed, and the report resolved itself —
+  which is worth recording honestly, because the tree that "did not work" and the tree that "works" may have differed
+  only in the binary the user had rebuilt.
+
+- **2026-10-22, s133 — the user asks for hover feedback on a link: "a visual feedback on the link to show it's
+  clickable on hover … the links get underlined when a cursor is on it" (with a screenshot of another terminal doing
+  exactly that).**
+  **Objective.** The `http(s)://` run under the pointer is underlined while the pointer is on it, so the user can see
+  a click will open something before they make it.
+  **Measured starting point (headless, no window mapped).**
+  * `grep -rn "ATTR_UNDERLINE\|ATTR_STRIKE" src/ include/` → the parser SETS both (`vt.c:2582`, `:2585`) and the
+    renderer reads NEITHER: there is no underline drawing anywhere in `src/render.c`. So this is not a matter of
+    setting an attribute on cells — a decoration quad has to be added, and the only existing one of that shape is the
+    bar/underline CURSOR quad of pass 2b (`render_cursor()`'s `CUR_UNDERLINE` branch: `x=0, y=cell_h-w, w=cell_w,
+    h=w`, w clamped to `cell_h/3` with a floor of 1).
+  * There is no hover handler in this tree and no pointer-position state in `Render` (AGENT.md, s107: "there is no
+    hover handler here and there should not be one" — that was about FOCUS, and it still holds: nothing about the
+    pointer's position may take the keyboard). Adding a purely VISUAL hover is a different thing, and it must not
+    touch focus, selection or the click path.
+  * `Cell` must not be touched (step 7's rule: it is allocated per column per row and reflow moves it), so the hover
+    run is a value the frame computes, not a flag painted into the grid.
+  **Plan.** (1) `src/url.c`: `url_hover_shows(const UrlHover *)` — the hover gates, written as the SAME gates
+  `url_refusal()` answers with (`released/single/no_drag` filled in as a hover implies), so the underline can never
+  promise a click that the gate would refuse. Gates: `click_opens_url` on, the pointer over a terminal pane (not the
+  bar, the band, a margin or the confirm box), no live selection drag, no `Shift`, the program does not own its
+  clicks, and the run is one `term_url_text()` will hand over. No new config key: the underline promises exactly what
+  `click_opens_url` already decides, so a second key could disagree with it. (2) `src/render.c`: pure
+  `render_hover(cell_w, cell_h, HoverDraw *)` beside `render_cursor()` (same clamp shape, its own thickness rule),
+  and a new pass 2c emitting one quad per cell of the hovered run — after the selection bands and after the cursor
+  quad, before the glyphs, so it is over the paper and the highlight and never hides a character; colour is the
+  cell's own ink, so a coloured address underlines in its own colour and a theme needs nothing. (3) `Render` gains
+  `hover_tab`/`hover_span` (window state copied per frame, exactly like `cursor_on`/`bell_ms`), and `main.c`
+  recomputes the run in `redraw()` — every frame, from the pointer and the layout — so a scroll, a repaint, a resize
+  or a tab switch can never leave an underline on a run that is no longer there. `W.ptr_in` (new) records that the
+  pointer is on the surface at all; `ptr_motion` sets `W.dirty` when the CELL under the pointer changes, which is the
+  only new redraw source. (4) Checks: a `url_hover` group in `tests/test_vt.c` (every gate flipped, and the
+  agreement invariant — same flags, hover shows ⟺ a plain click opens) and a `hover` group in `tests/test_render.c`
+  (the rect invariants: never 0 px, never taller than a third of the cell, full cell width so neighbours join) plus
+  the source scans for the `main.c`/`render.c` wiring. (5) Mutants in `.scratch/s133/` to prove those checks are not
+  vacuous. (6) README (the click section + the `click_opens_url` row), this file, ISSUES; both builds, every suite,
+  `make asan`, the headless CLI group, commit, push.
+  **Expected outcome.** `test_vt` up by the hover gate table, `test_render` up by the rect invariants and the wiring
+  scans, everything else unchanged, both builds at 0 warning lines, asan clean. What is owed to the user's eye: that
+  the underline READS as an underline at their font size (thickness, position) — every check here pins the decision
+  and the rect, none pins the pixel.
+  **BASELINE, measured before the first edit of this session:** `make clean && make -j8` exit 0 / 0 warning lines, and
+  `make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0 / 0 warning lines; `test_vt` **1654/0**, `dbg` **MODEL
+  OK (0 problems)**, `test_fm` **384/0**, `test_render` **578/0**. That is the s132 tree (uncommitted) and it is green.
+  STEP 1 DONE — `include/kai-term/kai-term.h`: `UrlHover` + `url_hover_shows()` declared in the URL section (with the
+  "no `url_hover =` key" decision written where the next reader will see it), `HoverDraw` + `render_hover()` declared
+  beside `render_cursor()`, and `Render.hover_tab` / `Render.hover_span` added next to `bell_ms` with the reason they
+  are window state and recomputed per frame. Not yet built.
+  STEP 2 DONE — `src/url.c`: `url_hover_shows()` implemented as a call to `url_click_opens()` with the click-only
+  gates filled in as a hover implies (`released`/`single` = 1, `no_drag = !dragging`), plus the `in_pane` gate that
+  has no click equivalent. No second predicate was written, so the underline cannot drift from the click. Not yet
+  built.
+  STEP 3 DONE — `src/render.c`: `render_hover(cell_w, cell_h, HoverDraw *)` next to `render_cursor()` (full cell
+  width, on the cell's bottom edge, thickness `cell_h/12` with a floor of 1 px and the same `cell_h/3` cap the
+  underline cursor uses); a new **pass 2c** between the cursor quad and the glyphs, drawing one quad per cell of the
+  run in the ONE pane `Render.hover_tab` names, in the cell's own ink; `render_init()` sets `hover_tab = -1` (the
+  memset's 0 would read as "tab 0"); and the quad budget gained `+ URL_MAX` with the reason (a run longer than that
+  is refused before it can reach the span, so it is the real ceiling). `url_row_range()` in src/url.c was made
+  public as **`url_span_row()`** and the pass asks IT — a second reading of "which cells of a run sit on this row"
+  would be a second answer about a soft-wrapped run, the same mistake step 7 refused to make twice with the wrap
+  marks. It also gained a `r < r0 || r > r1` refusal so a row outside the run answers "none".
+  STEP 4 DONE — `src/main.c`: `hover_cell()` (the pointer→pane→cell mapping, per pane, exact for the same reason
+  `sel_cell()` is), `hover_motion()` (marks the window dirty only when the CELL changes — a compositor sends one
+  event per pixel) called from `ptr_enter`, `ptr_motion` and `ptr_leave`, and `hover_update()` called from
+  `redraw()` every frame: it clears `rend.hover_tab` to -1, maps the pointer, skips the confirm-quit box, asks
+  `term_url_span()` + `term_url_text()` (the same two questions the click asks) and then `url_hover_shows()`. New
+  `W.ptr_in` because `wl_pointer.leave` does not clear `ptr_x/ptr_y`. No new config key.
+  STEP 5 PARTLY DONE — checks. `tests/test_vt.c`: the `url/hover` gate table (7 cases), the 32-combination
+  agreement loop with the two non-vacuity counts (`shown == 1`, `off_pane == 0`), and the `url/row` group for
+  `url_span_row()` including a real 40-column wrapped grid where the underlined cells (35 + 26) must equal the 61
+  bytes that get opened. `tests/test_render.c`: `group_hover_shape()` (the rect invariants over cells 1..400 px,
+  the measured thickness ladder, the empty-rect answers for a 0/negative cell) and 14 new wiring scans, three of
+  which had to move because the tree legitimately changed (`g_layout.dialog.on` 2→3, `click_opens_url` 1→3,
+  `term_url_span`/`term_url_text` 2→3 each); a new scanner `src_code_before()` pins the DRAW ORDER (bands →
+  cursor quad → underline → glyphs), which no headless test can otherwise reach. `build/url.o` joined
+  `bin/test_render` (and `src/url.c` the asan rule) because render.o now calls `url_span_row()`.
+  MEASURED SO FAR: `make -j8` exit 0 / 0 warning lines; `make bin/test_vt bin/dbg bin/test_fm bin/test_render`
+  exit 0 / 0 warning lines; `./bin/test_vt` **1673 checks, 0 failures** (was 1654, +19); `./bin/test_render`
+  **604 checks, 0 failures** (was 578, +26). Every scan count was measured with `.scratch/s129/scancount.py`, not
+  guessed. NOT yet run: `dbg`, `test_fm`, `make asan`, the CLI group, and the mutants.
+
+- **2026-10-22, s134 — the user's eye on the hover underline: "it's over the text instead of under it. It would be
+  better under".** The task block above holds the report, the measurement and the plan; the baseline was re-measured
+  before the first edit: `make clean && make -j8` exit 0 / **0 warning lines**, `make bin/test_vt bin/dbg bin/test_fm
+  bin/test_render` exit 0 / **0 warning lines**, `./bin/test_vt` **1673/0**, `./bin/dbg` **MODEL OK (0 problems)**,
+  `./bin/test_fm` **384/0**, `./bin/test_render` **604/0** — the s133 tree is green, so the report is a wrong pixel,
+  not a broken build.
+  **The root cause, measured before touching anything (probes in `.scratch/s134/`):** the quad's y grows UP from the
+  cell's bottom edge (the MVP is an unflipped pixel ortho; `pad_gl` is the GL y of the bottom row), and
+  `render_hover()` copied `render_cursor()`'s `CUR_UNDERLINE` formula `y = cell_h - h`, which is the TOP of the cell
+  in that space. The header comment that was copied from says "origin at the cell's top-left" — wrong — while the
+  `HoverDraw` comment right below it says "y is measured UP from the cell's bottom edge" — right. Two comments, one
+  file, one of them false, and the code followed the false one. The DECSCUSR underline cursor has had the same defect
+  since s112, and `tests/test_render.c` had pinned it twice (`d.y == ch - 2`, `d.y + d.h == cell_h`) because a check
+  written from the implementation's own assumption restates the assumption instead of testing it.
+  **STEP 0 DONE — the font measured, so the fix has numbers instead of an opinion** (see the task block: cell_h /
+  ascent / descent at 7 pixel sizes, the depth of every glyph of the URL in the screenshot, and the font's own OS/2
+  underline position as the cross-check). Not yet edited: render.c, the header, the checks.
+  STEP 1 DONE — `src/render.c`: the new static `underline_y(cell_h, ascent_px, descent_px, h)` with the coordinate
+  space written out where the next reader will hit it, `render_cursor()`'s `CUR_UNDERLINE` branch and `render_hover()`
+  both asking it, and `render_draw()` gaining `float descent = (float)f->descent * f->scale;` next to the existing
+  `ascent`, passed to all three cursor passes and to the hover pass. `render_cursor()` and `render_hover()` both grew
+  `ascent_px`/`descent_px` parameters.
+  STEP 2 DONE — `include/kai-term/kai-term.h`: the `CursorDraw` comment's "origin at the cell's top-left" replaced
+  with the truth (x from the left edge, y from the BOTTOM edge measured up, and why a bar cannot show the difference
+  while an underline can), both declarations updated, and the `render_hover()` comment saying the position is asked of
+  the same helper the cursor asks.
+  STEP 3 DONE — `tests/test_render.c`: the two checks that had pinned the bug replaced. `group_cursor_shape()` now
+  passes metrics everywhere (a 9x18 cell with ascent 13 / descent 5) and asserts the underline is at `y == 0` with its
+  top edge never above the baseline; `group_hover_shape()` was rewritten around the measured font table (13
+  (cell_w, cell_h, ascent, descent) rows: the installed face at px 10..32 plus three faces this machine has not got —
+  leading under the baseline, no descender band, a descender deeper than the cell) with five invariants (never 0 px,
+  never over the cell/3 cap, always inside the cell, never above the baseline when there is room, and at the bottom of
+  the DESCENDER band when the cell has leading), the measured thickness-and-place table, the 3-px-below-the-baseline
+  cross-check at font_size 14, and a new check that the cursor's underline and the hover underline come out the SAME
+  rect at the same thickness. The wiring scans gained three: `underline_y` counted 3 (definition + both underlines),
+  `cell_h - h` / `cell_h - w` pinned ABSENT in src/render.c, and the descent metric counted where it must reach. All
+  counts measured with `.scratch/s134/scancount.py` (the s129 scanner replica), not guessed.
+  MEASURED after the edits: `make -j8` exit 0 / **0 warning lines**; `make bin/test_vt bin/dbg bin/test_fm
+  bin/test_render` exit 0 / **0 warning lines**; `./bin/test_render` **616 checks, 0 failures** (was 604, +12);
+  `./bin/test_vt` **1673/0** (unchanged — the position is a render.c decision, as the plan expected); `./bin/dbg`
+  **MODEL OK (0 problems)**; `./bin/test_fm` **384/0**. One check went red on the first run and it was the check that
+  was wrong, not the code: the "never thinner as the cell gets taller" invariant compares neighbours, and the new
+  metrics table was not sorted by cell_h — the table is sorted now and the reason is written above it.
+  NOT yet run: the mutants, `make asan`, the CLI group, README/ISSUES.
+  STEP 4 DONE — the mutant harness `.scratch/s134/mutate.py` (the s133 one, re-anchored for the changed source, plus
+  11 new mutants: the old `cell_h - h` / `cell_h - w` formulas put back, each arm of `underline_y()` broken in turn
+  (band ignored, always-cell-bottom, the two clamps dropped, the baseline not derived from the ascent), the metric
+  faked at each call site (hover passes 0, one cursor pass passes 0/0, the descent unscaled, the descent never read).
+  **The run found two s133 checks that were vacuous, and the reason is worth keeping: the s133 harness's CONTROL run
+  was red** (3 checks of its copy could not read `config/kai-term.theme`), so every mutant "failed" and the summary's
+  "26 mutants, 0 survived" meant nothing — the harness's own docstring warns about exactly that and the summary
+  printed the claim anyway. With a green control, `no_ptr_in_flag` (deleting `if (!W.ptr_in)` from `hover_cell()`) and
+  `chrome_ink` (feeding the underline a chrome colour instead of the cell's ink) survived. Both guards are pinned now
+  by their own text (`if (!W.ptr_in)` counted 1 in main.c; `uint32_t ink = c->fg;` and `ink = c->bg;` counted 1 each
+  in render.c), and `chrome_ink` was rewritten to a mutation that COMPILES — its first version used `chrome.fg`, which
+  does not exist, so it was reported as a survivor when it had never run. The harness now separates "did not compile"
+  from "survived". `test_render` is **617 checks, 0 failures** after those two scans.
+  STEP 5 DONE — user docs, which s133 had not written at all: README's feature bullet, a paragraph in "Clicking a web
+  address" (the underline appears exactly where a click would open, follows the pointer cell, takes the address's own
+  colour, and has no key of its own), and the `click_opens_url` settings row; `config/kai-term.conf`'s
+  `click_opens_url` block gained the same four lines. ISSUES' entry is written after the final measurement below.
+- **2026-10-21, s135 — close-out of s132+s133+s134: the verification those entries claimed but had not run, then the
+  commit and the push (CLOSED).** The tree found at session start: HEAD `124983c`, ALL of s132/s133/s134 uncommitted
+  across 11 files, and ISSUES.md ALREADY carrying final-looking numbers (asan clean, CLI 99/0/13) that no journal entry
+  recorded producing — claims written ahead of their runs, exactly the shape the rules forbid. The s135 task block
+  above holds the plan; every number was re-measured in this session before anything was committed:
+  `make clean && make -j8` exit 0 / **0 warning lines**; `make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0
+  / **0 warning lines**; `./bin/test_vt` **1673/0**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **384/0**,
+  `./bin/test_render` **617/0**; `make asan` exit 0, **0 warning lines, 0 sanitizer reports**, same four counts;
+  `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh ./bin/kai-term` → **CLI: 99 checks, 0 failures, 13 skipped** (the
+  13 windowed checks stayed skipped — the user is not at the machine to consent to ~15 mapped windows).
+  `.scratch/s134/mutate.py` re-run whole: **CONTROL green** (1673/0, 617/0 — the s133 harness's failure mode checked
+  FIRST), **36 mutants, 34 killed, 2 survived** (`hover_no_cap`, `renderer_adds_own_rule`), matching ISSUES exactly;
+  no source changed during verification, so no re-run was owed afterwards and this run also covers the s133 mutants
+  the s134 plan owed. README's new refusal-log sentence was grepped against the code before committing: `src/main.c`
+  logs `url: the click at (%d,%d) opened nothing — %s` and `src/url.c` names all six reasons verbatim — the sentence
+  is true of this tree.
+  **Committed:** `24638cc` "URL hover: the address under the pointer underlines, under the letters, and a refused
+  click says why" — src, include, tests, Makefile, config templates, README in ONE commit: s132/s133/s134 share
+  `url.c`/`main.c`/`render.c`/`test_vt.c`/`test_render.c` hunk-for-hunk and splitting them after the fact would have
+  manufactured boundaries the work never had; the message names each session's part. **Pushed** after `git fetch`;
+  `git log --oneline origin/main -1` reads `24638cc`. `.scratch/` stayed untracked, never `git add`-ed.
+  **Owed to the user's eye:** that the fixed underline now READS as an underline at their font size (the checks pin
+  the rect against measured font metrics; no check pins the pixel) — plus the still-open step 2/3b/5/6 look items in
+  "Current Status". Nothing else is in progress; the next thing is to ask the user what they want next.
+
 ## Next Steps
 
-1. **The s102 plan is FINISHED — all seven steps are built, checked and committed.** Nothing is in progress. Step 7
-   (the plain-click web address) closed in s131 as `4610911`, pushed and re-verified from a fresh clone of that
-   commit. Steps 4, 5 and 6: step 4 is confirmed by the user in both forms; steps 5, 6 and 7 are committed and owed
+1. **The s102 plan is FINISHED — all seven steps are built, checked and committed — and the hover underline the user
+   asked for afterwards is committed too (`24638cc`, pushed, `origin/main` re-read from git at s135).** Nothing is in
+   progress. Step 7 (the plain-click web address) closed in s131 as `4610911`, pushed and re-verified from a fresh
+   clone of that commit; s132's refusal log, s133's hover underline and s134's position fix landed together in
+   `24638cc`. Steps 4, 5 and 6: step 4 is confirmed by the user in both forms; steps 5, 6 and 7 are committed and owed
    only their look to the user's eye (the list and the recipes are in "Current Status"). Do not re-open, re-ask
    about or re-derive steps 0-7 — each section under "Current Task" records the A/B and the mutants it was measured
-   against, and the s120-s131 entries do the same for the sessions that built them.
+   against, and the s120-s135 entries do the same for the sessions that built them.
    **So the next thing to do is either ask the user what they want next, or take an item from "Housekeeping" below
    (item 5) — not to invent a feature.** If a new feature is asked for, the standing survey rule applies: grep the
    tree for it first (0 hits means absent, not wanted), then check what the user's own setup actually asks for
@@ -2299,12 +2627,12 @@ Kai-Term/
 ├── config/kai-term.theme        # the shipped THEME example: all 23 theme names at the built-in colours
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c url.c font.c render.c main.c
-├── tests/test_vt.c              # 1632 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt
+├── tests/test_vt.c              # 1654 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt
 │                                # machinery, click selection, confirm-quit (predicate, count, wording, notice
 │                                # geometry), the visual bell (the BEL event, the fade, drawn-vs-hidden sessions),
 │                                # the web-address click (the run rule, the gates, the wait, a real spawn)
 ├── tests/test_fm.c              # 384 checks: the file-manager model, previews, decoders, band geometry, pointer rules, the preview pane's text selection
-├── tests/test_render.c          # 575 checks: the renderer's pure decisions — colour choices, cursor shape, the question
+├── tests/test_render.c          # 578 checks: the renderer's pure decisions — colour choices, cursor shape, the question
 │                                # row's two colours, the box's six, the bell's colour — plus the source scans that cover
 │                                # main.c's confirm-quit, visual-bell and URL wiring
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
@@ -2385,7 +2713,7 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   sequence and the measurements that chose it, and the command line `tab_spawn()` hands `pty_spawn()`. Nothing
   here talks to the shell except through those files and the pty; the protocol's other half is `kai_apc()` in
   `src/vt.c` and the state machine in `src/main.c`.
-- `tests/test_vt.c` — 1632 checks. Groups: parser (C0 inside a control sequence; a CSI sequence split across two
+- `tests/test_vt.c` — 1654 checks. Groups: parser (C0 inside a control sequence; a CSI sequence split across two
   bursts), clipboard text policy (`paste_repair`, `clipboard_mime_rank`), grid, selection, alt screen,
   `live_off`, emoji clusters, CSI 3 J, bracketed paste, `term_init` guard, reflow, `term_grid_geometry`,
   zoom/alt-screen row-shrink, `mouse_sgr_button`/`mouse_wheel_button` (the SGR order and the 64/65 wheel codes),
@@ -2406,12 +2734,14 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   the shell-integration scripts as they land on disk, and the
   prompt machinery the follow is built from (`term_at_prompt()`, `term_prompt_line()`,
   `term_prompt_line_typed()`, `term_prompt_line_is()`, the echo window and its transition rule, the clear ->
-  `cd` -> re-populate sequence as the model sees it). The **`url` group** (step 7, 116 checks, sitting next to the
+  `cd` -> re-populate sequence as the model sees it). The **`url` group** (step 7, 138 checks, sitting next to the
   pointer-precedence group so the click features stay together) covers the run rule and its spans, the trailing-mark
   cut/keep table, the scheme rules, the non-ASCII/wide refusal, the window-broke vs program-broke split, a tab's gap,
   the alternate screen (the scan FINDS the address; the gate declines the click), the `URL_MAX` boundary on all three
   sides, the delimiter corpus, the scrolled-away limit, `url_is_openable`, the 9-case `url_click_opens` gate table,
-  the `url_open_due` boundary against `term_click_count`, the two header constants, the `click_opens_url` key and an
+  the 16-case `url_refusal` table (every reason named, the reasons' precedence over each other, and
+  `url_click_opens` pinned to `refusal == NONE`), the `url_open_due` boundary against `term_click_count`, the two
+  header constants, the `click_opens_url` key and an
   end-to-end `url_spawn` through two stand-in openers that report their own argv, session id, signal mask and open
   descriptors. `main.c` itself is in no test binary — that machine is
   covered by `.scratch/s86/follow2.c` and the live harness. Two invariants with dedicated checkers: the `row[]`
@@ -2428,7 +2758,7 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   (`band_mismatches()`), the copy's buffer bounds including `cap == 0`, the invalidation on scroll / resize / a
   new preview, a directory preview's entry list being selectable too, and what a row wider than the pane can
   copy (28 cells of a 130-character line).
-- `tests/test_render.c` — 575 checks, the only coverage of the renderer's decisions that needs no display. It
+- `tests/test_render.c` — 578 checks, the only coverage of the renderer's decisions that needs no display. It
   links `render.o` (plus `fm.o font.o img.o vt.o shellint.o layout.o mux.o config.o`, which is what `render.o`
   needs to LINK) and calls only the pure functions — never `render_init()`, never a GL call. Colour: the
   configured `cursor_color` is what an active pane's cursor is drawn with, an inactive session's cursor is that
@@ -2447,8 +2777,9 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   lines). The wiring pins (`conf.cursor_width` reaches `render_init()`, `rend.cursor_on = W.cursor_on` exists,
   `render_cursor` appears 4× in `src/render.c`, `cursor_on` 3×, and the six confirm-quit counts in `src/main.c`:
   the window gate 2×, the tab gate 3×, the answer 3×, `confirm_clear` 4×, the row handed to the layout 1+1×, the
-  shared predicate 2+2×) are text counts — re-diff them, they are not executed. The 14 URL scans (s129) pin that
-  `src/main.c` CONSULTS `src/url.c` instead of keeping its own copy: the gate asked once with
+  shared predicate 2+2×) are text counts — re-diff them, they are not executed. The 17 URL scans (s129's 14 plus
+  s132's 3) pin that `src/main.c` CONSULTS `src/url.c` instead of keeping its own copy: the gate asked once and
+  asked for a REASON, that reason logged and gated on the switch,
   `conf.click_opens_url`, the scan asked twice (click + deadline) with `strcmp(holds, clicked)` at the deadline,
   `url_tick` defined and called, the wait using `URL_OPEN_WAIT_MS` not a literal, the pending stamp cleared in both
   places that end a wait, one `url_spawn` site taking `URL_OPENER_PROGRAM`, and in `src/url.c` the presence of
