@@ -28,8 +28,8 @@ protocol), two vertex batches per frame with the pictures drawn between them. In
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
 ## Current Status (re-measured 2026-10-21, s135 — **GREEN; the s102 plan's seven steps are all closed and the hover
-underline the user then asked for is built, checked and fixed (it was drawing across the letters) — committed as
-`24638cc` and pushed; read the commit state from git, never from here**)
+underline the user then asked for is built, checked, fixed (it was drawing across the letters) and CONFIRMED in the
+user's window (s136) — committed as `24638cc` and pushed; read the commit state from git, never from here**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -133,16 +133,18 @@ underline the user then asked for is built, checked and fixed (it was drawing ac
   works and open as expected."** Nothing in step 7 is owed to their eye any more. Recipe, for anyone re-checking it:
   `printf 'see https://example.com/a?b=1\n'` then click it; `./bin/kai-term -d` logs
   `url: a click asked xdg-open for …` and, when a click is refused, why.
-  **What is on the list from s133: the look of the hover underline** — that the address under the pointer gains an
-  underline that READS as an underline at their font size (its thickness and its place in the cell), that it follows
-  the pointer cell for cell, that it is gone when the pointer leaves the address, the pane, or the window, and that it
-  does NOT appear where a click would not open (`less`/`nano`/`man`, `Shift` held, a drag in progress, or
-  `click_opens_url = 0`). Every one of those is a decision with a check; none has a check on the pixel.
+  **The s133/s134 hover underline is CONFIRMED — the user had eyes on it 2026-10-21 (s136): "I confirm it to be
+  working properly"**, after s134 moved it from across the letters to under them. Steps 5, 6 and 7 (the middle click,
+  the bell and the whole URL feature — the click, the refusal log and the hover underline) are now all confirmed in
+  the user's window; nothing in them is owed to their eye any more, and their look is not to be re-asked about or
+  re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
+  `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — s135 CLOSED (2026-10-21): close out s134 — the final verification ISSUES.md already claims, then the
-commit and the push. RESULT: every claim verified by a run in this session (see the s135 journal entry), feature
-committed as `24638cc` and pushed, `origin/main` re-read from git. Nothing is in progress; the hover underline is
-owed to the user's eye.
+## Current Task — none. s135 CLOSED (2026-10-21): the final verification ISSUES.md already claims, the commit and the
+push (see the s135 journal entry) — feature `24638cc`, journal `a7694b6`, `origin/main` re-read from git. s136
+(2026-10-21) is the user's confirmation of the hover underline: **"I confirm it to be working properly"** — the last
+item s134 left owed to their eye, so steps 5, 6 and 7 are now fully closed. Nothing is in progress; the next thing is
+to ask the user what they want next (Next Steps item 1).
 
 ### s135 task block — verify the claims, then commit s132+s133+s134
 
@@ -2482,15 +2484,30 @@ numbers and the intermediate check counts are in git.
   **Owed to the user's eye:** that the fixed underline now READS as an underline at their font size (the checks pin
   the rect against measured font metrics; no check pins the pixel) — plus the still-open step 2/3b/5/6 look items in
   "Current Status". Nothing else is in progress; the next thing is to ask the user what they want next.
+- **2026-10-21, s136 — the user's eye on the hover underline: CONFIRMED (CLOSED, no code change).** The report,
+  verbatim: *"I confirm it to be working properly"* — asked for at the end of s135, whose recipe was
+  `printf 'see https://example.com/a?b=1 now'` and a look at the line under the address. That was the ONE item s134
+  left owed to their eye (the checks pin the rect against measured font metrics; no check pins the pixel), so the
+  s134 fix is now closed on both halves: the hover underline AND the `ESC[5 q` underline cursor that carried the same
+  defect since s112, which the user has not asked about separately and which no report contradicts.
+  **Consequence for the list:** steps 5 (middle click), 6 (the bell) and 7 (the URL click, its refusal log and its
+  hover underline) are all confirmed in the user's window now — do not re-ask about them, re-propose them or chase
+  their look further. What remains on the owed-to-their-eye list is only: the look of a themed window, a live OSC
+  colour repaint, the configured `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
+  No file of the shipped tree changed in s136 — documentation only, so no rebuild or suite re-run was owed; the
+  doc-pinning checks in `tests/test_vt.c` read README/ISSUES/config templates, and AGENT.md is not one of the files
+  they read, which is why this edit needs no re-measure to be honest about.
 
 ## Next Steps
 
 1. **The s102 plan is FINISHED — all seven steps are built, checked and committed — and the hover underline the user
-   asked for afterwards is committed too (`24638cc`, pushed, `origin/main` re-read from git at s135).** Nothing is in
+   asked for afterwards is committed too (`24638cc`, pushed, `origin/main` re-read from git at s135) and CONFIRMED by
+   the user's eye (s136).** Nothing is in
    progress. Step 7 (the plain-click web address) closed in s131 as `4610911`, pushed and re-verified from a fresh
    clone of that commit; s132's refusal log, s133's hover underline and s134's position fix landed together in
-   `24638cc`. Steps 4, 5 and 6: step 4 is confirmed by the user in both forms; steps 5, 6 and 7 are committed and owed
-   only their look to the user's eye (the list and the recipes are in "Current Status"). Do not re-open, re-ask
+   `24638cc`. Steps 4, 5 and 6: step 4 is confirmed by the user in both forms, and steps 5, 6 and 7 were confirmed in
+   their window 2026-10-21 (s136: "I confirm it to be working properly") — so nothing in steps 4-7 is owed to their
+   eye any more. Do not re-open, re-ask
    about or re-derive steps 0-7 — each section under "Current Task" records the A/B and the mutants it was measured
    against, and the s120-s135 entries do the same for the sessions that built them.
    **So the next thing to do is either ask the user what they want next, or take an item from "Housekeeping" below

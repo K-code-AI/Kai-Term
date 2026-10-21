@@ -97,7 +97,8 @@ reach. `.scratch/s134/mutate.py`: **36 mutants, 34 killed** — the report's own
 cursor's version 8, each arm of the rule 2-11. The two survivors are honest: `hover_no_cap` (the thickness cap in
 `render_hover()` cannot be reached, because `cell_h/12` is never over `cell_h/3` — it is a guard for a future ladder,
 not a live branch) and `renderer_adds_own_rule` (a renderer inventing its own rule about spans is exactly what a
-source scan cannot see; the pixel stays owed to the user's eye). That run also caught **two s133 checks that were
+source scan cannot see; the pixel was owed to the user's eye, and they confirmed it 2026-10-21: "I confirm it to be
+working properly"). That run also caught **two s133 checks that were
 vacuous**: the s133 harness's control run had been red, which made every mutant look killed, and with a green control
 deleting the `if (!W.ptr_in)` guard in `hover_cell()` and feeding the underline a chrome colour instead of the cell's
 ink both survived. Both are pinned by their own text now.
