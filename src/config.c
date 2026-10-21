@@ -68,6 +68,10 @@ void config_default(Config *c)
     /* Middle-click paste is OFF by default — the user asked for it as an option precisely because they dislike
        it. Nothing about a middle click changes until this is turned on. */
     c->middle_click_paste = 0;
+    /* The bell is VISUAL by default. Kai-Term has no audio, so a BEL that is not drawn is a BEL nobody hears:
+       readline's ambiguous completion, `less` on a failed search and sudo on a wrong password all say "no" with
+       a BEL and would otherwise say nothing at all. The user's answer to question 6 was "on by default". */
+    c->bell = BELL_VISUAL;
     /* The cursor: a thin bar (there is no `cursor_style` key — the user asked for one look) that is on for
        1000 ms and off for 1000 ms, the classic rhythm. 0 turns the blink off and an application cannot turn
        it back on (see the CURBLINK enum comment). 2 px is the width that reads as a hairline at 14px but is
@@ -534,6 +538,22 @@ static void apply_setting(Config *c, const char *key, char *val)
            file-manager band still picks a file, and one while a program holds the mouse is still reported to
            that program — the order is ptr_press_action()'s, in src/vt.c, and a check pins it. */
         c->middle_click_paste = cfg_bool(val) ? 1 : 0;
+    } else if (!strcmp(key, "bell")) {
+        /* What a BEL does: `visual` (the default) flashes that session's field for BELL_FLASH_MS, `off` draws
+           nothing. 1/on/yes/true and 0/off/no/false are accepted as spellings of the two, the way confirm_quit
+           accepts them for its three. An unknown word WARNS AND KEEPS — that is the rule for an enum, and it is
+           NOT the rule for a bool (cfg_bool() reads any word but 0/off/no/false as ON; the s125 check pins
+           that, so do not copy this branch into a bool key or the other way round). */
+        if (!strcasecmp(val, "off") || !strcmp(val, "0") || !strcasecmp(val, "no") ||
+            !strcasecmp(val, "false")) {
+            c->bell = BELL_OFF;
+        } else if (!strcasecmp(val, "visual") || !strcmp(val, "1") || !strcasecmp(val, "on") ||
+                   !strcasecmp(val, "yes") || !strcasecmp(val, "true")) {
+            c->bell = BELL_VISUAL;
+        } else {
+            klog(L_WARN, "config: bell = '%s' is not a value (visual or off); keeping %s", val,
+                 c->bell == BELL_OFF ? "off" : "visual");
+        }
     } else if (!strcmp(key, "cursor_blink")) {
         /* Half-period in ms: the cursor is drawn for this long, then hidden for this long. 0 = steady.
            The upper clamp is only there to stop a typo (`cursor_blink = 100000`) leaving a cursor that

@@ -2246,6 +2246,61 @@ int main(void)
         }
     }
 
+    /* --- the switch: bell, an enum whose DEFAULT is the feature -------------------------------
+       The user asked for the visual bell ON (their answer to question 6), so a group that only proved `= off`
+       works would pass a build that shipped it off. Default first; then every spelling of both values fed AFTER
+       the opposite one (the s120 `cfg_no_auto` lesson: fed into a config that already holds the expected answer,
+       a word the parser does not know still passes); then the enum's warn-and-KEEP, which is deliberately NOT
+       the bool rule the group above pins — the two checks side by side are what stop them being confused. */
+    {
+        Config c;
+        const char *path = "/tmp/kterm_test_config_bell.conf";
+        config_default(&c);
+        CHECK(c.bell == BELL_VISUAL,
+              "config: bell defaults to visual — with no audio, a bell that is not drawn is a bell nobody sees");
+        FILE *f = fopen(path, "w");
+        CHECK(f != NULL, "config: temp config file writable (bell)");
+        if (f) {
+            static const char *vis[] = { "visual", "1", "on", "yes", "true", "VISUAL", "On" };
+            static const char *off[] = { "off", "0", "no", "false", "OFF" };
+            for (size_t i = 0; i < sizeof vis / sizeof vis[0]; i++) {
+                f = fopen(path, "w");
+                fprintf(f, "bell = off\nbell = %s\n", vis[i]);
+                fclose(f);
+                config_default(&c);
+                config_load(&c, path);
+                CHECK(c.bell == BELL_VISUAL,
+                      "config: bell = visual (and its 1/on/yes/true spellings) turns the flash on");
+            }
+            for (size_t i = 0; i < sizeof off / sizeof off[0]; i++) {
+                f = fopen(path, "w");
+                fprintf(f, "bell = visual\nbell = %s\n", off[i]);
+                fclose(f);
+                config_default(&c);
+                config_load(&c, path);
+                CHECK(c.bell == BELL_OFF,
+                      "config: bell = off (and its 0/no/false spellings) turns it off again");
+            }
+            /* Warn-and-KEEP, in BOTH directions: a check that only starts from one value passes a parser that
+               keeps one and clobbers the other. */
+            f = fopen(path, "w");
+            fputs("bell = visual\nbell = sometimes\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.bell == BELL_VISUAL,
+                  "config: a word that is neither value keeps the current bell (visual here) — an enum is not a bool");
+            f = fopen(path, "w");
+            fputs("bell = off\nbell = sometimes\n", f);
+            fclose(f);
+            config_default(&c);
+            config_load(&c, path);
+            CHECK(c.bell == BELL_OFF,
+                  "config: and it keeps OFF just as well — the parser cannot quietly turn the bell back on");
+            remove(path);
+        }
+    }
+
     /* --- what a pointer press MEANS: the precedence a user can feel ---------------------------
        ptr_button() in main.c is a chain of early returns and main.c is in no test binary, so the ORDER lives
        here as one decision. Each case below is a claim about a middle click: it closes a session on the bar,
@@ -2299,6 +2354,76 @@ int main(void)
               "ptr: a MIDDLE release over the bar is nobody's — it does not close a second time and does not paste");
         CHECK(ptr_press_action(NULL) == PTR_NONE, "ptr: a NULL press is answered, not crashed");
 #undef PP
+    }
+
+    /* --- the visual bell: BEL is an event, and only a real BEL rings ---------------------------
+       The user's answer to question 6 was "on by default", so the parser half has to be pinned: a BEL in the
+       text must be RECORDED, and a 0x07 that is doing another job must NOT ring. The second half matters more
+       than the first: OSC, APC and DCS all use 0x07 as their ST terminator, so a parser that rang on every
+       0x07 would flash the window for every title a shell sets and for every shell-integration announcement. */
+    {
+        term_destroy(&T);
+        term_init(&T, 10, 20, 100);
+        T.bell_rang = 0;
+        feed("hello");
+        CHECK(T.bell_rang == 0, "bell: ordinary output rings nothing");
+        feed("\x07");
+        CHECK(T.bell_rang == 1, "bell: a BEL in the text is recorded, for main.c to turn into a flash");
+        T.bell_rang = 0;
+        feed("\x1b]0;a title set with a BEL terminator\x07");
+        CHECK(T.bell_rang == 0,
+              "bell: a 0x07 that TERMINATES an OSC is a string terminator, not a bell");
+        CHECK(T.title[0] == 'a',
+              "bell: and that OSC really was parsed as a title (the check above is not passing because "
+              "the sequence was abandoned)");
+        feed("\x1b_K;kai-term;integration;fish\x07");
+        CHECK(T.bell_rang == 0, "bell: an APC announcement ended by a BEL does not ring either");
+        feed("\x1bPq#0;2;0;0;0\x07");
+        CHECK(T.bell_rang == 0, "bell: a DCS ended by a BEL does not ring either");
+        T.bell_rang = 0;
+        feed("\x1b[1\x07m");
+        CHECK(T.bell_rang == 1,
+              "bell: a BEL inside a control sequence still rings — the sequence keeps collecting and the "
+              "control is executed (the s97 rule)");
+        T.bell_rang = 0;
+        feed("\x07\x07\x07");
+        CHECK(T.bell_rang == 1, "bell: three BELs are one event, not a counter — the flag is a level");
+    }
+
+    /* --- how long a flash lasts, and how it fades (the pure half of the visual bell) ----------
+       main.c owns the clock, so the ONLY thing that decides what a frame shows is this function. Every case
+       below is a way the flash could be wrong on screen: stuck forever, never drawn, or snapping off. */
+    {
+        CHECK(bell_strength(1000, 1000, BELL_FLASH_MS) == 1000,
+              "bell: at the moment of the ring the flash is at full strength");
+        CHECK(bell_strength(1000 + BELL_FLASH_MS / 2, 1000, BELL_FLASH_MS) == 500,
+              "bell: halfway through it is half as strong — the fade is linear, not a step");
+        CHECK(bell_strength(1000 + BELL_FLASH_MS - 1, 1000, BELL_FLASH_MS) > 0,
+              "bell: the last millisecond before the deadline is still on screen");
+        CHECK(bell_strength(1000 + BELL_FLASH_MS, 1000, BELL_FLASH_MS) == 0,
+              "bell: at the deadline it is gone — this is what lets main.c stop redrawing");
+        CHECK(bell_strength(1000 + BELL_FLASH_MS + 5000, 1000, BELL_FLASH_MS) == 0,
+              "bell: long after it is gone, whatever the clock has done since");
+        CHECK(bell_strength(999, 1000, BELL_FLASH_MS) == 0,
+              "bell: a clock that went backwards draws nothing (a flash for a ring in the future would "
+              "never expire)");
+        CHECK(bell_strength(1500, 0, BELL_FLASH_MS) == 0,
+              "bell: a session that has never rung (0) has no flash — a fresh Tab needs no branch");
+        CHECK(bell_strength(1500, -5, BELL_FLASH_MS) == 0, "bell: a negative timestamp is no ring");
+        CHECK(bell_strength(1500, 1000, 0) == 0,
+              "bell: a duration of 0 means no flash, and the division below is never reached");
+        CHECK(bell_strength(1500, 1000, -10) == 0, "bell: a negative duration is no flash either");
+        int prev = 1001, mono = 1, over = 0;
+        for (int ms = 0; ms <= BELL_FLASH_MS; ms++) {
+            int strength = bell_strength(1000 + ms, 1000, BELL_FLASH_MS);
+            if (strength > 1000 || strength < 0)
+                over = 1;
+            if (strength > prev)
+                mono = 0;
+            prev = strength;
+        }
+        CHECK(!over, "bell: the strength stays inside 0..1000 for every millisecond of the window");
+        CHECK(mono, "bell: it never gets brighter as time passes — one fade, no flicker");
     }
 
     /* --- emoji grapheme clusters + wide emoji (color emoji support) --- */
@@ -3120,6 +3245,9 @@ int main(void)
             CHECK(t.middle_click_paste == d.middle_click_paste && d.middle_click_paste == 0,
                   "template: middle_click_paste matches, and the shipped line really is the built-in 0 — "
                   "a template that ships the option ON contradicts the default the user asked for");
+            CHECK(t.bell == d.bell && d.bell == BELL_VISUAL,
+                  "template: bell matches, and the shipped line really is the built-in `visual` — the user "
+                  "asked for the bell to be visible by default");
             CHECK(t.cursor_blink == d.cursor_blink && t.cursor_width == d.cursor_width,
                   "template: cursor_blink/cursor_width match (and the shipped lines really are 1000/2)");
             CHECK(t.repeat_delay == d.repeat_delay && t.repeat_rate == d.repeat_rate,
@@ -3194,8 +3322,8 @@ int main(void)
             int nb = cfg_names_of("src/config.c", "static int apply_bind_key(", bind_names, 64);
             CHECK(ns > 0, "template: the settings names were read from src/config.c (the ladder moved?)");
             CHECK(nb > 0, "template: the binding names were read from src/config.c (the ladder moved?)");
-            CHECK(ns == 38 && nb == 24,
-                  "template: the parser accepts 38 settings and 24 bindings — re-diff, do not copy");
+            CHECK(ns == 39 && nb == 24,
+                  "template: the parser accepts 39 settings and 24 bindings — re-diff, do not copy");
             int nbad = 0;
             if (ns > 0)
                 nbad += tpl_check_names(tpl_conf, (const char *const *)set_names, ns);
@@ -3535,6 +3663,64 @@ int main(void)
         for (int i = 0; i < 4; i++)
             mux_close(&MX2, 0);
         CHECK(mux_count(&MX2) == 0, "confirm mux: the tabs are gone, nothing was left behind");
+    }
+
+    /* --- the visual bell: which sessions can still be seen flashing (mux_bell_live) -------------
+       This rule used to sit in main.c's bell_live(), which no test binary links, and `.scratch/s126/mutate.py`
+       proved it: a mutant that walked every TAB instead of every PANE survived every check in the tree. The
+       behaviour it breaks is real and invisible to a harness — an UNDRAWN session keeps the window redrawing
+       every 8 ms for 250 ms for a picture that cannot change, and (worse) a flash that is not on screen still
+       counts as "live", so the final frame that clears it is asked for on behalf of a session nobody sees. So
+       the rule moved to mux.c and is pinned here, with a hand-built Layout: no pty, no clock, no window. */
+    {
+        Mux MX3;
+        Layout lay;
+        mux_init(&MX3, 8);
+        memset(&lay, 0, sizeof lay);
+        CHECK(mux_bell_live(&MX3, &lay, 1000, BELL_FLASH_MS) == 0,
+              "bell live: no sessions and no panes means nothing is flashing");
+        CHECK(mux_bell_live(NULL, &lay, 1000, BELL_FLASH_MS) == 0,
+              "bell live: no mux at all is not a flash (a public entry point needs the guard)");
+        CHECK(mux_bell_live(&MX3, NULL, 1000, BELL_FLASH_MS) == 0,
+              "bell live: no layout is not a flash either");
+        for (int i = 0; i < 4; i++)
+            CHECK(mux_open(&MX3, 6, 20, 50) == i, "bell live: four tabs opened");
+        CHECK(mux_bell_live(&MX3, &lay, 1000, BELL_FLASH_MS) == 0,
+              "bell live: a fresh tab has never rung — mux_open() cleared the slot's ring time");
+
+        /* One pane, showing tab 2, which rang 100 ms ago: live. */
+        lay.npane = 1;
+        lay.pane[0].tab = 2;
+        MX3.tab[2].bell_ms = 900;
+        CHECK(mux_bell_live(&MX3, &lay, 1000, BELL_FLASH_MS) == 1,
+              "bell live: a drawn session that just rang keeps the window redrawing");
+        /* The same session, past the deadline: not live — this is what lets the loop stop redrawing. */
+        CHECK(mux_bell_live(&MX3, &lay, 900 + BELL_FLASH_MS, BELL_FLASH_MS) == 0,
+              "bell live: at the deadline it is over, drawn or not");
+        /* THE rule the mutant survived: tab 0 is flashing and the layout does not draw it, while the pane it
+           DOES draw (tab 2) has an EXPIRED ring — otherwise the answer would be 1 for the wrong reason and the
+           check would pass vacuously. */
+        MX3.tab[2].bell_ms = 500;      /* drawn, and 500 ms past its deadline at now = 1000 */
+        MX3.tab[0].bell_ms = 990;      /* flashing, but hidden */
+        CHECK(mux_bell_live(&MX3, &lay, 1000, BELL_FLASH_MS) == 0,
+              "bell live: a session the layout does not draw has no field to flash, so it keeps no frame alive "
+              "(the tab bar's `*` is its mark)");
+        /* In split view two of the four ARE drawn: only those two count. */
+        lay.npane = 2;
+        lay.pane[1].tab = 0;
+        CHECK(mux_bell_live(&MX3, &lay, 1000, BELL_FLASH_MS) == 1,
+              "bell live: side-by-side, the pane whose session rang is enough to keep the frame");
+        /* `bell = off` hands in a duration of 0: nothing is live, whatever the timestamps say. */
+        CHECK(mux_bell_live(&MX3, &lay, 1000, 0) == 0,
+              "bell live: a duration of 0 is `bell = off` — no branch of its own needed anywhere");
+        /* A layout naming a tab that is gone (a close between the layout and the tick). */
+        lay.pane[1].tab = 7;
+        lay.pane[0].tab = -1;
+        CHECK(mux_bell_live(&MX3, &lay, 1000, BELL_FLASH_MS) == 0,
+              "bell live: a pane naming a tab that no longer exists is skipped, not read out of bounds");
+        for (int i = 0; i < 4; i++)
+            mux_close(&MX3, 0);
+        CHECK(mux_count(&MX3) == 0, "bell live: the tabs are gone, nothing was left behind");
     }
 
     /* --- confirm-quit: the question kinds must not collide with "no question" -------------------

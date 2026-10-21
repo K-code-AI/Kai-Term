@@ -190,6 +190,53 @@ static void group_cursor_color(void)
           "leave a colour behind for the checks that follow)");
 }
 
+/* ---------- the visual bell's colour (step 6) ---------------------------------------------
+   render_draw() is in no test binary, so the two decisions it makes about a flash — how far the paper moves
+   toward the ink, and what happens at the ends of the range — are checked here, at the function that makes
+   them. The timing half (how long, when it stops) is checked in tests/test_vt.c, where bell_strength() lives. */
+static void group_bell_color(void)
+{
+    const uint32_t paper = 0xff101014u, ink = 0xffe5e5e5u;   /* the shipped template's background/foreground */
+    CHECK(render_bell(paper, ink, 0) == paper,
+          "bell: strength 0 is the paper itself — the last frame of a fade is indistinguishable from no flash");
+    CHECK(render_bell(paper, ink, -7) == paper, "bell: a negative strength is the paper too");
+    /* The -7 above cannot tell a guard from no guard: 25 * -7 / 1000 is 0 in C, so a mix that skipped the guard
+       would still hand back the paper. A strength far below 0 is the case that separates them — without the
+       guard the percent goes negative and every channel is clamped toward BLACK, which is a colour nobody
+       asked for. Found by `.scratch/s126/mutate.py`'s `bell_color_ignores_strength` surviving. */
+    CHECK(render_bell(paper, ink, -1000) == paper,
+          "bell: a strength far below 0 is the paper as well — a negative mix percent would drag every "
+          "channel toward black, not toward the paper");
+    CHECK(render_bell(paper, ink, 1000) == mix_ref(paper, ink, BELL_MIX_MAX),
+          "bell: at full strength the paper moves exactly BELL_MIX_MAX percent toward the ink");
+    CHECK(render_bell(paper, ink, 1000) != paper && render_bell(paper, ink, 1000) != ink,
+          "bell: the flash is visible, but it is never the ink itself — the text has to stay readable over it");
+    CHECK(render_bell(paper, ink, 5000) == render_bell(paper, ink, 1000),
+          "bell: a strength over 1000 is clamped, so no channel can pass the colour it is mixing toward");
+    CHECK(render_bell(paper, ink, 500) == mix_ref(paper, ink, BELL_MIX_MAX * 500 / 1000),
+          "bell: half strength is half the mix — the fade is one quad changing colour, not more quads");
+    int mono = 1;
+    int prevb = -1;
+    for (int s = 0; s <= 1000; s += 25) {
+        int v = (int)((render_bell(paper, ink, s) >> 16) & 0xff);
+        if (v < prevb)
+            mono = 0;
+        prevb = v;
+    }
+    CHECK(mono, "bell: every step of the fade moves the same way — no flicker, no getting brighter");
+    /* A light theme has to flash too: mixing toward a DARK ink is what keeps this from being a feature of
+       dark palettes only (the bug class is a mix that rounds to the paper and shows nothing). */
+    CHECK(render_bell(ink, paper, 1000) != ink,
+          "bell: a light paper with dark ink still flashes — the mix is toward the ink either way");
+    CHECK((render_bell(ink, paper, 1000) >> 16) < (ink >> 16),
+          "bell: and on a light paper it moves DOWN toward the ink, not up");
+    CHECK((render_bell(paper, ink, 1000) >> 24) == 0xffu,
+          "bell: the alpha stays opaque — a transparent window must not get a hole in it");
+    CHECK(render_bell(0xff808080u, 0xff808080u, 1000) == 0xff808080u,
+          "bell: a theme whose ink equals its paper flashes to that same colour (there is nothing to show, "
+          "and inventing a colour would be a guess)");
+}
+
 /* ---------- the two source scans that cover what no headless test can run ---------- */
 
 /* Count code tokens equal to `word` in a source file; -1 when the file cannot be opened, so a moved
@@ -512,6 +559,54 @@ static void group_source_wiring(void)
           "middle click — one paste path, not two that can drift");
     CHECK(src_word_count("src/main.c", "mux_running") == 2 && src_word_count("src/main.c", "pty_fg_busy") == 2,
           "src/main.c asks the measured predicate rather than inventing its own busy test");
+
+    /* ---- the visual bell: the draw loop asks two decisions and makes none of its own (s126) ----
+       The flash is one quad, so the two things that can be wrong about it are its timing and its colour, and
+       both are functions a test calls. What these scans pin is that render_draw() consults them instead of
+       doing arithmetic of its own — and that the staging budget pays for the pass, which is the one mistake
+       that turns a new quad into a buffer overrun in a wide window. Counts measured on the wired tree. */
+    CHECK(src_word_count("src/render.c", "bell_strength") == 1,
+          "src/render.c asks bell_strength() once — how long a flash lasts is vt.c's decision, not a number "
+          "in the draw loop");
+    CHECK(src_word_count("src/render.c", "render_bell") == 2,
+          "src/render.c defines one bell colour and the draw loop calls it — no literal colour in the pass");
+    CHECK(src_word_count("src/render.c", "BELL_FLASH_MS") == 1,
+          "the duration comes from the header constant exactly once — a second copy can disagree with the "
+          "checks that pin it");
+    CHECK(src_sub_count("src/render.c", "+ lay->npane") == 1,
+          "the staging budget pays for one quad per drawn pane, so the bell pass cannot overrun the buffer");
+    /* ... and that main.c actually feeds it. Without these the renderer would ask bell_strength() with a
+       now_ms of 0 and a bell_ms of 0 forever: every check above stays green while no bell is ever drawn, which
+       is the dead-cursor_color shape again (a key parsed, stored and tested at the parser, reaching no pixel). */
+    CHECK(src_call_passes_arg("src/main.c", "render_init(&", "conf.bell") == 1,
+          "src/main.c passes conf.bell to render_init() — `bell = off` has to reach the drawing decision");
+    CHECK(src_sub_count("src/render.c", "r->bell_on") == 2,
+          "src/render.c stores bell_on once and consults it once, in the pass itself");
+    CHECK(src_sub_count("src/main.c", "rend.now_ms") == 1 && src_sub_count("src/main.c", "rend.bell_ms[") == 1,
+          "redraw() fills this frame's clock and every session's ring time — the renderer reads no clock itself");
+    CHECK(src_sub_count("src/main.c", "term.bell_rang") == 2,
+          "the pty-read path reads the BEL event AND clears it — a flag left set would re-arm the flash on "
+          "every later read and the pane would never stop washing");
+    CHECK(src_word_count("src/main.c", "bell_strength") == 0 && src_word_count("src/main.c", "mux_bell_live") == 1,
+          "main.c asks the SAME live decision the renderer reasons about, once, and never writes the fade "
+          "arithmetic itself — a second copy could disagree about when a flash is over (the rule moved to "
+          "src/mux.c in s127 because a mutant that ignored the DRAWN part survived every check here)");
+    CHECK(src_word_count("src/mux.c", "mux_bell_live") == 1 && src_word_count("src/mux.c", "bell_strength") == 1,
+          "src/mux.c defines the live decision once and asks bell_strength() once — no second fade formula "
+          "anywhere in the tree");
+    CHECK(src_sub_count("src/main.c", "layout_pane_of_tab(&g_layout, ti) >= 0") == 2,
+          "the BEL hand-off marks the window dirty only for a session the layout DRAWS (the second use is the "
+          "picture path). Found by `main_dirty_ignores_drawn` surviving: an unseen session burning a frame every "
+          "8 ms is a battery cost with no visible symptom");
+    CHECK(src_word_count("src/main.c", "bell_tick") == 2,
+          "the bell tick is defined AND called from the frame timer — a fade that nothing drives freezes at "
+          "its first frame");
+    CHECK(src_sub_count("src/main.c", "live || W.bell_live") == 1,
+          "the tick asks for one more frame when the LAST flash ends — without that transition the pane keeps "
+          "the last half-faded wash forever. A text pin, honestly labelled: nothing headless can see the frame");
+    CHECK(src_word_count("src/mux.c", "bell_ms") == 2,
+          "src/mux.c names the ring time twice and only twice: mux_open() clears a reused slot (a new tab cannot "
+          "inherit a dead session's bell) and mux_bell_live() reads it");
     /* The one link a headless test cannot execute: main() handing the configured value to the renderer and
        to the band's painter. The call string includes the '&' so a COMMENT that merely names the function
        (main.c has two) cannot start the scan. */
@@ -579,6 +674,7 @@ int main(void)
 {
     group_cursor_color();
     group_cursor_shape();
+    group_bell_color();
     group_source_wiring();
     group_scanner_selfcheck();
     printf("%d checks, %d failures\n", checks, fails);

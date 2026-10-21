@@ -448,6 +448,13 @@ typedef struct Term {
        with the rest of Term: a fresh session has nothing painted that needs sweeping. */
     int      colors_dirty;
     uint32_t old_def_fg, old_def_bg;
+    /* BEL: raised by the parser, consumed by main.c — the same one-way hand-off as colors_dirty above. It is
+       an EVENT, not a state: main.c clears it and records the moment on ITS clock, so a bell that arrives in
+       a session nobody can see cannot leave a flash armed for it (the bar's `*` is the mark for that case).
+       Zeroed by term_init() with the rest of Term, so a new tab has never rung. A BEL that TERMINATES a
+       string (OSC / APC / DCS use 0x07 as ST) never reaches exec_c0() and therefore does not ring — that is a
+       checked rule, because merging the two would make every OSC set with a BEL terminator ring the bell. */
+    int      bell_rang;
 } Term;
 
 /* The last directory the shell said it entered (its `cd` ack). main.c compares this with the directory the
@@ -655,6 +662,29 @@ int term_click_count(uint32_t time_ms, uint32_t prev_time_ms, int same_cell, int
 int  term_selection_text(Term *t, char *out, size_t cap); /* copies text, returns length */
 void term_select_clear(Term *t);
 
+/* ---- the visual bell (step 6) ---------------------------------------------------------------
+   A BEL is an event, not a pixel. vt.c raises a per-session flag; main.c turns it into a timestamp on its
+   own CLOCK_MONOTONIC ms clock (vt.c reads no clock, so the model stays reproducible in a test); and what a
+   frame draws is then ONE pure question, asked by the draw loop and answered here. That is the usual shape
+   in this project — the rule lives where a test can call it, the draw loop only draws what was decided.
+
+   BELL_FLASH_MS is how long a bell stays on screen. A chosen number, not one measured from another terminal:
+   long enough to be noticed by someone who is not looking at the cell that rang, short enough that a program
+   ringing BEL repeatedly (readline's ambiguous completion, `less` on a failed search, sudo on a wrong
+   password) reads as feedback rather than as a strobe. BELL_MIX_MAX is how far the field moves toward the ink
+   at full strength, in percent — deliberately small, because the flash is one quad UNDER the glyphs and the
+   text has to stay readable through it (there is no GL blending in this renderer, so "fade" means mixing the
+   colour on the CPU, which is exactly what render_bell() does). */
+#define BELL_FLASH_MS 250
+#define BELL_MIX_MAX  25
+
+/* 0..1000: how strong the flash is, right now, for a session that rang at `rang_ms`. 0 means "draw nothing":
+   no ring yet (0), at or after the deadline, a clock that went backwards (now < rang), or a duration of 0.
+   It falls linearly from 1000 at the ring, so the field fades out instead of snapping off. The clock values are
+   milliseconds since boot (CLOCK_MONOTONIC) and are long long on purpose: an `int` ms counter wraps after 24.8
+   days, and a terminal left open over a weekend is not an edge case. */
+int bell_strength(long long now_ms, long long rang_ms, int dur_ms);
+
 /* Setting for CSI 3 J ("erase saved lines"): 1 (default) lets it drop the scrollback buffer, 0 keeps
    the history. It is a process-wide setting rather than Term state because `ESC c` / RIS rebuilds the
    Term (term_init) and must not silently re-enable it — same pattern as kai_term_loglevel. */
@@ -735,6 +765,13 @@ enum {
    command asks first, and an idle session closes without a question. CONFIRM_ALWAYS asks at every close,
    CONFIRM_NEVER quits exactly as earlier builds did. */
 enum { CONFIRM_NEVER = 0, CONFIRM_RUNNING = 1, CONFIRM_ALWAYS = 2 };
+
+/* bell config value: what a BEL does. BELL_VISUAL (the default) washes that session's field toward the ink
+   for BELL_FLASH_MS; BELL_OFF draws nothing at all. There is deliberately no audio half: Kai-Term has no
+   sound output, so "off" means "no bell is visible", not "the bell is silenced". BELL_OFF is 0 because this
+   value is only ever compared against a named action (the s122 CONFIRM_NONE lesson: an enum whose 0 doubles
+   as a truthiness test is the bug, not the numbering itself). */
+enum { BELL_OFF = 0, BELL_VISUAL = 1 };
 
 typedef struct {
     uint32_t sym;    /* the key: a printable codepoint or one of KB_KEY_* */
@@ -828,6 +865,14 @@ typedef struct Config {
        ptr_press_action() (src/vt.c), which is where the order bar > band > application > pane lives as one
        checkable decision. A program that asked for the mouse keeps its middle button either way. */
     int  middle_click_paste;
+    /* bell: what a BEL does — BELL_VISUAL (the default, a short flash of that session's field) or BELL_OFF.
+       On by default because a BEL is how readline, `less`, `man`, vim and sudo say "no" or "that one is
+       ambiguous", and a terminal with no audio and no flash never says it at all. It is a flash of the PANE,
+       not of the window margin: the margin is the same colour as the cells (s101), so a margin-only flash
+       would read as a smaller rectangle inside the terminal. The rules of the flash — how long, how far
+       toward the ink — are BELL_FLASH_MS / BELL_MIX_MAX and bell_strength() above, not numbers inside the
+       draw loop. */
+    int  bell;
     /* The cursor's shape is always the thin bar unless an application asks for another one with DECSCUSR
        (there is deliberately no `cursor_style` key — the user asked for one look). These two say how that
        cursor behaves:
@@ -1084,6 +1129,11 @@ typedef struct Tab {
        revives `int_dead` — without it, the first shell that failed to answer would keep the whole session on
        the typed path even after an integrated one announced. Travels with the Tab like the two above. */
     int  int_gen;
+    /* The CLOCK_MONOTONIC ms of the last BEL this session rang, 0 = never. It lives here rather than in Term
+       because it is window state on main.c's clock (the model reads no clock) and because it has to travel with
+       the Tab when mux_close() shifts the array — the same reason `attention` is here. render_draw() asks
+       bell_strength() with it, per pane, so in side-by-side view only the pane whose session rang flashes. */
+    long long bell_ms;
 } Tab;
 
 typedef struct Mux {
@@ -1315,6 +1365,15 @@ int layout_hit_fm(const Layout *l, int px, int py);
 /* -1 when that session is not drawn in this layout (a hidden tab in tab mode, or a session outside the
    visible pane window in split mode). */
 int layout_pane_of_tab(const Layout *l, int tab);
+/* Is a visual-bell flash on screen RIGHT NOW? 1 when any session this layout DRAWS rang within `dur_ms` of
+   `now_ms`, 0 when none did — and 0 always for `dur_ms <= 0`, which is how `bell = off` answers without a
+   branch of its own. It lives in src/mux.c (a question about sessions, asked with the layout that says which
+   ones are visible) rather than in main.c, for the usual reason: main.c is in no test binary, and "a session
+   the user cannot see has no field to wash out — the bar's `*` is its mark" is a rule worth pinning. Before
+   it moved, `.scratch/s126/mutate.py`'s `main_live_scans_all_tabs` mutant (scan every TAB, not every PANE)
+   survived every check in the tree. A session that is not drawn must not keep the window redrawing for
+   BELL_FLASH_MS on a picture that cannot change. */
+int mux_bell_live(const Mux *m, const Layout *lay, long long now_ms, int dur_ms);
 /* The grid size EVERY session of this layout gets, drawn or not. layout_compute gives every pane the same
    height and, in split mode, the same width, so one size describes them all — and that is what lets main.c
    resize a session that is NOT on screen to the size its pane will have, so switching to it never triggers
@@ -1782,12 +1841,26 @@ typedef struct Render {
                                     how tall the underline is. Same lesson as cursor_color above — a key
                                     that stops in Config is not implemented — so it reaches the renderer
                                     here and render_cursor() clamps it to the cell (1..cell/3). */
+    /* bell_on: the `bell =` line as a drawing decision (1 = BELL_VISUAL). The same lesson as cursor_color two
+       fields up — a key that stops in Config is not implemented — and deliberately a SEPARATE field from the
+       timestamps below, so `off` cannot be faked by forgetting to record a ring: a session that rang while the
+       bell is off still holds its timestamp, and nothing draws because the renderer asks
+       bell_strength(now, ms, bell_on ? BELL_FLASH_MS : 0). The duration-0 rule is already checked in
+       tests/test_vt.c, so "off draws nothing" costs no new branch and no new number. */
+    int bell_on;
     /* The blink phase of THIS frame: main.c's cursor-blink timer flips W.cursor_on and calls redraw(), and
        the frame copies it here. It is window state, never Term state — term_init() memsets Term for every
        new tab, and a blink that lived in the model would survive a tab switch it has no business surviving.
        Only the visible session's cursor blinks: render_draw() forces 1 for a pane that is drawn but not the
        active one, which is the classic behaviour and keeps a dimmed cursor steady. */
     int cursor_on;
+    /* The visual bell, per session: `bell_ms[i]` is the CLOCK_MONOTONIC ms session i last rang (0 = never),
+       copied from Tab.bell_ms by redraw(), and `now_ms` is this frame's reading of the same clock. The
+       renderer asks bell_strength() with them and never reads a clock itself — the same reason cursor_on is
+       copied in rather than reached for: window state travels through Render, never into main.c's globals.
+       Indexed by TAB index, like `terms` and PaneGeom.tab. */
+    long long now_ms;
+    long long bell_ms[TAB_MAX];
     void *ecfg;                  /* EGLConfig */
     void *nwin;                  /* EGLNativeWindowType (wl_egl_window) */
     /* Texture uploads fail when the GPU is out of memory (this box runs a local LLM that holds most of
@@ -1865,6 +1938,13 @@ typedef struct Chrome {
 } Chrome;
 void render_chrome(const Render *r, Chrome *out);
 
+/* The colour of a visual-bell flash at `strength` (0..1000, from bell_strength()): the paper mixed BELL_MIX_MAX
+   percent toward the ink at full strength, fading to the paper itself at 0. It is NOT a Chrome field because it
+   is per pane and per frame — the strength depends on WHEN this session rang — while Chrome is one set of colours
+   per frame. Pure (no GL, no font, no Term), so tests/test_render.c checks the colour where it is decided, and
+   render_draw() only draws the quad. */
+uint32_t render_bell(uint32_t bg, uint32_t fg, int strength);
+
 /* What ONE cursor cell is drawn as. The other half of the s102 lesson: the shape decision must live where a
    test can reach it, not inside the draw loop (render_draw() is in no test binary, exactly like main.c).
    Four outputs, because the three passes of a frame each ask a different question about the same cell, and
@@ -1889,7 +1969,7 @@ void render_cursor(int style, int visible, int band_on, int cell_w, int cell_h, 
 
 int  render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
                  uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color,
-                 int cursor_width);
+                 int cursor_width, int bell_on);
 /* Draw one frame: the tab bar (if the layout says so), every pane's grid, and the file-manager band if
    the layout has one. Two vertex batches (backgrounds, then bands + glyphs + chrome) with one draw call
    per application picture between them — see the header comment of src/render.c for why the frame cannot

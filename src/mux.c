@@ -69,6 +69,9 @@ int mux_open(Mux *m, int rows, int cols, int scrollback)
     t->cd_req[0] = 0;
     t->int_dead = 0;
     t->int_gen = 0;        /* matches the fresh Term's shell_int_gen = 0: nothing announced yet */
+    /* Same rule for the visual bell: a reused slot must not inherit the previous session's ring, or a new tab
+       could come up mid-flash of a BEL that belonged to a shell that is already gone. */
+    t->bell_ms = 0;
     m->active = i;      /* a new tab is the one the user is looking at */
     return i;
 }
@@ -182,6 +185,30 @@ int mux_running(const Mux *m, int *idx, int max)
         n++;
     }
     return n;
+}
+
+/* Is a visual-bell flash on screen right now? See the header: the point is the word DRAWN. A session the user
+   cannot see has no field to wash out (the tab bar's `*` is how they find it), and keeping the window dirty for
+   BELL_FLASH_MS on its behalf would burn a frame every 8 ms for a picture that cannot change. The layout is what
+   says which sessions are on screen, so it is an argument here rather than a loop over every tab — and this is
+   in mux.c, not main.c, because main.c is in no test binary and a mutant that scanned every tab survived every
+   check in the tree (`.scratch/s126/mutate.py`, s127). The duration is the CALLER's decision (`bell = off` hands
+   in 0), so the two places that ask about a flash cannot disagree about when it ends: both go through
+   bell_strength(). Pane entries are re-checked against the tab count rather than trusted: a layout built for a
+   frame in which a session had just closed can name an index that no longer exists. */
+int mux_bell_live(const Mux *m, const Layout *lay, long long now_ms, int dur_ms)
+{
+    if (!m || !lay || dur_ms <= 0)
+        return 0;
+    int n = mux_count(m);
+    for (int p = 0; p < lay->npane; p++) {
+        int tab = lay->pane[p].tab;
+        if (tab < 0 || tab >= n)
+            continue;
+        if (bell_strength(now_ms, m->tab[tab].bell_ms, dur_ms) > 0)
+            return 1;
+    }
+    return 0;
 }
 
 /* "2, 4 and 5" — which sessions are at risk. At most FOUR numbers: this is one row of a window, and

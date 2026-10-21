@@ -25,11 +25,11 @@ working by the user 2026-10-19 (s107's feature), so the theme import carries no 
 confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
 with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-20 (s126, from `make clean`, on the tree that added `middle_click_paste`): `make -j8` exit 0
-with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
-**0 warning lines**; `./bin/test_vt` **1446 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
-`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **529 checks, 0 failures**; `make asan` exit 0 with
-the same counts, 0 warning lines and no sanitizer report. `sh tests/cli_test.sh` with
+Re-measured 2026-10-20 (s127, from `make clean`, on the tree that added the visual bell): `make -j8` exit 0 with
+**0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
+**0 warning lines**; `./bin/test_vt` **1498 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+`./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **555 checks, 0 failures**; `make asan` exit 0 with
+the same four counts, **0 warning lines** and no LeakSanitizer/UBSan report. `sh tests/cli_test.sh` with
 `KAI_TERM_TEST_NO_WINDOW=1` reports **CLI: 99 checks, 0 failures, 13 skipped** — the 13 are the windowed group,
 which was last run for real in s124 (**CLI: 149 checks, 0 failures, 0 skipped**, twice). That group maps ~15 real
 windows on the user's desktop, so it is a run to ask about before repeating, not a routine command. What only that
@@ -37,9 +37,9 @@ group covers is `main()`'s argv handling for the flags that OPEN a window (`-c/-
 flags, `-d` beating `log =`, `-w`, `-e`) and that a real launch applies the multiplexing / display /
 file-manager keys and the band's share. The config search order and the settings-vs-binding file rules are covered
 headless in `tests/test_vt.c` (13 `cfgsearch` checks + the `config split` group), so they are not a gap. None of
-step 3 (the double/triple click), step 3b (the preview pane's selection), step 4 (confirm-quit) or step 5 (the
-middle-click option) added a command-line flag, so nothing in that windowed group is new; `--import-theme` is not
-in that list either — it needs no display, so s107 pinned it headless. No
+step 3 (the double/triple click), step 3b (the preview pane's selection), step 4 (confirm-quit), step 5 (the
+middle-click option) or step 6 (the bell) added a command-line flag, so nothing in that windowed group is new;
+`--import-theme` is not in that list either — it needs no display, so s107 pinned it headless. No
 `TODO`/`FIXME`/`XXX` and no `TEMPORARY`/`PROBE` marker anywhere in `src/`, `include/`, `tests/`.
 
 Everything below "Fixed" is current behaviour, not a bug. What is implemented and how to use it is README's job;
@@ -443,6 +443,33 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   either (bash leaves `tcgetpgrp` answering 0), so Kai-Term never asks whether to kill nothing. The state
   converges in a second or two after a command starts, so "asked and nothing was running" is a possible `-d`
   log line rather than a bug.
+
+**The bell (`bell = visual`, the default)**
+
+- **Kai-Term has no audio, so a `BEL` is only ever SEEN.** `bell = visual` washes that session's own pane toward
+  the text colour for `BELL_FLASH_MS` (250 ms) and fades it out; `bell = off` draws nothing at all. There is no
+  volume, no beep device and no `audible` setting — a program that rings a BEL is answered by a quad, not by a
+  sound.
+- **A `BEL` that TERMINATES a control sequence is not a bell.** OSC, APC and DCS all use `0x07` as their string
+  terminator (ST), and those bytes never reach the code that rings: otherwise every window title a shell sets and
+  every shell-integration announcement would flash the window. Checked both ways in `tests/test_vt.c` — the
+  "does not ring" check is paired with one proving the OSC really was parsed as a title, so it cannot pass by the
+  sequence being abandoned. A `BEL` inside a CSI still rings (the s97 rule), and three `BEL`s are one event, not
+  three flashes.
+- **A session you are not looking at does not flash.** The tab bar's `*` is its mark, and an undrawn session does
+  not keep the window redrawing on a picture that cannot change. In side-by-side view only the pane whose session
+  rang washes. The rule is `mux_bell_live()` in `src/mux.c` (15 checks in `tests/test_vt.c`); it lives there
+  because it used to sit in `main.c`, which no test binary links, and a mutant that scanned every TAB instead of
+  every PANE then survived every check in the tree (s127).
+- **The flash is one quad UNDER the text**, so a line stays readable while it fades, and it never touches the
+  window's margin — the margin is the paper colour (s101), so a margin-only flash would read as a smaller
+  rectangle inside the terminal. The colour is the paper mixed `BELL_MIX_MAX` (25 %) toward the ink at full
+  strength, never the ink itself.
+- **What no harness here can see, stated rather than hidden:** `render_draw()` is in no test binary, so the pass
+  that emits the quad — that it draws at all, and that it draws over the right pane — is covered only by source
+  scans plus the user's eye. Two mutants of `.scratch/s126/mutate.py` (`render_draws_nothing`,
+  `render_wrong_surface`) survive every check in the tree by construction. Whether the flash READS as a bell and
+  not as a glitch is a question for the user's window, not for a suite.
 
 **Graphics / images**
 

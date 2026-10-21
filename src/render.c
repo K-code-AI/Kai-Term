@@ -255,7 +255,7 @@ static void set_clear_color(Render *r)
 
 int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, float opacity,
                 uint32_t bg, uint32_t fg, uint32_t cursor_color, uint32_t selection_color,
-                int cursor_width)
+                int cursor_width, int bell_on)
 {
     memset(r, 0, sizeof(*r));
     r->vw = w;
@@ -348,6 +348,7 @@ int render_init(Render *r, void *wl_display, void *egl_window, int w, int h, flo
     r->cursor_color = cursor_color;   /* the `cursor_color =` line (see Render.cursor_color) */
     r->selection_color = selection_color;   /* the `selection_color =` line (see Render.selection_color) */
     r->cursor_width = cursor_width;   /* the `cursor_width =` line (see Render.cursor_width) */
+    r->bell_on = bell_on;             /* the `bell =` line (see Render.bell_on) */
     r->ecfg = malloc(sizeof(cfg));
     if (r->ecfg)
         memcpy(r->ecfg, &cfg, sizeof(cfg));
@@ -666,6 +667,20 @@ static uint32_t mix_c(uint32_t a, uint32_t b, int k100)
         out |= (uint32_t)(v < 0 ? 0 : (v > 255 ? 255 : v)) << sh;
     }
     return out;
+}
+
+/* The visual bell's colour: the paper mixed toward the ink — BELL_MIX_MAX percent at full strength, fading to
+   the paper itself as strength falls to 0 (so the last frame of a flash is indistinguishable from no flash, which
+   is what makes the fade read as a fade and not as a second flash). The clamp is not decoration: strength comes
+   from bell_strength(), which is already bounded, but this is a public entry point and a caller that handed in
+   5000 must not get a colour with a byte past 0xff. */
+uint32_t render_bell(uint32_t bg, uint32_t fg, int strength)
+{
+    if (strength <= 0)
+        return bg;
+    if (strength > 1000)
+        strength = 1000;
+    return mix_c(bg, fg, BELL_MIX_MAX * strength / 1000);
 }
 
 /* One place derives every CHROME colour of a frame. See the comment on Chrome in kai-term.h: the point of
@@ -1199,10 +1214,12 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
             fmcells += lay->fm.prev_cols * lay->fm.prev_rows;
     }
     /* +8: the focus border is 4 quads, and with the file manager on a pane border and a band border can
-       both be in the same frame. */
+       both be in the same frame. +npane: the visual bell is at most ONE quad per drawn pane (see pass 1b) —
+       a budget that forgets a pass is a buffer overrun waiting for a wide window. */
     int maxq = 3 * cells + 3 * fmcells + lay->nitem * (BAR_LABEL_MAX + 2)
              + (lay->notice_on ? NOTICE_MAX + 1 : 0)
              + (lay->dialog.on ? DIALOG_LINES * DIALOG_LINE_MAX + 2 * DIALOG_BTN_MAX + 7 : 0)
+             + lay->npane
              + 8;
     float *vdata = ensure_vdata(r, maxq);
     float *vp = vdata;
@@ -1264,6 +1281,34 @@ int render_draw(Render *r, Font *f, const Layout *lay, Term *const *terms, const
                 nquads++;
             }
         }
+    }
+
+    /* Pass 1b: the visual bell — at most ONE quad per pane, over that pane's cell backgrounds and under
+       everything batch B draws (the selection bands, the glyphs, the cursor), so the text stays readable while
+       the field fades. Per PANE and not per window: in side-by-side view only the pane whose session rang
+       washes out, which is the whole point of a bell that says which program is complaining. The rect is the
+       pane's own, so the leftover pixels at its right/bottom flash with the cells — s101 made the margin the
+       same colour as the cells, and a flash that stopped at the last whole cell would read as a smaller
+       rectangle inside the terminal. The strength is bell_strength()'s decision (src/vt.c), asked here with the
+       clock main.c copied into Render; the colour is render_bell()'s. Neither is arithmetic in this loop, so
+       both are checked where they are made. */
+    for (int p = 0; p < lay->npane; p++) {
+        int tab = lay->pane[p].tab;
+        if (tab < 0 || tab >= TAB_MAX || !pane_term(terms, tab))
+            continue;
+        /* `bell = off` asks for a duration of 0, and bell_strength() already answers 0 for that (a checked
+           rule), so the switch needs no branch of its own and no second number to drift. */
+        int dur = r->bell_on ? BELL_FLASH_MS : 0;
+        int strength = bell_strength(r->now_ms, r->bell_ms[tab], dur);
+        if (strength <= 0)
+            continue;
+        col2f(render_bell(r->bg, r->fg, strength), bg);
+        bg[3] *= r->opacity;
+        emit_quad(&vp, (float)lay->pane[p].x,
+                  (float)r->vh - (float)lay->pane[p].y - (float)lay->pane[p].h,
+                  (float)lay->pane[p].w, (float)lay->pane[p].h,
+                  du * 0.5f, dv * 0.5f, du * 1.5f, dv * 1.5f, white, bg, 0.0f, 0.0f, 0.0f);
+        nquads++;
     }
 
     /* The file-manager band, pass 1: cell backgrounds. fm.c painted these grids with the CONFIGURED

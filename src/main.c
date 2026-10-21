@@ -96,6 +96,12 @@ typedef struct Wayland {
        Steady whenever the blink is not armed (see blink_update), which is what `cursor_blink = 0`, an
        unfocused window and a DECSCUSR steady request all mean. */
     int cursor_on;
+    /* 1 while a visual-bell flash is on screen for a DRAWN session. Window state, like cursor_on: it is about
+       what the frame shows, not about the session. It exists for one reason — the tick that keeps the window
+       dirty while a flash fades must also ask for EXACTLY ONE more frame when the last flash ends, because at
+       that moment bell_strength() answers 0 and nothing else would ever redraw: without it the screen keeps the
+       last half-faded flash forever. */
+    int bell_live;
     int32_t ptr_x, ptr_y;       /* last pointer position in surface coords (px) */
     int ptr_btn;                /* held button mapped to SGR index (0/1/2), or -1 */
     int selecting;              /* 1 while a left-button text selection drag is in progress */
@@ -599,6 +605,12 @@ static void redraw(void)
     /* The blink phase of this frame. Copied, not read from W inside the renderer: the renderer takes its
        window state through Render (opacity, colours) and never reaches into main.c's globals. */
     rend.cursor_on = W.cursor_on;
+    /* The visual bell of this frame: the same rule, and the reason the renderer reads no clock. Indexed by TAB
+       index like `terms` above, so a pane pairs with its own session's timestamp and in side-by-side view only
+       the pane whose program rang washes out. A session that is not in the layout has no entry to read. */
+    rend.now_ms = (long long)mono_ms();
+    for (int i = 0; i < TAB_MAX; i++)
+        rend.bell_ms[i] = i < mux_count(&mux) ? mux.tab[i].bell_ms : 0;
     int drew = render_draw(&rend, &font, &g_layout, terms, &g_fm);
     if (drew < 0) {
         /* The renderer could not put the glyph atlas in GPU memory even after dropping every picture
@@ -3030,6 +3042,29 @@ static void blink_update(void)
     klog(L_DEBUG, "cursor blink: half-period %d ms (%s)", half, half > 0 ? "blinking" : "steady");
 }
 
+/* Is a visual-bell flash on screen right now? The rule is mux_bell_live()'s (src/mux.c) — it is checked there,
+   and it is the one that knows only a DRAWN session has a field to wash out. What stays here is the two things
+   only this file owns: the clock and the config line. The duration is handed in rather than read by the callee,
+   so `bell = off` needs no branch and the renderer and this tick cannot disagree about when a flash ends. */
+static int bell_live(void)
+{
+    return mux_bell_live(&mux, &g_layout, (long long)mono_ms(),
+                         conf.bell == BELL_VISUAL ? BELL_FLASH_MS : 0);
+}
+
+/* The frame timer's bell tick, next to blink_update() for the same reason: a flash changes on a schedule, and
+   nothing else in the loop wakes on one. While a flash is live the window must be redrawn every frame or the
+   fade would be one frozen colour; and on the frame where the LAST flash ends the window must be redrawn once
+   MORE, because bell_strength() has just answered 0 and the screen still holds the previous frame's wash. That
+   final frame is what W.bell_live is for — without it a bell would leave a permanent tint on the pane. */
+static void bell_tick(void)
+{
+    int live = bell_live();
+    if (live || W.bell_live)
+        W.dirty = 1;
+    W.bell_live = live;
+}
+
 static void dd_data_offer(void *d, struct wl_data_device *dd, struct wl_data_offer *offer)
 {
     (void)d; (void)dd;
@@ -3370,7 +3405,8 @@ static int wayland_setup(int init_w, int init_h)
        config file, the parser and the struct for weeks and reached no pixel, because the renderer drew
        the cursor from the CURSOR_COL macro (see Render.cursor_color, and ISSUES.md). */
     if (render_init(&rend, W.display, W.egl_window, init_w, init_h, conf.opacity, conf.bg,
-                    conf.fg, conf.cursor_color, conf.selection_color, conf.cursor_width) < 0) {
+                    conf.fg, conf.cursor_color, conf.selection_color, conf.cursor_width,
+                    conf.bell == BELL_VISUAL) < 0) {
         klog(L_ERROR, "render_init failed");
         return -1;
     }
@@ -3829,6 +3865,21 @@ int main(int argc, char **argv)
                             klog(L_INFO, "display: the window's ink and paper are now #%06x / #%06x — "
                                  "an application set them, not kai-term.conf", nf & 0xffffff, nb & 0xffffff);
                         }
+                        /* The program in this session rang a BEL. The model only says THAT it happened (vt.c
+           reads no clock, so a test can pin the parser half); here it becomes a moment on this process's clock,
+           which is all the renderer needs to draw a fading flash — or to draw nothing, when `bell = off` made
+           bell_on 0. The flag is cleared because it is an EVENT: leaving it set would re-arm the flash on every
+           later read of the same pty and the pane would never stop washing. Marking the window dirty is gated on
+           the session being DRAWN, exactly like bell_live() gates on it: a bell in a session nobody can see has
+           no field to flash, and the bar's `*` (set just below, by the same read) is how the user finds it. */
+                        if (tb->term.bell_rang) {
+                            tb->term.bell_rang = 0;
+                            tb->bell_ms = (long long)mono_ms();
+                            if (layout_pane_of_tab(&g_layout, ti) >= 0)
+                                W.dirty = 1;
+                            klog(L_DEBUG, "bell: session %d/%d rang%s", ti + 1, mux_count(&mux),
+                                 conf.bell == BELL_VISUAL ? " — its pane flashes" : " (bell = off: nothing drawn)");
+                        }
                         if (ti == mux_active(&mux) || layout_pane_of_tab(&g_layout, ti) >= 0) {
                             /* The visible session, or one drawn NEXT TO it in side-by-side view: the picture
                                changed, so redraw. A pane the user can already see needs no unread mark. */
@@ -3862,6 +3913,8 @@ int main(int argc, char **argv)
                 /* A follow sequence whose shell never answers has no output to advance on, so the
                    deadline is checked here too. */
                 fm_cd_tick();
+                /* A bell flash fades on a schedule, so it is kept alive here too — see bell_tick(). */
+                bell_tick();
                 /* Draw when something changed AND no frame callback is in flight (frame_cb == NULL means
                    the compositor already showed the buffer we committed, so the swap has the best chance
                    of not waiting for a buffer release). `resized` is in the condition because a size

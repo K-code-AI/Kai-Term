@@ -866,6 +866,26 @@ int ptr_press_action(const PtrPress *p)
     return PTR_NONE;
 }
 
+/* How strong a session's visual-bell flash is right now, 0..1000 (see the header for the rule and for
+   BELL_FLASH_MS). Every early return is a case a check names:
+   * dur <= 0 — a caller that asks for no flash gets none, and the division below is never reached.
+   * rang <= 0 — never rang. 0 is also what a fresh Tab holds, so "no bell yet" costs no branch in main.c.
+   * now < rang — the clock went backwards, or a stale timestamp outlives the frame. Showing a flash for a
+     ring that is somehow in the future is how a bell would stick on screen forever.
+   * elapsed >= dur — the deadline passed; 0 means "draw nothing", which is what lets main.c stop marking
+     the window dirty once the flash is over.
+   The fade is linear and integer-only: 1000 at the ring, and the last millisecond before the deadline is
+   still > 0, so the field fades out instead of snapping off. */
+int bell_strength(long long now_ms, long long rang_ms, int dur_ms)
+{
+    if (dur_ms <= 0 || rang_ms <= 0 || now_ms < rang_ms)
+        return 0;
+    long long elapsed = now_ms - rang_ms;
+    if (elapsed >= dur_ms)
+        return 0;
+    return (int)((1000 * (dur_ms - elapsed)) / dur_ms);
+}
+
 /* The wheel code an application that asked for the mouse expects. See the header: 4/5 (which Kai-Term sent
    until s96) is read by ncurses as button 1, so the wheel did nothing in vim, htop, tmux and `nano --mouse`;
    64/65 is what every other terminal sends and what measurably scrolls those programs. */
@@ -3693,7 +3713,14 @@ static void osc_end(Parser *ps)
 static void exec_c0(Term *t, uint8_t b)
 {
     switch (b) {
-    case 0x07: break;                                    /* BEL: nothing to do here */
+    case 0x07:
+        /* BEL: an event, not a pixel. The model only records that it happened; main.c turns it into a
+           timestamp on its own clock and decides whether anything is drawn (Config.bell). Keeping the flag
+           here rather than a deadline is what lets a test pin the parser half without a clock, and it is why
+           a BEL that TERMINATES a string does not ring: the OSC / APC / DCS states consume 0x07 as ST and
+           never call this function (checked in tests/test_vt.c). */
+        t->bell_rang = 1;
+        break;
     case 0x08:                                           /* BS */
         if (t->cx > 0)
             t->cx--;
