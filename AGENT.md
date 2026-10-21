@@ -21,9 +21,8 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-20, s127 — **GREEN; step 5 is committed AND pushed (`f3c812a`); step 6 (the
-visual bell) is wired end to end and mutation-tested, and this session commits it. Read the commit state from
-git**)
+## Current Status (re-measured 2026-10-20, s127 — **GREEN; steps 5 and 6 are committed AND pushed (`f3c812a`,
+`1f79221`); the working tree is clean apart from untracked `.scratch/`. Read the commit state from git**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -110,8 +109,7 @@ git**)
   search in `less`) — the pane washes toward the text colour for a quarter of a second and fades; with
   `bell = off` nothing is drawn at all. Step 7 will add to the list as it lands.
 
-## Current Task — step 5 DONE and pushed (`f3c812a`); step 6, the visual bell, DONE (committed this session, s127).
-Next: step 7, plain-click URLs
+## Current Task — step 6 DONE and pushed (`1f79221`). Next: step 7, plain-click URLs
 
 The s102 plan (steps 1-7 below) is still the plan. All eight open questions were answered by the user
 2026-10-22 and the answers change four details: no `cursor_style` key, no primary-selection work, plain-click
@@ -189,7 +187,7 @@ Done work is listed here only to say it is done and where its rules live; the me
 - **Step 5 — middle-click paste, opt-in and off by default (DONE, s125+s126, `f3c812a`, pushed).** `PtrPress` +
   `ptr_press_action()` in vt.c (the precedence as one decision), the key `middle_click_paste`, and one paste path
   (`clipboard_paste(why)`) shared with `Ctrl`+`Shift`+`V`. Settings names 36 -> 37. Rules below.
-- **Step 6 — the visual bell (DONE, s126+s127, committed this session).** `Term.bell_rang` (the event) +
+- **Step 6 — the visual bell (DONE, s126+s127, `1f79221`, pushed).** `Term.bell_rang` (the event) +
   `Tab.bell_ms` (the moment, on main.c's clock) + `bell_strength()` (the fade) + `render_bell()` (the colour) +
   `mux_bell_live()` (which sessions are on screen to flash) + one quad per drawn pane in batch A. The key
   `bell = visual|off`, default `visual`; settings names 37 -> 38 -> 39 across steps 5-6. Rules below.
@@ -1638,6 +1636,46 @@ numbers and the intermediate check counts are in git.
   (3) README's Features bullet + ISSUES (a bell limitation, and the re-measured counts paragraph); (4) `make
   asan` + the headless CLI group; (5) commit and push. Expected outcome: a step-6 commit whose every claim has a
   number next to it, and an explicit list of what only the user's eye can settle.
+  DONE (1, the harness): 32 mutants + `control_noop`, run in a staging tree. First pass 24 killed / 7 survived;
+  three of those survivors were real gaps and are fixed (the colour guard `-7` could not pin, the drawn-vs-hidden
+  rule sitting in untestable `main.c`, and an unpinned dirty-flag gate), one was a harness artifact (a mutant
+  comment naming the very string a scan looks for), one is an unreachable guard recorded as such. Re-run: **29
+  killed, 3 survived + the control** — the two expected survivors are `render_draws_nothing` and
+  `render_wrong_surface`, both because `render_draw()` is in no test binary, and that is written into ISSUES
+  rather than papered over. Full table and verdicts in the step-6 section.
+  DONE (2, the gap that mattered): the "only a session the layout DRAWS can be flashing" rule moved from
+  `main.c`'s `bell_live()` to `mux_bell_live(mux, layout, now, dur)` in `src/mux.c`, with 15 checks in
+  `tests/test_vt.c` (no pty, no clock, no window — a hand-built Layout). `main.c` keeps only the clock and the
+  config line. The mutant that motivated it now dies in `test_vt` (2 failures), and the same rule mutated in
+  `main.c` dies in `test_render` — the two halves are separate claims with separate watchers.
+  DONE (3, the documents): README gained a "A bell you can see" Features bullet (the `bell` settings row was
+  already there from s126); ISSUES gained a "The bell" limitations group — no audio so a BEL is only ever seen, a
+  `0x07` that terminates a string is not a bell, an unseen session does not flash, the flash is one quad under the
+  text and never in the margin, and what no harness here can see — and its "Re-measured" paragraph now carries
+  this session's numbers instead of s126's.
+  DONE (4, measured): `make clean && make -j8` exit 0, **0** warning lines; the test build exit 0, **0** warning
+  lines; `./bin/test_vt` **1498/0**, `./bin/dbg` **MODEL OK (0 problems)**, `./bin/test_fm` **384/0**,
+  `./bin/test_render` **555/0**; `make asan` exit 0, **0** warning lines, no LeakSanitizer/UBSan report, the same
+  four counts; `KAI_TERM_TEST_NO_WINDOW=1 sh tests/cli_test.sh ./bin/kai-term` → **CLI: 99 checks, 0 failures,
+  13 skipped**. The windowed group was NOT run (it maps ~15 real windows on the user's desktop — ask first).
+  `grep` for `TODO`/`FIXME`/`XXX` and for `TEMPORARY|PROBE|EXPERIMENT|NEGATIVE` still returns only the known
+  `mkdtemp` template and the three probe-writing lines in `tests/test_render.c`.
+  DONE (5, committed and pushed): `1f79221 "Bell: a BEL you can see -- the pane that rang washes and fades"`
+  (12 files). `git fetch` first — nothing had landed on GitHub. `git push` took `f3c812a..1f79221`, which also
+  pushed s126's three journal commits; `git status -sb` now reads `main...origin/main` with nothing ahead and the
+  only untracked thing is `.scratch/`, which was never `git add`-ed. The measurements above were taken on this
+  tree, and the tree is what was pushed.
+  WHAT THIS SESSION LEARNED, worth carrying: (a) a check on a small negative number can be worth nothing —
+  `BELL_MIX_MAX * -7 / 1000` is 0 in C, so the "negative strength" check passed with the guard deleted; a check
+  that is meant to pin a guard has to be A/B'd against the guard's absence, which is exactly what the harness is;
+  (b) a mutant's own comment can satisfy the scan that is supposed to catch it (`src_call_passes_arg` uses
+  `strstr` and does not skip comments) — the mutant text must not name the thing the scan looks for; (c) a rule
+  that lives in `main.c` has only text pins watching it, and a text pin watches the SHAPE of the code, not its
+  effect — the fix is to move the rule, not to write a second scan.
+  OWED NOW: the user's eyes on the bell (recipe in "Current Status"), plus everything still on that list from
+  steps 2, 3b and 5.
+  Next session: **step 7, plain-click URLs** — the shape is written in the step-7 section and the user's answer to
+  question 7 (a plain click, with gates) is already under "Decisions already made".
 
 ## Next Steps
 
@@ -2384,6 +2422,11 @@ hit-tested bar then panes.
   …` line: with the band on at the default `fm_size = 75`, `R` is roughly a quarter of what it is with the band
   off (grid area 58 rows -> terminal 14 rows), and `layout: … grid CxR per session` is what `tests/cli_test.sh`
   compares between a band-off and a band-on run.
+- **The bell.** `bell: session i/N rang — its pane flashes`, or `bell: session i/N rang (bell = off: nothing
+  drawn)`, is logged at debug level for every `BEL` the parser sees. The line proves the program rang and says what
+  the config asked for: absent means no `0x07` ever arrived (the program did not ring — check the program, not the
+  renderer); present with no visible flash means the drawing half, not the parser. A session the layout does not
+  draw logs the same line and deliberately flashes nothing — the tab bar's `*` is its mark.
 - `./bin/dbg` — scripted scroll/resize/reflow/zoom stages; each prints `scroll_off/live_off/rows/rcap/used` plus
   one 2-character token per slot (`v` viewport / `s` scrollback, then the row's first cell), and asserts `row[]`
   is a NULL-free, duplicate-free permutation.
