@@ -477,8 +477,14 @@ Two things worth knowing:
 - **Whether a window actually appears is the desktop's business, not Kai-Term's.** Kai-Term starts the opener in
   its own session, with its input and output on `/dev/null` and none of Kai-Term's own descriptors passed to it —
   a browser must not end up holding your terminal's pseudo-terminals open after their shells are gone. If the
-  desktop has no opener, or none for that kind of address, nothing appears; `./bin/kai-term -d` logs the address
-  it handed over (`url: a click asked xdg-open for …`) and, when the click was refused, why.
+  desktop has no opener, or none for that kind of address, nothing appears. `./bin/kai-term -d` logs the address it
+  handed over (`url: a click asked xdg-open for …`), and when a click was accepted and then dropped it says why
+  (`url: the text under the click changed while the click waited — nothing opened`). **A click that never looked like
+  an address logs nothing** — every ordinary click in a terminal would fill the log — so the question "why did that
+  click not open anything?" is answered by whether the line `url: the click at (col,row) holds … — waiting out the
+  double-click window` appeared for it: if it did not, the address was not one Kai-Term would open (no scheme, a
+  character it cannot spell in the middle, over 2048 characters, or a click that belonged to a drag, a word gesture,
+  `Shift`, the tab bar, the file manager, or a program that owns its own screen).
 - **A run that has scrolled above the top of the window is not found** — the same limit a triple click has, and
   scrolling back to it is what makes it clickable again.
 
