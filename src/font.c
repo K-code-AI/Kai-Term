@@ -1,10 +1,5 @@
-/* Kai-Term — FreeType glyph atlas (alpha8 texture data) + color emoji atlas (RGBA8).
- *
- * Mono glyphs: fontconfig fallback lookup -> FreeType raster -> alpha8 atlas.
- * Color emoji: the whole grapheme cluster is shaped by HarfBuzz into ONE glyph id of a color
- * emoji font (Noto Color Emoji: a CBDT/CBLC bitmap-only face), whose premultiplied BGRA bitmap
- * is converted to RGBA and packed into a second atlas. Metrics stay UNSCALED (the strike's own
- * pixel size); the renderer scales them per frame, so zoom never re-rasterizes an emoji. */
+/* Glyph atlases: alpha8 for mono glyphs, RGBA8 for color emoji. Emoji metrics stay UNSCALED and the
+   renderer scales them per frame, so zooming never re-rasterizes an emoji. */
 #include "kai-term.h"
 
 #include <fontconfig/fontconfig.h>
@@ -15,10 +10,8 @@
 
 #define ATLAS_W0 512
 #define ATLAS_H0 512
-/* Color emoji bitmaps are big (the installed Noto Color Emoji strike: 136x128 px per glyph), so the
-   color atlas is wider than the mono one and its height is capped: 1024*8192*4 = 32 MB is already ~1900
-   distinct emoji, and anything past that falls back to the mono glyph instead of growing the
-   atlas forever (a `cat` of an emoji-heavy file must not exhaust memory). */
+/* Color emoji bitmaps are large (~136x128 px each), so the color atlas is wider than the mono one and its
+   height is capped; past the cap a glyph falls back to mono instead of growing the atlas forever. */
 #define CATLAS_W0 1024
 #define CATLAS_H0 512
 #define CATLAS_H_MAX 8192
@@ -91,10 +84,8 @@ static void atlas_place_bits(Font *f, Glyph *g, const uint8_t *bits, int pitch)
     f->atlas_dirty = 1;
 }
 
-/* Would a w*h glyph still fit at the current shelf cursor? atlas_place_bits starts a NEW
-   shelf when the row is full, so the check must account for that vertical step — comparing
-   against the CURRENT shelf_y alone lets a wrapped glyph be written past the end of the
-   buffer (heap overflow, caught by ASan in the color atlas where glyphs are 136px wide). */
+/* Would a w*h glyph still fit at the current shelf cursor? atlas_place_bits starts a NEW shelf when a row
+   is full, so the check has to include that vertical step. */
 static int atlas_fits(Font *f, int w, int h)
 {
     int x = f->shelf_x, y = f->shelf_y, sh = f->shelf_h;
@@ -272,12 +263,8 @@ static FT_Face fb_load_face(Font *f, const char *path)
     return face;
 }
 
-/* Pick the face to rasterize cp from. If the primary face covers it, use the primary.
-   Otherwise ask fontconfig for a fallback font that actually contains cp: first a monospace
-   match, then (if that match does not really cover cp) any font. A face is only used when
-   FT_Get_Char_Index confirms it has the glyph, so a monospace font that merely sorts best but
-   lacks the codepoint is not mistaken for a fallback. If nothing on the system covers cp, the
-   primary face is returned and the glyph rasterizes as .notdef/blank (best effort). */
+/* Pick the face to rasterize cp from: the primary if it covers cp, otherwise a fontconfig fallback that
+   FT_Get_Char_Index confirms really has the glyph. */
 static void *font_find_face(Font *f, uint32_t cp)
 {
     FT_Face primary = (FT_Face)f->ft;
@@ -407,10 +394,7 @@ static int catlas_fits(Font *f, int w, int h)
 
 static int color_load_bits(Font *f, ColorGlyph *g, int allow_grow);
 
-/* double the color atlas height and re-pack every cached color glyph from its glyph id.
-   Repeats until every glyph fits: emoji bitmaps are ~136px wide, so a 512px atlas holds only
-   three per shelf and the packer wraps often — without the fit check a wrapped glyph used to
-   be written past the end of the buffer (ASan heap-buffer-overflow). */
+/* Double the color atlas height and re-pack every cached color glyph, repeating until every glyph fits. */
 static void catlas_grow(Font *f)
 {
     for (;;) {
@@ -525,13 +509,8 @@ static void fc_color_lookup(uint32_t cp, char *out, size_t cap)
     FcCharSetDestroy(cs);
 }
 
-/* Open the color emoji face and build the HarfBuzz font that shapes clusters against it.
-   The installed Noto Color Emoji is bitmap-only (FT_IS_SCALABLE == 0) with ONE CBDT strike whose
-   bitmaps are 136x128 px, so the strike is selected with FT_Select_Size and bitmaps are loaded
-   unscaled; a scalable color font
-   (COLR/SVG) is sized to the cell instead. color_ok stays 0 when the system has no color font,
-   when FreeType was built without color-bitmap support, or when HarfBuzz cannot wrap the face —
-   in every one of those cases the mono fallback still draws the emoji. */
+/* Open the color emoji face and build the HarfBuzz font that shapes clusters against it. The installed Noto
+   Color Emoji is bitmap-only with one 136x128 strike, so it is selected with FT_Select_Size. */
 static void color_init(Font *f)
 {
     if (!f->fc_ready)
@@ -566,18 +545,13 @@ static void color_init(Font *f)
             FT_Done_Face(face);
             return;
         }
-        /* size metrics are 26.6 fixed point; this is the strike's own line height, i.e. the
-           pixel size the unscaled bitmaps are drawn at. It comes from the font, not from here:
-           128 for the installed Noto Color Emoji, and the L_INFO line below logs what a given
-           box really reports. */
+        /* Size metrics are 26.6 fixed point; this is the strike's own line height, the pixel size at which the
+   unscaled bitmaps are drawn. */
         f->color_px = (int)(face->size->metrics.height / 64);
         if (f->color_px <= 0)
             f->color_px = (int)face->size->metrics.y_ppem;
-        /* Last resort for a color face that reports no usable metrics at all. color_px is the
-           divisor in render_draw's `cell_h / color_px`, so it must stay > 0; assuming the text
-           pixel size makes the emoji about one cell tall instead of trusting a hard-coded strike
-           height (font_size is clamped to 6..256 in config.c, so f->px is always > 0). Never taken
-           with the installed font: height/64 = 128 and y_ppem = 109 there. */
+        /* Last resort for a color face that reports no usable metrics. color_px is the divisor in
+   `cell_h / color_px`, so it must stay > 0. */
         if (f->color_px <= 0)
             f->color_px = f->px;
     }
@@ -607,11 +581,8 @@ static void color_init(Font *f)
     klog(L_INFO, "color emoji: %s (%dpx strike)", path, f->color_px);
 }
 
-/* Shape one emoji grapheme cluster into a single glyph id (HarfBuzz applies the font's GSUB
-   rules, so 👨\u200d👩\u200d👧\u200d👦, 🏳️\u200d🌈 and 👍🏽 each become ONE glyph), load that glyph's
-   color bitmap into the color atlas and cache it under the cluster's codepoint sequence.
-   Returns NULL (caller falls back to the mono glyph) when color emoji are unavailable, when
-   shaping does not collapse to exactly one real glyph, or when the glyph has no color bits. */
+/* Shape one emoji grapheme cluster into a single glyph id (HarfBuzz applies the font's GSUB rules, so a
+   family emoji stays one glyph), load its color bitmap and cache it under the codepoint sequence. */
 ColorGlyph *font_color_glyph(Font *f, const uint32_t *seq, int n)
 {
     if (!f->color_ok || !f->hbf || n <= 0 || n > CLUSTER_MAX + 1)
@@ -797,11 +768,8 @@ int font_resize(Font *f, int px)
     font_metrics(f, px);
     f->px = px;
 
-    /* Color emoji: a bitmap-only strike (the installed Noto Color Emoji: one strike, 136x128 px
-       bitmaps) is loaded UNSCALED and scaled at draw time, so zooming needs nothing here — the
-       atlas stays valid and the emoji stay as sharp as that single strike allows. A scalable color
-       face (COLR/SVG) is sized like the text face, so its cached bitmaps are dropped and re-shaped
-       at the new px. */
+    /* A bitmap-only strike is loaded unscaled and scaled at draw time, so zooming needs nothing here; a
+   scalable color face is sized like the text face and its cached bitmaps are dropped. */
     if (f->color_ok && f->cface && FT_IS_SCALABLE((FT_Face)f->cface)) {
         if (FT_Set_Pixel_Sizes((FT_Face)f->cface, 0, (FT_UInt)px)) {
             klog(L_WARN, "FT_Set_Pixel_Sizes(%d) failed for the color face", px);

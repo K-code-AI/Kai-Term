@@ -1,18 +1,5 @@
-/* Kai-Term — shell integration.
-   The file manager can move the shell into the directory the user is browsing. The way that worked before
-   this module was to type `cd '<dir>'` at the prompt, which is visible, needs the user's half-typed command
-   captured and re-typed around it, and can only run where the model can PROVE the line is empty (see the
-   prompt section of src/vt.c). This module does it without touching the line at all: the shell's own line
-   editor runs a handler bound to a control sequence, and the directory arrives out of band in a file.
-
-   Why a file and not the sequence: the terminal has one channel to the shell (the pty input stream), and a
-   key binding can only ever be a fixed byte sequence — anything after it would be inserted into the user's
-   line. So the sequence carries no data, which also means a stray sequence can never run a path.
-
-   Everything here is deliberately dumb and testable: three scripts as string constants, one private
-   directory, one request file per session, one command line per shell. The interesting part — which
-   sequence is safe — is measured, not assumed, and the measurements are recorded next to the table below
-   and in AGENT.md (s90). */
+/* The file manager moves the shell into the directory it is showing. The path travels in a file, not in
+   the key sequence: a sequence is fixed bytes, so anything appended would land in the user's line. */
 
 #include "kai-term.h"
 
@@ -24,18 +11,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* ---------- the scripts ----------
-   Each one announces itself over Kai-Term's APC channel (parsed by kai_apc in src/vt.c) and binds one
-   sequence to a handler that reads the request file and cds. None of them replaces the user's own
-   configuration: fish evaluates `-C` after the user's config, bash's --rcfile file sources ~/.bashrc
-   first, and zsh's ZDOTDIR directory holds a .zshrc that sources the user's real one first.
-
-   Each script does two more things, both asked for by the user on 2026-10-20:
-   - it repaints the prompt after the cd, where the shell can be asked to (fish: `commandline -f repaint`,
-     measured; zsh: `zle reset-prompt`; bash: it cannot — see the note in SCRIPT_BASH);
-   - it wraps a bare `fish`/`bash`/`zsh` so a shell the user starts at the prompt loads the script too and
-     announces itself, instead of the session dropping to the typed path. A name the user defined as a
-     function or alias is never replaced, and a command given ANY argument runs exactly as typed. */
+/* Each script sources the user's own config first, binds one key to a cd handler, and announces which
+   shell is at the prompt before every prompt. */
 
 static const char SCRIPT_FISH[] =
     "# Kai-Term shell integration for fish. Written by Kai-Term at startup and loaded with\n"
@@ -211,13 +188,7 @@ static const char SCRIPT_BASH[] =
     "fi\n"
     "printf '\\033_K;kai-term;integration;bash\\033\\\\'\n";
 
-/* VERIFIED 2026-10-20 (s94): the user confirmed zsh in their own window, and the integration gate now runs zsh
-   5.9 headless — the script announces, `C-x C-]` fires the ZLE widget, the ack comes back in 54 ms, the typed
-   line is byte-identical and `zle reset-prompt` repaints the prompt so it names the new directory. What is still
-   NOT measured for zsh is what those two bytes do in a zsh that has NO binding (the inertness that protects an
-   unwrapped nested shell) — it was measured for fish and bash only. Kai-Term only ever uses the integration path
-   after the script announces itself, so if a future zsh stops taking the binding the ack never arrives and the
-   typed-`cd` path runs: the safe direction to be wrong in. */
+
 static const char SCRIPT_ZSH[] =
     "# Kai-Term shell integration for zsh. Written by Kai-Term at startup; zsh is started with\n"
     "# ZDOTDIR pointing at a directory holding this file as .zshrc, and it sources the user's real .zshrc\n"
@@ -312,26 +283,8 @@ int shellint_kind_for(const char *shell_path)
 
 const char *shellint_seq(int kind, size_t *len)
 {
-    /* ONE sequence for every supported shell, measured on this box (s91, `.scratch/s90b/inert.c` +
-       `fire.c`: real fish 4.6 and real bash 5.3 in a real Kai-Term pty, no window):
-       C-x C-] = 0x18 0x1d.
-         - FIRES when bound: fish's line editor and bash's readline both run the handler, the user's half
-           typed line is byte-identical before and after, and the shell's own cwd changes (the ack proves
-           it, and `pwd` after the line is cleared says the new directory).
-         - INERT when NOT bound: nothing is inserted, in either shell, with or without the user's own
-           rcfile. That is what makes a nested shell (a plain bash started inside an integrated fish) safe:
-           the bytes reach a reader with no handler and the worst case is silence plus a timed-out ack, not
-           a stray character on the user's line. The per-shell table this replaces (F14 for fish, C-x q for
-           bash) was NOT safe that way — F14 inserts `~` in bash, C-x q inserts `q` in fish.
-         - UNBOUND by default in both, so Kai-Term takes a key from nobody.
-       Rejected, each measured: C-x q (damages fish), ESC [ 2 6 ~ = F14 (damages bash), C-] alone (fires and
-       is inert, but bash binds it to character-search, so it would steal a working key), and C-\ (0x1c:
-       inert and unbound in both shells, but `stty -a` on a pty reports `quit = ^\` — VQUIT would kill
-       whatever owns the tty whenever the shell is not reading it, which is far worse than a stray byte).
-       zsh gets the same bytes, and since s94 they are MEASURED there too: the gate's zsh run gets the handler
-       running and the ack back in 54 ms. (What has never been measured in zsh is the inert-when-unbound case —
-       that was tested in fish and bash only. If a zsh ever does not take these bytes, the ack never arrives and
-       the typed path runs, which is the safe direction to be wrong in.) */
+    /* C-x C-] (0x18 0x1d) is the one sequence used for every shell: measured in fish, bash and zsh, it runs
+   a binding when it has one and types nothing when it does not. Other candidates damage the line. */
     static const char SEQ[] = "\x18\x1d";      /* C-x C-] */
     if (kind == SHELLINT_NONE) {
         if (len)
@@ -376,9 +329,8 @@ int shellint_prepare(char *dir, size_t cap)
         klog(L_WARN, "shell integration: cannot create a directory in %s: %s", base, strerror(errno));
         return -1;
     }
-    /* The command line built by shellint_argv() quotes paths with single quotes and is run through
-       /bin/sh -c, so a path holding a quote would break it. mkdtemp gives us the name, so this can only
-       happen if the runtime directory itself is oddly named — refuse rather than build a broken line. */
+    /* shellint_argv() puts this path, single-quoted, into a /bin/sh -c line, so a quote in it would break
+   the command; mkdtemp only inherits one from an oddly named runtime directory. */
     if (strchr(tmpl, '\'') || strlen(tmpl) + 64 >= cap) {
         rmdir(tmpl);
         klog(L_WARN, "shell integration: the runtime directory name is unusable (%s)", tmpl);
@@ -411,12 +363,8 @@ void shellint_cleanup(const char *dir)
     snprintf(p, sizeof(p), "%s/fish.fish", dir);   unlink(p);
     snprintf(p, sizeof(p), "%s/bash.bash", dir);   unlink(p);
     snprintf(p, sizeof(p), "%s/zsh/.zshrc", dir);  unlink(p);
-    /* The request files are named per SESSION, and a leftover one would outlive the session that asked for
-       it: a later shell reading it would cd somewhere the user never chose. main.c numbers sessions with a
-       counter that never repeats within one run (a tab index does repeat — closing a tab shifts the later ones
-       down and a new tab reuses the freed index, and two sessions sharing a request file is how one shell
-       ends up in another session's directory), so the names cannot be enumerated here: the directory is
-       scanned and everything matching is removed, including the temporary name write_request() renames from. */
+    /* A leftover request file would cd a later shell into a directory the user never chose. The names use a
+   per-run counter that cannot be guessed, so the whole directory is scanned. */
     DIR *d = opendir(dir);
     if (d) {
         struct dirent *de;
@@ -478,11 +426,8 @@ int shellint_argv(int kind, const char *dir, const char *req_path, char *cmd, si
     const char *real_zd = getenv("ZDOTDIR");
     if (!real_zd || !real_zd[0])
         real_zd = getenv("HOME");
-    /* KAI_TERM_INT_DIR is exported to every integrated shell because the script's nested-shell wrappers
-       need it: a bare `bash` typed at an integrated fish prompt is run as
-       `command bash --rcfile $KAI_TERM_INT_DIR/bash.bash`, and the shell running that wrapper only knows
-       the directory because we put it in the environment. Each script has a fallback that derives it from
-       its own file name, but the wrappers must not depend on that. */
+    /* Exported because a nested shell's wrapper runs `bash --rcfile $KAI_TERM_INT_DIR/...`, and the shell
+   running that wrapper only learns the directory from the environment. */
     int n;
     if (kind == SHELLINT_FISH)
         n = snprintf(cmd, cap, "KAI_TERM_CD_REQUEST='%s' KAI_TERM_INT_DIR='%s' "

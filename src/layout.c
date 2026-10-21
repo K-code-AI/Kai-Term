@@ -1,44 +1,8 @@
-/* Kai-Term — layout: how one window's pixels are shared between the tab bar and the sessions.
-
-   Pure geometry on purpose (no Wayland, no EGL, no file descriptors), so the whole tab-bar /
-   side-by-side feature is checkable headlessly in tests/test_vt.c — the only kind of evidence this
-   project can rely on for layout, since the user verifies anything visual themselves.
-
-   One function decides everything about where things are drawn, for the same reason term_grid_geometry()
-   exists: the drawn cell, the pointer -> cell mapping and the PTY/grid size MUST agree, and every extra
-   copy of that arithmetic is a chance for them to drift apart. main.c calls layout_compute() once per
-   geometry change, resizes every displayed session to its pane's cols/rows, hit-tests the pointer with
-   layout_hit_bar()/layout_hit_pane(), and hands the result to render_draw(), which draws exactly these
-   rectangles and nothing else.
-
-   Rules the implementation follows (each is checked in tests/test_vt.c):
-   * Config.padding is the margin around EVERYTHING (all four sides), exactly as it was for a single grid.
-     With the bar off and one pane the numbers are identical to what term_grid_geometry() used to return
-     for the whole window, so a single-session window cannot change shape.
-   * The bar is one cell row tall and sits inside the top margin; `gap` px separate it from the grid, and
-     the panes from each other.
-   * Leftover pixels that do not fill a whole cell stay at the RIGHT and BOTTOM of their pane — the same
-     rule the single grid uses, and the reason `col = (ptr_x - pane.x) / cell_w` names the drawn cell.
-   * The terminal wins over the chrome: if the bar would leave no room for one cell row, the bar is
-     dropped for that frame rather than shrinking the grid to nothing.
-   * In side-by-side mode at most split_max panes are shown; when there are more sessions than that, the
-     shown window of tabs slides to contain the active one.
-   * With the file manager on, the grid area is split HORIZONTALLY first: a band taking fm_size PERCENT of
-     its height on top (browser left, preview right) and the terminal pane(s) below it. The sessions stay
-     ordinary entries in pane[], only shorter, so every hit test, focus border and pointer -> cell mapping
-     works whether the band is on or off. If the window cannot hold the band AND FM_TERM_MIN_ROWS of
-     terminal, the band is dropped for that frame — the terminal wins again.
-   * The confirm-quit question (`notice_on`) is one row of chrome at the BOTTOM of the grid area and costs
-     the panes exactly one row, exactly as the bar costs one at the top. It is reserved BEFORE the
-     file-manager band is measured, so the band's PERCENT applies to what is left rather than to a grid area
-     the question has already eaten. If giving up the row would leave no room for one text row, the QUESTION
-     is dropped for that frame — the terminal wins over the chrome that asks about the terminal. */
+/* How one window's pixels are split between the tab bar, the file-manager band and the session panes.
+   Pure geometry — no Wayland, no EGL, no file descriptors — so it is testable without a window. */
 #include "kai-term.h"
 
-/* Cut a string to at most `max` UTF-8 codepoints, never in the middle of a multi-byte sequence. A tab's
-   title comes from OSC 0/2 and may be UTF-8; splitting a sequence would make the bar draw garbage.
-   Continuation bytes (0x80..0xBF) belong to the codepoint already counted, so the walk only counts lead
-   bytes and can never land inside a sequence. */
+/* Cut a string to at most `max` UTF-8 codepoints, never inside a multi-byte sequence. */
 static void clip_utf8(char *s, int max)
 {
     int n = 0;
@@ -54,10 +18,7 @@ static void clip_utf8(char *s, int max)
     }
 }
 
-/* Drop a trailing incomplete UTF-8 sequence left by a BYTE-bounded copy. clip_utf8() only ever cuts at a
-   codepoint edge, but snprintf into a fixed buffer can split one; the rule itself lives in src/vt.c
-   (utf8_trim_partial) because the bar label, the notice row, the dialog's sentence and a process name all
-   need it — one rule, not four that can drift. */
+/* Drop a trailing incomplete UTF-8 sequence left by a byte-bounded copy (snprintf can split one). */
 
 /* "<n> <title>", with a '*' before the title when the session is hidden and has output the user has not
    seen yet. An unnamed session reads "shell" — every shell sets its own title (OSC 0/2) as soon as it
@@ -110,14 +71,8 @@ static int cols_bytes(const char *s, int nbytes, int maxcols)
     return nb;
 }
 
-/* Wrap a sentence into at most DIALOG_LINES lines of at most `maxcols` columns, breaking at spaces. A word
-   wider than the line is hard-broken at the column limit, never inside a codepoint: a name the user typed
-   has to stay readable, and a box that grew past the window to hold one would not be a box at all. If the
-   sentence needs more lines than the box holds, the LAST line keeps as much of it as fits and ends in
-   " ..." — the shortening is visible rather than silent, and the buttons are still there so the question can
-   still be answered. DIALOG_LINE_MAX is a second, independent limit: a multi-byte name can exhaust a line's
-   BYTES long before its columns, and the wrap treats that exactly like a full line rather than writing past
-   the end of the array. */
+/* Wrap a sentence into at most DIALOG_LINES lines of `maxcols` columns, breaking at spaces; a word wider
+   than the line is hard-broken, and DIALOG_LINE_MAX bounds BYTES, which a name can exhaust first. */
 static void wrap_sentence(const char *text, int maxcols, Dialog *d)
 {
     d->nline = 0;
@@ -156,12 +111,8 @@ static void wrap_sentence(const char *text, int maxcols, Dialog *d)
                 utf8_trim_partial(dst);        /* the BYTE bound can land inside a codepoint */
                 take = (int)strlen(dst);
                 o = (size_t)take;
-                /* The pointer steps over exactly the bytes this line KEPT, not the bytes it was handed.
-                   Stepping over the trimmed ones is a bug with two halves, both measured at
-                   .scratch/s124/wrap2 with 150 x U+00E9 in a 1200px box (the byte bound binds at 127
-                   bytes long before the column bound does): the character that was trimmed away vanishes
-                   from the sentence, and the next line STARTS on its leftover continuation byte, which
-                   the font then draws as a codepoint of its own. A cut has to agree with the advance. */
+                /* The pointer steps over exactly the bytes this line KEPT. Stepping over the trimmed ones loses a
+   character and starts the next line on its leftover continuation byte. */
                 p += take;
                 break;
             }
@@ -266,19 +217,8 @@ void layout_compute(const LayoutReq *rq, Layout *out)
         }
     }
 
-    /* ---- the confirm-quit question: one row of chrome at the bottom of the grid area ----
-       Reserved here, before the file-manager band and before the panes are measured, so that everything
-       below works on the grid area that is LEFT. It costs exactly ONE cell row and no gap: the question is
-       chrome the user reads once, and every extra pixel it takes is a row of the work being asked about.
-       (The bar costs a row AND a gap because its items need separating from each other; one full-width row
-       does not.) The remainder of the pane's rect stays at its bottom as usual, so a window whose height is
-       not a whole number of rows keeps its natural slack between the last text row and the question.
-       The row sits at the BOTTOM rather than the top because the question is about the work on screen: the
-       text the user is being asked to throw away stays visible above it.
-       The terminal wins over the question, exactly as it wins over the bar and over the band — a window too
-       short to give up the row closes without asking rather than showing half a terminal. That is a
-       decision, not a fallback: `notice_on` in the result says what was actually drawn, and main.c's gate
-       reads nothing from it (the question was already asked by then). */
+    /* The confirm-quit question costs one row at the bottom of the grid area, reserved before the band so the
+   band's percent applies to what is left. Too short for that row and the question is dropped. */
     int notice_on = rq->notice_on ? 1 : 0;
     if (notice_on && grid_h - ch < ch)
         notice_on = 0;
@@ -289,21 +229,15 @@ void layout_compute(const LayoutReq *rq, Layout *out)
         out->notice_w = grid_w;
         out->notice_h = ch;
         grid_h -= ch;
-        /* The text is cut HERE, to the columns this row really has, so the renderer draws exactly what the
-           geometry decided and a clipped question is a checked decision rather than something a draw loop
-           does with no check on it. NOTICE_MAX bounds the bytes, clip_utf8 bounds the codepoints and
-           utf8_trim_partial undoes a byte bound that landed inside one. */
+        /* The text is cut HERE, to the columns this row really has, so the renderer draws what geometry decided. */
         snprintf(out->notice, sizeof out->notice, "%s",
                  (rq->notice_text && rq->notice_text[0]) ? rq->notice_text : "");
         clip_utf8(out->notice, imax_(grid_w / cw, 1));
         utf8_trim_partial(out->notice);
     }
 
-    /* ---- the file-manager band, above the terminal pane(s) ----
-       The band takes fm_size percent of the grid area's height and the sessions keep the rest — a SHARE of
-       the window rather than a fixed row count, so resizing or zooming keeps the proportion the user asked
-       for. The terminal stays a normal PaneGeom in pane[], only shorter, which is what lets every existing
-       hit test, the focus border and W.gx/W.gy keep working with the file manager on AND off. */
+    /* The band takes fm_size percent of the grid area's height and the sessions keep the rest. It stays an
+   ordinary PaneGeom, so every hit test works with the band on and off. */
     int pane_y = grid_y, pane_h = grid_h;
     if (rq->fm_on) {
         int pct = iclamp_(rq->fm_size, FM_SIZE_MIN, FM_SIZE_MAX);
@@ -371,22 +305,9 @@ void layout_compute(const LayoutReq *rq, Layout *out)
         term_grid_geometry(pg->w, pg->h, cw, ch, 0, &pg->cols, &pg->rows, &xoff, &yoff);
     }
 
-    /* ---- the confirm-quit DIALOG: a centred box over the terminal, with two buttons to click ----
-       A window close is the one that cannot be undone, so it asks with a box the user can answer with a
-       click. It is drawn OVER the terminal and costs NO grid row: the work being asked about stays exactly
-       as it was, which is the opposite of the tab question — a tab is cheap and reversible, so that one
-       stays out of the way by taking a row at the bottom. Which of the two a question uses is main.c's
-       choice; layout draws what it is asked for and decides nothing about which.
-
-       The box hugs its text. The sentence is wrapped at the widest it could possibly be (the grid area less
-       one cell of padding each side), and the box then shrinks to the widest line the wrap actually
-       produced: a box the width of the window holding four words reads as a mistake. The two buttons set a
-       FLOOR on the width, because a box narrower than the two answers it holds cannot be clicked.
-
-       Like every other piece of chrome here the box can be DROPPED, and for the same reason: if it does not
-       fit the grid area, `on` stays 0 and nothing is drawn. That is a decision with a field on it, not a
-       fallback — main.c's rule is that a close is never blocked by a question the user cannot see, so a
-       dropped box means the window closes at once, exactly as it did before this feature existed. */
+    /* The confirm-quit dialog: a centred box drawn OVER the terminal, costing no grid row. It hugs its text —
+   wrapped at the widest possible, then shrunk to the widest line produced — and is dropped if it will
+   not fit, in which case the window closes without asking. */
     if (rq->dialog_on) {
         int pad_h = cw;                    /* one cell of padding, each side */
         int pad_v = imax_(ch / 2, 1);      /* half a cell above and below the text */
@@ -449,10 +370,8 @@ void layout_compute(const LayoutReq *rq, Layout *out)
     }
 }
 
-/* Which button of the dialog, if any, owns this pointer position. Returns the index into Layout.dialog.btn[],
-   or -1 for anywhere else — including inside the box but off both buttons, which main.c treats as "the
-   question stays up": a click that lands near a button must never answer it by accident, and a click outside
-   the box must never be read as a NO the user did not give. */
+/* Which dialog button owns this pointer position, or -1 anywhere else — including inside the box but off
+   both buttons, which leaves the question up. */
 int layout_hit_dialog(const Layout *l, int px, int py)
 {
     if (!l->dialog.on)
@@ -521,13 +440,8 @@ void layout_grid_size(const Layout *l, int *cols, int *rows)
     *rows = l->pane[0].rows;
 }
 
-/* The window size to ask the compositor for at startup. Kept next to layout_compute() because it is its
-   inverse for this one case: the grid must fit the window that layout_compute() will later measure, and the
-   bar costs one cell ROW plus the gap — cell_h, never cell_w. The file-manager band is a PERCENT of the
-   grid area, so the inverse has to be solved rather than added: with band = pct% of grid_h, the terminal
-   pane's rows*ch plus the gap must fit in the (100-pct)% that is left, i.e.
-   grid_h = ceil((rows*ch + gap) * 100 / (100 - pct)). tests/test_vt.c feeds this straight back into
-   layout_compute() and requires the configured cols x rows for the TERMINAL pane, band on and off. */
+/* The startup window size: layout_compute() inverted. The bar costs a cell ROW plus the gap; the band is a
+   percent, so grid_h = ceil((rows*ch + gap) * 100 / (100 - pct)). */
 void layout_initial_size(int cols, int rows, int cell_w, int cell_h, int pad, int gap, int bar,
                          int fm_on, int fm_size, int *win_w, int *win_h)
 {

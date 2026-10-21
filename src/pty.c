@@ -28,17 +28,8 @@ int pty_spawn(Pty *p, const char *cmd, int rows, int cols, const char *dir)
         return -1;
     }
 
-    /* Leave the pty's termios at the kernel's defaults. On Linux a pty master and its slave share ONE
-       termios, so anything set here is also the CHILD's terminal. An earlier version called
-       cfmakeraw() on the master, which gave every program in the terminal a raw terminal: ISIG off made
-       Ctrl+C an ordinary byte instead of SIGINT, ICANON off made Ctrl+D an ordinary byte instead of EOF,
-       ECHO off meant a program that relies on the tty echoing showed nothing it was typed, and OPOST off
-       made every `printf("\n")` arrive as a bare LF, which the VT parser correctly does not treat as a
-       newline — the output staircases. Measured 2026-10-19 (`.scratch/s78/`, A/B against a copy of this
-       file with the cfmakeraw block deleted): `ls` emits `<LF>` with the raw pty and `<CR><LF>` without
-       it; `sleep 30` + Ctrl+C survives with it and is killed by SIGINT without it (in fish too); Ctrl+D
-       is not EOF with it. Programs that want raw mode set it themselves — readline, vim, fish and less
-       all do — so leaving the defaults alone is what a terminal emulator must do. */
+    /* Leave the pty's termios at the kernel's defaults. Master and slave share ONE termios, so cfmakeraw() here
+   would give every program a raw terminal: Ctrl+C stops being SIGINT and "\n" stops being a newline. */
     pty_setsize(p, rows, cols);
     p->rows = rows;
     p->cols = cols;
@@ -107,11 +98,8 @@ void pty_setsize(Pty *p, int rows, int cols)
         .ws_row = (unsigned short)rows,
         .ws_col = (unsigned short)cols,
     };
-    /* The cell size in px, when it is known. Applications that draw images need it: timg 1.6.3
-       only auto-selects its kitty graphics mode when the PTY reports a non-zero pixel geometry
-       (measured: with ws_xpixel/ws_ypixel == 0 it prints "cell-pixels: -1x-2" and falls back to
-       quarter blocks), and it scales the image with it, so reporting nothing is what makes an
-       image come out at the wrong aspect. */
+    /* The cell size in px, when it is known. Applications that draw images scale by it, so reporting nothing is
+   what makes a picture come out at the wrong aspect. */
     if (p->cell_w > 0 && p->cell_h > 0) {
         ws.ws_xpixel = (unsigned short)(cols * p->cell_w);
         ws.ws_ypixel = (unsigned short)(rows * p->cell_h);
@@ -156,17 +144,9 @@ void pty_write(Pty *p, const void *buf, size_t len)
     }
 }
 
-/* Is something still running here? The DECISION is kept apart from the syscall so a test can put every case
-   through without owning a process — the same split as render_cursor(). Measured against bash, zsh and fish
-   (.scratch/s117/fgprobe2, which answers each shell's startup queries and proves the command ran): idle at
-   the prompt the pty's foreground process group IS the shell's pid, and a foreground command or a pipeline
-   moves it elsewhere. Kai-Term never calls tcsetpgrp, so the shell owns that value.
-   The two guards are measurements, not paranoia. After the shell exits, bash's pty answers tcgetpgrp with 0,
-   and a naive `fg != child` calls a DEAD session "running" — the window would then ask whether to kill
-   nothing (zsh and fish left the old value there, which reads idle only by luck). And a session whose pty is
-   already closed has nothing to ask about. A job the user backgrounded with `&` keeps the shell in the
-   foreground group, so it reads idle: the gate protects a foreground command, not a daemon (measured, and
-   documented as a limitation in README/ISSUES). */
+/* Is something still running? The decision is kept apart from the syscall so a test can cover every case
+   without owning a process. After the shell exits tcgetpgrp answers 0 or a stale value, so comparing
+   against the child alone calls a dead session "running". */
 int fg_busy(pid_t fg, pid_t child)
 {
     if (fg <= 0 || child <= 0)
@@ -181,15 +161,8 @@ int pty_fg_busy(const Pty *p)
     return fg_busy(tcgetpgrp(p->mfd), p->child);
 }
 
-/* What is running here, BY NAME. The box the user asked for says `Warning ! "nano" is still running.`, not
-   "a command" — a user who typed `nano` recognises their own word and does not have to wonder which session
-   is meant. The DECISION about the text is kept apart from the file read for the same reason fg_busy() is:
-   a test can put every case through `proc_comm_name` without owning a process.
-   /proc/<pid>/comm is the kernel's own name for the process: TASK_COMM_LEN-1 = 15 bytes plus a newline, so
-   it is always short enough for one row of a window, and it is the name of the FOREGROUND group's leader,
-   which is exactly the process fg_busy() says is at risk. It is read with open/read rather than fopen
-   because this runs inside a Wayland event handler on the way to closing the window: no malloc, no stdio
-   buffer, nothing that can fail in a way the close path has to unwind. */
+/* What is running, by name: /proc/<pid>/comm of the foreground group's leader, which is the process
+   fg_busy() says is at risk. open/read rather than fopen — this runs inside a Wayland handler. */
 int proc_comm_name(const char *raw, char *out, size_t cap)
 {
     if (!out || cap == 0)

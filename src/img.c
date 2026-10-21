@@ -1,24 +1,5 @@
-/* Kai-Term — image decoding: the one place where bytes become pixels.
- *
- * Every picture Kai-Term shows arrives as bytes somewhere and leaves here as RGBA8, which is the only
- * pixel format the renderer knows (one GL texture per picture, composited by the shader as
- * c + bg*(1-c.a), so no GL blending is needed). Two producers share this file:
- *   - src/vt.c  — the kitty graphics protocol (an application transmits a picture inline);
- *   - src/fm.c  — the file manager's preview pane (a picture read from disk).
- * Keeping the decoders in one place is what makes "PNG works in both" true by construction instead of
- * by coincidence.
- *
- * Formats are recognized by their own bytes (img_sniff), not by a file name or by the f= a protocol
- * claims: a container is self-describing and an application may set f= loosely.
- *
- * Dependencies: libpng and zlib are already required by the graphics protocol. JPEG and WebP use the
- * system libraries (libjpeg, libwebp). GIF is decoded HERE, in-tree, because giflib is not a
- * dependency of this project and the format is small enough to own: a header, one color table and an
- * LZW stream.
- *
- * Nothing here premultiplies: the callers do it (img_premultiply) at the moment they know where the
- * pixels are going, exactly as the graphics path always has.
- */
+/* Image decoding: the one place where bytes become pixels. RGBA8 out, the only pixel format the renderer
+   knows. Formats are recognized by their own bytes, not by a name or by what a protocol claims. */
 #include "kai-term.h"
 
 #include <setjmp.h>
@@ -202,12 +183,8 @@ static uint8_t *img_decode_webp(const uint8_t *mem, size_t n, int *w, int *h)
     return out;
 }
 
-/* ---------- GIF, decoded in-tree ----------
- * The whole format: a header, a logical screen descriptor, an optional global color table, then a
- * sequence of blocks — image descriptors (0x2C), extensions (0x21) and the trailer (0x3B). Data is
- * LZW-compressed with codes of at most 12 bits packed least-significant-bit first.
- * Only the FIRST image block is decoded: an animation's later frames are deltas over what was drawn
- * before, which a preview pane has no use for (documented in ISSUES.md). */
+/* GIF, decoded in-tree because giflib is not a dependency. Only the first image block is decoded: an
+   animation's later frames are deltas over what was drawn before. */
 
 typedef struct {
     const uint8_t *p;
@@ -329,10 +306,8 @@ static int gif_lzw(const uint8_t *d, size_t dn, int minsz, uint8_t *out, size_t 
     return o == want;
 }
 
-/* An interlaced GIF stores its rows in four passes: every 8th row from 0, then every 8th from 4,
-   then every 4th from 2, then every 2nd from 1. This maps the y-th row IN THE STREAM to the row of
-   the image it belongs to. The per-pass counts are ceil((ih - start) / step), which is what makes the
-   boundaries exact (for ih 23 they are 3 + 3 + 6 + 11 = 23). */
+/* An interlaced GIF stores its rows in four passes: every 8th from 0, every 8th from 4, every 4th from 2,
+   every 2nd from 1. This maps a row in the stream to the row of the image it belongs to. */
 static int gif_interlaced_row(int srow, int ih)
 {
     int n0 = (ih + 7) / 8;   /* rows 0, 8, 16, ...  */

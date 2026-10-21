@@ -1,20 +1,5 @@
-/* Kai-Term — multiplexing: several terminal sessions (tabs) in one window.
-
-   This file is deliberately pure bookkeeping: no Wayland, no EGL, no file descriptors, no fork. That
-   is what makes the tab logic testable headlessly (tests/test_vt.c links it next to vt.c). src/main.c
-   owns everything that touches the outside world — spawning and reaping the shell, the PTY descriptor
-   in epoll, the window title — and this file owns the Tab array, the active index, the per-tab
-   attention flag and the Term lifetime.
-
-   The array is kept DENSE (tabs occupy 0..n-1) so "tab 3" means the same thing to the user, to
-   mux_goto() and to main.c's fd -> tab lookup. Closing a tab therefore shifts the later ones down;
-   the one hazard that creates is Term.ps.t, a pointer a Term keeps to itself, which mux_close()
-   re-arms for every moved tab (see the comment there).
-
-   One exception to "no file descriptors": mux_running() asks pty_fg_busy() about each tab's pty. That is a
-   read-only query (tcgetpgrp), it owns nothing and cannot block — and putting it HERE is what makes the
-   confirm-quit decision testable headlessly: a test gives a Tab an mfd of -1 and gets "idle" without
-   owning a process. */
+/* Several terminal sessions (tabs) in one window. Pure bookkeeping — no Wayland, no EGL, no fork — so the
+   tab logic is testable without a window; main.c owns everything that touches the outside world. */
 #include "kai-term.h"
 
 void mux_init(Mux *m, int max_tabs)
@@ -113,12 +98,8 @@ int mux_close(Mux *m, int idx)
     return m->active;
 }
 
-/* An application changed the default ink/paper (OSC 10/11) in one session: sweep the cells every OTHER
-   session has already painted. The defaults are process-wide (see g_def_fg/g_def_bg in vt.c), so one session's
-   OSC 11 changes the paper of all of them — that is a consequence of the s101 decision to let ONE runtime value
-   own the default colours, and it is the honest behaviour: two sessions with different papers in one window would
-   need per-session defaults, which is a different design. Sweeping the raising session again is harmless — the
-   sweep is a match-and-replace and no cell still carries the old value. */
+/* An application changed the default ink/paper (OSC 10/11) in one session. The defaults are process-wide,
+   so the other sessions' already-painted cells have to be swept to match. */
 void mux_recolor_defaults(Mux *m, uint32_t old_fg, uint32_t old_bg,
                           uint32_t new_fg, uint32_t new_bg)
 {
@@ -189,15 +170,8 @@ int mux_running(const Mux *m, int *idx, int max)
     return n;
 }
 
-/* Is a visual-bell flash on screen right now? See the header: the point is the word DRAWN. A session the user
-   cannot see has no field to wash out (the tab bar's `*` is how they find it), and keeping the window dirty for
-   BELL_FLASH_MS on its behalf would burn a frame every 8 ms for a picture that cannot change. The layout is what
-   says which sessions are on screen, so it is an argument here rather than a loop over every tab — and this is
-   in mux.c, not main.c, because main.c is in no test binary and a mutant that scanned every tab survived every
-   check in the tree (`.scratch/s126/mutate.py`, s127). The duration is the CALLER's decision (`bell = off` hands
-   in 0), so the two places that ask about a flash cannot disagree about when it ends: both go through
-   bell_strength(). Pane entries are re-checked against the tab count rather than trusted: a layout built for a
-   frame in which a session had just closed can name an index that no longer exists. */
+/* Is a bell flash on screen right now? A session the user cannot see has no field to wash out, and keeping
+   the window dirty for it would burn frames on a picture that cannot change. */
 int mux_bell_live(const Mux *m, const Layout *lay, long long now_ms, int dur_ms)
 {
     if (!m || !lay || dur_ms <= 0)
@@ -213,11 +187,8 @@ int mux_bell_live(const Mux *m, const Layout *lay, long long now_ms, int dur_ms)
     return 0;
 }
 
-/* "2, 4 and 5" — which sessions are at risk. At most FOUR numbers: this is one row of a window, and
-   the count in front of the list already carries the size of the problem. Four is what still fits an
-   80-column window together with the question and the answer hint — the exact-text checks in
-   tests/test_vt.c are what pins that, not a guess. A NULL idx is tolerated because this is a public
-   entry point: a caller that has the count but no list still gets a correct sentence. */
+/* "2, 4 and 5" — which sessions are at risk, at most four numbers: that is what still fits an 80-column
+   window next to the question and the answer hint. */
 static void session_list(const int *idx, int n, char *out, size_t cap)
 {
     if (cap == 0)
@@ -241,13 +212,8 @@ static void session_list(const int *idx, int n, char *out, size_t cap)
     }
 }
 
-/* The one-row question. Its WORDING lives here rather than in main.c for the same reason the fm model
-   does: main.c is in no test binary, so a string inside it is a claim, while a string built here is a
-   check. Every branch says the same three things: what is about to happen, what is still running (and
-   WHICH, when there is more than one session), and how to answer. The wording is short on purpose — the
-   longest form still fits an 80-column window, because a question whose answer hint was clipped off the
-   right edge is a question the user cannot read the end of. A NULL `idx` keeps the COUNT and drops the
-   list: the count is the part a yes/no answer cannot carry. */
+/* The one-row question's wording lives here rather than in main.c because main.c is in no test binary: a
+   string built here is a check, a string inside main.c is only a claim. */
 int confirm_message(int what, int n, const int *idx, char *out, size_t cap)
 {
     if (!out || cap == 0)
@@ -282,10 +248,8 @@ int confirm_message(int what, int n, const int *idx, char *out, size_t cap)
     return r;
 }
 
-/* One entry of the WINDOW box's list: the process's own name in quotes when it could be read, the session
-   number when it could not. "a command" is exactly what the user's box replaces — a user who typed `nano`
-   reads their own word and knows which session is meant. A number says plainly that it is a fallback, which
-   is better than inventing a name for a process this process cannot see. */
+/* One entry of the window box's list: the process's own name in quotes when it could be read, the session
+   number when it could not. A number says plainly that it is a fallback. */
 static void name_phrase(const char *name, int tabidx, char *out, size_t cap)
 {
     if (name && name[0])
@@ -294,11 +258,8 @@ static void name_phrase(const char *name, int tabidx, char *out, size_t cap)
         snprintf(out, cap, "session %d", tabidx + 1);
 }
 
-/* `"nano"`, `"nano" and "sleep"`, `"a", "b" and "c"`, `"a", "b", "c" and 2 more`. At most THREE names: the
-   box is one sentence in the middle of a window, not a process listing, and the verb already carries the
-   size of the problem. The "and" goes before the last NAME only when the list ends with a name — `"a", "b"
-   and "c" and 2 more` reads as a mistake, `"a", "b", "c" and 2 more` does not. A NULL entry falls back to
-   the session number (see name_phrase); a NULL list falls back for every entry. */
+/* `"nano"`, `"nano" and "sleep"`, `"a", "b", "c" and 2 more`. At most three names — the box is one
+   sentence, not a process listing — and "and" precedes the last name only when the list ends with one. */
 static void name_list(const int *idx, const char *const *names, int n, char *out, size_t cap)
 {
     if (!cap)
@@ -324,14 +285,8 @@ static void name_list(const int *idx, const char *const *names, int n, char *out
     }
 }
 
-/* The sentence for the WINDOW box, in the user's own words: `Warning ! "nano" is still running. Are you sure
-   you want to close it ?`. It lives here rather than in main.c for the same reason confirm_message() does —
-   main.c is in no test binary, so a string inside it is a claim while a string built here is a check. The
-   wording differs from the tab row on purpose: a tab close is cheap and reversible by opening the tab again,
-   a window close is the one that cannot be undone, so it names the work by name and asks in full sentences.
-   `n <= 0` is reachable only through `confirm_quit = always`, which asks whatever is running; with nothing
-   to name the sentence says only what it is about to do. Like confirm_message(), the return value is what
-   was WRITTEN, not what snprintf would have written. */
+/* The window box's sentence. It differs from the tab row on purpose: a tab close is reversible, a window
+   close is not, so this one names the work and asks in full sentences. */
 int confirm_warning(int n, const int *idx, const char *const *names, char *out, size_t cap)
 {
     if (!out || cap == 0)
