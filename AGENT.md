@@ -140,7 +140,69 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
   `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — none. s135 CLOSED (2026-10-21): the final verification ISSUES.md already claims, the commit and the
+## Current Task — s137 IN PROGRESS: MAJOR comment cleanup across `src/` and `include/` (the user's request
+2026-10-21). No feature work. See the s137 task block.
+
+### s137 task block — comments: self-explanatory code, 1-2 lines, no jargon
+
+**The user's rule, verbatim:** "The code is full of useless comments. We prefer code to be self explanatory. When we
+write comments its because there is something locally unintuitive that a future reader should know. But as we write
+code our goal is to make all code locally intuitive, removing the need for comments. If we ever do need to write
+comments, we never introduce jargon. Comments should be understandable to someone who was just dropped into the
+codebase for the first time. Comments should attempt to be concise, on average 1-2 lines. If you are writing a longer
+comment its likely there is a lot of useless information, which is bad because the information may become stale as the
+code changes."
+
+**Measured starting point (2026-10-21, before any edit):** `src/` + the header = 17,676 lines, of which **5,821 are
+comment lines**; **504 blocks of 4+ lines cover 3,485 lines**. Worst: `src/shellint.c` 79-line and 56-line blocks,
+`src/vt.c:1109` 38, `src/layout.c:1` 35, `src/render.c:1` 30 and `:727` 29, `src/vt.c:471` 23, `src/img.c:1` 21,
+`src/theme.c:272` 20. Only 11 comment lines carry a session tag (`sNNN`), so the jargon is mostly *prose* jargon
+("the model can PROVE the line is empty", "pass 3", "the s102 plan"), not tags.
+
+**What survives a rewrite, and what goes.** A comment stays only if it states something the code cannot show, in 1-2
+lines, in words a newcomer has: an invariant, a units or coordinate convention (a quad's y grows UP from the cell's
+bottom edge), a hazard, a spec/protocol reference, or why the obvious approach is wrong. What goes: the history of
+how a decision was reached, session numbers and dates, "measured on ...", cross-file essays, anything that restates
+what the next line of code already says, and any paragraph that could be cut without a reader making a mistake. Where
+the surviving fact needs more room than 2 lines, the fact is a sign the CODE is not locally intuitive — fix the code
+(name, guard, helper) rather than write the paragraph.
+
+**Verified safe with respect to the checks (measured before editing, not assumed):** every source-scanning check
+(`src_word_count`, `src_sub_count`, `src_call_passes_arg` in `tests/test_render.c`; `cfg_names_of`,
+`theme_names_of`, `usage_opts_of`, `src_hexesc_count` in `tests/test_vt.c`) **skips comments** — the block/line skip
+is in the scanner — so deleting or shortening a comment cannot change a count. The doc-pinning checks read
+`README.md`, `ISSUES.md` and the three `config/` templates, never `src/` comments. So the suites are the check on
+this work, and a suite that stays green at the same count means no code changed.
+
+**Method.** One file at a time. For each: read every comment in it, rewrite in place, then `make -j8` + the suites
+that link it, and record the before/after comment-line count here. Commit per file or per small group. If a comment
+encodes an invariant, the invariant is preserved in the shortened wording — never dropped.
+
+**Progress (measured with `.scratch/cc.py`, which counts comment lines with the same C tokenizer the edit tool uses).**
+Baseline at the start of s137: **5,671** comment lines across `src/` + the header. Now **4,145** — every file in
+`src/` and the header done: `shellint.c` 79->23, `layout.c` 163->77, `mux.c` 92->47, `font.c` 105->73, `img.c`
+72->47, `pty.c` 51->24, `url.c` 92->62, `config.c` 212->159, `theme.c` 149->108, `fm.c` 324->244, `render.c`
+530->349, `vt.c` 1027->764, `main.c` 1291->1072, header 1484->1096. The header's average comment is now **1.90
+lines** (586 comments); `grep -nE "s[0-9]{2,3}\b|\.scratch|2026-|AGENT\.md|ISSUES\.md"` over it returns nothing, so
+no session tags, probe paths or dates survive there. After every batch: `make -j8` and the test build at **0 warning
+lines**, `test_vt` **1673/0**, `test_render` **617/0**, `test_fm` **384/0**, `dbg` **MODEL OK**, `CLI: 99/0, 13
+skipped** — the counts not moving is the proof no code changed. One code change was made in the header on purpose:
+`int wheel_sends_keys, click_moves_cursor;` became two declarations so each switch carries its own note (17 comment
+lines -> 9), and `BELL_FLASH_MS`/`BELL_MIX_MAX` gained trailing comments when the section essay shrank.
+**Remaining:** a second pass on `main.c` (1072 comment lines, 128 blocks of 4+) and `vt.c` (764, 72 blocks), then
+`tests/` (1,896 comment lines across the four C test files) if the user wants the suites cleaned too.
+
+**Tooling built for this (in `.scratch/`, not shipped):** `reblock.py` — a C tokenizer that finds comments (it skips
+string literals, so a shell `${X%/*}` inside a script constant is never mistaken for a comment) and replaces a block
+addressed by its starting line, bottom-up, dying if an anchor does not land on a comment; `batch.py` — runs a batch
+file (`EDITS = [(start_line, new_text), ...]`), first printing what every anchor currently holds so a wrong line
+number is caught before it edits a DIFFERENT comment, and writing only with `--go`; `dumpc.py` — prints every
+comment of a file with its length; `cc.py` — the per-file before/after count. Anchors are line numbers, so each batch
+is applied to a file in one call, highest line first.
+
+---
+
+## Closed: s135 (2026-10-21) — the final verification ISSUES.md already claims, the commit and the
 push (see the s135 journal entry) — feature `24638cc`, journal `a7694b6`, `origin/main` re-read from git. s136
 (2026-10-21) is the user's confirmation of the hover underline: **"I confirm it to be working properly"** — the last
 item s134 left owed to their eye, so steps 5, 6 and 7 are now fully closed. Nothing is in progress; the next thing is
