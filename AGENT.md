@@ -2618,6 +2618,15 @@ numbers and the intermediate check counts are in git.
   **Now in progress: the header's 51 remaining blocks of 4+ lines** (`src/` has 7 left: 6 in `vt.c` — the grid
   diagram, the graphics-protocol banner, the APC channel, the clipboard-policy banner — and 1 in `fm.c`).
   **Next after that:** `tests/` (1,896 lines in the four C test files) only if the user asks for the suites cleaned.
+  **The header's 4+ blocks went (`60d18bf`): 1061 -> 1009 comment lines, average 1.72** (`.scratch/hp4.py`,
+  `hp5.py`). One of them moved rather than shrank: `click_moves_cursor`'s note was a TRAILING comment, so the wrap
+  width was 69 columns and it needed 5 lines; above the declaration the same words take 3. Re-measured: code
+  identical to HEAD, both builds 0 warning lines, **1673/0, MODEL OK, 384/0, 617/0, CLI 99/0 with 13 skipped**.
+  **Tree state now: 3,613 comment lines in `src/` + the header** (5,671 at the start of s137), and 28 blocks of 4+
+  lines left: 22 in the header (the `render_cursor()` parameter table and the `render_draw()` contract are the two
+  longest, and both are contracts a caller needs) and 6 in `vt.c` (the grid-slot diagram, the kitty APC form, the APC
+  channel, the clipboard-policy banner). Those are the ones a rewrite should NOT flatten. `fm.c`'s last one, the file
+  header, went with it (244 -> 243).
 
 ## Next Steps
 
