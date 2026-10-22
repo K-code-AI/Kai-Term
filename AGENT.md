@@ -243,6 +243,11 @@ waiting on, so that line is now replaced (see "Current Status").
   `test_render` **617/0**, `CLI 99/0 with 13 skipped` (`KAI_TERM_TEST_NO_WINDOW=1`) and **`INSTALL 43/0/0`**;
   `make asan` exit 0 at **0 warning lines**, same four counts, no LeakSanitizer or UBSan report. `make icons`
   re-run and byte-identical to the committed PNGs.
+- **Commits:** `7c20533` (the flaky spawn check, on its own) then `6ea0d17` (the install targets, the icon set,
+  the 43-check gate and the docs). Self-containment re-verified the s131 way: a fresh `git clone` of `6ea0d17`
+  (`.scratch/s142/verify_commit`) builds both ways at 0 warning lines and reports the same five counts including
+  `INSTALL 43/0/0`. Not pushed at the time of writing — `git fetch` first, pushing is the next session's or the
+  user's call.
 - **Docs:** ISSUES.md gained the flake under "Fixed", an "Install / desktop entry" group under "Known
   limitations" (templates are overwritten; `/etc/kai-term` is not PREFIX-relative; the .ico is not installed
   as-is; `Exec` relies on PATH; `StartupNotify=true` with no startup-id handling in the tree — 0 hits for it),
