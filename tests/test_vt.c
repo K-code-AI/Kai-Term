@@ -779,6 +779,7 @@ int main(void)
     /* --- scroll region --- */
     feed("\x1b[2J\x1b[H\x1b[1r");           /* full-screen region */
     feed("\x1b[2;4r");                       /* region rows 2..4 */
+    CHECK(T.cx == 0 && T.cy == 0, "DECSTBM homes to the screen top-left, not the region top");
     feed("\x1b[2;1H");
     CHECK(T.cy == 1, "cursor at region top after H");
     feed("A\r\nB\r\nC\r\nD");                /* D should scroll within region */
@@ -787,6 +788,105 @@ int main(void)
     row_text(3, row);
     CHECK(row[0] == 'D', "D written at region bottom");
     feed("\x1b[1r");
+
+    /* --- absolute addressing is screen-bounded, relative motion is region-bounded (s144) ---
+       DECSTBM says where SCROLLING happens and how far RELATIVE motion may go. It does not bound
+       `CUP`/`HVP`/`VPA` or a cursor restore: those address any row of the screen. tmux relies on this —
+       it sets a region that EXCLUDES the row it is about to paint, scrolls, then writes at `ESC[1;1H`.
+       Clamping the absolute forms to the region moved that write one row down and every absolute address
+       after it, so a tmux prompt landed one row low and the echoed typing overwrote the prompt's first
+       line (user report: "My prompt get mangled in tmux"). Oracle: tmux's own parser, replayed by
+       .scratch/s144/cases.py — every case there agrees with these checks. */
+    term_destroy(&T);
+    term_init(&T, 10, 20, 0);
+    feed("\x1b[2J\x1b[H\x1b[2;9r");          /* region = rows 2..9, i.e. 0-based 1..8 */
+    CHECK(T.top == 1 && T.bot == 8, "region rows 2..9");
+    feed("\x1b[2J\x1b[5;5HMID\x1b[2;9r");    /* the cursor is NOT at home when the region is set */
+    CHECK(T.cx == 0 && T.cy == 0, "DECSTBM homes the cursor from wherever it was");
+    feed("AFTER-R");
+    row_text(0, row);
+    CHECK(!memcmp(row, "AFTER-R", 7), "the print after DECSTBM lands on the screen top row");
+    row_text(4, row);
+    CHECK(!memcmp(row + 4, "MID", 3), "DECSTBM homes the cursor, it does not erase");
+    feed("\x1b[2J\x1b[1;1HTOPROW\x1b[2;9r");
+    feed("\x1b[2;1HR1\r\nR2\r\nR3\r\nR4\r\nR5\r\nR6\r\nR7\r\nR8\r\nR9");
+    row_text(0, row);
+    CHECK(!memcmp(row, "TOPROW", 6), "a region scroll never touches the row above the region");
+    row_text(1, row);
+    CHECK(!memcmp(row, "R2", 2), "the region's top line left the region");
+    row_text(8, row);
+    CHECK(!memcmp(row, "R9", 2), "the line that forced the scroll lands at the region bottom");
+    row_text(9, row);
+    CHECK(row[0] == ' ', "a region scroll never touches the row below the region");
+    feed("\x1b[1;1HABOVE");
+    row_text(0, row);
+    CHECK(!memcmp(row, "ABOVE", 5), "CUP writes the row ABOVE the region");
+    feed("\x1b[10;1HBELOW");
+    row_text(9, row);
+    CHECK(!memcmp(row, "BELOW", 5), "CUP writes the row BELOW the region");
+    feed("\x1b[11;99H");
+    CHECK(T.cx == 19 && T.cy == 9, "an out-of-range CUP clamps to the screen, not the region");
+    feed("\x1b[2J\x1b[1;1H\x1b[2;9r");
+    feed("\x1b[1dVPA1");
+    row_text(0, row);
+    CHECK(!memcmp(row, "VPA1", 4), "VPA addresses the row above the region");
+    feed("\x1b[2J\x1b[1;1H\x1b[2;9r");       /* VPA keeps the column, so start it at column 1 */
+    feed("\x1b[10dVPA10");
+    row_text(9, row);
+    CHECK(!memcmp(row, "VPA10", 5), "VPA addresses the row below the region");
+    feed("\x1b[2J\x1b[1;1H\x1b[2;9r");       /* save a position outside the region, then leave it */
+    CHECK(T.cx == 0 && T.cy == 0, "CUP before any motion is the screen top-left");
+    feed("\x1b[s\x1b[5;1H\x1b[u");
+    CHECK(T.cx == 0 && T.cy == 0, "CSI u restores a row outside the region");
+    feed("\033" "7\x1b[5;1H\033" "8");      /* ESC 7 / ESC 8, NOT `CSI 7` / `CSI 8`: the digit is the
+                                                final byte, and a `\x1b7` literal is one hex escape */
+    CHECK(T.cx == 0 && T.cy == 0, "ESC 8 restores a row outside the region");
+    feed("\x1b[2J\x1b[H\x1b[2;9r");
+    feed("\x1b[1;1H\x1b[20BAT-CUD");         /* relative motion: the region IS the bound */
+    CHECK(T.cy == 8, "CUD stops at the region bottom");
+    row_text(9, row);
+    CHECK(row[0] == ' ', "CUD never walks into the row below the region");
+    feed("\x1b[20FCUU");
+    CHECK(T.cy == 1, "CPL stops at the region top");
+    feed("\x1b[2J\x1b[H\x1b[2;9r");
+    feed("\x1b[1;1HABOVE\r\nINSIDE");
+    feed("\x1b[1;1H\x1b[1L");                  /* IL with the cursor ABOVE the region */
+    row_text(0, row);
+    CHECK(!memcmp(row, "ABOVE", 5), "IL outside the region does nothing");
+    row_text(1, row);
+    CHECK(!memcmp(row, "INSIDE", 6), "IL outside the region leaves the region alone");
+    feed("\x1b[1;1H\x1b[1M");                  /* DL with the cursor ABOVE the region */
+    row_text(0, row);
+    CHECK(!memcmp(row, "ABOVE", 5), "DL outside the region does nothing");
+    row_text(1, row);
+    CHECK(!memcmp(row, "INSIDE", 6), "DL outside the region leaves the region alone");
+    feed("\x1b[2;1H\x1b[1L");                  /* IL inside the region */
+    row_text(1, row);
+    CHECK(row[0] == ' ', "IL inside the region inserts a blank line");
+    row_text(2, row);
+    CHECK(!memcmp(row, "INSIDE", 6), "IL inside the region pushes the line down");
+    feed("\x1b[2;1H\x1b[1M");                  /* DL inside the region */
+    row_text(1, row);
+    CHECK(!memcmp(row, "INSIDE", 6), "DL inside the region pulls the line up");
+
+    /* The reported shape, in ten rows: tmux scrolls its region, paints the prompt starting one row
+       BELOW the home it asked for, then addresses the typing row absolutely. */
+    term_destroy(&T);
+    term_init(&T, 10, 20, 0);
+    feed("\x1b[2J\x1b[H\x1b[2;10r\x1b[9S");
+    feed("\x1b[1;1H\x1b[K\r\nPROMPT-1\r\nPROMPT-2");
+    row_text(0, row);
+    CHECK(row[0] == ' ', "the row above the region stays blank");
+    row_text(1, row);
+    CHECK(!memcmp(row, "PROMPT-1", 8), "prompt line 1 on the row tmux addressed");
+    row_text(2, row);
+    CHECK(!memcmp(row, "PROMPT-2", 8), "prompt line 2 on the row tmux addressed");
+    feed("\x1b[1;10r\x1b[3;15HTYPED");
+    row_text(1, row);
+    CHECK(!memcmp(row, "PROMPT-1", 8), "the typing did NOT land on prompt line 1");
+    row_text(2, row);
+    CHECK(!memcmp(row, "PROMPT-2", 8) && row[14] == 'T', "the typing follows the prompt's last row");
+    term_init(&T, 10, 20, 100);   /* the next group expects the 100-line scrollback back */
 
     /* --- scrollback pull-back via scroll down (SD) --- */
     feed("\x1b[2J\x1b[H");

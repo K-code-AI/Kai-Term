@@ -2138,8 +2138,14 @@ static Cell blank_cell(Term *t)
 
 static void set_cursor_pos(Term *t, int row, int col)
 {
-    int top = t->top, bot = t->bot;
-    int r = iclamp_(row, top, bot);
+    /* Absolute addressing is bounded by the SCREEN, not by the scroll region. DECSTBM (`ESC[r`) limits
+       where SCROLLING happens and where RELATIVE motion (`CUU`/`CUD`/`CNL`/`CPL`) may go, but `CUP`,
+       `HVP`, `VPA` and a cursor restore address any row of the screen — that is how tmux paints the row
+       ABOVE its own region: it sets `ESC[2;29r`, scrolls, then writes at `ESC[1;1H`. Clamping here to the
+       region moved that write one row down, and every later absolute address with it, so a prompt drawn
+       by tmux landed on the wrong row and the echo overwrote the prompt's first line. Measured against
+       tmux's own parser: `.scratch/s144/cases.py`. */
+    int r = iclamp_(row, 0, t->g.rows - 1);
     t->cx = iclamp_(col, 0, t->g.cols - 1);
     t->cy = r;
     t->wrap_next = 0;
@@ -2222,7 +2228,8 @@ static void csi_dispatch(Term *t, int fin)
     case 'E': t->cy = iclamp_(t->cy + p1, t->top, t->bot); t->cx = 0; t->wrap_next = 0; break;
     case 'F': t->cy = iclamp_(t->cy - p1, t->top, t->bot); t->cx = 0; t->wrap_next = 0; break;
     case 'G': case '`': t->cx = iclamp_(p1 - 1, 0, t->g.cols - 1); t->wrap_next = 0; break;
-    case 'd': t->cy = iclamp_(p1 - 1, t->top, t->bot); t->wrap_next = 0; break;
+    case 'd': /* VPA: line position absolute — the whole screen, see set_cursor_pos() */
+        t->cy = iclamp_(p1 - 1, 0, t->g.rows - 1); t->wrap_next = 0; break;
     case 'H': case 'f': set_cursor_pos(t, p1 - 1, p2 - 1); break;
     case 'J': erase_display(t, def1); break;
     case 'K': erase_line(t, def1); break;
