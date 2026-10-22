@@ -8,13 +8,15 @@ Invariants" — read those, not the history.
 
 ## Open
 
-**No open bug.** The last one found was an underline drawn across the letters instead of under them (s134 — the first
-entry under "Fixed", and the second half of it, the `ESC[5 q` underline cursor, had been there since s112 without
-anyone seeing it). Before that, two colour-plumbing bugs: `cursor_color =` being dead config, and the 256-colour
-cube's top level overflowing, both fixed and A/B'd in s102. The shape worth remembering, which applies to all three:
-a config key is not implemented at the parser, it is implemented where the value is used; a computed colour must be
-measured, not assumed; and a check written from the implementation's own idea of a coordinate space tests that idea
-instead of the screen.
+**No open bug.** The last one found was the flaky `test_vt` spawn check (s142 — the first entry under "Fixed": it
+asserted on a report file the child process was still writing, so it failed about half the time). Before that, an
+underline drawn across the letters instead of under them (s134, and the second half of it, the `ESC[5 q` underline
+cursor, had been there since s112 without anyone seeing it), and two colour-plumbing bugs: `cursor_color =` being dead
+config, and the 256-colour cube's top level overflowing, both fixed and A/B'd in s102. The shape worth remembering,
+which applies to all of them: a config key is not implemented at the parser, it is implemented where the value is
+used; a computed colour must be measured, not assumed; a check written from the implementation's own idea of a
+coordinate space tests that idea instead of the screen; and a check that reads a file another process is still writing
+tests its own timing.
 
 The frame around the grid — the `padding` margin and the blank cells reading two different background colours — was
 fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed").
@@ -28,13 +30,14 @@ working by the user 2026-10-19 (s107's feature), so the theme import carries no 
 confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
 with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-22 (s139, from `make clean`, on the committed tree that removed the README-pinning checks —
-see the first entry under "Fixed"; the run on `24638cc`, the commit that fixed the underline's position, is in
-AGENT.md's journal): `make -j8` exit 0
+Re-measured 2026-10-22 (s142, from `make clean`, on the tree that added the install targets and fixed the flaky
+spawn check — see the first entry under "Fixed"): `make -j8` exit 0
 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
 **0 warning lines**; `./bin/test_vt` **1665 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
 `./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **617 checks, 0 failures**; `make asan` exit 0 with
-the same four counts, **0 warning lines** and no LeakSanitizer/UBSan report. `sh tests/cli_test.sh` with
+the same four counts, **0 warning lines** and no LeakSanitizer/UBSan report. `sh tests/install_test.sh` reports **INSTALL: 43 checks, 0 failures, 0 skipped** (new in s142: install and
+uninstall run against a throwaway `DESTDIR`, never the host) and
+`sh tests/cli_test.sh` with
 `KAI_TERM_TEST_NO_WINDOW=1` reports **CLI: 99 checks, 0 failures, 13 skipped** — the 13 are the windowed group,
 which was last run for real in s124 (**CLI: 149 checks, 0 failures, 0 skipped**, twice). That group maps ~15 real
 windows on the user's desktop, so it is a run to ask about before repeating, not a routine command. What only that
@@ -61,9 +64,21 @@ reproduces.
 
 One entry per bug: what the user saw, the cause in one line, what fixed it, and what now keeps it from coming back.
 The full investigation of each — the probes, the wrong theories, the measurements that settled them — is AGENT.md's
-Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
-the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
+Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`,
+`s142`); the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**`make test` failed on one check about half the time and passed it the other half (2026-10-22, s142).** Symptom:
+`tests/test_vt.c:2815`, "spawn: the child holds NO pty", failed on some runs of `./bin/test_vt` and passed on others
+— **4 failures in 8** direct runs, **2 in 3** `make test` runs, on a tree with no other change, and reproduced on a
+`git archive HEAD` tree, so it predates the install targets it was found under. Cause: the stand-in opener writes a
+FOUR-line report and the last two lines each cost it a fork (`awk`, then `ls | grep`), while the harness stopped
+polling as soon as the report file held any bytes at all — so it usually had `argc=` and `arg=` in hand and then
+asserted on a `ptys=` line that had not been written yet. The check was measuring the harness's own timing, not the
+program. Fix: poll until all four keys are present; the 3 s timeout still fails the check, so waiting cannot
+manufacture a pass. Verified both ways: **20 consecutive runs at 1665 checks, 0 failures**, and the fixed check still
+kills the mutant that deletes `closefrom()` from `url_spawn()` — 3 runs, 3 failures, the same check every time
+(`.scratch/s142/ab_closefrom/`).
 
 **Two checks were failing on the committed tree — both of them README checks (2026-10-22, s139).** Found at the
 start of the session, before any edit: `make clean && make -j8` and the test build were clean, but
@@ -842,3 +857,26 @@ Not bugs — current behaviour, each re-checked against the source 2026-10-17. D
   sessions produced output. An app's OSC 0/2 title goes to that session's tab bar label instead (or
   `shell` until it sets one), so a taskbar, window rule or script matching on the window title sees
   Kai-Term's text, not the shell's.
+
+**Install / desktop entry (`make install`, `make uninstall`; s142)**
+
+- **`make install` overwrites an existing `/etc/kai-term/kai-term.conf`.** The three templates in `config/` are the
+  reference the suite pins against the parsers, so an upgrade replaces them; a site's own settings belong in
+  `~/.config/kai-term/kai-term.conf`, which shadows `/etc/kai-term` (first hit wins, and that order is pinned by the
+  `cfgsearch` checks). `make uninstall` removes the templates it wrote but leaves the directory when it holds a file
+  it did not make.
+- **`/etc/kai-term` is NOT under `$(PREFIX)`.** `cfg_find()` and `theme_find()` have that path in the binary, so
+  `make install PREFIX=/usr` still puts the templates in `/etc/kai-term`. A check compares the Makefile's `CONFDIR`
+  with the literal in `src/config.c`, because a PREFIX-relative `CONFDIR` would install configs nothing reads.
+- **`Kai-Term.ico` is not installed as-is.** A freedesktop icon theme wants one PNG per size directory, so `icons/`
+  holds the PNG set generated from the .ico and `install` copies that. If the .ico changes, `make icons` (needs
+  python3 + Pillow) must be re-run and the PNGs committed — otherwise the installed icon stays the old one, and
+  `install` itself will not complain, because it never reads the .ico.
+- **`Exec=kai-term` relies on PATH.** The entry names the binary rather than an absolute path, so it keeps working
+  under any `PREFIX`; a `PREFIX` outside PATH needs the entry edited.
+- **`StartupNotify=true`, and Kai-Term never consumes the startup id.** There is no startup-notification or
+  `xdg_activation` code in the tree (0 hits for it), so a launcher that shows a waiting indicator clears it when the
+  window maps, not when the terminal is ready.
+- **The icon and menu caches are refreshed only for a real install.** `install`/`uninstall` run
+  `gtk-update-icon-cache` and `update-desktop-database` when `DESTDIR` is empty; a staged install deliberately does
+  not touch the host's caches.

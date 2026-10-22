@@ -69,7 +69,9 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   `CLI: 99 checks, 0 failures, 13 skipped`
   with `KAI_TERM_TEST_NO_WINDOW=1` — those 13 are the
   windowed group, last run for real in s124 (**149 checks, 0 failures, 0 skipped**, twice, ~15 real windows each
-  time; ask before running it again while the user is at the machine). `make asan` is green on THIS tree (re-run at
+  time; ask before running it again while the user is at the machine). **`INSTALL: 43 checks, 0 failures, 0
+  skipped`** is new (s142, `tests/install_test.sh`): install/uninstall staged into a throwaway `DESTDIR`, never
+  the host. `make test` now runs it (it is a prerequisite of `test`, like `test-cli`). `make asan` is green on THIS tree (re-run at
   s135 on the committed tree): all four asan binaries exit 0, 0 warning lines, no LeakSanitizer or
   UBSan report, same four counts. The whole set was then re-run on a **fresh clone of the step-7 commit**
   (`.scratch/s131/verify_commit`) to prove the commit is self-contained: `src/url.c` is tracked, both builds exit 0
@@ -101,8 +103,17 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   so the scanner can never count its own source (s103). `grep -rn "TODO\|FIXME\|XXX"` returns only `mkdtemp`'s
   `kai-term-int-XXXXXX` template and one test's fill string. If that ever changes, re-word this line rather
   than leave a claim that no longer matches the grep.
-- **No `install` target**, and nothing copies `config/*` to `/etc/kai-term` — deliberate; README tells the user
-  to copy the templates. Adding one is the user's call.
+- **`install` / `uninstall` / `icons` targets exist (s142 — the user asked for them on 2026-10-22, which is
+  the call this line used to be waiting on).** `make install` puts `bin/kai-term` in `$(PREFIX)/bin`
+  (default `/usr/local/bin`), the three `config/` templates in `/etc/kai-term` (+ `themes/kai-term.theme`),
+  `kai-term.desktop` in `$(PREFIX)/share/applications`, and the `Kai-Term.ico` set as
+  `$(PREFIX)/share/icons/hicolor/<N>x<N>/apps/kai-term.png`. `CONFDIR` is NOT under `$(PREFIX)` because
+  `cfg_find()` and `theme_find()` have `/etc/kai-term` in the binary — a check pins the two against each
+  other. `DESTDIR=` stages everything (that is how `tests/install_test.sh` runs it without root, and the
+  only way this has ever been run here: **no real system install has been performed from this repo**).
+  `make uninstall` removes exactly what `install` made and no more — it leaves a directory that still
+  holds a file it did not make. Installed names are `kai-term` throughout, so nothing here can touch the
+  user's own `k-term` / `desktop-terminal` setup.
 - **Git:** `origin = https://github.com/K-code-AI/Kai-Term`, branch `main`. Step 3b is committed and pushed —
   but read that from git, never from here: `git status -sb` and `git log --oneline origin/main -1`. `git fetch`
   before push — the user commits on GitHub too. Never commit `bin/` or `build/` — and note `.scratch/` is NOT
@@ -147,11 +158,102 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
   `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — NONE IN PROGRESS (s141 closed the comment pass)
+## Current Task — NONE IN PROGRESS (s142 closed the install targets)
 
-The comment rule the user gave in s137 is now applied to the whole tree: `src/` + the header at **3,613** comment
-lines (s138, unchanged this session) and `tests/` at **1,436** (s141). The next action is the user's: ask what they
-want next, or take a Housekeeping item from "Next Steps" — not invent a feature.
+`make install` / `make uninstall` / `make icons` exist, are gated by 43 checks, and are green along with every other
+suite. **What is owed to the user, not to a harness: running `sudo make install` on their own machine and looking at
+the result** — that the launcher appears in their menu with the Kai-Term icon, that the window's icon is the Kai-Term
+artwork and not the generic one, and that `make uninstall` leaves their own `k-term` / `desktop-terminal` setup
+exactly as it was. No install has been run against the host from this repo, deliberately.
+
+## Closed: s142 (2026-10-22) — `make install` / `make uninstall`, the icon set, and one flaky check
+
+**Asked for by the user at session start (2026-10-22):** "It would be nice to do a make install. Which would put the
+Config template in /etc/kai-term/, the Binary in /usr/local/bin/, and create the relevant .desktop file. Also I
+included a file Kai-Term.ico to use as an Icon for the terminal. make uninstall should remove the files made by
+make install." That is the user's call the old "No `install` target ... adding one is the user's call" line was
+waiting on, so that line is now replaced (see "Current Status").
+
+**Plan, in order:**
+
+1. `tools/make_icons.py` — read `Kai-Term.ico` (9 images: 16/24/32/48/64/96/128/256 BMP + one 256 PNG) and write the
+   PNG set `icons/hicolor/<S>x<S>/apps/kai-term.png`. The .ico is a Windows container; the freedesktop icon spec
+   wants PNG per size directory, so the .ico is the SOURCE asset and the PNGs are what gets installed. Needs
+   python3 + PIL (both on this host) and is therefore an OPTIONAL regeneration step (`make icons`), never a
+   dependency of `make install`.
+2. `kai-term.desktop` — a committed entry: `Exec=kai-term`, `Icon=kai-term`, `StartupWMClass=Kai-Term` (must equal
+   `DEF_APP_ID`, `kai-term.h:51`), `Categories=...TerminalEmulator;`.
+3. Makefile `install` / `uninstall` (+ `icons`), with `DESTDIR`/`PREFIX` overridable so the whole thing is testable
+   without root. `/etc/kai-term` is NOT PREFIX-relative: `cfg_find()` (`src/config.c:722`) and `theme_find()`
+   (`src/theme.c:186`) have that path in the binary.
+4. `tests/install_test.sh` — the gate: stage into a throwaway `DESTDIR`, run install, assert every path exists with
+   the right mode/content, run uninstall, assert every path is gone AND that a file install did not create is still
+   there. Wired into `make test` as `test-install`. A/B it against a tree with no install target (it must fail).
+5. Re-measure everything (both builds, the four suites, the CLI group, the new install group), then AGENT.md /
+   ISSUES.md / README-temp.
+
+**Progress (measured, not assumed):**
+
+- Step 1 DONE. `tools/make_icons.py` written and run: 9 PNGs in `icons/<N>x<N>/apps/kai-term.png` for
+  N = 16/24/32/48/64/96/128/256/512, 105 KB total. Probed the .ico first: it holds 8 BMP frames
+  (16..256, 32 bpp, real alpha) and one PNG frame whose DIRECTORY entry says 256 but which DECODES as
+  512x512 — the HiDPI trick — so the tool names the directory from the decoded size, not the directory
+  entry. The two 256 frames are the same artwork: resizing the 512 to 256 and comparing against the
+  BMP 256 gives a mean per-pixel difference of 1.58 out of 1020. Running the tool twice gives byte-
+  identical PNGs (sha256 compared), so `make icons` is reproducible.
+- Step 2 DONE. `kai-term.desktop` at the project root. `desktop-file-validate` (present on this host)
+  accepts it; it first emitted a HINT for `Categories=Utility;TerminalEmulator;` ("can be extended with
+  another category among: System") and `Categories=System;TerminalEmulator;` is the form that validates
+  with no hint at all — measured against all three spellings, `System;Utility;` warns about two main
+  categories. `StartupWMClass=Kai-Term` is not a guess: it is `DEF_APP_ID` (`kai-term.h:51`), and the
+  suite compares the two.
+- Step 3 DONE. Makefile gained `install`, `uninstall` and `icons`, with `INSTALL`/`DESTDIR`/`PREFIX`/
+  `BINDIR`/`DATADIR` overridable and `CONFDIR := /etc/kai-term` deliberately NOT under `$(PREFIX)`.
+  Both targets refresh `gtk-update-icon-cache` and `update-desktop-database`, but only when `DESTDIR`
+  is empty — a staged install must not touch the host's caches.
+- Step 4 DONE. `tests/install_test.sh` (43 checks, wired in as `make test-install`, and `test-install`
+  is now a prerequisite of `test`). It plants four files install did not make (a neighbour in `bin/`, a
+  sysadmin's `/etc/kai-term/site.conf`, a stale `22x22/apps/kai-term.png` from an older .ico, and another
+  app's icon in a size dir we also fill) and then compares the WHOLE staged file list before and after,
+  so "install wrote something extra" and "uninstall left something behind" are both checks, not hopes.
+  **Measured: `INSTALL: 43 checks, 0 failures, 0 skipped`.** Two findings it produced while being
+  written: (a) the first draft asserted `/etc/kai-term` is removed by uninstall, which is WRONG when a
+  file install did not make is in there — the assertion was fixed to match the behaviour a sysadmin
+  needs (the dir survives, the `themes/` dir we made and emptied does not); (b) `desktop-file-validate`
+  changed the Categories spelling (above).
+- **A/B measured (`.scratch/s142/`):** feature-absent — a `git archive HEAD` tree (no `install` target)
+  plus the new test: **36 of the 43 checks fail**. Mutation run (`.scratch/s142/mutate.py`, 10 mutants,
+  each one edit to the install surface): **every mutant killed, 0 survivors** — no-icons 4 failures,
+  CONFDIR-under-PREFIX 9, uninstall-keeps-conf 2, uninstall-keeps-icons 2, wrong `StartupWMClass` 1,
+  wrong `Exec` 1, no-desktop-file 12, uninstall `rm -rf $(BINDIR)` 2, binary installed 0644 3, install
+  writing one extra file 2. Baseline in the same harness: 43/0.
+
+- **A pre-existing FLAKE found while measuring (not caused by this work, and fixed):** `make test` went red
+  about half the time on `tests/test_vt.c:2815` — "the child holds NO pty". Measured on a `git archive HEAD`
+  tree with no install target at all: **2 failures in 3 `make test` runs**, and **4 in 8** of plain
+  `./bin/test_vt`. Cause: the stand-in opener writes FOUR lines and the last two each cost it a fork
+  (`awk`, then `ls | grep`), while the harness stopped polling as soon as the file had ANY bytes — so it
+  read `argc=`/`arg=` and then asserted on a `ptys=` line that had not been written yet. Fixed by polling
+  until all four keys are present (the timeout still fails the check, so it cannot pass by waiting). **Verified
+  both ways: 20 runs of `./bin/test_vt` → 20 × 1665/0; and the fixed check still kills the mutant that
+  deletes `closefrom()` from `url_spawn()` — 3 runs, 3 failures, the same check, every time.**
+- Step 5 DONE — **the whole set re-measured on the final tree, from `make clean`:** `make -j8` exit 0 at **0
+  warning lines**; `make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0 at **0 warning lines**;
+  `make test` exit 0 with `test_vt` **1665/0**, `dbg` **MODEL OK (0 problems)**, `test_fm` **384/0**,
+  `test_render` **617/0**, `CLI 99/0 with 13 skipped` (`KAI_TERM_TEST_NO_WINDOW=1`) and **`INSTALL 43/0/0`**;
+  `make asan` exit 0 at **0 warning lines**, same four counts, no LeakSanitizer or UBSan report. `make icons`
+  re-run and byte-identical to the committed PNGs.
+- **Docs:** ISSUES.md gained the flake under "Fixed", an "Install / desktop entry" group under "Known
+  limitations" (templates are overwritten; `/etc/kai-term` is not PREFIX-relative; the .ico is not installed
+  as-is; `Exec` relies on PATH; `StartupNotify=true` with no startup-id handling in the tree — 0 hits for it),
+  and the re-measured counts. README.md was NOT touched (it is the user's file); the install wording went into
+  `README-temp` §5.
+
+**Off-limits, and still off-limits:** the user's own `/usr/local/bin/k-term`, `/usr/local/bin/desktop-terminal`,
+`~/.local/share/applications/desktop-terminal.desktop` and `~/.config/kai-term/desktop-terminal.conf`. The names
+this target installs are `kai-term` (binary, desktop file, icon) so it cannot collide with them. **No real system
+install is run from here** — every verification goes through `DESTDIR=` into a scratch directory; `sudo make
+install` is the user's command to run.
 
 ## Closed: s141 (2026-10-22) — the comment rule finished across `tests/`: 1,896 -> 1,436 comment lines, average 1.73
 
@@ -2866,6 +2968,13 @@ numbers and the intermediate check counts are in git.
    **The comment pass is FINISHED (s137-s141) — `src/` + the header at 3,613 comment lines and `tests/` at 1,436, both
    averaging 1.7-1.8 lines per comment, `jargon.py` clean over the whole tree. Do not re-open it or "tidy" comments
    again**; the s137 task block holds the user's rule and the s141 close-out holds the measured end state.
+   **`make install` / `make uninstall` / `make icons` are FINISHED (s142)** — 43 checks in `tests/install_test.sh`,
+   a prerequisite of `make test`. Do not re-add an install target or re-decide the layout: the decisions (CONFDIR not
+   PREFIX-relative, the PNG set committed rather than generated at install time, `kai-term` as the installed name so
+   it cannot collide with the user's own `k-term`) are recorded in the s142 entry. **What IS owed to the user's eye is
+   the installed result** — their menu showing the Kai-Term entry with the Kai-Term icon, the window's own icon, and
+   `make uninstall` leaving their own `k-term`/`desktop-terminal` setup untouched. A real install is theirs to run
+   (`sudo make install`); the suite stages with `DESTDIR=` and this repo has never written to the host.
 2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look
    (a 2 px bar at the left edge of the cell, one second on / one second off while the window has focus, steady
    with `cursor_blink = 0`), then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'`
@@ -2975,7 +3084,10 @@ numbers and the intermediate check counts are in git.
    `s129/maskprobe.c` (why the signal-mask half needs a non-shell stand-in: `/bin/sh` normalises its own mask) +
    `s129/scancount.py` (the scan-count replica for the 14 URL wiring pins) + `s131/ab_nourl/` (the feature-absent
    A/B: the whole tree with `src/url.c` stubbed out) + `s131/verify_commit/` (a fresh `git clone` of the step-7
-   commit, built and run to prove the commit is self-contained). One fact
+   commit, built and run to prove the commit is self-contained) + `s142/mutate.py` (the install/uninstall mutation
+   run: 10 mutants, every one killed) + `s142/ab_base/` (a `git archive HEAD` tree with the new test dropped in — the
+   feature-absent A/B, 36 of the 43 checks fail) + `s142/ab_closefrom/` (the mutant that deletes `closefrom()` from
+   `url_spawn()`, which is what proves the re-written spawn check still pins the descriptor rule). One fact
    to keep in mind: this file
    cites those paths and a fresh clone cannot run them — so anything that is a real regression gate belongs in
    `tests/` eventually.
@@ -2992,24 +3104,31 @@ Kai-Term/
 ├── ISSUES.md                    # open items + Fixed + known limitations
 ├── README.md                    # the user's — features, deps, build, flags, config files, shortcuts. Never
 │                                #   edit it; proposals go in README-temp (git-ignored)
-├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
+├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/test-install/asan/run/
+│                                #   icons/install/uninstall/clean (install+uninstall take DESTDIR=/PREFIX=)
 ├── config/kai-term.conf         # the shipped SETTINGS template: every default the parser accepts
 ├── config/kai-term.bind         # the shipped KEY-BINDING template: all 24 names at their built-in default
 ├── config/kai-term.theme        # the shipped THEME example: all 23 theme names at the built-in colours
+├── Kai-Term.ico                 # the icon SOURCE asset (9 images: 16..256 BMP + a 512 PNG frame) — not installed as-is
+├── tools/make_icons.py          # Kai-Term.ico -> icons/ (python3 + Pillow; `make icons`, not part of `install`)
+├── icons/hicolor/<N>x<N>/apps/kai-term.png  # the installed icon set, generated from the .ico and committed
+├── kai-term.desktop             # the launcher entry installed into $(DATADIR)/applications
 ├── include/kai-term/kai-term.h  # the single shared header: all types, prototypes, log levels, helpers
 ├── src/                         # config.c theme.c vt.c img.c mux.c layout.c fm.c shellint.c pty.c url.c font.c render.c main.c
-├── tests/test_vt.c              # 1654 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt
+├── tests/test_vt.c              # 1665 checks: parser, grid, graphics, config, themes, OSC colours, imports, prompt
 │                                # machinery, click selection, confirm-quit (predicate, count, wording, notice
 │                                # geometry), the visual bell (the BEL event, the fade, drawn-vs-hidden sessions),
 │                                # the web-address click (the run rule, the gates, the wait, a real spawn)
 ├── tests/test_fm.c              # 384 checks: the file-manager model, previews, decoders, band geometry, pointer rules, the preview pane's text selection
-├── tests/test_render.c          # 578 checks: the renderer's pure decisions — colour choices, cursor shape, the question
+├── tests/test_render.c          # 617 checks: the renderer's pure decisions — colour choices, cursor shape, the question
 │                                # row's two colours, the box's six, the bell's colour — plus the source scans that cover
 │                                # main.c's confirm-quit, visual-bell and URL wiring
 ├── tests/dbg.c                  # grid-model invariant checker (permutation + scroll_off/live_off bounds)
 ├── tests/cli_test.sh            # drives the REAL bin/kai-term: 99 checks / 13 skipped headless (the 13 are the window
 │                                # groups; a display run was last measured at 149 in s124)
 │                                # ONE probe launch gates the window checks; KAI_TERM_TEST_NO_WINDOW=1 skips them
+├── tests/install_test.sh        # 43 checks: `make install`/`uninstall` into a throwaway DESTDIR — every path, mode and
+│                                #   byte, the .desktop keys against DEF_APP_ID, and that nothing else is created or left
 ├── bin/                         # kai-term, test_vt, dbg, test_fm, test_render (+ *_asan)  [generated, git-ignored]
 └── build/                       # *.o + generated/xdg-shell-*                [generated, git-ignored]
 ```
@@ -3673,6 +3792,22 @@ hit-tested bar then panes.
   the cube, the OSC colours, the sweep and the import corpus were all measured.
 
 ## Key Decisions & Pitfalls
+
+- **A check that reads a file another process is still writing measures its own timing** (s142). The spawn check
+  polled until the report file was non-empty and then asserted on all four of its lines; the last two lines each
+  cost the child a fork, so the check failed about half the time for a reason that had nothing to do with Kai-Term.
+  Poll until the report is COMPLETE (every key present), and keep the timeout as a failure so waiting cannot
+  manufacture a pass. Then re-A/B: the fixed check must still kill the mutant.
+- **Install paths that the BINARY hard-codes must not be Makefile variables that a `PREFIX` change moves** (s142).
+  `cfg_find()` and `theme_find()` ask for `/etc/kai-term` by literal, so `CONFDIR` in the Makefile is `:= /etc/kai-term`,
+  not `$(DATADIR)/etc/kai-term`; `tests/install_test.sh` compares the two so they cannot drift. Everything else
+  (`BINDIR`, `DESKTOPDIR`, `ICONDIR`) is PREFIX-relative and `DESTDIR=` stages all of it — which is what lets the
+  suite run install and uninstall at all without touching the host.
+- **The .ico is the icon's source, not its installed form** (s142). A freedesktop icon theme wants one PNG per size
+  directory; `icons/` holds the PNG set generated by `tools/make_icons.py` and committed, so `make install` needs no
+  Python. If the .ico changes, `make icons` has to be re-run — `install` never reads the .ico and will not notice.
+  The installed name is `kai-term` everywhere (binary, desktop file, icon) and `StartupWMClass` is `DEF_APP_ID`, not a
+  hand-written string.
 
 - **"The parser knows this key" is never evidence that the key does anything.** `cursor_color =` was defaulted
   (`src/config.c`), parsed and stored in `Config`, and no line of code anywhere read it — `src/render.c` drew the

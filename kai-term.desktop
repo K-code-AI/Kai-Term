@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Kai-Term
+GenericName=Terminal
+Comment=Wayland terminal emulator with an integrated file manager
+Exec=kai-term
+Icon=kai-term
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;commandline;
+StartupNotify=true
+StartupWMClass=Kai-Term

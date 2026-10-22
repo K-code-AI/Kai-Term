@@ -78,7 +78,7 @@ bin/test_fm: tests/test_fm.c build/fm.o build/vt.o build/img.o build/config.o bu
 bin/test_render: tests/test_render.c build/render.o build/fm.o build/font.o build/img.o build/vt.o build/shellint.o build/layout.o build/mux.o build/config.o build/theme.o build/pty.o build/url.o $(HDRS) | bin
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-test: bin/test_vt bin/dbg bin/test_fm bin/test_render test-cli
+test: bin/test_vt bin/dbg bin/test_fm bin/test_render test-cli test-install
 	./bin/test_vt
 	./bin/dbg
 	./bin/test_fm
@@ -89,6 +89,11 @@ test: bin/test_vt bin/dbg bin/test_fm bin/test_render test-cli
 # that (it skips the window-opening checks when there is no Wayland session).
 test-cli: $(BIN)
 	sh tests/cli_test.sh ./$(BIN)
+
+# install/uninstall are Makefile recipes, so the only way to check them is to run them — against a
+# throwaway DESTDIR, never against /etc, /usr/local/bin or /usr/share on the build host.
+test-install: $(BIN)
+	sh tests/install_test.sh
 
 # address-sanitizer builds of the VT unit tests (make asan)
 ASANFLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -g
@@ -117,7 +122,73 @@ asan: bin/test_vt_asan bin/dbg_asan bin/test_fm_asan bin/test_render_asan
 run: $(BIN)
 	./$(BIN)
 
+# ---- install / uninstall -----------------------------------------------------------
+# One list of installed paths, so install and uninstall cannot drift apart:
+#   $(BINDIR)/kai-term                          the binary
+#   $(CONFDIR)/kai-term.conf, .bind             the templates cfg_find() searches
+#   $(CONFDIR)/themes/kai-term.theme            so `theme = kai-term` resolves
+#   $(DESKTOPDIR)/kai-term.desktop              the launcher entry
+#   $(ICONDIR)/<N>x<N>/apps/kai-term.png        the Kai-Term.ico set, as an icon theme wants it
+# CONFDIR is deliberately NOT under $(PREFIX): cfg_find() (src/config.c) and theme_find()
+# (src/theme.c) have "/etc/kai-term" in the binary, so a staged or relocated build still reads it.
+# DESTDIR= stages everything, which is how tests/install_test.sh checks this without root.
+INSTALL    ?= install
+DESTDIR    ?=
+PREFIX     ?= /usr/local
+BINDIR     ?= $(PREFIX)/bin
+DATADIR    ?= $(PREFIX)/share
+CONFDIR    := /etc/kai-term
+DESKTOPDIR := $(DATADIR)/applications
+ICONDIR    := $(DATADIR)/icons/hicolor
+
+# Regenerate the committed PNG set from the .ico. Needs python3 + Pillow, and `install` does NOT
+# depend on it: the PNGs are in the tree, so a machine with no Python still installs.
+icons: tools/make_icons.py Kai-Term.ico
+	python3 tools/make_icons.py Kai-Term.ico icons
+
+install: $(BIN)
+	$(INSTALL) -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(DESKTOPDIR)" "$(DESTDIR)$(CONFDIR)/themes"
+	$(INSTALL) -m 0755 $(BIN) "$(DESTDIR)$(BINDIR)/kai-term"
+	$(INSTALL) -m 0644 config/kai-term.conf "$(DESTDIR)$(CONFDIR)/kai-term.conf"
+	$(INSTALL) -m 0644 config/kai-term.bind "$(DESTDIR)$(CONFDIR)/kai-term.bind"
+	$(INSTALL) -m 0644 config/kai-term.theme "$(DESTDIR)$(CONFDIR)/themes/kai-term.theme"
+	$(INSTALL) -m 0644 kai-term.desktop "$(DESTDIR)$(DESKTOPDIR)/kai-term.desktop"
+	for p in $(wildcard icons/*/apps/kai-term.png); do \
+	  d="$(DESTDIR)$(ICONDIR)/$${p#icons/}"; \
+	  $(INSTALL) -d "$$(dirname "$$d")"; \
+	  $(INSTALL) -m 0644 "$$p" "$$d"; \
+	done
+	@# A staged install must not touch the host's caches; a real one must refresh them, or the new
+	# icon and the new entry stay invisible to launchers until something else rebuilds them.
+	@if [ -z "$(DESTDIR)" ]; then \
+	  command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+	    gtk-update-icon-cache -q -t -f "$(ICONDIR)" || true; \
+	  command -v update-desktop-database >/dev/null 2>&1 && \
+	    update-desktop-database "$(DESKTOPDIR)" || true; \
+	fi
+
+# Removes exactly the files above and the directories above created (each rmdir stops at a
+# directory it did not make, so a shared applications/ or hicolor/ dir survives). The icon paths are
+# globbed in the DESTINATION rather than taken from icons/, so an icon size a previous install put
+# there is still cleaned up after the .ico changed.
+uninstall:
+	rm -f "$(DESTDIR)$(BINDIR)/kai-term" "$(DESTDIR)$(DESKTOPDIR)/kai-term.desktop" \
+	      "$(DESTDIR)$(CONFDIR)/kai-term.conf" "$(DESTDIR)$(CONFDIR)/kai-term.bind" \
+	      "$(DESTDIR)$(CONFDIR)/themes/kai-term.theme"
+	for f in $(DESTDIR)$(ICONDIR)/*/apps/kai-term.png; do \
+	  [ -e "$$f" ] || continue; \
+	  rm -f "$$f"; \
+	  rmdir --ignore-fail-on-non-empty "$$(dirname "$$f")" "$$(dirname "$$(dirname "$$f")")"; \
+	done
+	rmdir --ignore-fail-on-non-empty "$(DESTDIR)$(CONFDIR)/themes" "$(DESTDIR)$(CONFDIR)"
+	@if [ -z "$(DESTDIR)" ]; then \
+	  command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+	    gtk-update-icon-cache -q -t -f "$(ICONDIR)" || true; \
+	  command -v update-desktop-database >/dev/null 2>&1 && \
+	    update-desktop-database "$(DESKTOPDIR)" || true; \
+	fi
+
 clean:
 	rm -rf bin build
 
-.PHONY: all test test-cli asan run clean
+.PHONY: all test test-cli test-install asan run icons install uninstall clean
