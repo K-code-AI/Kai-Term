@@ -1,8 +1,7 @@
-/* The file manager's model and nothing else: a directory listing, a selection, a preview, and two grids of
- * ordinary Cells. No Wayland, no EGL, no rendering — so tests drive a real directory tree with no window,
- * and the scan/preview builders can run on a worker thread because they touch nothing but malloc, the
- * filesystem and their argument. Every filesystem call may fail; a failure becomes a line of text in a
- * pane plus a log line, never a half-updated model. */
+/* The file manager's model and nothing else: a listing, a selection, a preview, and two grids of
+   * ordinary Cells. No Wayland, no EGL, no rendering — so tests drive a real directory tree with no
+   * window and the builders can run on a worker thread. Every filesystem call may fail; a failure
+   * becomes text in a pane plus a log line, never a half-updated model. */
 #include "kai-term.h"
 
 #include <ctype.h>
