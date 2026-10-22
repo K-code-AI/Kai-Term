@@ -278,9 +278,8 @@ static KImage *img_by_id(Term *t, int id)
 }
 
 /* ---------- the shipped config templates: which NAMES they list ----------
-   Comparing every loaded field with config_default() cannot see a MISSING line, so the key lines are
-   scanned both ways: every name the parser accepts must be listed, and every name listed must be one
-   it accepts. A key line starts, after blanks, with a letter followed by `=`. */
+   Comparing loaded fields with config_default() cannot see a MISSING line, so the key lines are scanned
+   both ways: every name the parser accepts is listed, and every name listed is one it accepts. */
 static int tpl_check_names(const char *path, const char *const *names, int n)
 {
     FILE *f = fopen(path, "r");
@@ -338,9 +337,8 @@ static int tpl_check_names(const char *path, const char *const *names, int n)
 }
 
 /* Counts the "\x1b" + hex-digit trap in a C source: a hex escape swallows every following hex digit, so
-   an ESC followed by 'c' written as one escape becomes 0x1bc — the test then feeds one 0xbc byte, checks
-   nothing, and still passes. Returns -1 if the file cannot be opened. Comments are skipped, so prose
-   about the trap is not counted as the trap. */
+   ESC + 'c' written as one escape becomes 0x1bc — the test then feeds one 0xbc byte, checks nothing, and
+   still passes. Comments are skipped, so prose about the trap is not counted. */
 static int src_hexesc_count(const char *path)
 {
     FILE *f = fopen(path, "r");
@@ -549,11 +547,8 @@ static int span_copy(int c0, int r0, int c1, int r1, char *out, size_t cap)
 }
 
 /* ---------- confirm-quit: a pty with a hand-built process tree on it ----------
-   `pty_fg_busy()` reads the terminal's FOREGROUND PROCESS GROUP, so pinning it needs a real pty
-   with real process groups; a struct of made-up numbers would pin the arithmetic and nothing else.
-   The "shell" is a fork that does what pty_spawn()'s child does (open the slave, setsid, TIOCSCTTY)
-   and then what an interactive shell does — take the foreground group, and on a byte from a pipe
-   hand a command's own group the foreground. */
+   `pty_fg_busy()` reads the terminal's FOREGROUND PROCESS GROUP, so pinning it needs a real pty with
+   real process groups; a struct of made-up numbers would pin the arithmetic and nothing else. */
 typedef struct {
     Pty p;
     int cfd;      /* control pipe, write end: 'r' start a command, 'x' close the session */
@@ -809,9 +804,8 @@ int main(void)
     CHECK(row[0] == 'L' && row[1] == '1' && row[2] == '2', "SD pushed the blank row out");
 
     /* --- live_off: the anchor that follows the newest output ---
-       * scroll_off is an ABSOLUTE index into row[] (row[0] = oldest retained line), so the live view is
-       * at scroll_off == live_off, NOT at 0. Navigation clamps to [0, live_off] and snap-to-live
-       * restores live_off, mirroring main.c's scrollback_nav()/snap_to_live() math. */
+       scroll_off is an ABSOLUTE index into row[] (row[0] = oldest line), so the live view is at
+       scroll_off == live_off, NOT at 0. Navigation clamps to [0, live_off]; snap-to-live restores it. */
     term_destroy(&T);
     term_init(&T, 10, 20, 100);
     for (int i = 1; i <= 12; i++) {
@@ -979,9 +973,8 @@ int main(void)
     CHECK(row[0] == '6', "shrink keeps bottom line (no scrollback)");
 
     /* --- a height SHRINK must never move the cursor off its own line ---------------------------
-       Zooming changes cols AND rows at once; giving up the viewport's TOP row pushed the cursor's own line
-       into scrollback whenever the shrink was bigger than the rows above it. The rule: give up the rows
-       BELOW the cursor first. */
+       Zooming changes cols AND rows at once; giving up the viewport's TOP row pushed the cursor's own
+       line into scrollback. The rule: give up the rows BELOW the cursor first. */
     term_destroy(&T);
     term_init(&T, 20, 20, 100);
     feed("\r\nPROMPT-ONE\r\nPROMPT-TWO > ");     /* a two-line prompt, cursor on viewport row 2 */
@@ -1271,9 +1264,8 @@ int main(void)
 
     /* --- DECSCUSR (CSI Ps SP q): the shape and the blink an application asks for ----------------
        xterm's table: 0 (omitted) and 1 = blinking block, 2 = steady block, 3/4 = bar, 5/6 = underline,
-       odd/even deciding the blink; anything else is ignored. The SPACE is part of the sequence —
-       `CSI Ps q` without the intermediate is a different, unimplemented spelling, and requiring it keeps
-       Parser.inter from being read as "any q". */
+       odd/even deciding the blink; anything else is ignored. The SPACE is part of the sequence — `CSI Ps
+       q` without the intermediate is a different, unimplemented spelling. */
     CHECK(T.cur_style == CUR_UNSET && T.cur_blink == CURBLINK_UNSET,
           "a fresh session has never been asked for a shape (CUR_UNSET, so the configured bar wins)");
     feed("\x1b[3 q");
@@ -1350,8 +1342,7 @@ int main(void)
 
     /* --- evdev BTN_* -> SGR button number ---
        The kernel order is LEFT 0x110, RIGHT 0x111, MIDDLE 0x112, but SGR/X10 number them 0/1/2 in NAME
-       order, so a switch written in kernel order silently swaps right and middle. The literals are
-       written here as well as through the enum, so changing the enum alone fails a check. */
+       order, so a switch written in kernel order silently swaps right and middle. */
     CHECK(mouse_sgr_button(EVDEV_BTN_LEFT) == 0, "BTN_LEFT -> SGR 0");
     CHECK(mouse_sgr_button(EVDEV_BTN_MIDDLE) == 1, "BTN_MIDDLE -> SGR 1");
     CHECK(mouse_sgr_button(EVDEV_BTN_RIGHT) == 2, "BTN_RIGHT -> SGR 2");
@@ -1391,8 +1382,7 @@ int main(void)
 
     /* --- the wheel and a click as keystrokes (nano/less scrolling) ---
        The state that matters is "alternate screen AND no mouse protocol": the program owns its screen,
-       has no terminal scrollback, and reads a mouse report as TYPED TEXT (one report put "64;20;5M"
-       into the user's file), so the wheel and a click have to become cursor keys. */
+       has no scrollback, and reads a mouse report as TYPED TEXT — one put "64;20;5M" in the user's file. */
     char kseq[4096];
     term_destroy(&T);
     term_init(&T, 24, 80, 100);
@@ -1706,9 +1696,8 @@ int main(void)
     CHECK(n == 0 && sel[0] == 0, "empty selection text after clear");
 
     /* --- per-glyph (cell-granular) endpoints — ------------------------------------------
-       main.c's sel_set_endpoints() only ever produces frac 0 (left edge of the earlier endpoint) and frac
-       1000 (right edge of the later one), so a range can never end inside a glyph: whole cells only, and
-       the cell under the pointer stays selected whichever way the drag goes. */
+       sel_set_endpoints() only ever produces frac 0 (left edge of the earlier endpoint) and frac 1000
+       (right edge of the later one), so a range can never end inside a glyph: whole cells only. */
     T.sel_active = 1;
     T.sel_ax = 1; T.sel_ay = 0; T.sel_af = 0;      /* forward drag: anchor col1 .. pointer col3 */
     T.sel_bx = 3; T.sel_by = 0; T.sel_bf = 1000;
@@ -1767,10 +1756,8 @@ int main(void)
     CHECK(n == 4 && !memcmp(sel, "\xe4\xb8\xadX", 4), "empty: the copied text stops at the last glyph");
 
     /* --- what a double / triple click selects ------------------------------------------
-       main.c detects the gesture; WHAT it selects is model state, so it lives in vt.c. Two things are easy
-       to guess backwards: the DIRECTION Grid.wrap points (the mark sits on the row that WAS broken by
-       the margin and continues on the NEXT one) and the INDEX it is stored under (a row SLOT:
-       scroll_off + row). */
+       Grid.wrap's DIRECTION is easy to guess backwards (the mark sits on the row broken by the margin
+       and continues on the NEXT one), as is the INDEX it is stored under (a row SLOT: scroll_off + row). */
     term_destroy(&T);
     term_init(&T, 10, 60, 100);
     feed("\x1b[2J\x1b[H");
@@ -1864,9 +1851,8 @@ int main(void)
           "word: a missing out-parameter is a refusal, not a write through NULL");
 
     /* --- the LINE a triple click selects: the logical line, not the physical row ------------
-       `wrap[i]` marks the row that was BROKEN and continues on the next one. A line ending exactly at the
-       margin is the trap: the mark is not set until the character crossing the margin is written, so the
-       row below belongs to the line only once that character arrives. */
+       `wrap[i]` marks the row that was BROKEN and continues on the next one. The trap is a line ending
+       exactly at the margin: the mark is not set until the character crossing the margin is written. */
     term_destroy(&T);
     term_init(&T, 10, 20, 100);
     feed("\x1b[2J\x1b[H");
@@ -1960,9 +1946,8 @@ int main(void)
     }
 
     /* --- the switch: middle_click_paste, and the default IS the feature -------------------------
-       Middle-click paste ships OFF, so a group that only proved `= 1` works would pass a build that
-       shipped it ON. Every spelling is fed AFTER the opposite value: fed into a config that already holds
-       the expected answer, a word the parser does not know still passes. */
+       Middle-click paste ships OFF, so a group proving only `= 1` would pass a build that shipped it ON.
+       Every spelling is fed AFTER the opposite value: a config holding the answer hides an unknown word. */
     {
         Config c;
         const char *path = "/tmp/kterm_test_config_mcp.conf";
@@ -1994,8 +1979,7 @@ int main(void)
             }
             /* The bool contract, as it actually is: cfg_bool() reads ONLY 0/off/no/false as off and
                treats ANY other word as on — NOT warn-and-KEEP, which is confirm_quit's rule for an enum.
-               Started from OFF so the check is not vacuous: a word the parser does not know must still
-               produce ON. */
+               Started from OFF so the check is not vacuous. */
             f = fopen(path, "w");
             fputs("middle_click_paste = 0\nmiddle_click_paste = maybe\n", f);
             fclose(f);
@@ -2008,9 +1992,8 @@ int main(void)
     }
 
     /* --- the switch: bell, an enum whose DEFAULT is the feature -------------------------------
-       The visual bell ships ON, so a group that only proved `= off` works would pass a build that shipped
-       it off. Its warn-and-KEEP for a bad value is deliberately NOT the bool rule the group above pins —
-       the two side by side are what stop them being confused. */
+       The visual bell ships ON, so a group that only proved `= off` works would pass a build that
+       shipped it off. Its warn-and-KEEP for a bad value is NOT the bool rule the group above pins. */
     {
         Config c;
         const char *path = "/tmp/kterm_test_config_bell.conf";
@@ -2062,9 +2045,7 @@ int main(void)
 
     /* --- what a pointer press MEANS: the precedence a user can feel ---------------------------
        ptr_button() in main.c is a chain of early returns and main.c is in no test binary, so the ORDER
-       lives here as one decision: a middle click closes a session on the bar, picks a file in the band,
-       belongs to a program that asked for the mouse, and is a paste ONLY in a plain pane — and only when
-       the user turned that on. */
+       lives here: bar closes a session, band picks a file, a mouse-owning program wins, else a paste. */
     {
         PtrPress p;
 #define PP(btn_, pr_, dlg_, bar_, fm_, app_, mp_) (memset(&p, 0, sizeof p), p.btn = (btn_), \
@@ -2340,7 +2321,7 @@ int main(void)
         CHECK(term_url_text(&T, &us, utxt, sizeof utxt) == -1 && utxt[0] == 0,
               "url/long: and the text refuses it — over URL_MAX is not something to open, and nothing "
               "is written");
-        /* The boundary, measured on both sides: URL_MAX itself is allowed. */
+        /* The boundary on both sides: URL_MAX itself is allowed. */
         for (int want = URL_MAX - 1; want <= URL_MAX + 1; want++) {
             term_destroy(&T);
             term_init(&T, 24, 200, 100);
@@ -2590,9 +2571,7 @@ int main(void)
 
         /* --- the HOVER underline: the SAME gates, seen from the pointer ------------------
            An underline is a PROMISE that a plain click here opens the address, so it can only lie by
-           disagreeing with the click's gate — hence url_hover_shows() calls url_click_opens() instead of
-           keeping its own list of ifs. These checks pin every gate and the agreement over every combination
-           of the flags the two decisions share. */
+           disagreeing with the click's gate — hence url_hover_shows() calls url_click_opens(). */
         {
             UrlHover h;
 #define UH(A, B, C, D, E) (memset(&h, 0, sizeof h), h.enabled = (A), h.in_pane = (B), h.dragging = (C), \
@@ -2646,9 +2625,8 @@ int main(void)
         }
 
         /* --- which cells of a span sit on which row: ONE owner, asked by the text AND the underline.
-           term_url_text() spells an address out with this and the hover underline is drawn from it, so the
-           line under an address can never cover a cell the opener would not read. A second reading of the
-           rule in the renderer would be a second answer about a soft-wrapped run. */
+           term_url_text() spells an address out with this and the hover underline is drawn from it, so
+           the line under an address can never cover a cell the opener would not read. */
         {
             UrlSpan one = { 3, 5, 3, 20 };
             int ra = -1, rb = -1;
@@ -2697,9 +2675,8 @@ int main(void)
         }
 
         /* --- the wait: a double click on an address selects the word and opens NOTHING --------
-           The boundary is STRICTLY past the window: term_click_count() counts a press at exactly
-           CLICK_DCLICK_MS as still the same gesture, so an open firing at that instant would leave the two
-           rules disagreeing about the last millisecond of a double click. */
+           The boundary is STRICTLY past the window: a press at exactly CLICK_DCLICK_MS is still the same
+           gesture, so an open firing at that instant would leave the two rules disagreeing. */
         CHECK(CLICK_DCLICK_MS == 500 && URL_OPEN_WAIT_MS == CLICK_DCLICK_MS,
               "url/wait: the open waits out exactly the double-click window — one gesture, one number");
         CHECK(url_open_due(1000 + CLICK_DCLICK_MS, 1000, URL_OPEN_WAIT_MS) == 0,
@@ -2718,8 +2695,7 @@ int main(void)
 
         /* --- the switch: click_opens_url, and the default IS the feature ----------------------
            The plain click ships ON, so a group that only proved `= 0` works would pass a build that
-           shipped it OFF. Default first, then every spelling of both values fed AFTER the opposite one,
-           then the bool contract. */
+           shipped it OFF. Every spelling is fed AFTER the opposite value. */
         {
             Config c;
             const char *path = "/tmp/kterm_test_config_url.conf";
@@ -2764,9 +2740,8 @@ int main(void)
         }
 
         /* --- url_spawn: the one place Kai-Term starts a program -------------------------------
-           The header's claim has three parts — the argument arrives as ONE argument with no shell in
-           between, Kai-Term's descriptors are closed in the child, and the blocked SIGCHLD mask is
-           unblocked. All three are checkable headless with a script as the stand-in opener. */
+           The header's claim has three parts: the argument arrives as ONE argument with no shell in
+           between, Kai-Term's descriptors are closed in the child, and the SIGCHLD mask is unblocked. */
         {
             char script[160], outp[160], pwn[160];
             snprintf(script, sizeof script, "/tmp/kterm-urlspawn-%ld.sh", (long)getpid());
@@ -2793,8 +2768,7 @@ int main(void)
 
                 /* A pty master, so there IS a Kai-Term descriptor the child must not inherit — the
                    failure the header names (a browser holding the user's ptys open after their shells
-                   are gone). src/pty.c calls posix_openpt without O_CLOEXEC too, so this is the real
-                   condition, not a convenient one. */
+                   are gone). src/pty.c calls posix_openpt without O_CLOEXEC too. */
                 int pty = posix_openpt(O_RDWR | O_NOCTTY);
                 CHECK(pty >= 0, "spawn: a pty master was opened to be inherited (or not)");
 
@@ -2900,9 +2874,8 @@ int main(void)
     }
 
     /* --- the visual bell: BEL is an event, and only a real BEL rings ---------------------------
-       A BEL in the text must be RECORDED, and a 0x07 doing another job must NOT ring: OSC, APC and DCS
-       all use 0x07 as their ST terminator, so a parser that rang on every 0x07 would flash the window
-       for every title a shell sets. */
+       A BEL in the text must be RECORDED; a 0x07 doing another job must NOT ring. OSC, APC and DCS use
+       0x07 as their ST terminator, so ringing on every 0x07 would flash for every title a shell sets. */
     {
         term_destroy(&T);
         term_init(&T, 10, 20, 100);
@@ -3462,9 +3435,8 @@ int main(void)
     }
 
     /* --- config: shell_integration ------------------------------------------------------------
-       On by default: a recognised shell starts with Kai-Term's integration script, the only way the file
-       manager can move the shell without touching the user's half-typed line. Off must mean "start the
-       shell exactly as before". */
+       On by default: a recognised shell starts with Kai-Term's integration script — the only way the
+       file manager can move the shell without touching a half-typed line. Off means "as before". */
     {
         Config c;
         const char *path = "/tmp/kterm_test_config_shellint.conf";
@@ -3495,9 +3467,8 @@ int main(void)
     }
 
     /* --- config: the key-repeat settings ------------------------------------------------------
-       A Wayland compositor never sends repeat events, so Kai-Term generates them: repeat_delay (ms before
-       the first repeat, 0 = off) and repeat_rate (repeats per second). Both are clamped so a typo cannot
-       stall or flood the PTY. */
+       A Wayland compositor never sends repeat events, so Kai-Term generates them: repeat_delay (ms
+       before the first repeat, 0 = off) and repeat_rate (per second), both clamped against a typo. */
     {
         Config c;
         const char *path = "/tmp/kterm_test_config3.conf";
@@ -3542,8 +3513,7 @@ int main(void)
 
     /* --- config: the cursor settings -------------------------------------------------------
        The cursor is a bar (no `cursor_style` key), so the only two numbers are the blink half-period and
-       the pixel width. Both are clamped: `cursor_blink = 0` is the off switch, and a width of 0 would
-       draw nothing. */
+       the pixel width: `cursor_blink = 0` is the off switch, and a width of 0 would draw nothing. */
     {
         Config c;
         const char *path = "/tmp/kterm_test_config_cursor.conf";
@@ -3580,11 +3550,8 @@ int main(void)
     }
 
     /* ---------- config: the search order, and the binding file ----------------------------------
-       The order is $XDG_CONFIG_HOME/kai-term, then ~/.config/kai-term, then /etc/kai-term, first found
-       wins, nothing found means the built-in defaults — and config_load(NULL) reads what the search
-       found, so this is not just a path printer. HOME and XDG_CONFIG_HOME point at a scratch tree for
-       the block and are put back exactly as they were, because every later check reads the real
-       environment. */
+       The order is $XDG_CONFIG_HOME/kai-term, then ~/.config/kai-term, then /etc/kai-term: first found
+       wins, nothing found means the built-in defaults, and config_load(NULL) reads what was found. */
     {
         char base[128];
         snprintf(base, sizeof base, "/tmp/kterm_cfg_%d", (int)getpid());
@@ -3683,8 +3650,7 @@ int main(void)
 
     /* --- config: which NAME lives in which file, and which file wins ---------------------------
        The split is by name, not "the last file read wins": a binding in kai-term.conf keeps working, the
-       bind file is read last so it wins for the same name, and a SETTING written in the bind file is
-       refused out loud. */
+       bind file wins for the same name, and a SETTING written in it is refused out loud. */
     {
         Config c;
         const char *cf = "/tmp/kterm_test_split.conf";
@@ -3750,9 +3716,8 @@ int main(void)
     }
 
     /* --- config: where a '#' starts a comment -------------------------------------------------
-       `background = #1c1c22` is the form the shipped template writes, so "whitespace before the '#' is
-       enough" would cut that line at the '#' and apply no colour. A '#' is a comment only when
-       whitespace precedes it, or precedes AND follows it. */
+       A '#' is a comment only when whitespace precedes it, or precedes AND follows it — `background =
+       #1c1c22` is the shipped form that the looser rule would silently cut. */
     {
         Config c;
         const char *path = "/tmp/kterm_test_hash.conf";
@@ -3796,9 +3761,8 @@ int main(void)
     }
 
     /* --- config: the shipped templates ARE the defaults ---------------------------------------
-       The templates list every name with the value config_default() gives it, so the check loads both
-       files and compares every field with a fresh default Config. From anywhere but the repo root the
-       files are not there and the block reports a skip rather than passing on nothing. */
+       The templates list every name with the value config_default() gives it: the check compares every
+       field with a fresh default Config, and skips rather than passes when the files are not there. */
     {
         const char *tpl_conf = "config/kai-term.conf";
         const char *tpl_bind = "config/kai-term.bind";
@@ -3934,9 +3898,8 @@ int main(void)
     }
 
     /* ---------- a viewport grown past half of rcap (the row[]-overrun segfault) ----------
-       rcap is fixed at (rows at init + scrollback), so growing the viewport shrinks the scrollback that
-       fits: the bound on scroll_off/live_off is rcap - rows, NOT scrollback_max. Feeding more lines than
-       that used to blank row[rcap] — a heap-buffer-overflow. */
+       rcap is fixed at (rows at init + scrollback), so the bound on scroll_off/live_off is rcap - rows,
+       NOT scrollback_max: feeding past it used to blank row[rcap], a heap-buffer-overflow. */
     {
         term_destroy(&T);
         term_init(&T, 4, 20, 20);            /* rcap = 24, scrollback_max = 20 */
@@ -3974,9 +3937,8 @@ int main(void)
     }
 
     /* --- multiplexing: the tab bookkeeping (src/mux.c) ----------------------------------------
-       Only the bookkeeping is testable here (the PTYs and the window belong to main.c), and that is where
-       the bugs live: an active index past the end, a grid left behind or freed twice, a shifted tab
-       keeping a pointer into its old home. */
+       Only the bookkeeping is testable here (PTYs and window belong to main.c), and that is where the
+       bugs live: an active index past the end, a grid freed twice, a tab keeping a stale pointer. */
     {
         Mux MX;
         char ttl[128];
@@ -4077,14 +4039,13 @@ int main(void)
 
     /* --- confirm-quit: is something still running? (fg_busy / pty_fg_busy / mux_running) ------
        Closing a window or a tab closes the pty master and hangs up the shell, so anything running in it
-       dies with no warning. The gate is `confirm_quit`, the predicate is the pure `fg_busy()` behind
-       `pty_fg_busy()` (the ONE tcgetpgrp call in the tree), and the count is `mux_running()`. */
+       dies with no warning. The gate is `confirm_quit`, the predicate `fg_busy()` (one tcgetpgrp). */
     {
         CHECK(fg_busy(100, 100) == 0, "confirm: a session that owns its foreground group is idle");
         CHECK(fg_busy(200, 100) == 1, "confirm: another foreground group means a command is running");
-        /* The two guards are measurements, not paranoia. A pty whose foreground group has died answers 0
-           (bash in s117, the fake session in s120), and a refused tcgetpgrp answers -1; a naive
-           `fg != child` calls BOTH "running", so the window would ask whether to kill nothing. */
+        /* The two guards are real cases, not paranoia: a pty whose foreground group has died answers 0,
+           a refused tcgetpgrp answers -1, and a naive `fg != child` calls BOTH "running" — the window
+           would then ask whether to kill nothing. */
         CHECK(fg_busy(0, 100) == 0, "confirm: fg == 0 (the session died) is idle, not running");
         CHECK(fg_busy(-1, 100) == 0, "confirm: a refused tcgetpgrp is idle, not running");
         CHECK(fg_busy(200, 0) == 0, "confirm: a tab with no child has nothing running");
@@ -4225,9 +4186,8 @@ int main(void)
     }
 
     /* --- the visual bell: which sessions can still be seen flashing (mux_bell_live) -------------
-       The rule lives in mux.c because main.c is in no test binary. What it breaks is invisible to a
-       harness: an UNDRAWN session keeps the window redrawing every 8 ms for 250 ms for a picture that
-       cannot change, and a flash nobody sees still counts as "live". */
+       The rule lives in mux.c because main.c is in no test binary. An UNDRAWN session keeps the window
+       redrawing every 8 ms for a picture that cannot change — a flash nobody sees still counts as live. */
     {
         Mux MX3;
         Layout lay;
@@ -4281,8 +4241,7 @@ int main(void)
 
     /* --- confirm-quit: the question kinds must not collide with "no question" -------------------
        main.c keeps the question state in one int that doubles as "is a question up?", where 0 means no —
-       so a question KIND of 0 would never be drawn, the keyboard would never go modal, and the close the
-       gate swallowed would leave a window answering neither button. Hence CONFIRM_QUIT is not 0. */
+       so a KIND of 0 would never be drawn and the keyboard never go modal: CONFIRM_QUIT is not 0. */
     CHECK(CONFIRM_NONE == 0, "confirm kinds: CONFIRM_NONE is the zero value, which is what main.c tests");
     CHECK(CONFIRM_QUIT != 0 && CONFIRM_CLOSE_TAB != 0,
           "confirm kinds: no question kind is 0, so asking can never look like 'nothing is being asked'");
@@ -4290,10 +4249,8 @@ int main(void)
           "confirm kinds: a window close and a tab close are distinguishable");
 
     /* --- confirm-quit: the row a TAB close shows (confirm_message) ---------------------------
-       The wording lives in mux.c so it is a checkable decision, and the strings below are copied from
-       what the code writes. The CONFIRM_QUIT branches are SUPERSEDED, not shipped — a WINDOW close asks
-       with confirm_warning() and a box — and stay only because the function's safety contract (cap 0, a
-       NULL buffer, a small cap) is pinned through them. */
+       The wording lives in mux.c to be checkable. The CONFIRM_QUIT branches are SUPERSEDED, not shipped
+       — they stay only because the safety contract (cap 0, NULL buffer, small cap) is pinned there. */
     {
         char msg[256];
         int one[1] = { 2 };
@@ -4358,9 +4315,8 @@ int main(void)
     }
 
     /* --- confirm-quit: what the running process is called (proc_comm_name) ---------------------
-       The WINDOW box names the process — `Warning ! "nano" is still running.` — because "a command"
-       makes the user guess which session is meant. The name comes from /proc/<fg>/comm, where fg is the
-       SAME tcgetpgrp() value fg_busy() already tested. */
+       The WINDOW box names the process (`Warning ! "nano" is still running.`) because "a command" makes
+       the user guess which session is meant. The name comes from /proc/<fg>/comm. */
     {
         char nm[PROC_NAME_MAX];
         int r;
@@ -4417,9 +4373,8 @@ int main(void)
         r = proc_comm_name("abc", nm, 1);
         CHECK(r == 0, "comm: a cap of 1 holds no name at all");
 
-        /* cap == 0 must touch NOTHING — the s116 lesson from fm_preview_selection_text's out[-1], applied
-           before it could happen here. A canary, not a strlen(): strlen of a buffer the function never
-           terminated reports a write that never happened (the first probe made exactly that mistake). */
+        /* cap == 0 must touch NOTHING. Checked with a canary, not a strlen(): strlen of a buffer the
+           function never terminated reports a write that never happened. */
         char canary[4] = { 1, 2, 3, 4 };
         r = proc_comm_name("nano\n", canary, 0);
         CHECK(r == 0, "comm: cap 0 is refused");
@@ -4442,8 +4397,7 @@ int main(void)
 
     /* --- confirm-quit: the exact sentence the WINDOW box shows (confirm_warning) ---------------
        `Warning ! "name of the process" is still running. Are you sure you want to close it ?` — pinned
-       character for character, spaces before ! and ? included. The wording differs from the tab row on
-       purpose: a window is the close that cannot be undone. */
+       character for character, spaces before ! and ? included. It differs from the tab row on purpose. */
     {
         char msg[DIALOG_MAX];
         int one[1] = { 0 }, two[2] = { 0, 1 }, three[3] = { 0, 1, 2 }, five[5] = { 0, 1, 2, 3, 4 };
@@ -4516,9 +4470,8 @@ int main(void)
     }
 
     /* --- config: the key-binding specs ("Ctrl+Shift+T") ----------------------------------------
-       The spec parser is user-facing, and two rules protect the user from themselves: a binding with NO
-       modifier is refused (it would take a plain typing key away from the shell), and a spec that does
-       not parse keeps the binding already in place. */
+       Two rules protect the user: a binding with NO modifier is refused (it would take a plain typing
+       key from the shell), and a spec that does not parse keeps the binding already in place. */
     {
         KeyBind KB;
         CHECK(keybind_parse("Ctrl+Shift+T", &KB) && KB.set == 1 &&
@@ -4671,9 +4624,8 @@ int main(void)
     }
 
     /* --- config: what a close asks about first (confirm_quit) ---------------------------------
-       The default must change nothing for a user who is never interrupted: an idle window still closes
-       instantly. A bad value keeps the CURRENT one rather than picking a side — silently quitting and
-       silently asking are both wrong answers to a typo. */
+       The default changes nothing: an idle window still closes instantly. A bad value keeps the CURRENT
+       one — silently quitting and silently asking are both wrong answers to a typo. */
     {
         Config c;
         const char *path = "/tmp/kterm_test_config_confirm.conf";
@@ -4741,9 +4693,9 @@ int main(void)
         CHECK(c.fm_preview == 1, "config: the preview pane is on by default");
         CHECK(c.fm_show_hidden == 0, "config: dotfiles are hidden by default");
         CHECK(c.fm_follow == 1, "config: the shell follows the browsed directory by default");
-        /* The user asked for this default explicitly: a pane of the band is focused by CLICKING it, so
-           the pointer's position never takes the keyboard. The rule itself is checked in test_fm.c
-           (fm_wheel_focus); this pins that a launch without a settings file starts in that mode. */
+        /* A pane of the band is focused by CLICKING it, so the pointer's position never takes the
+           keyboard. The rule itself is checked in test_fm.c (fm_wheel_focus); this pins that a launch
+           with no settings file starts in that mode. */
         CHECK(c.fm_focus_on_hover == 0,
               "config: the pointer does not take the keyboard by default — a click is required");
         CHECK(c.key_file_manager.set && c.key_file_manager.sym == 'f' &&
@@ -4837,9 +4789,8 @@ int main(void)
     }
 
     /* --- layout: the tab bar and the side-by-side panes ----------------------------------------
-       One pure function decides the bar, the click targets and the panes: the single-session window must
-       not change shape, a click must name the tab it is drawn on, a pane's grid must fit its rect, and
-       the pointer mapping (col = (ptr_x - pane.x)/cell_w) must stay exact. */
+       One pure function decides the bar, the click targets and the panes: one tab must not change the
+       window's shape, a click must name the tab it is drawn on, and the pointer mapping must stay exact. */
     {
         LayoutReq rq;
         Layout L;
@@ -4995,8 +4946,7 @@ int main(void)
 
         /* layout_initial_size(): the startup window size must be big enough that layout_compute() gives
            back EXACTLY the configured cols x rows. The bar costs one cell ROW plus the gap — cell_h, not
-           cell_w — and only the round trip can catch that typo; a non-square cell (8x17) makes it
-           visible. */
+           cell_w — and only the round trip catches that typo. */
         int iw, ih;
         layout_initial_size(80, 30, 8, 17, 8, 8, BAR_ALWAYS, 0, 0, &iw, &ih);
         CHECK(iw == 80 * 8 + 16 && ih == 30 * 17 + 16 + 17 + 8,
@@ -5019,9 +4969,9 @@ int main(void)
               "layout: padding 0 with a square cell gives the edge-to-edge startup size");
 
         /* ---------- the file-manager band (Layout.fm) ----------
-           936x1002 px window, 8x17 cells, padding 8, gap 8, one session, bar auto (off with one tab): the
-           grid area is 920 x 986 px = 115 x 58 whole cells. The band asks for 75% of that height (the
-           default), i.e. 739 px; the pixels that do not fill a whole cell stay at the BOTTOM. */
+           936x1002 px window, 8x17 cells, padding 8, gap 8, one session, bar auto (off with one tab):
+           the grid area is 920 x 986 px = 115 x 58 whole cells. The band asks for 75% of that height
+           (the default), i.e. 739 px; the pixels that do not fill a whole cell stay at the BOTTOM. */
         lreq(&rq, LAYOUT_TABS, 936, 1002, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
         rq.fm_on = 1; rq.fm_preview_on = 1; rq.fm_size = 75;
         layout_compute(&rq, &L);
@@ -5113,10 +5063,9 @@ int main(void)
         CHECK(layout_hit_fm(&L, 100, 20) == FM_HIT_NONE,
               "fm layout: with the band off no point ever hit-tests as the file manager");
 
-        /* The startup round trip with the band on. The band is a PERCENT, so the startup height has to
-           be SOLVED, not added to: the terminal's rows*ch plus the gap must fit in the (100-pct)% the grid
-           area keeps, i.e. grid_h = ceil((rows*ch + gap) * 100 / (100 - pct)). 30 rows at 17 px plus an
-           8 px gap is 518 px out of 25%, so the grid area is 2072 px and the window 2088 px. */
+        /* The startup round trip with the band on. The band is a PERCENT, so the startup height has to be
+           SOLVED, not added to: grid_h = ceil((rows*ch + gap) * 100 / (100 - pct)). 30 rows at 17 px plus
+           an 8 px gap is 518 px out of 25%, so the grid area is 2072 px and the window 2088 px. */
         layout_initial_size(80, 30, 8, 17, 8, 8, BAR_AUTO, 1, 75, &iw, &ih);
         CHECK(iw == 80 * 8 + 16 && ih == 2072 + 16,
               "fm layout: the startup window is solved from the percent, not by adding band rows");
@@ -5147,10 +5096,8 @@ int main(void)
     }
 
     /* ---------- layout: the confirm-quit question row (Layout.notice) ----------
-       The question is chrome, so it obeys the bar's rules: it costs the panes a row, it is dropped when
-       the window cannot pay, and its text is cut to the row's columns HERE rather than in a draw loop no
-       test reaches. Base geometry as in the group above: 936x1002 px, 8x17 cells, padding 8, gap 8, so
-       the grid area is 920 x 986 px = 115 x 58 whole cells. */
+       The question is chrome: it costs the panes a row, it is dropped when the window cannot pay, and
+       its text is cut to the row's columns HERE rather than in a draw loop no test reaches. */
     {
         LayoutReq rq;
         Layout L;
@@ -5299,10 +5246,7 @@ int main(void)
 
     /* ---------- layout: the confirm-quit DIALOG (Layout.dialog) ----------
        A WINDOW close asks with a centred box and two clickable buttons; a tab close keeps the row above.
-       The box is drawn OVER the terminal, so the claim this group exists to pin is the one the whole
-       design rests on: it costs the terminal NO row. Base geometry as in the group above (936x1002,
-       8x17 cells, padding 8, gap 8, grid area 920 x 986 = 115 x 58 cells). Every number below is what
-       the code produces, not what it was meant to produce. */
+       The box is drawn OVER the terminal, so it costs the terminal NO row. */
     {
         LayoutReq rq;
         Layout L;
@@ -5364,10 +5308,8 @@ int main(void)
         CHECK(yes->label_x == yes->x + 8 && no->label_x == no->x + 8,
               "dialog layout: each label starts one cell in from its field — geometry's decision, not the renderer's");
 
-        /* The hit test. A button answers at its centre, on every edge pixel, and not one pixel outside;
-           the middle of the box and a point outside the box answer nothing. That last pair is a
-           decision: a click near a button must not answer it by accident, and a click on the terminal
-           must never be read as the NO the user did not give. */
+        /* The hit test: a button answers at its centre and on every edge pixel, and not one pixel
+           outside; a click on the terminal must never be read as the NO the user did not give. */
         CHECK(layout_hit_dialog(&L, 680, 517) == 0 && layout_hit_dialog(&L, 732, 517) == 1,
               "dialog hit: each button owns its centre");
         CHECK(layout_hit_dialog(&L, yes->x, yes->y) == 0 &&
@@ -5437,12 +5379,8 @@ int main(void)
                   "dialog layout: no wrapped line ever reaches the end of its buffer");
 
         /* A UTF-8 sentence cut by the byte bound must not leave a dangling lead byte for the font.
-           Rejecting any line that ends on a byte in 0x80..0xBF can NEVER pass: a complete 2-byte codepoint
-           ends on exactly such a byte. What has to hold is that every line is whole codepoints from end to
-           end (150 x U+00E9 at 33 columns gives three lines of 66 bytes = 33 WHOLE codepoints each, the
-           last one ending in " ..."). The pattern VARIES on purpose (U+00C0, U+00C1, ... rather than one
-           codepoint repeated): a sentence of 150 identical characters hides a gap, because every byte
-           position looks like every other one — that setup let a mutant that dropped a codepoint pass. */
+           Rejecting a line ending on a byte in 0x80..0xBF can NEVER pass: a complete 2-byte codepoint
+           ends on exactly one. The pattern VARIES — 150 identical characters hide a dropped codepoint. */
         char acc[400]; int ao = 0;
         for (int i = 0; i < 128; i++) { acc[ao++] = (char)0xc3; acc[ao++] = (char)(0x80 + (i % 64)); }
         acc[ao] = 0;
@@ -5481,12 +5419,9 @@ int main(void)
               "dialog layout: a word wider than the line is broken at a COLUMN limit and still holds nothing "
               "but whole 3-byte codepoints");
 
-        /* The case the first draft never reached: a box WIDE enough that a line's BYTE bound
-           (DIALOG_LINE_MAX-1 = 127 bytes) binds long before its COLUMN bound does. Only that path can cut
-           inside a codepoint, and the first version of wrap_sentence() cut one, trimmed it out of the line,
-           and then advanced the source pointer OVER the bytes it had just dropped — so a character vanished
-           from the sentence and the next line began on its leftover continuation byte. 150 x U+00E9 in a
-           1200px window reaches it: line[1] starts a9 c3 a9 ..., 127 bytes, 147 of 150 codepoints shown. */
+        /* A box WIDE enough that the line's BYTE bound (DIALOG_LINE_MAX-1 = 127) binds long before its
+           COLUMN bound: only that path can cut inside a codepoint, and trimming the cut then advancing
+           the source pointer makes a character vanish and the next line start on a continuation byte. */
         lreq(&rq, LAYOUT_TABS, 1200, 800, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
         rq.dialog_on = 1; rq.dialog_text = acc;
         layout_compute(&rq, &L);
@@ -5520,10 +5455,9 @@ int main(void)
               "dialog layout: the lines hold the sentence in order with NOTHING dropped between them — a cut "
               "that trims a codepoint must not step the source pointer over it");
 
-        /* Malformed input is not this function's fault and must not become this function's crash. A
-           sentence that ENDS inside a codepoint (a name read from a file that was cut, a hand-fed test
-           string) has to come out as whole codepoints: the renderer walks these lines with next_cp(),
-           and a dangling lead byte there is a codepoint of its own on the screen. */
+        /* Malformed input is not this function's fault and must not become its crash: a sentence that
+           ENDS inside a codepoint has to come out as whole codepoints, because the renderer walks these
+           lines with next_cp() and a dangling lead byte there is a codepoint of its own on the screen. */
         const char *trunc = "Warning ! \xc3";   /* one hex escape: a lone lead byte at the end */
         lreq(&rq, LAYOUT_TABS, 1200, 800, 8, 17, 8, 8, 1, 0, 4, BAR_AUTO);
         rq.dialog_on = 1; rq.dialog_text = trunc;
@@ -5536,13 +5470,9 @@ int main(void)
               "dialog layout: a sentence that ends mid-codepoint is trimmed to whole ones, not handed on "
               "broken to the font");
 
-        /* The FOURTH cut in the function, and the one the first three cases still miss: a sentence too long
-           for the box, so the last line is shortened and ends in " ...". That path clamps the line to
-           DIALOG_LINE_MAX-5 BYTES to make room for the four columns of " ...", and in a wide box with
-           2-byte characters the clamp lands mid-codepoint (300 varying 2-byte names in a 1200px window ->
-           four lines, the last 126 bytes, the clamp cutting at byte 123 and the trim pulling it back to
-           122). The " ..." hides a bad byte from any check that only looks at the END of a line, so this
-           case is checked with the validator, not with an eye on the tail. */
+        /* The FOURTH cut, the one the first three cases miss: a sentence too long for the box, so the
+           last line ends in " ...". That path clamps to DIALOG_LINE_MAX-5 BYTES, and with 2-byte
+           characters the clamp lands mid-codepoint — which the " ..." hides, so the validator checks it. */
         static char bigsent[700];
         int bo = 0;
         for (int i = 0; i < 300; i++) { bigsent[bo++] = (char)0xc3; bigsent[bo++] = (char)(0x80 + (i % 64)); }
@@ -5607,12 +5537,8 @@ int main(void)
     }
 
     /* ---------- the shell's input line: term_at_prompt() (src/vt.c) ----------
-       The file manager writes at the shell's prompt (`cd <dir>`, a selected path), and it must not do
-       that on top of a command the user is halfway through. Kai-Term cannot tell a prompt from a prompt
-       plus typed text by looking at the BYTES (the tty echoes typing, and that echo arrives as ordinary
-       output), so what the model remembers is the cursor row as the application last printed it, and the
-       echo window around what the terminal itself sent is what keeps that memory honest. These checks
-       follow a realistic shell: prompt, echo, readline's own redraws (\r, \b \b, \x1b[K), Enter. */
+       The file manager must not write `cd <dir>` over a half-typed command, and the BYTES cannot tell a
+       prompt from a prompt plus typed text — the echo of typing arrives as ordinary output. */
     term_destroy(&T);
     term_init(&T, 10, 20, 100);
     CHECK(term_at_prompt(&T) == 0, "prompt: before anything is printed nothing is known");
@@ -5636,12 +5562,9 @@ int main(void)
           "prompt: a cursor moved off the prompt position does not count as empty");
     type("\x1b[C");
     CHECK(term_at_prompt(&T) == 1, "prompt: and moving it back does");
-    /* The anchor rule this depends on, stated: prompt_cx/prompt_cy are where the cursor sits when the
-       line is EMPTY, and a burst that only moves the cursor must not redefine them. Before the input
-       whitelist a movement key set input_pending and so kept the snapshot still by accident; now the
-       rule is explicit and these checks say what happens if it is dropped. (CSI G moves the cursor
-       WITHIN the row, which is the case here; CSI H would also move it to another row, and SS3 `ESC O H`
-       / `ESC [ 1 ~` are not cursor keys in this parser at all, so a check must not lean on them.) */
+    /* The anchor rule: prompt_cx/prompt_cy are where the cursor sits when the line is EMPTY, and a burst
+       that only moves the cursor must not redefine them. (CSI G moves within the row; SS3 `ESC O H` and
+       `ESC [ 1 ~` are not cursor keys in this parser, so a check must not lean on them.) */
     type("\x1b[1G");                        /* column 1: the row is untouched, the cursor is inside it */
     CHECK(T.cx == 0 && T.prompt_cx == 8 && T.prompt_cy == T.cy,
           "prompt: moving the cursor does not move the remembered cursor anchor");
@@ -5668,11 +5591,9 @@ int main(void)
     feed("\r\x1b[Kprompt$ ");
     CHECK(term_at_prompt(&T) == 1, "prompt: redrawn exactly as remembered, it counts as unchanged");
 
-    /* BackSpace on an EMPTY prompt used to kill the file manager's `cd` follow for the rest of the
-       session. bash and sh answer such a key with nothing but a bell (0x07) and fish answers NOT AT ALL,
-       so no burst was ever seen to prove the line empty and the echo window stayed shut. A movement or
-       erase key cannot put text on a line that is already provably the bare prompt, so it does not open
-       the window. */
+    /* BackSpace on an EMPTY prompt used to kill the `cd` follow for the rest of the session: bash and sh
+       answer it with a bell and fish with nothing, so no burst ever proved the line empty. A movement or
+       erase key cannot put text on a line already provably bare, so it does not open the echo window. */
     type("\x7f");                         /* BackSpace on an empty line */
     CHECK(T.input_pending == 0 && term_at_prompt(&T) == 1,
           "prompt: BackSpace on an EMPTY prompt leaves the line known (the user's report, 2026-10-20)");
@@ -5690,7 +5611,7 @@ int main(void)
     CHECK(term_at_prompt(&T) == 1, "prompt: and the line is known again after that repaint");
 
     /* The whitelist stops exactly where a key could put characters on a line the application may not be
-       showing — that is the s77 hazard (an application that does not echo at all), and it must stay shut. */
+       showing: an application is not obliged to echo at all, so that door must stay shut. */
     type("\t");                           /* completion inserts text, or inserts nothing and shows nothing */
     CHECK(T.input_pending == 1,
           "prompt: Tab still opens the echo window — completion can insert text the row never shows");
@@ -5716,10 +5637,8 @@ int main(void)
           "prompt: BackSpace AFTER typed text does not close the window the typing opened");
 
     /* A query answer is output, not typing: DA1/DSR/CPR go out through the pty but must not open an echo
-       window, or every probe would stop the prompt being remembered. The line has to be submitted first:
-       the checks above left an echo window open (the last thing typed was `rm`, and the erase key after
-       it may not close one), and asserting `input_pending == 0` on top of that would test a state the
-       program cannot be in. */
+       window, or every probe would stop the prompt being remembered. The line is submitted first because
+       the checks above left an echo window open. */
     press("\r", "\r\n");                    /* Enter submits — that is what closes the window */
     feed("prompt$ ");
     CHECK(term_at_prompt(&T) == 1 && T.input_pending == 0,
@@ -5739,12 +5658,9 @@ int main(void)
     feed("\r\nprompt$ ");
     CHECK(term_at_prompt(&T) == 1, "prompt: and the cd it ran leaves the line clean again");
 
-    /* An application is NOT obliged to echo: interactive bash in a Kai-Term pty can return nothing at
-       all for typed characters, so the row never changes and the line reads as untouched — the file
-       manager would write `cd <dir>` onto a half-typed command and run the result. The echo window is
-       what catches that: bytes sent and never submitted keep the line dirty whatever the application
-       shows, and only the application putting the remembered prompt back on screen (or CR/LF/Ctrl+C)
-       clears it. */
+    /* An application is NOT obliged to echo: bash in a Kai-Term pty can return nothing at all for typed
+       characters, so the row never changes and the line reads as untouched. Bytes sent and never
+       submitted keep the line dirty whatever the application shows. */
     send_in("rm -rf");                     /* nothing comes back: this application does not echo */
     CHECK(term_at_prompt(&T) == 0,
           "prompt: typed text with NO echo at all still makes the line dirty");
@@ -5760,10 +5676,8 @@ int main(void)
     CHECK(term_at_prompt(&T) == 1, "prompt: Ctrl+C discards the line and re-arms the gate");
 
     /* The alternate screen is never "at a prompt" while it is up, and it must not disturb the snapshot:
-       the main grid is parked and comes back byte-for-byte, so the row the snapshot describes is the row
-       that reappears. Re-taking the snapshot on leave recorded the cursor where the user had left it in
-       the ALTERNATE grid, which made a half-typed command look like an EMPTY prompt — and the clear-the-
-       line rule would then have erased it. The snapshot always describes the main grid. */
+       the main grid is parked and comes back byte-for-byte. Re-taking the snapshot from the ALTERNATE
+       grid made a half-typed command look like an EMPTY prompt. */
     type("\x1b[A");                         /* an arrow key: opens an echo window no CR will ever close */
     CHECK(T.input_pending == 1, "prompt: an arrow key leaves an echo window open");
     feed("\x1b[?1049h");
@@ -5780,9 +5694,8 @@ int main(void)
           "prompt: and the echo that restores the remembered row closes the window again");
 
     /* Scrolled back into history = the user is not looking at the prompt. The grid is 10 rows, so this
-       needs output that actually reaches the bottom margin — two newlines do not scroll anything. The
-       command that produced the output is submitted first, which is also what closes the echo window the
-       arrow key above left open. */
+       needs output that reaches the bottom margin — two newlines scroll nothing. The command is
+       submitted first, which closes the echo window the arrow key left open. */
     send_in("ls -l\r");
     for (int i = 0; i < 12; i++)
         feed("file0i\r\n");
@@ -5819,9 +5732,8 @@ int main(void)
     CHECK(term_at_prompt(&T) == 1, "prompt: and back down on the prompt row it is");
 
     /* A reset (ESC c) frees what the old screen owned — the snapshot included — and the fresh terminal
-       answers about its own blank screen instead of comparing against freed memory (LeakSanitizer and
-       ASan both watch this in `make asan`). Written as two escapes on purpose: "\x1bc" is ONE hex escape
-       (0x1bc, out of range for a char), not ESC followed by 'c'. */
+       answers about its own blank screen instead of comparing against freed memory. Written as two
+       escapes on purpose: "\x1bc" is ONE hex escape (0x1bc), not ESC followed by 'c'. */
     feed("\x1b" "c");
     CHECK(term_at_prompt(&T) == 1, "prompt: after a reset the fresh screen is described, not freed memory");
     CHECK(T.cx == 0 && T.cy == 0,
@@ -5829,10 +5741,8 @@ int main(void)
           "have printed a character and left it at column 1)");
 
     /* ---------- the same line WITH text on it: term_prompt_line() (src/vt.c) ----------
-       The prompt must ALWAYS end up in the directory the browser is looking at, so a navigation may NOT
-       be refused because the line already holds text — Kai-Term clears the line, sends the `cd`, and puts
-       the text back on the new prompt. That is only safe if the model can say EXACTLY what is on the line
-       and where the line ends, which is what these checks pin. */
+       A navigation may NOT be refused because the line holds text — Kai-Term clears the line, sends the
+       `cd`, and puts the text back. That is only safe if the model can say EXACTLY what is on the line. */
     term_destroy(&T);
     term_init(&T, 10, 40, 100);            /* wide enough that the checks below never wrap a line */
     char pline[FM_LINE_MAX];
@@ -5852,14 +5762,10 @@ int main(void)
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "rm -rf su"),
           "line: describable again once the cursor is back at the end of the text");
 
-    /* A shell that DECORATES the line: fish paints a grey autosuggestion immediately right of the cursor
-       and puts the cursor back where it was (typing `git com` draws `mit -m "Initial commit"` on the row,
-       `ls -la /tmp` draws a `/`). Those cells are not part of the command line, and at the cell level they
-       are indistinguishable from the right half of a command the user parked the cursor in front of — so
-       the strict description must keep refusing (a caller about to erase the line cannot tell the two
-       apart) while the question "did the text I typed land?" must still be answered yes (that caller
-       erased nothing; its own text is by definition left of the cursor). This is why FMCD_RETYPING uses
-       term_prompt_line_is() and FMCD_ERASING does not. */
+    /* A shell that DECORATES the line: fish paints a grey autosuggestion right of the cursor,
+       indistinguishable at cell level from the right half of a command the user parked the cursor in
+       front of. So the strict description keeps refusing while "did the text I typed land?" answers yes
+       — hence FMCD_RETYPING uses term_prompt_line_is() and FMCD_ERASING does not. */
     feed("\x1b[90mmit\x1b[0m\x1b[3D");     /* ghost painted, cursor moved back to the end of the typing */
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
           "ghost: text right of the cursor makes the strict description refuse, ghost or not");
@@ -5879,10 +5785,7 @@ int main(void)
 
     /* ---------- the same line, asked the way the PATH KEY asks it: term_prompt_line_typed() ----------
        The path key inserts at the cursor and erases nothing, so the right-of-cursor half of the strict
-       question is not a safety check for it — it is only a refusal. bash and zsh type the path after
-       `cat ` on their own, and the only refusals are the cases where cells right of the cursor hold
-       something: fish's autosuggestion, or a cursor the user had moved back. These checks pin the
-       difference between the two predicates, so the choice cannot drift back without a check going red. */
+       question is only a refusal: cells right of the cursor holding something refuse. */
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 0,
           "path gate: (the setup) the strict predicate refuses this line — a ghost sits right of the cursor");
     CHECK(term_prompt_line_typed(&T, pline, sizeof pline) == 1 && !strcmp(pline, "rm -rf su"),
@@ -5960,13 +5863,9 @@ int main(void)
     CHECK(term_prompt_line(&T, pline, sizeof pline) == 1 && !strcmp(pline, "\xf0\x9f\x98\x80"),
           "line: back on the main screen the same line is describable again, text and all");
 
-    /* Scrolled back into history is not the line the user is looking at. Two newlines scroll nothing in a
-       10-row grid, so this first needs output that actually reaches the bottom margin.
-       The prompt is printed by the shell (feed) and the emoji is TYPED (type): one
-       feed("p \xf0\x9f\x98\x80") would write the whole row as application output, and term_parse()
-       legitimately re-takes the snapshot at the end of such a burst, so the describable typed text really
-       is "" then. Writing the line as application output is the setup that makes these two checks fail
-       for the wrong reason. */
+    /* Scrolled back into history is not the line the user is looking at; two newlines scroll nothing in
+       a 10-row grid, so this needs output that reaches the bottom margin. The prompt is FED by the shell
+       and the emoji TYPED: one feed of the row would be application output. */
     press("\r", "\r\n");
     for (int i = 0; i < 12; i++)
         feed("filler\r\n");
@@ -5994,11 +5893,8 @@ int main(void)
           "line: so that row is describable and the typed text on it is empty — correctly");
 
     /* ---------- the clear -> `cd` -> re-populate sequence, as the model sees it ----------
-       src/main.c is in no test binary, so the machine itself is covered by the live key-injection
-       harness, not here. What IS testable — and what the machine is built entirely out of — is the pair
-       of questions it asks the model at every step. These replay its exact writes (Ctrl+U, `cd <dir>\r`,
-       the captured text with no CR) against the real parser, so a change to the snapshot rules that would
-       break the feature fails a check instead of breaking it silently. */
+       src/main.c is in no test binary, so what IS testable is the pair of questions it asks the model:
+       these replay its exact writes (Ctrl+U, `cd <dir>\r`, the captured text with no CR). */
     term_destroy(&T);
     term_init(&T, 10, 40, 100);
     char cap[FM_LINE_MAX];
@@ -6034,14 +5930,9 @@ int main(void)
           "seq: the finished line reads exactly as it did before — the user's text is back, nothing ran");
 
     /* THE BUG THESE PIN: a SECOND navigation on top of the text Kai-Term had just re-typed did not erase
-       it — the prompt ended up `Some text cd '/'` and the shell ran it. The burst right after the
-       re-type painted NOTHING on the input row (fish repainting prompt chrome — OSC 7, OSC 0, DECSET), so
-       the row still equalled the snapshot, and the end-of-burst rule read that STEADY STATE as "the
-       application put the prompt back, the line is provably empty". It closed the echo window over bytes
-       that had not been echoed yet, and every later burst then RE-TOOK the snapshot — including the one
-       carrying the echo of Kai-Term's own text — so a row holding `git com` began answering
-       term_at_prompt() as EMPTY and the next navigation took the fast path. A match that was already a
-       match is not evidence. */
+       it — the prompt ended up `Some text cd '/'` and the shell ran it. The burst after the re-type
+       painted NOTHING, so the row still equalled the snapshot and the end-of-burst rule read that STEADY
+       STATE as "provably empty". A match that was already a match is not evidence. */
     feed("\x1b]7;file://host/dir\x07\x1b[?2004h\x1b[?2031h");   /* chrome only: the row is untouched */
     CHECK(T.input_pending == 1,
           "seq: a burst that paints NOTHING on the input row does not close the echo window");
@@ -6056,10 +5947,9 @@ int main(void)
     CHECK(T.input_pending == 0 && term_at_prompt(&T) == 1,
           "seq: the burst that repaints the remembered prompt proves it — the follow is idempotent");
 
-    /* fish decorates the line: an autosuggestion is painted in grey immediately right of the cursor and
-       is NOT part of the command line — `git com` gets `mit -m "Initial commit"` drawn there, `ls -la
-       /tmp` gets a `/`. The ruling is to follow the browser through it, which is safe because the write
-       is gated on the erase PROOF, not on the capture. */
+    /* fish decorates the line: an autosuggestion painted in grey immediately right of the cursor is NOT
+       part of the command line (`git com` gets `mit -m "Initial commit"` drawn there). Follow the
+       browser through it — safe because the write is gated on the erase PROOF, not on the capture. */
     term_destroy(&T);
     term_init(&T, 10, 40, 100);
     feed("prompt$ ");
@@ -6139,11 +6029,9 @@ int main(void)
           "seq: the prompt redrawn is what finally proves the line empty (the machine's deadline "
           "covers the case where it never is)");
 
-    /* The one thing that DOES break the proof, pinned so it is documented rather than discovered: the
-       snapshot names a ROW. If the shell prints a line of its own between the erase and its next prompt
-       (a background job finishing, a SIGCHLD notice), the redrawn prompt sits on another row, the model
-       cannot prove the line is empty, and the machine times out and drops the sequence — logging what
-       was on the line. Failing that way is the safe direction; it is not a licence to guess. */
+    /* The one thing that DOES break the proof: the snapshot names a ROW. If the shell prints a line of
+       its own between the erase and its next prompt (a job finishing), the prompt sits on another row,
+       the line is not provable, and the machine drops the sequence — logging what was on it. */
     term_destroy(&T);
     term_init(&T, 10, 40, 100);
     feed("prompt$ ");
@@ -6156,10 +6044,9 @@ int main(void)
           "seq: so the erase is NOT proven and the machine will drop the sequence rather than send a cd");
 
     /* ---------- graphics: the kitty image protocol (src/vt.c) ----------
-       Headless on purpose: the decoded PIXELS live in the model, so the parser, the chunk assembly,
-       the placement math and the lifetime rules are all testable without a display — render.c only
-       turns KImage.rgba into a GL texture. Cell px 8x16 is what src/main.c pushes from the font
-       metrics, and the protocol sizes pictures in PIXELS, so every span below depends on it. */
+       The decoded PIXELS live in the model, so the parser, the chunk assembly, the placement math and
+       the lifetime rules are testable without a display — render.c only turns KImage.rgba into a GL
+       texture. */
     term_destroy(&T);
     term_init(&T, 10, 20, 100);
     term_set_cell_px(&T, 8, 16);
@@ -6183,8 +6070,8 @@ int main(void)
           "graphics: a 2x2 px picture covers one cell of an 8x16 grid");
 
     /* --- premultiplication, the rule the no-blending shader depends on ---
-       The +255 rounding s68 used made (255*255 + 255)/255 == 256, and the uint8_t cast turned a fully
-       opaque WHITE pixel BLACK. The s68 probe missed it because its sample pixel was never white. */
+       Rounding with +255 makes (255*255 + 255)/255 == 256, and the uint8_t cast then turns a fully
+       opaque WHITE pixel BLACK — which is why the sample texel here is white. */
     uint8_t opaque_white[4] = { 0xff, 0xff, 0xff, 0xff };
     gfx_feed(&T, "a=T,i=2,q=2,f=32,s=1,r=1,m=0", opaque_white, 4);
     im = img_by_id(&T, 2);
@@ -6223,9 +6110,8 @@ int main(void)
     CHECK(strstr(T.resp, "\x1b_G:OK;i=5") != NULL, "graphics: q=1 answers OK");
 
     /* --- re-transmitting to an id replaces that picture instead of stacking another one ---
-       Measured with timg 1.6.3 -V (see AGENT.md s70): a four-frame gif alternates between TWO ids, so
-       three of its four frames are transmissions to an id that already exists. Treating every
-       transmission as new leaves a trail of pictures behind an animation. */
+       A four-frame gif alternates between TWO ids, so three of its four frames go to an id that already
+       exists; treating every transmission as new leaves a trail of pictures behind an animation. */
     int n_before = term_image_count(&T);
     gfx_feed(&T, "a=T,i=11,q=2,f=32,s=1,r=1,m=0", opaque_white, 4);
     CHECK(term_image_count(&T) == n_before + 1,
@@ -6289,9 +6175,8 @@ int main(void)
     CHECK(term_image_count(&T) == 0, "graphics: a=d,d=A deletes every image");
 
     /* --- a cursor left at the right margin places the picture at the start of the next row ---
-       Real `timg -p k` output hit exactly this (s69): its own text had filled a line, so the cursor
-       was in the pending-wrap state, and the picture was anchored at col == cols — decoded fine and
-       never drawn. */
+       When the program's own text has filled a line the cursor is in the pending-wrap state, and a
+       picture anchored at col == cols is decoded fine and never drawn. */
     term_destroy(&T);
     term_init(&T, 10, 20, 100);
     term_set_cell_px(&T, 8, 16);
@@ -6407,10 +6292,8 @@ int main(void)
     term_destroy(&T);
 
     /* ---------- shell integration: Kai-Term's APC channel + src/shellint.c ----------
-       The file manager can ask the shell to change its OWN directory instead of Kai-Term typing `cd` at the
-       prompt. Kai-Term only prefers that path once THIS session's shell announced itself, and only believes
-       it worked when the shell confirms the directory it entered. These checks pin the model half; the
-       end-to-end half (a real fish and a real bash in a real pty) is the harness in .scratch/s90/. */
+       The file manager can ask the shell to change its OWN directory instead of Kai-Term typing `cd` —
+       only once THIS session's shell announced itself, and only when it confirms the directory. */
     term_init(&T, 10, 20, 100);
     CHECK(T.shell_int == SHELLINT_NONE && T.shell_cd_ack[0] == 0,
           "integration: nothing is known about the shell until it announces itself");
@@ -6438,26 +6321,23 @@ int main(void)
     feed("\x1b_Gi=1,a=T,q=2,f=32,s=4,r=1,m=0;\x1b\\");
     CHECK(T.shell_int == SHELLINT_ZSH,
           "integration: the graphics APC (kind G) still goes to the graphics path");
-    /* A reset memsets Term. The announcement happens ONCE, at shell startup, so it must survive — losing it
-       would silently drop the feature for the rest of the session after any program sent ESC c. The prompt
-       snapshot right next to it must NOT survive, so the two are checked together, with a real snapshot
-       taken first (checking prompt_valid on a session that never printed a prompt would prove nothing). */
+    /* A reset memsets Term. The announcement happens ONCE, at shell startup, so it must survive — losing
+       it would silently drop the feature after any program sent ESC c. The prompt snapshot next to it
+       must NOT survive, so the two are checked together, with a real snapshot taken first. */
     feed("prompt$ ");
     CHECK(T.prompt_valid == 1 && T.shell_int == SHELLINT_ZSH,
           "integration: a prompt is snapshotted while the announcement is live");
     feed("\x1b" "c");        /* split so the C compiler does not read \x1bc as one hex escape */
     CHECK(T.shell_int == SHELLINT_ZSH && strcmp(T.shell_cd_ack, "/etc") == 0,
           "integration: a reset (ESC c) keeps the announcement, unlike the prompt snapshot");
-    /* What "invalidates" means here: the reset throws the remembered `prompt$ ` row away, and the
-       end-of-burst snapshot then legitimately re-takes the BLANK row the reset left behind. So the anchor
-       moving to column 0 of a cleared screen is the evidence, not prompt_valid == 0 — which would be wrong
-       to expect, since a blank row is a perfectly describable prompt. */
+    /* What "invalidates" means here: the reset throws the remembered `prompt$ ` row away and the end-of-
+       burst snapshot legitimately re-takes the BLANK row it left. The anchor moving to column 0 of a
+       cleared screen is the evidence, not prompt_valid == 0 — a blank row is a describable prompt. */
     CHECK(T.prompt_valid == 1 && T.prompt_cx == 0 && T.cx == 0,
           "integration: and a reset replaces the remembered prompt with the blank row it left");
-    /* An announcement is an EVENT, not only a kind. The user can put another shell in front of us at the
-       prompt (the scripts wrap a bare `fish`/`bash`/`zsh`) and the outer one announces again when that one
-       exits; main.c has to see it happen, because it is what revives an integration the session had given up
-       on. The kind alone cannot say it: fish -> a nested fish -> back to fish announces three times, one kind. */
+    /* An announcement is an EVENT, not only a kind: the user can put another shell in front of us at the
+       prompt and the outer one announces again when that one exits, which is what revives an integration
+       the session had given up on. fish -> nested fish -> fish announces three times for one kind. */
     CHECK(T.shell_int_gen > 0, "integration: an announcement is countable, not just a kind");
     int gen_before = T.shell_int_gen;
     feed("\x1b_K;kai-term;integration;fish\x1b\\");
@@ -6485,9 +6365,9 @@ int main(void)
         const char *fseq = shellint_seq(SHELLINT_FISH, &flen);
         const char *bseq = shellint_seq(SHELLINT_BASH, &blen);
         const char *zseq = shellint_seq(SHELLINT_ZSH, &zl);
-        /* Measured (AGENT.md s91): C-x C-] fires in fish 4.6 AND bash 5.3, is inert in both when unbound, and
-           is unbound by default in both. One sequence, so a nested shell that never announced can never be
-           handed a byte that damages its line (F14 inserts `~` in bash; C-x q inserts `q` in fish). */
+        /* C-x C-] fires in fish 4.6 and bash 5.3, is unbound by default in both, and is inert in both
+           when unbound. One sequence for every shell, so a nested shell that never announced can never
+           be handed a byte that damages its line (F14 inserts `~` in bash; C-x q inserts `q` in fish). */
         CHECK(fseq && flen == 2 && memcmp(fseq, "\x18\x1d", 2) == 0,
               "integration: fish is asked with C-x C-] (measured: one key to fish, inert when unbound)");
         CHECK(bseq && blen == 2 && memcmp(bseq, "\x18\x1d", 2) == 0,
@@ -6551,9 +6431,8 @@ int main(void)
                   "integration: the bash script binds the bytes shellint_seq() sends");
             CHECK(rd > 0 && strstr(txt, "if [ -f \"$HOME/.bashrc\" ]") != NULL,
                   "integration: the bash script loads the user's own ~/.bashrc first");
-            /* The two things the user asked for on 2026-10-20, pinned in the text that actually ships. No
-               other check sees these: they live in a string the C code never runs, and losing one silently
-               loses the feature (the .scratch/s92 gate proves they work, but only while it is run). */
+            /* These two lines of the shipped scripts have no other check: they live in a string the C
+               code never runs, so losing one silently loses the feature. */
             CHECK(strstr(ftxt, "commandline -f repaint") != NULL,
                   "integration: the fish script repaints the prompt after the cd (measured: it then names the new directory)");
             CHECK(strstr(ftxt, "functions -q bash") != NULL && strstr(ftxt, "kai_term_nested bash") != NULL,
@@ -6577,10 +6456,9 @@ int main(void)
         shellint_request_path(dir, 3, req, sizeof req);
         CHECK(strstr(req, "cd-request.3") != NULL,
               "integration: every session gets its own request file (one band, N shells)");
-        /* main.c numbers sessions with a counter, not the tab index (a freed index is reused, and two live
-           sessions sharing a request file is how one shell ends up in another session's directory). So the id
-           grows past TAB_MAX in a long session and cleanup must still find the file — it scans the directory
-           instead of enumerating indices. */
+        /* main.c numbers sessions with a counter, not the tab index: a freed index is reused, and two
+           live sessions sharing a request file is how one shell ends up in another session's directory.
+           So the id grows past TAB_MAX and cleanup scans the directory instead of enumerating indices. */
         {
             char big[FM_PATH_MAX + 64];
             shellint_request_path(dir, 5000, big, sizeof big);
@@ -6609,10 +6487,9 @@ int main(void)
         CHECK(shellint_argv(SHELLINT_ZSH, dir, req, cmd, sizeof cmd) == 0 &&
               strstr(cmd, "ZDOTDIR=") && strstr(cmd, "zsh"),
               "integration: zsh is started with ZDOTDIR at our directory");
-        /* The nested-shell wrappers run `command bash --rcfile $KAI_TERM_INT_DIR/bash.bash`, so every kind
-           must be handed the directory in its environment — a wrapper that cannot find the other scripts
-           starts a shell with NO integration, silently (measured that way in .scratch/s92: no error, no
-           announcement, just a fallback). */
+        /* The nested-shell wrappers run `command bash --rcfile $KAI_TERM_INT_DIR/bash.bash`, so every
+           kind must be handed the directory in its environment — a wrapper that cannot find the other
+           scripts starts a shell with NO integration, silently. */
         int intdir_ok = 1;
         for (int k = SHELLINT_FISH; k <= SHELLINT_ZSH; k++) {
             if (shellint_argv(k, dir, req, cmd, sizeof cmd) != 0)
@@ -6637,15 +6514,9 @@ int main(void)
         }
     }
 
-    /* ---------- the configured default ink and paper (s101) ----------
-       The user's report: "Some border seems to have appeared recently ... It's probably the padding to prevent
-       cutting glyph corner, But would it be possible for it to be the exact same color as the background ? they
-       should use the same config line to set their background color." Measured cause: glClear paints the
-       Config.padding margin and the whole-cell remainder with Config.bg, while every blank, erased, scrolled-in
-       and reflowed cell was filled with the compile-time DEF_BG. With `background = 1c1c22` in their file the two
-       numbers differ, and the difference is a frame around the grid. These checks pin the ONE runtime value that
-       now owns both jobs — the colour a cell is painted with, and the sentinel that says a cell was never
-       written. */
+    /* ---------- the configured default ink and paper ----------
+       glClear paints the padding margin and the whole-cell remainder with Config.bg, while blank,
+       erased, scrolled-in and reflowed cells got the compile-time DEF_BG — a frame around the grid. */
     {
         Config d;
         config_default(&d);
@@ -6718,9 +6589,8 @@ int main(void)
     }
 
     /* ---------- the palette is process-wide RUNTIME state (the shape themes need) ----------
-       Entries 0-15 are the ANSI colours a theme file may set. The point of the whole block is the second
-       check: term_init() memsets the Term, so a palette stored in the Term is refilled from the built-in
-       base16 by every new tab and by every `ESC c` — a theme would then apply to the first session only. */
+       Entries 0-15 are the ANSI colours a theme may set. term_init() memsets the Term, so a palette
+       stored in the Term is refilled from the built-in base16 by every new tab and every `ESC c`. */
     {
         const uint32_t *pal = term_palette();
         CHECK(pal[0] == 0xff000000u && pal[1] == 0xffcc5555u && pal[15] == 0xffffffffu,
@@ -6728,10 +6598,9 @@ int main(void)
         CHECK(pal[16] == 0xff000000u && pal[232] == 0xff080808u && pal[255] == 0xffeeeeeeu,
               "palette: the computed parts are the cube's first entry and the grey ramp's ends");
 
-        /* The 6x6x6 cube, at the entries an application actually uses. This pinned a real defect: the level
-           formula was 55 + 41 * level, which is 260 at level 5, and 260 << 16 leaves 0x04 in the channel —
-           91 of the 216 entries came out near-black (measured before the fix: 196 = ff040000,
-           226 = ff050400, 231 = ff050504). Alpha stayed 0xff, so no alpha check could ever have seen it. */
+        /* The 6x6x6 cube, at the entries an application actually uses. The level formula was once 55 +
+           41 * level, which is 260 at level 5, and 260 << 16 leaves 0x04 in the channel — 91 of the 216
+           entries came out near-black. Alpha stayed 0xff, so no alpha check could ever have seen it. */
         CHECK(pal[196] == 0xffff0000u && pal[46] == 0xff00ff00u && pal[21] == 0xff0000ffu,
               "palette: 196/46/21 are full red/green/blue, the cube's top level is 255");
         CHECK(pal[226] == 0xffffff00u && pal[231] == 0xffffffffu && pal[233] == 0xff121212u,
@@ -6767,11 +6636,9 @@ int main(void)
               "palette: term_init() does NOT refill the palette — a second tab keeps the theme (on the old "
               "per-Term palette this is the built-in 0xffcc5555)");
 
-        /* Nor does a full reset: `reset` at the prompt sends ESC c. Two escapes on purpose — "\x1bc" is ONE
-           hex escape (0x1bc, out of range for a char, and gcc says so), which feeds a single 0xbc byte and
-           checks nothing about RIS. That trap was already recorded above (the prompt group) and was walked
-           into again here, because the "0 warnings" measurement covered `make -j8` (src only) and never the
-           test build; the `hex escape` group below is what keeps it from happening a third time. */
+        /* Nor does a full reset: `reset` at the prompt sends ESC c. Two escapes on purpose — "\x1bc" is
+           ONE hex escape (0x1bc, out of range for a char), which feeds a single 0xbc byte and checks
+           nothing about RIS. The `hex escape` group below is what keeps that trap from happening again. */
         feed("\x1b" "c");
         feed("\x1b[31mR\x1b[0m");
         CHECK(cellfg(0, 0) == 0xffe07f70u,
@@ -6812,10 +6679,8 @@ int main(void)
     }
 
     /* ---------- themes (src/theme.c): the file, the search, and who wins ----------
-       A theme is colours only, applied after kai-term.conf and only where that file said nothing. The
-       precedence rule is the user's own (s102): "value in the kai-term.conf should supersede the theme" —
-       which is only true if a `background =` line wins ABOVE and BELOW the `theme =` line, so both orders
-       are checked. Scratch tree under /tmp, HOME/XDG pointed at it, everything restored after. */
+       A theme is colours only, applied after kai-term.conf and only where that file said nothing — which
+       is only true if a `background =` line wins ABOVE and BELOW the `theme =` line. */
     {
         char base[128];
         snprintf(base, sizeof base, "/tmp/kterm_theme_%d", (int)getpid());
@@ -7040,15 +6905,9 @@ int main(void)
         rmdir(base);
     }
 
-    /* ---------- OSC 4 / 10 / 11 / 104: an application repainting the terminal (step 1d) ----------
-       Every number below is what a probe printed first (.scratch/s104/oscprobe2.c and rgbround.c), not what
-       was intended. The shape worth remembering: OSC 4/10/11/104 are the ONLY colour sequences a program can
-       send, so they are the whole of the "repaint the terminal from the inside" capability, and the user asked
-       for it AND an off switch in the same answer (s102 question 2). Two things this group exists to keep out:
-       a computed colour that overflows its channel (the s102 cube bug, found HERE by the probe before any check
-       was written), and a default-colour change that leaves blank cells non-pristine (the s101 border bug).
-       The escapes are written "\x1b" "]..." — one escape followed by a hex letter would swallow it, which is
-       the trap the group below this one scans for. */
+    /* ---------- OSC 4 / 10 / 11 / 104: an application repainting the terminal ----------
+       The ONLY colour sequences a program can send. Two things this group keeps out: a computed colour
+       that overflows its channel, and a default-colour change that leaves blank cells non-pristine. */
     {
         term_set_osc_colors(1);
         term_palette_reset();
@@ -7072,9 +6931,9 @@ int main(void)
         CHECK(term_palette()[196] == 0xff112233u,
               "osc: OSC 4 CAN repaint the cube (196) — a theme file cannot, and osc_colors = 0 is the switch");
 
-        /* --- the rgb: forms, and the channel-overflow gate (measured: the first version painted
-           rgb:ffff/ffff/ffff as #010100, because (0xffff + 0x80) >> 8 is 256 and 256 << 16 puts 0x01 in the
-           GREEN byte. The canonical X11 spelling of WHITE came out near-black — the s102 cube bug again.) --- */
+        /* --- the rgb: forms, and the channel-overflow gate ---
+           The first version painted rgb:ffff/ffff/ffff as #010100: (0xffff + 0x80) >> 8 is 256, and 256
+           << 16 puts 0x01 in the GREEN byte, so the canonical X11 spelling of WHITE came out near-black. */
         feed("\x1b" "]4;9;rgb:ff/ff/ff\x07");
         CHECK(term_palette()[9] == 0xffffffffu, "osc: rgb:ff/ff/ff (2-digit) is white");
         feed("\x1b" "]4;9;rgb:ffff/ffff/ffff\x07");
@@ -7178,10 +7037,9 @@ int main(void)
         feed("\x1b" "]11;#0000ff\x07");
         CHECK(c0->bg == 0xff0000ffu, "recolor: the painted cell follows the new paper");
         CHECK(c15->bg == 0xff0000ffu, "recolor: and so does the blank cell beside it");
-        /* THE invariant. cell_pristine() compares a cell against the CURRENT defaults, so a sweep that skips
-           the blanks leaves them at the old paper: still looking blank, no longer pristine. row_used() then
-           counts the 15 trailing blanks as content, reflow re-wraps them, and the line gains a wrap mark it
-           never had — the s101 class of bug, in the opposite direction. */
+        /* THE invariant. cell_pristine() compares a cell against the CURRENT defaults, so a sweep that
+           skips the blanks leaves them at the old paper: still looking blank, no longer pristine.
+           row_used() then counts the trailing blanks as content and reflow re-wraps them. */
         term_resize(&T, 6, 10);
         CHECK(T.g.wrap[0] == 0,
               "recolor: after OSC 11 a narrow resize must NOT wrap 'hello' — if the sweep skipped the blank "
@@ -7222,15 +7080,10 @@ int main(void)
         term_destroy(&T);
     }
 
-    /* ---------- importing a foreign theme (`--import-theme`, step 1e) ----------
-       The importer's job is a translation of NAMES and of COLOUR SPELLINGS, so the checks are about values:
-       what a given file becomes, not that a function ran. Every count and every colour below is what
-       .scratch/s105/importprobe printed for these exact texts — the corpus is the probe's corpus, and the
-       kitty file is the user's own ~/.config/kitty/themes/noctalia.conf, copied verbatim.
-       Two things this group exists to keep out: a format guessed wrong (a colour that looks fine and is
-       wrong), and a colour folded wrong — the xfce 12-hex-digit form is the same overflow class as the s102
-       cube and the s104 rgb:ffff rounding, and the check on it asserts the FOLDED value, not just "nonzero".
-       Scratch tree under /tmp, HOME/XDG pointed at it, everything restored after. */
+    /* ---------- importing a foreign theme (`--import-theme`) ----------
+       The importer translates NAMES and COLOUR SPELLINGS, so the checks assert values, not that a
+       function ran. What it keeps out: a wrong format guess, and a wrong fold — the xfce 12-hex form
+       overflows. */
     {
         char base[128];
         snprintf(base, sizeof base, "/tmp/kterm_import_%d", (int)getpid());
@@ -7257,7 +7110,7 @@ int main(void)
         mkdir(d_xdg, 0700);
         mkdir(d_home, 0700);
 
-        /* The corpus, verbatim from .scratch/s105/corpus/ (the kitty file is the user's own). */
+        /* The corpus: real theme files copied verbatim, not invented samples. */
         static const char *KITTY =
             "color0 #0b2c47\ncolor1 #fd4663\ncolor2 #64c3e8\ncolor3 #5b7ef6\n"
             "color4 #906cff\ncolor5 #90d4ef\ncolor6 #90a4ef\ncolor7 #f2f3f3\n"
@@ -7491,11 +7344,9 @@ int main(void)
               "import: and the replaced file starts with the import header");
 
         /* A `name` key names the file; the name is made safe first. */
-        /* The three names below are what the real binary wrote, measured before the check was written:
-           `13th Floor` -> 13th-Floor, `../../evil` -> evil (a leading '.' or '/' is dropped, so there is
-           nothing to escape with), and a non-ASCII name keeps only its ASCII runs. That last one is a known
-           limit worth naming: the C locale has no isalnum for UTF-8 bytes, so `über — Café!` becomes
-           `ber-Caf`. The theme still loads; only the file name is plain. */
+        /* The three names below are what the real binary wrote: `13th Floor` -> 13th-Floor, `../../evil`
+           -> evil (a leading '.' or '/' is dropped, so there is nothing to escape with), and a non-ASCII
+           name keeps only its ASCII runs — the C locale has no isalnum for UTF-8 bytes. */
         CHECK(wr_file(p_named, "name = 13th Floor\nbackground = #101010\n") == 0,
               "import: a named theme file was written");
         snprintf(want, sizeof want, "%s/kai-term/themes/13th-Floor.theme", d_xdg);
@@ -7507,12 +7358,9 @@ int main(void)
         CHECK(theme_import(p_named, dest, sizeof dest, 1) == 0 && !strcmp(dest, want),
               "import: `name = ../../evil` cannot leave the themes directory — the dots and slashes are gone");
 
-        /* A name longer than ThemeVals.name is CUT, and the cut is a reported decision rather than an
-           accident — it is the file name the theme is written under. Measured with the real binary before
-           the check was written: a 236-byte name keeps its first 127 bytes, logs `the theme's name is 236
-           bytes — only the first 127 are kept`, the import still succeeds, and the written file re-reads
-           through the same cap. The name alternates 'a'/'b' so an off-by-one in the cap changes the LAST
-           character of the stem as well as its length; the CLI suite pins the log line. */
+        /* A name longer than ThemeVals.name is CUT, and the cut is reported because the name is what the
+           theme file is written under: a 236-byte name keeps its first 127 bytes and the import still
+           succeeds. The name alternates 'a'/'b' so an off-by-one shows in the last character. */
         char longname[141], stem[128], body[512];
         for (int i = 0; i < 140; i++)
             longname[i] = (i % 2) ? 'b' : 'a';
