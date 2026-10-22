@@ -158,14 +158,15 @@ remain closed; read the commit state from git, never from here**)
   re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
   `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — NONE IN PROGRESS (s144 closed the tmux prompt bug)
+## Current Task — NONE IN PROGRESS (s144 closed the tmux prompt bug, CONFIRMED by the user)
 
-The user's report is fixed in this tree and pinned by 32 new checks. **What is owed to the user, not to a harness:
-looking at their own tmux window** — that the prompt's rows and their typing sit where the shell put them, and that
-`less`/`vim`/`htop` (the other heavy users of a scroll region) still look right. Also still owed from s142: running
-`sudo make install` on their own machine and looking at the result — the launcher icon, the window icon, and that
-`make uninstall` leaves their own `k-term` / `desktop-terminal` setup as it was. No install has been run against the
-host from this repo, deliberately.
+The user's report is fixed in this tree, pinned by 32 new checks, and **CONFIRMED in the user's window 2026-10-22
+(s144: "its good")** — so the tmux prompt fix is closed and is not to be re-asked about or re-proposed. What that
+confirmation does NOT cover: `less`/`vim`/`htop`, the other heavy users of a scroll region — nothing has been reported
+broken there and the oracle probe never exercised them, so they remain unverified rather than confirmed. Also still owed
+from s142: running `sudo make install` on their own machine and looking at the result — the launcher icon, the window
+icon, and that `make uninstall` leaves their own `k-term` / `desktop-terminal` setup as it was. No install has been run
+against the host from this repo, deliberately.
 
 ## Closed: s144 (2026-10-22) — a prompt inside tmux was drawn one row low and the typing overwrote it
 
@@ -221,6 +222,10 @@ multi-line prompt (starship, or zsh's with a right-hand side), which is exactly 
 with those values the old clamp and the new one are the same expression. So the change cannot alter anything for a shell
 that never sets a scroll region — it only changes behaviour for a program that addresses a row OUTSIDE a region it set,
 which is what tmux does. That is also why the pre-fix probe showed 0 differences for bash's single-line prompt.
+
+**Confirmed by the user 2026-10-22:** asked to look at their own tmux pane, they answered "its good". That closes the
+reported symptom. It is not a confirmation about `less`/`vim`/`htop` — the oracle probe only ever ran tmux with
+fish/bash/zsh, so those remain unverified (and nothing has been reported broken in them).
 
 **Commit record:** `afeff46` (`src/vt.c` + the 32 checks) and this journal/ISSUES entry. The commit was then re-verified
 self-contained from `git archive HEAD` into `.scratch/s144/verify_commit`: both builds exit 0 with 0 warning lines and
@@ -3041,11 +3046,12 @@ numbers and the intermediate check counts are in git.
    the installed result** — their menu showing the Kai-Term entry with the Kai-Term icon, the window's own icon, and
    `make uninstall` leaving their own `k-term`/`desktop-terminal` setup untouched. A real install is theirs to run
    (`sudo make install`); the suite stages with `DESTDIR=` and this repo has never written to the host.
-   **The tmux prompt fix is FINISHED (s144)** — `set_cursor_pos()` and `VPA` are bounded by the screen, the region still
-   bounds scrolling, relative motion and the `IL`/`DL` gate; 32 checks plus seven mutants in `.scratch/s144/ab/mutate.py`
-   pin both halves. Do not "tidy" the clamps back into one shared bound — the two halves are different rules and the
-   mutants say so. **What IS owed to the user's eye** is their own tmux pane: the prompt's rows and their typing where
-   the shell put them, and `less`/`vim`/`htop` (the other heavy users of a scroll region) still looking right.
+   **The tmux prompt fix is FINISHED and CONFIRMED by the user (s144)** — `set_cursor_pos()` and `VPA` are bounded by
+   the screen, the region still bounds scrolling, relative motion and the `IL`/`DL` gate; 32 checks plus seven mutants in
+   `.scratch/s144/ab/mutate.py` pin both halves, and the user answered "its good" about their own tmux pane. Do not
+   "tidy" the clamps back into one shared bound — the two halves are different rules and the mutants say so. The only
+   thing this fix leaves unverified is `less`/`vim`/`htop` (the oracle probe ran tmux with fish/bash/zsh only); nothing
+   is reported broken there, so it is a thing to look at IF such a report arrives, not an open question.
 2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look
    (a 2 px bar at the left edge of the cell, one second on / one second off while the window has focus, steady
    with `cursor_blink = 0`), then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'`

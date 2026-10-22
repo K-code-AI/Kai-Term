@@ -96,7 +96,7 @@ seven mutants of the rule and all seven are killed (the shipped bug: 20 failures
 `.scratch/s144/tmuxprobe2` runs a real `tmux new-session 'exec fish'` over a real pty and compares kai-term's grid with
 `tmux capture-pane -p` row by row plus the cursor: **0 differences in 6 stages** (startup, typing, 100x30→60x20, back,
 Enter, typing again); the same probe against the pre-fix parser reports **14 differences** and shows the user's exact
-row. `test_vt` **1665 -> 1697 checks, 0 failures**.
+row. `test_vt` **1665 -> 1697 checks, 0 failures**. **Confirmed in the user's window 2026-10-22** ("its good").
 
 **`make test` failed on one check about half the time and passed it the other half (2026-10-22, s142).** Symptom:
 `tests/test_vt.c:2815`, "spawn: the child holds NO pty", failed on some runs of `./bin/test_vt` and passed on others
