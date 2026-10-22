@@ -217,6 +217,11 @@ multi-line prompt (starship, or zsh's with a right-hand side), which is exactly 
 `dbg` **MODEL OK (0 problems)**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with 13 skipped`,
 `INSTALL 43/0`, and `make asan` exit 0 with the same four counts, 0 warning lines and no LeakSanitizer/UBSan report.
 
+**Commit record:** `afeff46` (`src/vt.c` + the 32 checks) and this journal/ISSUES entry. The commit was then re-verified
+self-contained from `git archive HEAD` into `.scratch/s144/verify_commit`: both builds exit 0 with 0 warning lines and
+the counts come out identical there (1697/0, MODEL OK, 384/0, 617/0, CLI 99/0 with 13 skipped, INSTALL 43/0).
+`git status -sb` shows only the untracked `.scratch/`, which is never `git add`-ed.
+
 ## Closed: s142 (2026-10-22) — `make install` / `make uninstall`, the icon set, and one flaky check
 
 **Asked for by the user at session start (2026-10-22):** "It would be nice to do a make install. Which would put the
