@@ -140,8 +140,11 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
   `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — s138 IN PROGRESS: continue the comment cleanup (the user's request 2026-10-21, still going
-2026-10-22). No feature work. See the s137 task block for the rule and the method; s138's plan is below it.
+## Current Task — s138 DONE (2026-10-22): the comment cleanup across `src/` and the header is finished — 5,671 ->
+3,613 comment lines, every file averaging 1.6-1.9 lines per comment, no block of 4+ lines left anywhere except the
+28 that carry a diagram, a protocol form or a parameter contract. `tests/` was NOT touched: the s137 plan scopes it
+to "if the user asks for the suites cleaned too", and they have not. See the s137 task block for the rule and the
+method, and the s138 journal entry for what each pass changed.
 
 ### s137 task block — comments: self-explanatory code, 1-2 lines, no jargon
 
@@ -2626,7 +2629,21 @@ numbers and the intermediate check counts are in git.
   lines left: 22 in the header (the `render_cursor()` parameter table and the `render_draw()` contract are the two
   longest, and both are contracts a caller needs) and 6 in `vt.c` (the grid-slot diagram, the kitty APC form, the APC
   channel, the clipboard-policy banner). Those are the ones a rewrite should NOT flatten. `fm.c`'s last one, the file
-  header, went with it (244 -> 243).
+  header, went with it (244 -> 243, `c66e0f2`).
+  **Two accuracy scans over the rewritten comments, both clean.** Every `name()` mentioned in a comment was checked
+  against the identifiers in the code: the only real cross-references ("see the krfd block at the top of the file",
+  "see the invariant above request_frame") both resolve, and the rest of the scanner's 92 hits are English words in
+  parentheses (`ceil()`, `min()`, `VBO()`). Every `` `key =` `` in a comment was checked against the 86 names the two
+  parsers actually accept: one hit, `key_xxx =` in `src/config.c`, which is a placeholder pattern, not a stale name.
+  **Final verification of the whole s138 tree:** `make clean && make -j8` and the test build both exit 0 at **0
+  warning lines**; `test_vt` **1673/0**, `dbg` **MODEL OK**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0
+  with 13 skipped`; and `make asan` exit 0 at **0 warning lines** with the same four counts and no LeakSanitizer or
+  UBSan report. `cmpcode.py` reported "code identical to HEAD" before every one of the six commits, which is what
+  makes the unchanged counts meaningful rather than lucky.
+  **What is left of this task, and it needs the user's decision:** `tests/` holds 1,896 comment lines across the four
+  C test files, untouched by s137-s138. The suites' comments are where the check messages live, and the messages are
+  read by whoever runs a failing test, so they are a different case from the shipped tree — but the same rule would
+  apply if the user wants them cleaned.
 
 ## Next Steps
 
