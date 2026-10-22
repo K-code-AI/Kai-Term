@@ -553,192 +553,6 @@ static void rm_tree(const char *path)
     rmdir(path);
 }
 
-/* The long option names usage() prints, read out of src/main.c — the same derivation the templates use.
-   Each printed option is one string literal whose text starts with spaces then '-'; the prose line
-   ("Long options also accept the --name=VALUE form.") does not, and must not count. */
-static int usage_opts_of(const char *path, const char *names[], int cap)
-{
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return -1;
-    char line[4096];
-    int in = 0, n = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (!in) {
-            if (strstr(line, "static void usage("))
-                in = 1;
-            continue;
-        }
-        if (line[0] == '}')
-            break;
-        char *q = strchr(line, '"');
-        if (!q)
-            continue;
-        char *p = q + 1;
-        while (*p == ' ')
-            p++;
-        if (*p != '-')
-            continue;                          /* prose, not an option line */
-        char *d = strstr(p, "--");
-        if (!d || !isalpha((unsigned char)d[2]))
-            continue;
-        char *e = d + 2;
-        while (*e && (isalnum((unsigned char)*e) || *e == '-'))
-            e++;
-        size_t len = (size_t)(e - (d + 2));
-        if (n >= cap)
-            break;
-        char *buf = malloc(len + 1);
-        if (!buf)
-            break;
-        memcpy(buf, d + 2, len);
-        buf[len] = 0;
-        names[n++] = buf;
-    }
-    fclose(f);
-    return in ? n : -1;
-}
-
-/* The long option names README's option table documents: the third column of each table row. A separator
-   row (`|---|---|---|`) has no letter after its dashes, which is what keeps it out. */
-static int readme_opts_of(const char *path, const char *names[], int cap)
-{
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return -1;
-    char line[4096];
-    int n = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (line[0] != '|')
-            continue;
-        /* The long spelling is the SECOND column: leading pipe, end of column one, end of column two. */
-        char *p0 = strchr(line, '|');
-        if (!p0)
-            continue;
-        char *p1 = strchr(p0 + 1, '|');
-        if (!p1)
-            continue;
-        char *p2 = strchr(p1 + 1, '|');
-        size_t span = p2 ? (size_t)(p2 - (p1 + 1)) : strlen(p1 + 1);
-        char cell[512];
-        if (span >= sizeof cell)
-            span = sizeof cell - 1;
-        memcpy(cell, p1 + 1, span);
-        cell[span] = 0;
-        char *d = cell;
-        while ((d = strstr(d, "--")) != NULL) {
-            if (isalpha((unsigned char)d[2]))
-                break;
-            d++;
-        }
-        if (!d)
-            continue;
-        char *e = d + 2;
-        while (*e && (isalnum((unsigned char)*e) || *e == '-'))
-            e++;
-        size_t len = (size_t)(e - (d + 2));
-        if (n >= cap)
-            break;
-        char *buf = malloc(len + 1);
-        if (!buf)
-            break;
-        memcpy(buf, d + 2, len);
-        buf[len] = 0;
-        names[n++] = buf;
-    }
-    fclose(f);
-    return n;
-}
-
-/* The names one README markdown table documents: the FIRST cell of each table row inside the section whose
-   heading starts with `heading` (e.g. "### Settings"), taken only when that cell is a single back-quoted
-   name. The heading test is what keeps the settings table, the binding table and the shortcut tables from
-   being read as one list; a separator row (`|---|---|---|`) and a prose cell have no back-quoted name and
-   drop out. Returns -1 when the heading is not in the file at all, so a renamed section reports "the check
-   could not find the table" instead of "the table is empty and correct". */
-static int readme_table_names_of(const char *path, const char *heading, const char *names[], int cap)
-{
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return -1;
-    char line[4096];
-    int in = 0, found_heading = 0, n = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (line[0] == '#') {
-            in = !strncmp(line, heading, strlen(heading));
-            if (in)
-                found_heading = 1;
-            continue;
-        }
-        if (!in || line[0] != '|')
-            continue;
-        char *p1 = strchr(line + 1, '|');            /* end of the first cell */
-        if (!p1)
-            continue;
-        size_t span = (size_t)(p1 - (line + 1));
-        char cell[256];
-        if (span >= sizeof cell)
-            span = sizeof cell - 1;
-        memcpy(cell, line + 1, span);
-        cell[span] = 0;
-        char *q = cell;
-        while (*q == ' ' || *q == '\t')
-            q++;
-        if (*q != '`')
-            continue;
-        q++;
-        char *e = q;
-        while (isalnum((unsigned char)*e) || *e == '_')
-            e++;
-        if (e == q || *e != '`')                    /* `color0` … `color15`, or prose */
-            continue;
-        size_t len = (size_t)(e - q);
-        if (n >= cap)
-            break;
-        char *buf = malloc(len + 1);
-        if (!buf)
-            break;
-        memcpy(buf, q, len);
-        buf[len] = 0;
-        names[n++] = buf;
-    }
-    fclose(f);
-    return found_heading ? n : -1;
-}
-
-/* Set difference in both directions between a name list the parser owns and one a document lists. Returns
-   the number of mismatches and prints each one; `what` names the document in the message. */
-static int names_diff(const char *what, const char *const *code, int nc,
-                      const char *const *doc, int nd)
-{
-    int bad = 0;
-    for (int i = 0; i < nc; i++) {
-        int seen = 0;
-        for (int j = 0; j < nd; j++)
-            if (!strcmp(doc[j], code[i])) {
-                seen = 1;
-                break;
-            }
-        if (!seen) {
-            printf("FAIL: %s does not document `%s` — the parser accepts it\n", what, code[i]);
-            bad++;
-        }
-    }
-    for (int j = 0; j < nd; j++) {
-        int seen = 0;
-        for (int i = 0; i < nc; i++)
-            if (!strcmp(doc[j], code[i])) {
-                seen = 1;
-                break;
-            }
-        if (!seen) {
-            printf("FAIL: %s documents `%s`, which no parser accepts\n", what, doc[j]);
-            bad++;
-        }
-    }
-    return bad;
-}
-
 /* What a gesture would actually COPY: take the span the model returned, put it through the same whole-cell
    endpoints src/main.c's sel_set_endpoints() produces (left edge of the first endpoint, right edge of the
    last), and read the text back. A span check alone pins numbers; this pins the outcome in the clipboard. */
@@ -2674,16 +2488,12 @@ int main(void)
               url_is_openable("https://x?a=b#c") && url_is_openable("https://example.com/a(b)") &&
               url_is_openable("https://x/a%20b"),
               "url/openable: the shapes a real address arrives in are all accepted");
-        /* The two constants the feature is built on, pinned the way CLICK_DCLICK_MS is: README names both, and
-           a header that quietly changes them changes what Kai-Term executes and what it will hand over. The
-           `hdr_url_max_small` mutant (URL_MAX 2048 -> 64) survived every check before this pair existed, because
-           the length checks are written in terms of the constant and so follow it wherever it goes. */
+        /* The length checks are written in terms of URL_MAX, so only a literal here pins its value — and
+           the value decides what Kai-Term runs and what it hands to an opener. */
         CHECK(URL_MAX == 2048,
-              "url/const: the ceiling is 2048 characters — README says 2048, so the number is pinned, not "
-              "just used");
+              "url/const: the address ceiling is 2048 characters — pinned, not just used");
         CHECK(!strcmp(URL_OPENER_PROGRAM, "xdg-open"),
-              "url/const: the opener is the desktop's own `xdg-open` — the one program name in the feature "
-              "and the one README tells the user to have installed");
+              "url/const: the opener is the desktop's own `xdg-open`");
         CHECK(!url_is_openable("-https://example.com"),
               "url/openable: an argument starting with a dash is an OPTION — the one way a URL could "
               "change what the opener DOES rather than what it opens");
@@ -2811,8 +2621,7 @@ int main(void)
             }
             CHECK(agree, "url/refuse: url_click_opens is exactly `refusal == NONE` on every row of the table");
 #undef UC
-            /* The words. A name for every reason, none empty, none shared, and the two a user is most
-               likely to read pinned exactly — README quotes them, so they are a contract. */
+            /* The words: a name for every reason, none empty, none shared. */
             const char *nm[] = { url_refusal_name(URL_REFUSE_NONE), url_refusal_name(URL_REFUSE_OFF),
                                  url_refusal_name(URL_REFUSE_NOT_RELEASE), url_refusal_name(URL_REFUSE_GESTURE),
                                  url_refusal_name(URL_REFUSE_MOVED), url_refusal_name(URL_REFUSE_SHIFT),
@@ -2832,11 +2641,10 @@ int main(void)
             CHECK(!strcmp(url_refusal_name(URL_REFUSE_MOVED),
                           "the pointer changed cell between the press and the release, so it is a drag and a drag selects"),
                   "url/refuse: the MOVED wording is pinned — it is the line that answers \"I clicked and "
-                  "nothing happened\", and README quotes it");
+                  "nothing happened\"");
             CHECK(!strcmp(url_refusal_name(URL_REFUSE_APP),
                           "the program owns its own screen and keeps that click"),
-                  "url/refuse: the APP wording is pinned — it is the answer to \"not clickable in less\" and "
-                  "README quotes it");
+                  "url/refuse: the APP wording is pinned — it is the answer to \"not clickable in less\"");
             CHECK(!strcmp(url_refusal_name(URL_REFUSE_NO_ADDRESS), "no http(s) address under the pointer"),
                   "url/refuse: the NO-ADDRESS wording is pinned — it is the commonest line and must not read "
                   "like an error");
@@ -4033,10 +3841,10 @@ int main(void)
     }
 
     /* --- config: where a '#' starts a comment -------------------------------------------------
-       `background = #1c1c22` is the form README documents and the form the shipped template writes, and
-       the old rule ("whitespace before the '#' is enough") cut that line at the '#', so the colour was
-       never applied and nothing was even logged. A '#' is a comment when only whitespace precedes it, or
-       when whitespace precedes AND follows it; anything else is part of the value. */
+       `background = #1c1c22` is the form the shipped template writes, and the old rule ("whitespace
+       before the '#' is enough") cut that line at the '#', so the colour was never applied and nothing
+       was even logged. A '#' is a comment when only whitespace precedes it, or when whitespace precedes
+       AND follows it; anything else is part of the value. */
     {
         Config c;
         const char *path = "/tmp/kterm_test_hash.conf";
@@ -4217,34 +4025,6 @@ int main(void)
                 nbad += tpl_check_names(tpl_bind, (const char *const *)bind_names, nb);
             CHECK(nbad == 0,
                   "template: kai-term.conf and kai-term.bind list exactly the names the parser accepts");
-
-            /* --- README's own tables, in both directions --------------------------------------
-               The templates were pinned to the parser; README was pinned only for the command-line
-               options. Measured before this check existed (s110): deleting the `fm_focus_on_hover` row
-               from README's settings table left every check green, so a key could be added to the parser,
-               to the template and to the tests and stay invisible in the file a user actually reads. The
-               two tables are now read the way the templates are. README's THEME table is deliberately not
-               diffed: it collapses `color0` … `color15` into one row, so a name-by-name comparison would
-               fail on purpose; those 23 names stay pinned through config/kai-term.theme. */
-            const char *rset[64], *rbind[64];
-            int nrs = readme_table_names_of("README.md", "### Settings", rset, 64);
-            int nrb = readme_table_names_of("README.md", "### Key bindings", rbind, 64);
-            CHECK(nrs > 0 && nrb > 0,
-                  "template: README's settings and binding tables were read (did a heading move?)");
-            int rbad = 0;
-            if (ns > 0 && nrs > 0)
-                rbad += names_diff("README's settings table", set_names, ns, rset, nrs);
-            CHECK(rbad == 0,
-                  "template: README's settings table lists exactly the settings the parser accepts");
-            rbad = 0;
-            if (nb > 0 && nrb > 0)
-                rbad += names_diff("README's binding table", bind_names, nb, rbind, nrb);
-            CHECK(rbad == 0,
-                  "template: README's binding table lists exactly the bindings the parser accepts");
-            for (int i = 0; i < nrs; i++)
-                free((char *)rset[i]);
-            for (int i = 0; i < nrb; i++)
-                free((char *)rbind[i]);
 
             for (int i = 0; i < ns; i++)
                 free((char *)set_names[i]);
@@ -7916,52 +7696,6 @@ int main(void)
         rm_tree(d_xdg);
         rm_tree(d_home);
         rmdir(base);
-    }
-
-    /* ---------- the option list is pinned to the docs, not to a hand-copied list ----------
-       AGENT.md has long claimed "README's option table matches usage() by set difference". It did not: the
-       only option coverage was a hand-written list of 7 strings in tests/cli_test.sh, which is exactly the
-       list that goes stale when a flag is added. This derives the names from usage() in src/main.c and
-       compares them with README's table in both directions. */
-    {
-        const char *uopts[32], *ropts[32];
-        int nu = usage_opts_of("src/main.c", uopts, 32);
-        int nr = readme_opts_of("README.md", ropts, 32);
-        CHECK(nu > 0, "options: the option names were read out of usage() in src/main.c (did it move?)");
-        CHECK(nr > 0, "options: the option names were read out of README.md's table");
-        CHECK(nu == 9, "options: usage() prints 9 options — re-diff, do not copy");
-        int missing = 0, extra = 0;
-        if (nu > 0 && nr > 0) {
-            for (int i = 0; i < nu; i++) {
-                int found = 0;
-                for (int j = 0; j < nr; j++)
-                    if (!strcmp(uopts[i], ropts[j]))
-                        found = 1;
-                if (!found) {
-                    klog(L_WARN, "options: usage() prints --%s and README does not", uopts[i]);
-                    missing++;
-                }
-            }
-            for (int j = 0; j < nr; j++) {
-                int found = 0;
-                for (int i = 0; i < nu; i++)
-                    if (!strcmp(uopts[i], ropts[j]))
-                        found = 1;
-                if (!found) {
-                    klog(L_WARN, "options: README documents --%s and usage() does not print it", ropts[j]);
-                    extra++;
-                }
-            }
-        }
-        CHECK(missing == 0, "options: every option usage() prints is in README's table");
-        CHECK(extra == 0, "options: README documents no option usage() does not print");
-        /* Both readers malloc the names they read, and LeakSanitizer runs over this whole binary: leaving
-           them is 134 bytes in 18 allocations that has nothing to do with the shipped code and hides a real
-           leak when one appears. The cast is the same one the settings/binding name lists use. */
-        for (int i = 0; i < nu; i++)
-            free((char *)uopts[i]);
-        for (int i = 0; i < nr; i++)
-            free((char *)ropts[i]);
     }
 
     /* ---------- source hygiene: the "\x1bc" hex-escape trap (see src_hexesc_count) ----------

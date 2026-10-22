@@ -1657,13 +1657,9 @@ static void test_preview_select(void)
     CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: and its band follows the same rule");
 
     /* ---- a line WIDER than the pane: the copy is what the row shows, not the file's whole line ----
-       The preview cuts a long line at the pane's right edge rather than wrapping it, and the pane never
-       scrolls sideways, so the tail of a line wider than the pane is not in any cell to select. Measured
-       (.scratch/s116/longline): in a 30-column pane the row span is 2..29 and the copy is 28 bytes of a
-       130-character line. This check exists because README and ISSUES both said the copy gives back "the
-       whole line as the file holds it" — a claim the code does not support, and the reason both files now
-       say what the row can actually reach. It sits last in the group because installing a preview replaces
-       the one the checks above read. */
+       The preview cuts a long line at the pane's right edge and the pane never scrolls sideways, so the
+       tail of a line wider than the pane is not in any cell to select. It sits last in the group because
+       installing a preview replaces the one the checks above read. */
     fm_select(&fm, find_pos(&fm, "long.txt"));
     CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvsel: the long-line file is previewed");
     fm_install_preview(&fm, fm_preview_build(path, seq));
