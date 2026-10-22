@@ -2,6 +2,9 @@
 
 Kai-Term is a lightweight terminal emulator for Linux, written in C and built for Wayland.
 
+<img width="900" height="525" alt="Kai-Term" src="https://github.com/user-attachments/assets/651ed0f3-0f76-4d65-81b4-049a3f712a7e" />
+
+
 ## Features
 
 - **Integrated file manager** — Browse directories, preview images and text files, and change the shell's working directory without losing your current command.
