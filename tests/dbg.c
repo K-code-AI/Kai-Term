@@ -1,6 +1,5 @@
-/* Kai-Term — grid model sanity checker (no display needed).
- * Verifies the row[] layout invariant after each stage and prints a compact
- * view of the scrollback + viewport row buffers. */
+/* Grid-model sanity checker: drives the row[] grid with escape sequences and no display, and after
+ * every stage checks that row[] still holds no NULL and no buffer twice. */
 #include "kai-term.h"
 
 static Term T;
@@ -11,8 +10,8 @@ static void feed(const char *s){ term_parse(&T,(const uint8_t*)s,strlen(s)); }
 static void chk(const char *stage){
     Grid *g = &T.g;
     int used = g->scroll_off + g->rows;
-    /* the scrollback a viewport of the CURRENT height can hold: growing the viewport eats into it, so
-       scrollback_max alone is not a bound (that is what let scroll_up touch row[rcap]). */
+    /* how much scrollback a viewport of the CURRENT height can hold: growing the viewport eats into
+       it, so scrollback_max alone is not a bound. */
     int sbmax = g->scrollback_max < g->rcap - g->rows ? g->scrollback_max : g->rcap - g->rows;
     if (g->scroll_off < 0 || g->scroll_off > sbmax) {
         printf("BAD scroll_off=%d (max %d) after %s\n", g->scroll_off, sbmax, stage);
@@ -90,8 +89,7 @@ int main(void){
     chk("DL");
     feed("\x1b[2J\x1b[H\x1b[5;6H\x1b""7z\x1b""8Y");
     chk("save");
-    /* CSI 3 J (erase saved lines): the viewport rows move to the top slots and the rest are
-       blanked, so row[] must stay a NULL-free, duplicate-free permutation. */
+    /* ED 3 (erase saved lines): the viewport rows move to the top slots and the rest are blanked. */
     feed("\x1b[2J\x1b[H");
     for(int i=1;i<=12;i++){char l[32];snprintf(l,sizeof l,"E%02d\r\n",i);feed(l);}
     chk("ed3-before");
@@ -120,9 +118,7 @@ int main(void){
     chk("resize-grow");
     feed("\x1b[3J");                      /* ED 3 with a tiny scrollback (rcap = rows + 2) */
     chk("ed3-small");
-    /* REFLOW: a width change joins the soft-wrapped rows and re-breaks them, allocating a fresh row
-       buffer per produced line. row[] must still be a NULL-free, duplicate-free permutation of
-       exactly rcap buffers after every step, and the scroll anchors must stay inside the grid. */
+    /* a width change joins the soft-wrapped rows and re-breaks them into fresh buffers. */
     term_destroy(&T);
     term_init(&T, 6, 20, 6);
     for (int i = 0; i < 3; i++) { for (int k = 0; k < 5; k++) feed("abcdefghij"); feed("\r\n"); }
@@ -140,12 +136,11 @@ int main(void){
     chk("reflow-overflow-before");
     term_resize(&T, 4, 4);   chk("reflow-overflow");
     term_resize(&T, 2, 40);  chk("reflow-overflow-back");
-    /* GROW the viewport past half of rcap and then keep printing: rcap is fixed, so the usable
-       scrollback becomes rcap - rows (< scrollback_max). Scrolling past that must evict from the
-       oldest end, never walk off the end of row[] (the segfault this stage covers). */
+    /* rcap is fixed, so a taller viewport leaves less scrollback (rcap - rows): scrolling past that
+       must evict from the oldest end, never walk off the end of row[]. */
     term_destroy(&T);
     term_init(&T, 4, 20, 20);            /* rcap = 24, scrollback_max = 20 */
-    term_resize(&T, 12, 20);             /* usable scrollback is now 24 - 12 = 12 */
+    term_resize(&T, 12, 20);
     chk("growthen-scroll-before");
     for (int i = 1; i <= 60; i++) { char l[32]; snprintf(l, sizeof l, "G%02d\r\n", i); feed(l); }
     chk("growthen-scroll");
@@ -155,12 +150,9 @@ int main(void){
     chk("growthen-shrink");
     for (int i = 1; i <= 40; i++) { char l[32]; snprintf(l, sizeof l, "H%02d\r\n", i); feed(l); }
     chk("growthen-scroll2");
-    /* SHRINK with a cursor to preserve (the zoom leftover-lines bug). The viewport now
-       gives up its BOTTOM rows while the cursor has rows below it, which blanks a slot IN PLACE
-       instead of sliding the window down one slot — a different code path than the old top-row-into-
-       scrollback one, so row[] must be re-checked as a NULL-free, duplicate-free permutation for
-       both, plus the alternate screen (grid_resize_plain gets the cursor slot) and a whole zoom sweep
-       where cols AND rows change together. */
+    /* shrinking while the cursor has rows below it blanks slots IN PLACE instead of sliding the window
+       down one slot, so it is a different path from the top-row-into-scrollback one and needs its own
+       stage. */
     term_destroy(&T);
     term_init(&T, 6, 20, 6);                 /* rcap = 12 */
     for (int i = 1; i <= 4; i++) { char l[32]; snprintf(l, sizeof l, "Z%02d\r\n", i); feed(l); }
