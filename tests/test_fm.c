@@ -1,12 +1,8 @@
-/* Unit tests for the file manager model (src/fm.c).
- *
- * No display, no Wayland, no EGL: the tests build a REAL directory tree under /tmp (directories, a dotfile, a
- * dangling symlink, a FIFO, an unreadable directory, four image formats, a binary file) and drive the model
- * through it. A fake filesystem would test the fake, not the scanner.
- *
- * The tree is removed at the end. The same sources run under LeakSanitizer as bin/test_fm_asan (`make asan`),
- * so every fm_* allocation must be reachable from fm_destroy() or fm_scan_free()/fm_preview_free().
- */
+/* Unit tests for the file manager model (src/fm.c). No display, no Wayland, no EGL: the tests build a
+   REAL directory tree under /tmp (directories, a dotfile, a dangling symlink, a FIFO, an unreadable
+   directory, four image formats, a binary file) and drive the model through it — a fake filesystem would
+   test the fake, not the scanner. The same sources run under LeakSanitizer as `make asan`, so every fm_*
+   allocation must be reachable from fm_destroy() or fm_scan_free()/fm_preview_free(). */
 #include "kai-term.h"
 
 #include <dirent.h>
@@ -963,10 +959,9 @@ static void test_preview_scroll(void)
     fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(pane_shows(&fm, "L40") >= 0, "pvscroll: the last line is reachable");
 
-    /* The resize clamp bites when the pane GROWS: a taller pane shows more of the body, so the range
-       shrinks and a body scrolled to the OLD bottom would be painted into blank rows. The other direction
-       is the counter-intuitive one — a SHORTER pane has MORE to scroll (40 lines in a 6-row pane is 36
-       rows of range, not less) — so a check written the obvious way round passes with no clamp at all. */
+    /* The resize clamp bites when the pane GROWS: a taller pane shows more, the range shrinks, and a
+       body scrolled to the OLD bottom would be painted into blank rows. The other direction is counter-
+       intuitive — a SHORTER pane has MORE to scroll (40 lines in a 6-row pane is 36 rows of range). */
     fm_set_size(&fm, 40, 12, 30, 40);
     CHECK(fm_preview_scroll_max(&fm) == 40 - (40 - 2), "pvscroll: a taller pane has less left to scroll");
     CHECK(fm.pv_scroll == 2, "pvscroll: and the resize pulls the scroll back inside what it can show");
@@ -1012,10 +1007,10 @@ static void test_preview_scroll(void)
     fm_destroy(&fm);
 }
 
-/* The same body, driven by KEYS while the preview pane owns the keyboard (main.c routes the band's
-   Page_Up/Page_Down/Home/End here when focus == FM_FOCUS_PREVIEW). What these pin is what the wheel does not
-   exercise: what ONE page is, and that Home/End mean the first and last line of the BODY. A page has to be
-   exactly what the pane shows at once — one row off either way re-shows a line or skips one. */
+/* The same body, driven by KEYS while the preview pane owns the keyboard (main.c routes
+   Page_Up/Page_Down/Home/End here when focus == FM_FOCUS_PREVIEW). A page has to be exactly what the
+   pane shows at once — one row off either way re-shows a line or skips one — and Home/End mean the first
+   and last line of the BODY. */
 static void test_preview_keys(void)
 {
     FileMgr fm;
@@ -1312,11 +1307,9 @@ static void test_view_toggle(void)
 }
 
 /* ---------- a text selection inside the preview pane ----------
-   The pointer's half of this feature lives in main.c, which is in no test binary; everything about WHAT a
-   gesture selects lives in fm.c and vt.c, and that is what these pin. The body of a text preview starts at
-   row 2, column 2: rows 0-1 are the head (name, then path), and the two-column gutter is never written,
-   which is what makes the row gesture skip it. Every span below was read off this exact pane (30 columns x
-   12 rows, words.txt) before the CHECK was written. */
+   Everything about WHAT a gesture selects lives in fm.c and vt.c (the pointer's half is in main.c, in no
+   test binary). The body of a text preview starts at row 2, column 2: rows 0-1 are the head (name, then
+   path) and the two-column gutter is never written, which is what makes the row gesture skip it. */
 
 /* The text a span covers, read back out of the pane: a check that names the WORD a gesture selects says more
    than one that names two column numbers. */
@@ -1331,10 +1324,9 @@ static void span_text(const FmPane *p, int y, int x0, int x1, char *out, size_t 
     out[o] = 0;
 }
 
-/* Does the painted band agree with the model, cell for cell? The rule term_cell_highlightable() enforces: a
-   band lands only on a cell that HOLDS something (a glyph, a real space, or the continuation half of a wide
-   glyph), never on the never-written space past the end of a line. Counting the disagreements covers every
-   cell of the pane in one check. */
+/* Does the painted band agree with the model, cell for cell? term_cell_highlightable(): a band lands
+   only on a cell that HOLDS something (a glyph, a real space, or the continuation half of a wide glyph),
+   never on the never-written space past the end of a line. */
 static int band_mismatches(const FileMgr *fm, uint32_t sel)
 {
     const FmPane *p = &fm->prev;
@@ -1531,10 +1523,9 @@ static void test_preview_select(void)
     ok = fm_preview_word_span(&fm, 4, 3, &x0, &x1);
     CHECK(ok == 1 && x0 == 2 && x1 == 5,
           "pvsel: clicking the second glyph's anchor gives the same run, never half a pair");
-    /* A trailing mark that is NOT ASCII: the explicit list in trailing_punct() (the same table the terminal's word
-       selection uses) is what cuts it, and the wide-pair rule is what keeps the cut from splitting it. Row 5
-       is 元 at cols 2-3 and 。 (U+3002) at cols 4-5, so without the list the span would be 2..5 — this is the
-       check an ASCII-only rule fails. */
+    /* A trailing mark that is NOT ASCII: the explicit list in trailing_punct() (the same table the
+       terminal's word selection uses) cuts it, and the wide-pair rule keeps the cut from splitting it.
+       Row 5 is 元 at cols 2-3 and 。 (U+3002) at 4-5, so an ASCII-only rule would give the span 2..5. */
     ok = fm_preview_word_span(&fm, 2, 5, &x0, &x1);
     span_text(&fm.prev, 5, x0, x1, w, sizeof w);
     CHECK(ok == 1 && x0 == 2 && x1 == 3 && !strcmp(w, "\xe5\x85\x83"),
@@ -1590,10 +1581,9 @@ static void test_preview_select(void)
     one[0] = 'Z';
     n = fm_preview_selection_text(&fm, one, 1);
     CHECK(n == 0 && one[0] == 0, "pvsel: a one-byte buffer copies nothing and stays terminated");
-    /* cap == 0 has no byte to terminate. The first guard covered only the opening store (`if (cap) out[0] = 0;`)
-       and left the terminating one as `out[n < cap ? n : cap - 1]` — for cap 0 that is `out[-1]`. The buffer
-       here is deliberately the SECOND byte of an array: `pad + 1 - 1` is `pad[0]` by pointer arithmetic, so
-       this check sees the underflow without needing a sanitizer build. */
+    /* cap == 0 has no byte to terminate: a terminating store written `out[n < cap ? n : cap - 1]`
+       reaches `out[-1]`. The buffer here is deliberately the SECOND byte of an array, so `pad + 1 - 1`
+       is `pad[0]` and the check sees the underflow without a sanitizer build. */
     char pad[2];
     pad[0] = 'Z';
     pad[1] = 'Y';
@@ -1643,9 +1633,9 @@ static void test_preview_select(void)
     CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: and its band follows the same rule");
 
     /* ---- a line WIDER than the pane: the copy is what the row shows, not the file's whole line ----
-       The preview cuts a long line at the pane's right edge and the pane never scrolls sideways, so the
-       tail of a line wider than the pane is not in any cell to select. It sits last in the group because
-       installing a preview replaces the one the checks above read. */
+       The preview cuts a long line at the pane's right edge and never scrolls sideways: the tail of a
+       wider line is not in any cell to select. It sits last because installing a preview replaces the
+       one above. */
     fm_select(&fm, find_pos(&fm, "long.txt"));
     CHECK(fm_preview_request(&fm, &seq, path, sizeof path) == 1, "pvsel: the long-line file is previewed");
     fm_install_preview(&fm, fm_preview_build(path, seq));
@@ -1662,10 +1652,8 @@ static void test_preview_select(void)
 }
 
 /* ---------- the wheel over the band and the keyboard (fm_wheel_focus) ----------
-   Hovering the pointer over the band used to take the keyboard: fm_wheel() in main.c called fm_focus_set()
-   on its fifth line, before it knew whether the gesture had scrolled anything, and returned early when it
-   had not — so a wheel tick with a sub-cell delta moved the keyboard and did nothing else. The first three
-   checks here are that bug: they fail against the old unconditional rule even with fm_focus_on_hover = 1. */
+   Hovering the band used to take the keyboard: fm_wheel() called fm_focus_set() before it knew whether
+   the gesture had scrolled, so a tick with a sub-cell delta moved the keyboard and did nothing else. */
 static void test_wheel_focus(void)
 {
     /* A gesture that scrolled nothing never moves the keyboard — in EITHER mode. This is the fix, not a
