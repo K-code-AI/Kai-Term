@@ -4,6 +4,10 @@ Read this + ISSUES.md before touching the project. User-facing docs: README.md. 
 "Open". Root causes of long-fixed bugs: git history, not this file — `git show d5afe4a:ISSUES.md`.
 Host/tool facts: `/home/kaida/Project/ENVIRONMENT.md` (outside the repo on purpose — not project documentation).
 
+**`README.md` is the user's file — never edit it, and never write a check that reads it.** A session that wants a
+sentence in it puts the proposal in `README-temp` (git-ignored). README is deliberately short; long reference tables
+belong in `config/` (already pinned) or a `docs/` page, not in README.
+
 **The user always tests with the freshly built binary from `/home/kaida/Project/Kai-Term/bin/kai-term`.** When they
 report that a feature does not work, that binary and that source tree are what they mean. Never suggest they are
 running an older or installed copy, never go looking at an installed binary or a launcher for it, and never touch
@@ -27,7 +31,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-21, s135 — **GREEN; the s102 plan's seven steps are all closed and the hover
+## Current Status (re-measured 2026-10-22, s139 — **GREEN; the s102 plan's seven steps are all closed and the hover
 underline the user then asked for is built, checked, fixed (it was drawing across the letters) and CONFIRMED in the
 user's window (s136) — committed as `24638cc` and pushed; read the commit state from git, never from here**)
 
@@ -38,8 +42,10 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites — green, s133/s134 included, every number below re-run at s135's close-out.** Both builds clean (exit 0, 0 warning lines) and
-  `./bin/test_vt` reports **1673 checks, 0 failures** (the confirm-quit wording, the process name, the box
+- **Suites — green; every number below re-run at s139. `test_vt` is 1665 checks, not 1673: the 8 checks that read
+  README were deleted on the user's instruction ("we don't ever need to test the README"), and they were the two
+  failures the tree had been carrying since the README was rewritten.** Both builds clean (exit 0, 0 warning lines) and
+  `./bin/test_vt` reports **1665 checks, 0 failures** (the confirm-quit wording, the process name, the box
   geometry, the four wrap cuts, the `middle_click_paste`, `bell` and `click_opens_url` config groups, the 16-case
   pointer-precedence table, the BEL-rings / BEL-terminates-a-string split, the `bell_strength` ladder, the 15-check
   `mux_bell_live` drawn-vs-hidden group, the 18-check `bell_is_ours` table, and the **157-check `url` groups**:
@@ -77,17 +83,17 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   cut, because the cut decides the file name an imported theme lands under; the leak went by freeing the two
   name lists. Both fixes are pinned: the C check asserts the exact 127-byte stem, the CLI group greps the log
   line.
-- **Docs are pinned to the code by check, not by eye:** `tests/test_vt.c` reads the **40** setting names (the
-  hard-coded `ns == 40` beside the derived one — 36 -> 37 in s120 for `confirm_quit`, 37 -> 38 in s125 for
-  `middle_click_paste`, 38 -> 39 in s126 for `bell`, 39 -> 40 in s129 for `click_opens_url`), the **24** binding names out of the two strcmp ladders
-  in `src/config.c`, the **23** theme names out of `src/theme.c`'s `THEME_KEYS` table, and the **9** long options
-  out of `usage()` in `src/main.c`, and
-  compares each set with `config/kai-term.conf` + `config/kai-term.bind` + `config/kai-term.theme` + README's
-  tables — the option table by `readme_opts_of()`, README's **settings** and **binding** tables by
-  `readme_table_names_of()` + `names_diff()` (added s110: before it, deleting a settings row from README left
-  every check green). A name added to a parser without a template line, a template line no parser knows, a
-  template line the parser does not know, and a bogus README row (a `made_up_key`) each fail a check. Never
-  hand-copy a name list into a test — derive it from the source.
+- **The shipped templates are pinned to the parsers by check, not by eye; documents are not tested at all.**
+  `tests/test_vt.c` reads the **40** setting names (the hard-coded `ns == 40` beside the derived one — 36 -> 37 in
+  s120 for `confirm_quit`, 37 -> 38 in s125 for `middle_click_paste`, 38 -> 39 in s126 for `bell`, 39 -> 40 in s129
+  for `click_opens_url`), the **24** binding names out of the two strcmp ladders in `src/config.c`, and the **23**
+  theme names out of `src/theme.c`'s `THEME_KEYS` table, and compares each set with `config/kai-term.conf` +
+  `config/kai-term.bind` + `config/kai-term.theme`. A name added to a parser without a template line, a template
+  line no parser knows, a template line the parser does not know, and a bogus template line each fail a check.
+  Never hand-copy a name list into a test — derive it from the source. README is read by NO check: the readers
+  that did (`readme_table_names_of`, `readme_opts_of`, `usage_opts_of`, `names_diff`) were deleted in s139 on the
+  user's instruction, and README is theirs to edit — a session that wants a sentence in it writes it into
+  `README-temp` instead.
 - **No leftover probe or experiment in the tree, and no `TODO`/`FIXME`/`XXX`.** `grep -rnE
   "TEMPORARY|PROBE|EXPERIMENT|NEGATIVE" src/ include/ tests/` returns only the three lines in
   `tests/test_render.c` that WRITE a probe file — the token is split by string concatenation there on purpose,
@@ -140,7 +146,29 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
   `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — s138 DONE (2026-10-22): the comment cleanup across `src/` and the header is finished — 5,671 ->
+## Current Task — s139 (2026-10-22, IN PROGRESS): the same comment rule applied to `tests/`
+
+**The user asked for it** (session start, 2026-10-22): "tests/ holds 1,896 comment lines across the four C test
+files" + the same rule quoted verbatim (self-explanatory code, 1-2 lines, no jargon, understandable to a newcomer).
+That is the "only if the user asks for the suites cleaned too" condition in the s137/s138 plan, now satisfied.
+
+**Also from the user, and it changes the rules for every future session:** they have taken over all edits to
+`README.md`. Do not edit it; proposals go in `README-temp` (git-ignored). And no test reads README — the 8 checks that
+did were deleted mid-session (`95fb09b`) and `test_vt` went **1673/2 -> 1665/0**: those two failures had been sitting
+on the committed tree ever since the user shortened README. See the s139 journal entry.
+
+**Plan.** (1) Baseline: both builds + the four suites + the CLI suite, and the comment counts of the four test files,
+measured before any edit — the baseline came back RED on two README checks, which is why the removal above happened
+before any comment was touched. (2) One file at a time, smallest first (`dbg.c`, `test_render.c`,
+`test_fm.c`, `test_vt.c`): dump every comment, rewrite in place with the existing batch tooling, then prove with
+`cmpcode.py` that the code is identical to HEAD and that every suite prints the SAME check count. In a test file the
+check MESSAGES are part of the interface — they are what a failing run prints — so a message is only rewritten when
+it is jargon or longer than a reader needs; the check count never moves. (3) Commit per file.
+
+**Expected outcome:** the four suites green at unchanged counts, comment lines well under 1,896, no block of 4+ lines
+that is not a table/diagram, and `jargon.py` clean over `tests/`.
+
+## Closed: s138 (2026-10-22) — the comment cleanup across `src/` and the header is finished — 5,671 ->
 3,613 comment lines, every file averaging 1.6-1.9 lines per comment, no block of 4+ lines left anywhere except the
 28 that carry a diagram, a protocol form or a parameter contract. `tests/` was NOT touched: the s137 plan scopes it
 to "if the user asks for the suites cleaned too", and they have not. See the s137 task block for the rule and the
@@ -2646,6 +2674,47 @@ numbers and the intermediate check counts are in git.
   apply if the user wants them cleaned.
   **Pushed:** `git fetch` first (nothing new upstream), then `git push origin main` moved `origin/main` from `2ec88c3`
   to `324ac34` — the 20 commits of s137 and s138 are all upstream, and `git status -sb` reads no ahead/behind.
+- **2026-10-22, s139 — the comment rule moves to `tests/` (in progress).** The user asked for it, quoting the same
+  rule they gave for `src/`, and named the number: 1,896 comment lines in the four C test files. Measured with the
+  tokenizer before any edit — `dbg.c` 31 lines/18 comments, `test_fm.c` 224/117, `test_render.c` 280/85 (avg 3.29,
+  the worst file in the tree), `test_vt.c` 1361/624 — total **1,896**, so their number is the tokenizer's number.
+  **New standing rule from the user: `README.md` is theirs. Never edit it.** Anything a session wants to add goes in
+  `README-temp`, which is now in `.gitignore`.
+  **Baseline, re-measured in this session rather than carried over:** `make clean && make -j8` and
+  `make bin/test_vt bin/dbg bin/test_fm bin/test_render` both exit 0 at **0 warning lines**; `dbg` **MODEL OK (0
+  problems)**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with 13 skipped`
+  (`KAI_TERM_TEST_NO_WINDOW=1`, so no window was mapped on the user's desktop) — but **`test_vt` is 1673 checks,
+  2 FAILURES** at HEAD. That is not this session's doing and it is not a flake:
+  - `tests/test_vt.c:4232` — `readme_table_names_of("README.md", "### Settings")` and `"### Key bindings"` both
+    return -1: the user's `0297323 "Readme Update"` (HEAD, 2026-10-21 21:17, 63 insertions / 863 deletions) rewrote
+    README as a short overview and those two headings are gone, so the two-way name diff has no table to read.
+  - `tests/test_vt.c:7931` — `readme_opts_of()` reads the long option name out of the SECOND cell of each table row;
+    README's option table is now two columns (`| -e COMMAND | Run a command instead of the default shell |`), so the
+    second cell is prose and 0 names come back.
+  The s138 close-out's "1673/0" was true when it was written; `0297323` landed after it and made it stale. Do not
+  "fix" this by editing README — the user owns it. The decision (restore the tables, or weaken the pins to what the
+  short README actually promises) is theirs; the tables a restore needs are written out in `README-temp`.
+  **The user answered while the session was running: the README checks go.** "we don't ever need to test the README,
+  that's not a useful test to see if the program works properly. The only thing it shows is that the readme is light
+  as it should be. IF you really need to create a Docs directory and make new documentations. README should stay
+  light." Done in `95fb09b`: `readme_table_names_of()`, `readme_opts_of()`, `usage_opts_of()` (it existed only to be
+  diffed against README) and `names_diff()` (only those two called it) are deleted, with the 8 checks that used them.
+  Four comments and three check MESSAGES that cited README ("README says 2048", "README quotes it", "the form README
+  documents") were rewritten to state their own reason, because with README short those citations are simply false —
+  it no longer quotes the refusal wording, `URL_MAX` or `xdg-open`. `test_fm.c`'s 8-line essay about README and
+  ISSUES having promised a whole-line copy went to 4 lines with the history cut.
+  **Measured after:** `make clean && make -j8` and the test build exit 0 at **0 warning lines**; `test_vt` **1665/0**
+  (1673/2 before — 8 checks removed, 2 failures removed, nothing else moved), `dbg` **MODEL OK (0 problems)**,
+  `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with 13 skipped`. `grep -rn README tests/*.c` is empty, so
+  no test reads a document any more. What the suite still pins about configuration: the three shipped templates in
+  `config/` are set-differenced against the three parsers (`cfg_names_of`, `theme_names_of`, `tpl_check_names`), and
+  `tests/cli_test.sh` runs the real binary over its flags. What is no longer pinned anywhere is whether a document
+  lists every setting — deliberately.
+  `README-temp` (git-ignored, added to `.gitignore`) now holds the reference tables the deleted checks used to read,
+  re-derived from the tree rather than copied from the old README: 40 settings with the defaults the shipped template
+  writes, 24 bindings, and the 9 options `usage()` prints. Two claims in it were wrong when first written and were
+  corrected by reading the code — `log =` takes a number (0-3), not a word, and an empty `shell =` falls back to
+  `/bin/bash`, not `/bin/sh`. Verify a claim against the source before writing it down, even in a scratch document.
 
 ## Next Steps
 
@@ -2782,11 +2851,13 @@ numbers and the intermediate check counts are in git.
 
 ```
 Kai-Term/
-├── .gitignore                   # bin/, build/, *.o/*.obj/*.d/*.so/*.a, editor leftovers, docs/ARCHITECTURE.md
+├── .gitignore                   # bin/, build/, *.o/*.obj/*.d/*.so/*.a, editor leftovers,
+│                                #   docs/ARCHITECTURE.md, README-temp
 ├── LICENSE                      # MIT, "Copyright (c) 2026 Kaida"
 ├── AGENT.md                     # this journal
 ├── ISSUES.md                    # open items + Fixed + known limitations
-├── README.md                    # features, deps, build, flags, the config files, shortcuts, exit status
+├── README.md                    # the user's — features, deps, build, flags, config files, shortcuts. Never
+│                                #   edit it; proposals go in README-temp (git-ignored)
 ├── Makefile                     # src/*.c -> build/*.o -> bin/kai-term; all/test/test-cli/asan/run/clean
 ├── config/kai-term.conf         # the shipped SETTINGS template: every default the parser accepts
 ├── config/kai-term.bind         # the shipped KEY-BINDING template: all 24 names at their built-in default
@@ -2886,9 +2957,8 @@ What each file OWNS (the rules that bind them are in "Architecture & Invariants"
   DECCKM (`app_cursor`, `term_arrow_seq()` answering SS3 or CSI), the mouse-as-keystrokes helpers
   (`term_wants_key_mouse`, `term_wheel_arrow_keys`, `term_click_arrow_keys`), the graphics path
   (base64/chunking/PNG/zlib/raw/premultiply/placement/delete/scroll anchoring/id replacement/DA1-DA2-DSR
-  answers), mux, keybind/keymods parsing, config keys and template name-coverage (the two config ladders, the
-  theme table, `usage()` vs README's option table, and README's own settings and binding tables diffed against
-  the parser in both directions), the `hex escape` gate, `layout_compute`/`layout_grid_size`/
+  answers), mux, keybind/keymods parsing, config keys and template name-coverage (the two config ladders and the
+  theme table compared with the three shipped `config/` templates in both directions), the `hex escape` gate, `layout_compute`/`layout_grid_size`/
   `layout_initial_size` (the tab bar, the panes and the band's SHARE, three startup round trips), the
   palette/cube/OSC-colour groups, the theme file and precedence, the theme importer (sniff, per-format mapping,
   dropped keys, the native round trip), the click-selection group (`term_word_span`, `term_line_span`,
@@ -3355,7 +3425,7 @@ hit-tested bar then panes.
   belongs now (files written before the split must not lose bindings silently); a setting written in
   `kai-term.bind` is refused by name, never treated as an unknown key. `tests/test_vt.c` reads both name lists
   out of the strcmp ladders in `src/config.c` and compares them with `config/kai-term.conf` +
-  `config/kai-term.bind` AND with README's tables — a name added to a parser without a template line, a
+  `config/kai-term.bind` — a name added to a parser without a template line, a
   template line the parser does not know, and a deleted template line each fail a check.
 - `#` starts a comment when ONLY whitespace precedes it, or when whitespace precedes AND follows it. The old
   rule (whitespace before is enough) was a bug: it cut `background = #1c1c22` at the `#`, and an empty value is

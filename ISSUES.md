@@ -28,10 +28,11 @@ working by the user 2026-10-19 (s107's feature), so the theme import carries no 
 confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
 with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-21 (s135's close-out, from `make clean`, on the committed tree `24638cc` that fixed the
-underline's position; the s134 run of the same set is in AGENT.md's journal): `make -j8` exit 0
+Re-measured 2026-10-22 (s139, from `make clean`, on the committed tree that removed the README-pinning checks —
+see the first entry under "Fixed"; the run on `24638cc`, the commit that fixed the underline's position, is in
+AGENT.md's journal): `make -j8` exit 0
 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
-**0 warning lines**; `./bin/test_vt` **1673 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+**0 warning lines**; `./bin/test_vt` **1665 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
 `./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **617 checks, 0 failures**; `make asan` exit 0 with
 the same four counts, **0 warning lines** and no LeakSanitizer/UBSan report. `sh tests/cli_test.sh` with
 `KAI_TERM_TEST_NO_WINDOW=1` reports **CLI: 99 checks, 0 failures, 13 skipped** — the 13 are the windowed group,
@@ -63,6 +64,21 @@ The full investigation of each — the probes, the wrong theories, the measureme
 Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`);
 the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**Two checks were failing on the committed tree — both of them README checks (2026-10-22, s139).** Found at the
+start of the session, before any edit: `make clean && make -j8` and the test build were clean, but
+`./bin/test_vt` reported **1673 checks, 2 failures** — `template: README's settings and binding tables were read
+(did a heading move?)` and `options: the option names were read out of README.md's table`. Cause: `readme_table_names_of()`
+looks for the headings `### Settings` and `### Key bindings` and `readme_opts_of()` reads the long option name out of
+each table's second column, and README had been rewritten as a short overview in which those headings are gone and the
+option table has two columns. So the checks were not measuring the program — they were measuring a document. Fix, on
+the user's instruction ("we don't ever need to test the README … README should stay light"): the two README readers,
+the `usage()` reader that existed only to diff against them, and the `names_diff()` helper only they used are
+deleted, together with the 8 checks that read them (`test_vt` **1673/2 -> 1665/0**). The shipped templates stay
+pinned — `config/kai-term.conf`, `config/kai-term.bind` and `config/kai-term.theme` are still set-differenced against
+the three parsers, and `tests/cli_test.sh` still exercises the real option surface by running the binary (99 checks).
+What is now NOT pinned anywhere: that a document lists every setting. That is deliberate. The reference material the
+deleted tables held is written out in `README-temp` (git-ignored) in case a `docs/` page is ever wanted.
 
 **An underline was drawn across the letters instead of under them (2026-10-22, s134 — the hover underline the user
 had just asked for, and the DECSCUSR underline cursor with it, which had had the same defect since s112).** The
@@ -180,7 +196,9 @@ binding tables (`test_vt` 1130 -> 1133). README itself needed no edit — its ta
 to bite (`.scratch/s110/ab_readme/`, baseline 1133/0): deleting a settings row, deleting a binding row, adding a
 row no parser accepts, deleting the whole table and renaming the section heading each report **1 failure**. The
 theme table is deliberately not diffed — README collapses `color0` … `color15` into one row, so a name-by-name
-comparison would fail on purpose; those 23 names stay pinned through `config/kai-term.theme`.
+comparison would fail on purpose; those 23 names stay pinned through `config/kai-term.theme`. **Superseded in s139:**
+these README checks were later deleted (see the first entry above); the template pinning this entry added is still in
+force.
 
 **`make asan` red on the theme importer — two warnings only the sanitizer build sees, and a harness leak
 (2026-10-19, s107).** No user symptom; the defects were in the build and in the suite, and they mattered because

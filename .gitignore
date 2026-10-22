@@ -7,6 +7,9 @@ build/
 # docs/ARCHITECTURE.md from creeping back in.
 docs/ARCHITECTURE.md
 
+# README.md belongs to the user. Proposals for it go in README-temp instead.
+README-temp
+
 # Object files and compiler by-products, wherever they appear
 *.o
 *.obj
