@@ -2789,17 +2789,19 @@ int main(void)
                 char got[4096];
                 size_t got_n = 0;
                 int appeared = 0;
+                /* Wait for the report to be COMPLETE, not merely started: the child writes four lines and
+                   the last two each cost it a fork (awk, then ls|grep), so the file holds bytes long before
+                   it holds `ptys=`. Reading at the first byte made that check a coin flip — 4 failures in 8
+                   runs of ./bin/test_vt, and 2 in 3 through `make test`, on a tree with no other change. */
                 for (int tries = 0; tries < 300 && !appeared; tries++) {
-                    struct stat st;
-                    if (stat(outp, &st) == 0 && st.st_size > 0) {
-                        FILE *rf = fopen(outp, "r");
-                        if (rf) {
-                            got_n = fread(got, 1, sizeof got - 1, rf);
-                            got[got_n] = 0;
-                            fclose(rf);
-                            if (got_n > 0)
-                                appeared = 1;
-                        }
+                    FILE *rf = fopen(outp, "r");
+                    if (rf) {
+                        got_n = fread(got, 1, sizeof got - 1, rf);
+                        got[got_n] = 0;
+                        fclose(rf);
+                        if (strstr(got, "argc=") && strstr(got, "arg=") &&
+                            strstr(got, "sid=") && strstr(got, "ptys="))
+                            appeared = 1;
                     }
                     if (!appeared)
                         usleep(10000);
