@@ -8,15 +8,18 @@ Invariants" — read those, not the history.
 
 ## Open
 
-**No open bug.** The last one found was the flaky `test_vt` spawn check (s142 — the first entry under "Fixed": it
+**No open bug.** The last one found was the mangled prompt inside tmux (2026-10-22 — the first entry under "Fixed":
+absolute cursor addressing was bounded by the scroll region instead of by the screen, so tmux drew its pane one row low
+and the typed text landed on the prompt's first row). Before that, the flaky `test_vt` spawn check (s142 — it
 asserted on a report file the child process was still writing, so it failed about half the time). Before that, an
 underline drawn across the letters instead of under them (s134, and the second half of it, the `ESC[5 q` underline
 cursor, had been there since s112 without anyone seeing it), and two colour-plumbing bugs: `cursor_color =` being dead
 config, and the 256-colour cube's top level overflowing, both fixed and A/B'd in s102. The shape worth remembering,
 which applies to all of them: a config key is not implemented at the parser, it is implemented where the value is
 used; a computed colour must be measured, not assumed; a check written from the implementation's own idea of a
-coordinate space tests that idea instead of the screen; and a check that reads a file another process is still writing
-tests its own timing.
+coordinate space tests that idea instead of the screen; a check that reads a file another process is still writing
+tests its own timing; and a clamp applied to every form of one control is wrong for the forms the standard treats
+differently.
 
 The frame around the grid — the `padding` margin and the blank cells reading two different background colours — was
 fixed, A/B'd and confirmed in the user's own window in s101 (see "Fixed").
@@ -30,10 +33,10 @@ working by the user 2026-10-19 (s107's feature), so the theme import carries no 
 confirm-quit, is confirmed in both forms** — the one-row notice 2026-10-20 (s124) and the window's centred box
 with its clickable Yes/No the same day (s125, "I confirm the feature to be working. I had my eyes on it.").
 
-Re-measured 2026-10-22 (s142, from `make clean`, on the tree that added the install targets and fixed the flaky
-spawn check — see the first entry under "Fixed"): `make -j8` exit 0
+Re-measured 2026-10-22 (s144, from `make clean`, on the tree that fixed the tmux prompt mangling — see the first entry
+under "Fixed"): `make -j8` exit 0
 with **0 warning lines** and the TEST build (`make bin/test_vt bin/dbg bin/test_fm bin/test_render`) exit 0 with
-**0 warning lines**; `./bin/test_vt` **1665 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
+**0 warning lines**; `./bin/test_vt` **1697 checks, 0 failures**; `./bin/dbg` **MODEL OK (0 problems)**;
 `./bin/test_fm` **384 checks, 0 failures**; `./bin/test_render` **617 checks, 0 failures**; `make asan` exit 0 with
 the same four counts, **0 warning lines** and no LeakSanitizer/UBSan report. `sh tests/install_test.sh` reports **INSTALL: 43 checks, 0 failures, 0 skipped** (new in s142: install and
 uninstall run against a throwaway `DESTDIR`, never the host) and
@@ -65,8 +68,35 @@ reproduces.
 One entry per bug: what the user saw, the cause in one line, what fixed it, and what now keeps it from coming back.
 The full investigation of each — the probes, the wrong theories, the measurements that settled them — is AGENT.md's
 Progress Journal (era entries `s81`, `s82-s86`, `s88`, `s89`, `s90-s92`, `s96`, `s97`, `s98`, `s99`, `s101`, `s102`,
-`s142`); the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
+`s142`, `s144`); the rule each one produced is under "Architecture & Invariants" there. Check counts are what the suite reported at
 the time, not current totals.
+
+**A prompt inside tmux was drawn one row too low and the typed text overwrote the prompt's first line (2026-10-22,
+s144).** The report, verbatim: *"The prompt still gets mangled"* — screenshot of a tmux pane holding
+`kaida in k-genMy prompte get mangeld in tmux` on one row and `🕐 14:08:39 ❯` on the next: the typing sat at the end of
+the prompt's FIRST row and cut that row's own text off, while the row carrying the `❯` stayed empty.
+
+Cause in one line: `set_cursor_pos()` clamped the row to the scroll region (`t->top`/`t->bot`), so an absolute
+`CUP`/`HVP`/`VPA` could never address a row outside that region. tmux paints a pane by setting a region that EXCLUDES
+the row it is about to write — `ESC[2;29r`, scroll, then `ESC[1;1H` — so kai-term refused the row-1 address and wrote at
+row 2, shifting the whole prompt down one row and moving every later absolute address with it, including the
+`ESC[3;15H` that positions the echo. The echo then landed on the prompt's first row.
+
+Fix: the region bounds scrolling and RELATIVE motion (`CUU`/`CUD`/`CNL`/`CPL`, LF/RI/`SU`/`SD`) and gates `IL`/`DL`, but
+`CUP`, `HVP`, `VPA` and a cursor restore (`CSI u`, `ESC 8`) are bounded by the SCREEN, and DECSTBM homes the cursor to
+the screen top-left rather than to the region top. Both halves were MEASURED, not read out of a manual:
+`.scratch/s144/cases.py` replays eleven sequences through tmux's own parser as the oracle — 6 of the 11 disagreed before
+the fix and all 11 agree after, including the two relative-motion cases that had to keep agreeing.
+
+What keeps it out: 32 checks in `tests/test_vt.c` — absolute addressing above the region, below the region and
+out-of-range; both cursor-restore forms; DECSTBM homing from a row that is not the top; a region scroll leaving the rows
+above and below alone; `IL`/`DL` gated on both sides; and the reported shape itself (region, `CSI 9S`, prompt at
+`ESC[1;1H`, then `ESC[3;15HTYPED` — the typing must follow the prompt's last row). `.scratch/s144/ab/mutate.py` runs
+seven mutants of the rule and all seven are killed (the shipped bug: 20 failures). End to end,
+`.scratch/s144/tmuxprobe2` runs a real `tmux new-session 'exec fish'` over a real pty and compares kai-term's grid with
+`tmux capture-pane -p` row by row plus the cursor: **0 differences in 6 stages** (startup, typing, 100x30→60x20, back,
+Enter, typing again); the same probe against the pre-fix parser reports **14 differences** and shows the user's exact
+row. `test_vt` **1665 -> 1697 checks, 0 failures**.
 
 **`make test` failed on one check about half the time and passed it the other half (2026-10-22, s142).** Symptom:
 `tests/test_vt.c:2815`, "spawn: the child holds NO pty", failed on some runs of `./bin/test_vt` and passed on others

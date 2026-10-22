@@ -31,9 +31,9 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s141 — **GREEN; the s102 plan's seven steps are all closed and the hover
-underline the user then asked for is built, checked, fixed (it was drawing across the letters) and CONFIRMED in the
-user's window (s136) — committed as `24638cc` and pushed; read the commit state from git, never from here**)
+## Current Status (re-measured 2026-10-22, s144 — **GREEN; the user's "My prompt get mangled in tmux" report is
+fixed — absolute cursor addressing was bounded by the scroll region instead of the screen; the s102 plan's seven steps
+remain closed; read the commit state from git, never from here**)
 
 - **Build:** `make clean && make -j8` exit 0, **0 warning lines** under `WARN` (`-Wall -Wextra -Wshadow
   -Wwrite-strings -Wformat=2 -Wdiscarded-qualifiers`) — and the same for
@@ -42,11 +42,11 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites — green; every number below re-run at s141 (both builds, the four suites, the CLI group and `make asan`).
-  `test_vt` is 1665 checks, not 1673: the 8 checks that read
-  README were deleted on the user's instruction ("we don't ever need to test the README"), and they were the two
-  failures the tree had been carrying since the README was rewritten.** Both builds clean (exit 0, 0 warning lines) and
-  `./bin/test_vt` reports **1665 checks, 0 failures** (the confirm-quit wording, the process name, the box
+- **Suites — green; every number below re-run at s144 (both builds, the four suites, the CLI group, `install_test.sh`
+  and `make asan`). `test_vt` is 1697 checks, not 1665: s144 added 32 checks for the scroll-region rule (absolute
+  addressing screen-bounded, relative motion and scrolling region-bounded), and they kill all six mutants of that rule
+  in `.scratch/s144/ab/mutate.py`.** Both builds clean (exit 0, 0 warning lines) and
+  `./bin/test_vt` reports **1697 checks, 0 failures** (the confirm-quit wording, the process name, the box
   geometry, the four wrap cuts, the `middle_click_paste`, `bell` and `click_opens_url` config groups, the 16-case
   pointer-precedence table, the BEL-rings / BEL-terminates-a-string split, the `bell_strength` ladder, the 15-check
   `mux_bell_live` drawn-vs-hidden group, the 18-check `bell_is_ours` table, and the **157-check `url` groups**:
@@ -158,13 +158,64 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
   `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — NONE IN PROGRESS (s142 closed the install targets)
+## Current Task — NONE IN PROGRESS (s144 closed the tmux prompt bug)
 
-`make install` / `make uninstall` / `make icons` exist, are gated by 43 checks, and are green along with every other
-suite. **What is owed to the user, not to a harness: running `sudo make install` on their own machine and looking at
-the result** — that the launcher appears in their menu with the Kai-Term icon, that the window's icon is the Kai-Term
-artwork and not the generic one, and that `make uninstall` leaves their own `k-term` / `desktop-terminal` setup
-exactly as it was. No install has been run against the host from this repo, deliberately.
+The user's report is fixed in this tree and pinned by 32 new checks. **What is owed to the user, not to a harness:
+looking at their own tmux window** — that the prompt's rows and their typing sit where the shell put them, and that
+`less`/`vim`/`htop` (the other heavy users of a scroll region) still look right. Also still owed from s142: running
+`sudo make install` on their own machine and looking at the result — the launcher icon, the window icon, and that
+`make uninstall` leaves their own `k-term` / `desktop-terminal` setup as it was. No install has been run against the
+host from this repo, deliberately.
+
+## Closed: s144 (2026-10-22) — a prompt inside tmux was drawn one row low and the typing overwrote it
+
+**The report:** "The prompt still gets mangled", screenshot of a tmux pane showing
+`kaida in k-genMy prompte get mangeld in tmux` on one row and `🕐 14:08:39 ❯` on the next — the typed text sitting at
+the end of the prompt's FIRST row, cutting that row's own text off, with the row that holds the prompt's `❯` empty.
+
+**Cause, in one line:** `set_cursor_pos()` clamped the row to the scroll region (`t->top`/`t->bot`), so an absolute
+`CUP`/`HVP`/`VPA` could never address a row outside the region. tmux paints its pane by setting a region that EXCLUDES
+the row it is about to write (`ESC[2;29r`, scroll, then `ESC[1;1H`); kai-term refused the row-1 address and wrote at row
+2 instead, which shifted the whole prompt down one row and moved every later absolute address with it — including the
+`ESC[3;15H` that positions the echo, which then landed on the prompt's first row.
+
+**How it was found (no theory, only measurement).** `.scratch/s143/tmuxprobe` (left by the interrupted s143) runs a
+real `tmux -f /dev/null new-session 'exec fish'` over a real pty, feeds every byte to `term_parse()`, and compares
+kai-term's grid with tmux's own `capture-pane -p` — tmux is a mature, independent VT model, so it is the oracle.
+Pre-fix: 4 of 30 rows differ and the differing rows are the user's screenshot. `.scratch/s143/record` captured the raw
+1679-byte stream; `.scratch/s144/replay` feeds it one token at a time and prints the grid after each, which names the
+exact byte: the `ESC[1;1H` right after `ESC[2;29r` leaves the cursor at row 1 instead of row 0.
+
+**The rule, measured not assumed.** `.scratch/s144/cases.py` A/B's eleven sequences against tmux's parser, before and
+after. DECSTBM bounds **scrolling** and **relative motion** (`CUU`/`CUD`/`CNL`/`CPL`) and homes the cursor to the
+screen top-left; it does NOT bound `CUP`, `HVP`, `VPA` or a cursor restore (`CSI u`, `ESC 8`), and `IL`/`DL` are
+skipped when the cursor is outside the region. Before the fix 6 of the 11 cases differed; after, all 11 MATCH —
+including the two relative-motion cases, which already agreed and had to keep agreeing (the over-fix was the risk here,
+not the fix).
+
+**What keeps it out:** 32 new checks in `tests/test_vt.c` — CUP/HVP/VPA above the region, below the region and
+out-of-range; `CSI u` and `ESC 7`/`ESC 8` restoring a row outside the region; DECSTBM homing the cursor from a row that
+is not the top; a region scroll leaving the rows above and below the region alone; `IL`/`DL` gated on the region on both
+sides; and the reported shape itself in ten rows (region, `CSI 9S`, prompt at `ESC[1;1H`, then `ESC[3;15HTYPED` — the
+typing must follow the prompt's last row, not its first). `.scratch/s144/ab/mutate.py` runs seven mutants of that rule:
+`cup_region_clamp` (the shipped bug) 20 failures, `vpa_region_clamp` 2, `cud_screen_clamp` 3, `il_ungated` 6,
+`dl_ungated` 4, `decstbm_nohome` 2, `scroll_ignores_region` 1 — **all killed, baseline green**. Two of those checks were
+vacuous on the first attempt (an "IL outside the region does nothing" check on a row that was already blank, and a
+DECSTBM-home check taken with the cursor already home) and survived their mutant; both were rewritten to assert on
+text that is actually there.
+
+**End-to-end after the fix:** `.scratch/s144/tmuxprobe2` (the s143 probe plus a real `term_resize()` and a real Enter,
+comparing only the PANE rows because `capture-pane` excludes tmux's status line, and comparing the cursor too) —
+**0 differences in 6 stages**: startup, typing, 100x30→60x20, back to 100x30, Enter (fish answers "unknown command"),
+typing a second line. The same probe built against the pre-fix parser reports **14 differences**, with the user's exact
+row. The shells run with `HISTFILE=/tmp/kai_probe_hist` so the probe does not pollute the user's history. Re-run per
+shell with a real command (`ls -la`) through the same oracle: **fish 0, zsh 0, bash 0** after the fix; pre-fix **zsh 5**
+and **bash 0** — bash's default single-line prompt never makes tmux address a row outside its region, so the bug needs a
+multi-line prompt (starship, or zsh's with a right-hand side), which is exactly what the user runs.
+
+**Re-measured on the fixed tree:** both builds exit 0 with **0 warning lines**; `test_vt` **1697/0** (was 1665),
+`dbg` **MODEL OK (0 problems)**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with 13 skipped`,
+`INSTALL 43/0`, and `make asan` exit 0 with the same four counts, 0 warning lines and no LeakSanitizer/UBSan report.
 
 ## Closed: s142 (2026-10-22) — `make install` / `make uninstall`, the icon set, and one flaky check
 
@@ -2980,6 +3031,11 @@ numbers and the intermediate check counts are in git.
    the installed result** — their menu showing the Kai-Term entry with the Kai-Term icon, the window's own icon, and
    `make uninstall` leaving their own `k-term`/`desktop-terminal` setup untouched. A real install is theirs to run
    (`sudo make install`); the suite stages with `DESTDIR=` and this repo has never written to the host.
+   **The tmux prompt fix is FINISHED (s144)** — `set_cursor_pos()` and `VPA` are bounded by the screen, the region still
+   bounds scrolling, relative motion and the `IL`/`DL` gate; 32 checks plus seven mutants in `.scratch/s144/ab/mutate.py`
+   pin both halves. Do not "tidy" the clamps back into one shared bound — the two halves are different rules and the
+   mutants say so. **What IS owed to the user's eye** is their own tmux pane: the prompt's rows and their typing where
+   the shell put them, and `less`/`vim`/`htop` (the other heavy users of a scroll region) still looking right.
 2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look
    (a 2 px bar at the left edge of the cell, one second on / one second off while the window has focus, steady
    with `cursor_blink = 0`), then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'`
@@ -3391,6 +3447,15 @@ hit-tested bar then panes.
 - **A sequence is only complete when its final byte arrives; a burst boundary never ends one.** `term_parse()`
   re-enters with `ps->state` intact, and that is the whole mechanism — a probe or a fix that treats the end of a
   read as the end of a sequence invents a bug.
+- **The scroll region bounds scrolling and RELATIVE motion; it never bounds ABSOLUTE addressing.** `t->top`/`t->bot`
+  are the region DECSTBM (`ESC[r`) sets. They are the right bound for `CUU`/`CUD`/`CNL`/`CPL`, for what LF/RI/`SU`/`SD`
+  scroll, and for the gate that makes `IL`/`DL` a no-op when the cursor sits outside the region. They are the WRONG
+  bound for `CUP`/`HVP` (`H`, `f`), `VPA` (`d`) and a cursor restore (`CSI u`, `ESC 8`), which address the whole screen,
+  and DECSTBM itself homes the cursor to the screen top-left — not to the region top. tmux is the application that
+  depends on this: it sets a region that excludes the row it is about to paint (`ESC[2;29r`, scroll, `ESC[1;1H`), so a
+  region-clamped `CUP` shifts its whole pane down one row and every absolute address after it lands one row low — the
+  user's "My prompt get mangled in tmux". Pinned by 32 checks and by seven mutants in `.scratch/s144/ab/mutate.py`;
+  the rule itself was measured against tmux's own parser (`.scratch/s144/cases.py`), not read out of a manual.
 
 **Clipboard (main.c + the paste helpers in vt.c).**
 
@@ -3795,6 +3860,16 @@ hit-tested bar then panes.
 - Headless harness: link `src/vt.c` + `src/config.c` (+ `src/theme.c`, `mux.c`, `layout.c`) into a throwaway
   program in `/home/kaida/Project/.scratch/` to exercise logic Wayland input events cannot reach. That is how
   the cube, the OSC colours, the sweep and the import corpus were all measured.
+- **Oracle harness for any "the screen is wrong" report inside a full-screen program:** run the real program
+  (`tmux -f /dev/null new-session 'exec fish'`) in a pty, feed every byte it sends to `term_parse()`, and diff
+  kai-term's grid against the program's OWN model of the screen — for tmux that is `tmux capture-pane -p`, plus
+  `display-message -p '#{pane_height} #{cursor_x},#{cursor_y}'` for the cursor and the pane height (compare the
+  PANE rows: `capture-pane` excludes tmux's status line, which is a real row of the terminal). Two binaries, one
+  with the current `src/vt.c` and one with the suspect line reverted, run the same probe: that is the A/B. When the
+  grids differ, record the raw stream (`.scratch/s143/record`) and replay it one token at a time printing the grid
+  after each (`.scratch/s144/replay`) — the diverging byte names itself. `.scratch/s144/tmuxprobe2.c` and
+  `.scratch/s144/cases.py` are working examples; run the shells with `HISTFILE=` redirected so the probe does not
+  write into the user's history.
 
 ## Key Decisions & Pitfalls
 
@@ -4044,3 +4119,19 @@ hit-tested bar then panes.
   had been written as if the diagnostic did. Grep for the string before documenting it; when the honest answer is
   "nothing is logged here", replace the promise with the evidence that DOES answer the question (for the URL click:
   whether the `url: the click at (col,row) holds …` line appeared at all).
+- **When the question is "does my parser agree with the real thing", borrow a real implementation's model instead of
+  arguing from a manual.** tmux keeps its own grid for the pane and `tmux capture-pane -p` prints it, so feeding the
+  SAME pty bytes through `term_parse()` and diffing the two models line by line answers "parser or renderer?" in one
+  run — and `capture-pane` excludes the status line, so compare `#{pane_height}` rows, not the whole screen. Then
+  replay the recorded bytes ONE TOKEN AT A TIME printing the grid after each (`.scratch/s144/replay`) and the exact
+  byte that diverges names itself. This closed the s144 tmux prompt bug without a single guess; the same trick settled
+  the DECSTBM questions (`CSI A`/`B` ARE region-bounded, `CUP`/`VPA` are not) that a wrong reading of the manual would
+  have "fixed" into a second bug.
+- **A check that asserts on a row that is already blank, or on a cursor that is already home, proves nothing and stays
+  green against the very bug it was written for.** Two of s144's new checks survived their mutant: "IL outside the
+  region does nothing" ran on a cleared screen (the mutant blanked that row too), and "DECSTBM homes the cursor" ran
+  with the cursor already at 0,0. The mutation run is what caught them — which is why every new rule gets a mutant
+  before it gets a journal entry. Write the check so the mutant MUST change a cell that has text in it.
+- **`ESC 7`/`ESC 8` are `ESC` + a digit, not `CSI 7`/`CSI 8`** — and in C, `"\x1b7"` is ONE hex escape (0x1b7), not ESC
+  followed by `7`. Write `"\033" "7"`. A test that "saves and restores the cursor" while sending neither byte passes
+  for the wrong reason: the save never happened and the fields it asserts on were zero from initialisation.
