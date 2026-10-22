@@ -2644,6 +2644,8 @@ numbers and the intermediate check counts are in git.
   C test files, untouched by s137-s138. The suites' comments are where the check messages live, and the messages are
   read by whoever runs a failing test, so they are a different case from the shipped tree — but the same rule would
   apply if the user wants them cleaned.
+  **Pushed:** `git fetch` first (nothing new upstream), then `git push origin main` moved `origin/main` from `2ec88c3`
+  to `324ac34` — the 20 commits of s137 and s138 are all upstream, and `git status -sb` reads no ahead/behind.
 
 ## Next Steps
 
