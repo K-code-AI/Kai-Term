@@ -31,7 +31,7 @@ Wayland terminal emulator in C. xdg-shell window + PTY shell + VT/ANSI parser + 
 protocol), two vertex batches per frame with the pictures drawn between them. In-window multiplexing: N
 sessions per window, tab bar, side-by-side panes. No GUI framework.
 
-## Current Status (re-measured 2026-10-22, s139 — **GREEN; the s102 plan's seven steps are all closed and the hover
+## Current Status (re-measured 2026-10-22, s141 — **GREEN; the s102 plan's seven steps are all closed and the hover
 underline the user then asked for is built, checked, fixed (it was drawing across the letters) and CONFIRMED in the
 user's window (s136) — committed as `24638cc` and pushed; read the commit state from git, never from here**)
 
@@ -42,7 +42,8 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   still passing. Command worth copying:
   `make clean && make -j8 2>&1 | grep -ciE 'warning|error'`, then
   `make bin/test_vt bin/dbg bin/test_fm bin/test_render 2>&1 | grep -ciE 'warning|error'`.
-- **Suites — green; every number below re-run at s139. `test_vt` is 1665 checks, not 1673: the 8 checks that read
+- **Suites — green; every number below re-run at s141 (both builds, the four suites, the CLI group and `make asan`).
+  `test_vt` is 1665 checks, not 1673: the 8 checks that read
   README were deleted on the user's instruction ("we don't ever need to test the README"), and they were the two
   failures the tree had been carrying since the README was rewritten.** Both builds clean (exit 0, 0 warning lines) and
   `./bin/test_vt` reports **1665 checks, 0 failures** (the confirm-quit wording, the process name, the box
@@ -146,7 +147,33 @@ user's window (s136) — committed as `24638cc` and pushed; read the commit stat
   re-proposed. What is still on this list: the look of a themed window, a live OSC colour repaint, the configured
   `cursor_color`, the whole step-2 cursor, and step 3b's preview selection.
 
-## Current Task — s139 (2026-10-22, IN PROGRESS): the same comment rule applied to `tests/`
+## Current Task — NONE IN PROGRESS (s141 closed the comment pass)
+
+The comment rule the user gave in s137 is now applied to the whole tree: `src/` + the header at **3,613** comment
+lines (s138, unchanged this session) and `tests/` at **1,436** (s141). The next action is the user's: ask what they
+want next, or take a Housekeeping item from "Next Steps" — not invent a feature.
+
+## Closed: s141 (2026-10-22) — the comment rule finished across `tests/`: 1,896 -> 1,436 comment lines, average 1.73
+
+**The rule** is the user's, quoted verbatim in the s137 task block: code should be self-explanatory; a comment exists
+only for something locally unintuitive; 1-2 lines on average; understandable by someone dropped into the codebase for
+the first time.
+**Final state, measured with `.scratch/cc_tests.py` (the same C tokenizer the edit tool uses), not carried over:**
+`dbg.c` 22 lines / 17 comments (1.29), `test_fm.c` 192 / 117 (1.64), `test_render.c` 190 / 85 (2.24), `test_vt.c`
+1,032 / 613 (1.68) — **1,436 lines / 832 comments, avg 1.73**, from 1,896 when s139 started this and 1,626 at s141's
+start. `jargon.py` over the four files: **0** (67 at s140's start). Blocks of 4+ lines left: 0 in `dbg.c`, 4 in
+`test_fm.c`, 11 in `test_render.c`, 6 in `test_vt.c` — every one a table, a protocol form, a set of geometry or font
+numbers, an (a)-(d) invariant list or a group banner, which is the same exception `src/` kept (28 there).
+**Verified, not assumed:** `cmpcode.py` reported "code identical to HEAD" before each of the four commits; `make clean
+&& make -j8` and `make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0 at **0 warning lines**; `test_vt`
+**1665/0**, `dbg` **MODEL OK (0 problems)**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with 13 skipped`
+(`KAI_TERM_TEST_NO_WINDOW=1`); `make asan` exit 0 at **0 warning lines** with the same four counts and no
+LeakSanitizer or UBSan report. Every count equals the session's baseline, which is what proves no code moved.
+**Commits:** `0c949d1` (`test_vt.c`), `d1dd66a` (`test_render.c`), `5474da4` (`test_fm.c`).
+**Check messages were left alone** except where they were jargon or cited a document: they are what a failing run
+prints, and the check count never moved (1665 / 384 / 617 / 99 throughout).
+
+## Closed: s139 (2026-10-22) — the same comment rule applied to `tests/`
 
 **The user asked for it** (session start, 2026-10-22): "tests/ holds 1,896 comment lines across the four C test
 files" + the same rule quoted verbatim (self-explanatory code, 1-2 lines, no jargon, understandable to a newcomer).
@@ -2715,6 +2742,110 @@ numbers and the intermediate check counts are in git.
   writes, 24 bindings, and the 9 options `usage()` prints. Two claims in it were wrong when first written and were
   corrected by reading the code — `log =` takes a number (0-3), not a word, and an empty `shell =` falls back to
   `/bin/bash`, not `/bin/sh`. Verify a claim against the source before writing it down, even in a scratch document.
+- **2026-10-22, s140 — finishing `tests/`: `test_vt.c` (in progress).** Resumed the s139 task; three of the four test
+  files were already committed, so this session is `test_vt.c` only.
+  **Baseline re-measured before editing, not carried over:** `make -j8` and
+  `make bin/test_vt bin/dbg bin/test_fm bin/test_render` both exit 0 at **0 warning lines**; `test_vt` **1665 checks,
+  0 failures**, `dbg` **MODEL OK (0 problems)**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with 13
+  skipped` (`KAI_TERM_TEST_NO_WINDOW=1`, no window mapped on the user's desktop). Comment state of the four test files
+  (`.scratch/cc_tests.py`, new this session — the same tokenizer as `cc.py`, pointed at `tests/`): HEAD 1,767 lines /
+  832 comments, working tree **1,728 / 832** (avg 2.12 -> 2.08); `test_vt.c` alone 1,325 -> 1,286, 613 comments,
+  109 blocks of 4+ lines covering 583 lines. `cmpcode.py tests/test_vt.c`: code identical to HEAD, so the uncommitted
+  half-pass is comments only and is safe to build on.
+  **Plan:** batches over `test_vt.c` with `batch2.py`, each batch followed by `cmpcode.py` + both builds + `test_vt`
+  (count must stay 1665), then `jargon.py` over `tests/` to 0, then one commit for the file.
+  **Batches 1-2 done (L61-L2925, 37 blocks).** `test_vt.c` 1,325 -> **1,262** comment lines (613 comments, avg 2.06);
+  after each batch `cmpcode.py` says "code identical to HEAD", the test build is at 0 warning lines and `test_vt`
+  prints **1665 checks, 0 failures**.
+  **Checkpoint commit:** `test_vt.c` 1,325 -> **1,184** comment lines (613 comments, avg 2.16 -> **1.93**),
+  committed as the "test_vt.c first pass" commit after `cmpcode.py` (code identical), both builds at 0 warning
+  lines and `test_vt` 1665/0. The lesson of the middle batches: re-wording a paragraph does not shorten it —
+  the count only moved when whole sentences of test-design narrative were CUT, keeping the invariant, the
+  hazard and the contract. That is what the second pass does to the rest.
+  **Still to do:** the 4+ line blocks from L5100 to the end of `test_vt.c`, a second pass on the L280-L2800
+  blocks, then `jargon.py` over `tests/` to 0 and the final commit.
+  **Two tool faults found and fixed, both of which could have shipped damage:** (a) `batch2.py` with a STRING body
+  that has hand-typed `\n` + indent re-emits the whitespace run inside the wrapped line, so four comments came out
+  with double spaces mid-sentence — `.scratch/rewrap.py` (new) collapses the prose and re-wraps it with the block's
+  own indent; write batch bodies as ONE long line, or as a list of lines, never both. (b) `rewrap.py`'s first version
+  kept the block's own `*/` in the prose and appended another, producing `*/ */` — a stray `*/` line of CODE, which
+  `cmpcode.py` caught immediately (6145 -> 6149 code lines) before anything was built. Repaired the four blocks, and
+  `rewrap.py` now strips the terminator and dies if a comment marker survives in the prose. `batch2.py` also now
+  prints the first line of what each anchor currently holds, which is what caught the anchors having shifted by 19
+  lines after batch 1 — re-dump the block list before every batch, never reuse old line numbers.
+- **2026-10-22, s141 — finishing `test_vt.c` (in progress).** Resumed the s140 task on the user's request. The tree
+  had moved since s140's last entry: the uncommitted half-pass now measures 1,325 -> **1,126** comment lines, 613
+  comments, avg **1.84** (`.scratch/cc_tests.py`), and `cmpcode.py` reports code identical to HEAD for all four test
+  files, so the uncommitted work is comments only and is safe to build on.
+  **Baseline re-measured here, not carried over:** `make clean && make -j8` and
+  `make bin/test_vt bin/dbg bin/test_fm bin/test_render` exit 0 at **0 warning lines**; `test_vt` **1665/0**, `dbg`
+  **MODEL OK (0 problems)**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with 13 skipped`
+  (`KAI_TERM_TEST_NO_WINDOW=1`, no window mapped on the user's desktop). `jargon.py` over `tests/`: **12 lines** left,
+  all in `test_vt.c`.
+  **Remaining work measured before editing:** 79 blocks of 4+ lines in `test_vt.c` — 42 before L5100, 37 from L5100 on.
+  **Plan:** batches from the tail backwards with `batch2.py` (re-dump anchors each time), `cmpcode.py` + both builds +
+  `test_vt` after every batch, then a second pass on the L280-L2800 blocks that only got re-worded, then `jargon.py`
+  to 0, then the commit.
+  **New tool: `.scratch/batch3.py`.** `batch2.py` needs every body line hand-wrapped at the anchor's width, which is
+  how s140 got the double-space artifact; `batch3.py` takes the prose as ONE string (or `(banner, prose)`) and does
+  the wrapping itself against the anchor's own indent and the file's 108-column budget, dying if a comment marker
+  survives in the prose or a line goes over budget. Its first dry run exposed a bug in itself — the banner line was
+  being overwritten by the first wrapped prose line (a 4-line banner block reported `4 -> 2`), caught before anything
+  was written.
+  **Batch 12 (`.scratch/tv12.py`), the 37 blocks of 4+ lines from L5143 to the end: 162 -> 114 comment lines.**
+  `test_vt.c` 1,184 -> **1,078** comment lines, 613 comments, avg 1.93 -> **1.76**; all four test files 1,626 ->
+  **1,520**, avg **1.83**. After the batch: `cmpcode.py` "code identical to HEAD", `make bin/test_vt` exit 0 at **0
+  warning lines**, `test_vt` **1665 checks, 0 failures** — unchanged, so no code moved. Four blocks stay at 4 lines
+  (the fish-autosuggestion contract, the double-navigation bug, and two group banners); the rest are 2-3.
+  The first draft of this batch only reached 162 -> 141 because it re-worded instead of cutting; the second draft cut
+  whole clauses (test-design narrative, worked examples restated by the code, "that is the safe direction"-type
+  conclusions) and reached 114. Same lesson s140 recorded, now with a number on it.
+  **Batch 13 (`.scratch/tv13.py`), the 42 blocks of 4+ lines before L5143: 172 -> 128 comment lines.**
+  `test_vt.c` 1,184 -> **1,034** comment lines, 613 comments, avg 1.93 -> **1.69**; all four test files 1,626 ->
+  **1,476**, avg **1.77** — better than the 1.6-1.9 `src/` ended at. After the batch: `cmpcode.py` "code identical to
+  HEAD", `make bin/test_vt` exit 0 at **0 warning lines**, `test_vt` **1665 checks, 0 failures**. **Six** blocks of 4+
+  lines remain in the file: two are the allowed kind (the DECSCUSR parameter table at L1265 and the file-manager
+  band's geometry numbers at L4972) and four are dense one-case contracts (the fish-autosuggestion rule, the
+  double-navigation bug, and two group banners). What was cut here was mostly the "why this group is written this way"
+  narrative; what stayed is the invariant, the hazard and the contract, plus every group banner (they are how a reader
+  finds a behaviour in a 7,500-line file). One block's ` * ` continuation style was normalised to the file's usual
+  `   ` — comment text only, `cmpcode.py` still clean.
+  **Jargon pass (`.scratch/tv14.py`), 10 comments: `jargon.py` over all four test files now reports 0** (it was 67
+  at s140's start). What went was journal vocabulary — session tags (`s116`, `s77`, `s68`, `s91`, `s102`, `s105`),
+  "Measured (AGENT.md s91)", "The user asked for this default explicitly", "on 2026-10-20", `.scratch/...` probe
+  paths — each replaced by the fact itself ("a pty whose foreground group has died answers 0", "an application is not
+  obliged to echo at all", "real theme files copied verbatim, not invented samples"). Check MESSAGES were left alone:
+  `jargon.py` scans comments only, and a message is what a failing run prints.
+  **`test_vt.c` is DONE and committed (`0c949d1`): 1,325 -> 1,032 comment lines, 613 comments, avg 1.93 -> 1.68.**
+  Full tree re-measured before the commit: `make clean && make -j8` and the test build exit 0 at **0 warning lines**;
+  `test_vt` **1665/0**, `dbg` **MODEL OK (0 problems)**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with
+  13 skipped` — every count identical to the session's baseline, so no code moved. Four test files now hold **1,474**
+  comment lines (1,626 at session start, 1,896 when s139 measured them), avg **1.77**.
+  **What is left of the task:** `test_render.c` was the worst file in the tree at avg **2.54** with **21** blocks of 4+
+  lines, and `test_fm.c` has **9**; `dbg.c` (avg 1.29, 0 blocks) and `test_vt.c` (avg 1.68, 6 blocks) were done.
+  Next: a second pass on `test_render.c`, then `test_fm.c`, same method and same checks.
+  **`test_render.c` second pass (`.scratch/tv15.py`), its 20 blocks of 4+ lines: 98 -> 73 comment lines.** The file
+  goes 216 -> **191** comment lines, 85 comments, avg 2.54 -> **2.25**; all four test files **1,449**, avg **1.74**.
+  `cmpcode.py` "code identical to HEAD", `make bin/test_render` exit 0 at **0 warning lines**, `test_render` **617
+  checks, 0 failures** — unchanged. What went: the repeated "X is in no test binary, so these scans pin that main.c
+  consults it" essay (stated once in the file header, then cut from every group), the narrative of how a rule used to
+  be wrong, and the restatement of what the check below already shows. What stayed at 4-5 lines: the file header, the
+  measured underline-thickness tables and their font-metric numbers, and the four-rule hover list. One duplicated
+  explanation ("a token scan cannot see a branch switched off with `if (0)`") was cut to one line in the second place
+  it appeared (`.scratch/tv16.py`), leaving `test_render.c` at **190** comment lines, avg **2.24**.
+  **`test_fm.c` (`.scratch/tv17.py`), its 9 blocks of 4+ lines: 44 -> 32 comment lines.** The file goes 204 -> **192**,
+  117 comments, avg 1.74 -> **1.64**; its 9-line ` * `-style file header becomes a 5-line plain one. `cmpcode.py` "code
+  identical to HEAD", `make bin/test_fm` exit 0 at **0 warning lines**, `test_fm` **384 checks, 0 failures**.
+  **All four test files now: 1,436 comment lines, 832 comments, avg 1.73** — from 1,896 at s139's start and 1,626 at
+  s141's start. Per file: `dbg.c` 22/17 (1.29), `test_fm.c` 192/117 (1.64), `test_render.c` 190/85 (2.24), `test_vt.c`
+  1,032/613 (1.68). `jargon.py` reports 0 over all four.
+  **Session close-out.** Completed: `test_vt.c` finished and committed, `test_render.c` and `test_fm.c` given the second
+  pass, the jargon pass over `tests/`, and the whole tree re-verified (both builds, four suites, CLI, `make asan`) at
+  unchanged counts. Unfinished: nothing — the comment task the user started in s137 is closed, and "Current Task" now
+  reads NONE IN PROGRESS. Next action: ask the user what they want; the Housekeeping list (item 5) is the fallback, and
+  re-opening the comment pass is explicitly not a next step. One thing owed to no one but worth knowing: the four
+  comment commits (`0c949d1`, `d1dd66a`, `5474da4`) plus this journal commit are local until pushed — `git fetch`
+  first, as always.
 
 ## Next Steps
 
@@ -2732,6 +2863,9 @@ numbers and the intermediate check counts are in git.
    (item 5) — not to invent a feature.** If a new feature is asked for, the standing survey rule applies: grep the
    tree for it first (0 hits means absent, not wanted), then check what the user's own setup actually asks for
    before ranking it.
+   **The comment pass is FINISHED (s137-s141) — `src/` + the header at 3,613 comment lines and `tests/` at 1,436, both
+   averaging 1.7-1.8 lines per comment, `jargon.py` clean over the whole tree. Do not re-open it or "tidy" comments
+   again**; the s137 task block holds the user's rule and the s141 close-out holds the measured end state.
 2. **Owed to the user's eye** — the list is in "Current Status". The recipes: for step 2, open Kai-Term and look
    (a 2 px bar at the left edge of the cell, one second on / one second off while the window has focus, steady
    with `cursor_blink = 0`), then `printf '\033[1 q'` for a block, `'\033[5 q'` for an underline, `'\033[6 q'`
