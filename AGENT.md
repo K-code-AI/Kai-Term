@@ -217,6 +217,11 @@ multi-line prompt (starship, or zsh's with a right-hand side), which is exactly 
 `dbg` **MODEL OK (0 problems)**, `test_fm` **384/0**, `test_render` **617/0**, `CLI 99/0 with 13 skipped`,
 `INSTALL 43/0`, and `make asan` exit 0 with the same four counts, 0 warning lines and no LeakSanitizer/UBSan report.
 
+**Blast radius, stated exactly:** `t->top`/`t->bot` are 0 and `g.rows - 1` unless an application has set DECSTBM, and
+with those values the old clamp and the new one are the same expression. So the change cannot alter anything for a shell
+that never sets a scroll region — it only changes behaviour for a program that addresses a row OUTSIDE a region it set,
+which is what tmux does. That is also why the pre-fix probe showed 0 differences for bash's single-line prompt.
+
 **Commit record:** `afeff46` (`src/vt.c` + the 32 checks) and this journal/ISSUES entry. The commit was then re-verified
 self-contained from `git archive HEAD` into `.scratch/s144/verify_commit`: both builds exit 0 with 0 warning lines and
 the counts come out identical there (1697/0, MODEL OK, 384/0, 617/0, CLI 99/0 with 13 skipped, INSTALL 43/0).
