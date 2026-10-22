@@ -1,13 +1,11 @@
-/* Kai-Term — unit tests for the file manager model (src/fm.c).
+/* Unit tests for the file manager model (src/fm.c).
  *
- * No display, no Wayland, no EGL: the tests build a REAL directory tree under /tmp (directories, a
- * dotfile, a dangling symlink, a FIFO, an unreadable directory, four image formats, a binary file) and
- * drive the model through it. That is the only honest way to test a directory browser — a fake
- * filesystem would test the fake, not the scanner.
+ * No display, no Wayland, no EGL: the tests build a REAL directory tree under /tmp (directories, a dotfile, a
+ * dangling symlink, a FIFO, an unreadable directory, four image formats, a binary file) and drive the model
+ * through it. A fake filesystem would test the fake, not the scanner.
  *
- * The tree is removed at the end. The same sources are built as bin/test_fm_asan and run under
- * LeakSanitizer by `make asan`, so every fm_* allocation must be reachable from fm_destroy() or
- * fm_scan_free()/fm_preview_free().
+ * The tree is removed at the end. The same sources run under LeakSanitizer as bin/test_fm_asan (`make asan`),
+ * so every fm_* allocation must be reachable from fm_destroy() or fm_scan_free()/fm_preview_free().
  */
 #include "kai-term.h"
 
@@ -230,16 +228,15 @@ static void make_tree(void)
     if (f) { fputs("inside\n", f); fclose(f); }
 
     wstr("file.txt", "hello world\nsecond line\n");
-    /* The preview-pane selection group's file: a hyphenated word, trailing punctuation, two full-width
-       glyphs, a word that starts with punctuation, and a path. Every span the new group pins was read out of
-       this content by .scratch/s115/selprobe2 before the CHECK was written. */
+    /* The preview-pane selection group's file: a hyphenated word, trailing punctuation, two full-width glyphs, a
+       word that starts with punctuation, and a path. Every span the group pins was read off this content. */
     wstr("words.txt", "two-three, four.\n"
                        "\xe4\xbd\xa0\xe5\xa5\xbd \xe4\xb8\x96\xe7\x95\x8c\n"
                        "/etc/passwd (a path)\n"
                        "\xe5\x85\x83\xe3\x80\x82\n");   /* 元。 - a full-width mark ends this line */
     /* One 130-character line (the alphabet five times). The preview CUTS a long line at the pane's right edge
-       rather than wrapping it, so this is the file that pins what a row gesture can reach in a line wider than
-       the pane — .scratch/s116/longline printed the numbers before the CHECK was written. */
+       rather than wrapping it, so this is the file that pins what a row gesture can reach in a line wider
+       than the pane. */
     wstr("long.txt", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
                      "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
                      "abcdefghijklmnopqrstuvwxyz\n");
@@ -277,7 +274,7 @@ static void make_tree(void)
         wfile(rel, "x", 1);
     }
     /* A text file longer than any preview pane the tests build — what the wheel over the preview pane
-       exists for (s96). Every line is a 3-character label the painting checks look for by name. */
+       exists for. Every line is a 3-character label the painting checks look for by name. */
     {
         char big[40 * 8];
         size_t o = 0;
@@ -532,8 +529,8 @@ static void test_nav(void)
     fm_init(&fm, root);
     CHECK(!strcmp(fm.dir, root), "nav: the model starts in the requested directory");
     CHECK(fm.focus == FM_FOCUS_LIST && fm.preview_on, "nav: sane initial focus/preview state");
-    /* The row the band opens ON is the row the first Return / Right acts on. Measured live (s76): it
-       opened on the `..` row, so the first Right went UP a level instead of into a directory. */
+    /* The row the band opens ON is the row the first Return / Right acts on: it once opened on the `..`
+       row, so the first Right went UP a level instead of into a directory. */
     CHECK(fm.sel == 1, "init: a non-root directory opens on its first REAL row, not on the .. row");
     FileMgr r0;
     fm_init(&r0, "/");
@@ -601,9 +598,9 @@ static void test_nav(void)
     char want[1024];
     snprintf(want, sizeof want, "%s/adir", root);
     CHECK(!strcmp(fm.dir, want), "nav: the model moved into adir");
-    /* Until adir's listing lands, the entries in memory belong to root. Building a preview path out of
-       them asked the worker to stat `<adir>/<a name from root>` — measured live (s76) on every single
-       navigation (`fm: preview: cannot stat …/dirA: No such file or directory`). */
+    /* Until adir's listing lands, the entries in memory belong to root. Building a preview path out of them asked
+       the worker to stat `<adir>/<a name from root>`, which is what every navigation used to log (`fm:
+       preview: cannot stat …/dirA: No such file or directory`). */
     CHECK(!fm.have_listing, "nav: the old listing no longer describes this directory");
     char ppath[1024];
     unsigned long pseq = 0;
@@ -802,9 +799,8 @@ static void test_paint(void)
     CHECK(selrow + 1 < fm.list.rows - 1 && pbg(&fm.list, 0, selrow + 1) == BASE_BG,
           "paint: an unselected row is not");
     /* The highlight is the value the CALLER passed, not the SEL_BG macro: that is what lets a theme or a
-       `selection_color =` line change the band too. Written as a different colour on purpose — passing
-       SEL_BG and expecting SEL_BG would also pass if fm.c ignored its argument and used the macro, which
-       is exactly how the dead `cursor_color =` key stayed invisible (ISSUES.md). */
+       `selection_color =` line change the band too. It is written as a different colour on purpose — passing
+       SEL_BG and expecting SEL_BG would also pass if fm.c ignored its argument and used the macro. */
     fm_paint(&fm, BASE_FG, BASE_BG, 0xff00ff00u);
     CHECK(pbg(&fm.list, 0, selrow) == 0xff00ff00u && pbg(&fm.list, 20, selrow) == 0xff00ff00u,
           "paint: the selected row uses the sel colour it was handed, not the SEL_BG macro");
@@ -906,7 +902,7 @@ static void test_paint(void)
     fm_destroy(&fm);
 }
 
-/* ---------- the preview pane's own scroll (s96) ---------- */
+/* ---------- the preview pane's own scroll ---------- */
 
 static void pane_row_text(const FmPane *p, int y, char *out, size_t cap)
 {
@@ -1017,10 +1013,9 @@ static void test_preview_scroll(void)
 }
 
 /* The same body, driven by KEYS while the preview pane owns the keyboard (main.c routes the band's
-   Page_Up/Page_Down/Home/End here when focus == FM_FOCUS_PREVIEW). What these pin is the part the wheel
-   does not exercise: what ONE page is, and that Home/End mean the first and last line of the BODY.
-   A page must be exactly what the pane shows at once — one row short and a held Page key re-shows a
-   line, one row long and it skips one, and both are invisible until the pixels are checked. */
+   Page_Up/Page_Down/Home/End here when focus == FM_FOCUS_PREVIEW). What these pin is what the wheel does not
+   exercise: what ONE page is, and that Home/End mean the first and last line of the BODY. A page has to be
+   exactly what the pane shows at once — one row off either way re-shows a line or skips one. */
 static void test_preview_keys(void)
 {
     FileMgr fm;
@@ -1101,9 +1096,8 @@ static void test_preview_keys(void)
 
 /* ---------- the preview picture box ---------- */
 
-/* Glyphs painted INSIDE the box fm_image_fit() reports. The renderer draws the picture into that box and
-   emits the pane's glyphs in the batch AFTER it, so any glyph here is text drawn across the image — the
-   bug the user reported on 2026-10-19 ("the metadata sometimes get written on the image preview"). */
+/* Glyphs painted INSIDE the box fm_image_fit() reports: the renderer draws the picture into that box and emits
+   the pane's glyphs in the batch AFTER it, so any glyph here is text drawn across the image. */
 static int ink_in_box(const FileMgr *fm, int col, int row, int cols, int rows)
 {
     int ink = 0;
@@ -1151,9 +1145,8 @@ static void test_fit(void)
        ignored the metadata lines would sit. */
     CHECK(c == 19 && r == 14, "fit: and is centred in the area below the header AND the metadata");
 
-    /* The direct pin of the user's complaint: paint the pane, ask where the picture goes, and require
-       that no glyph of the pane sits in that box. Before the row budget was shared, the metadata lines
-       from row 3 down were painted exactly there. */
+    /* Paint the pane, ask where the picture goes, and require that no glyph of the pane sits in that box — before
+       the row budget was shared, the metadata lines from row 3 down were painted exactly there. */
     fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     fm_image_fit(&fm, 8, 16, &c, &r, &cols, &rows, &pw, &ph);
     CHECK(ink_in_box(&fm, c, r, cols, rows) == 0,
@@ -1164,10 +1157,9 @@ static void test_fit(void)
     CHECK(ink_rows(&fm, 2, r) == nmeta,
           "fit: and every metadata line that fits above the picture is still drawn");
 
-    /* The shape that actually overlapped before the row budget was shared: a picture big enough that its
-       box starts at the TOP of the picture area, which is exactly where the metadata lines are painted.
-       The pixels are the real img.png's; only the reported size is widened, because the fit is geometry
-       and generating a 1000x500 PNG here would test the encoder instead. */
+    /* The shape that actually overlapped before the row budget was shared: a picture big enough that its box starts
+       at the TOP of the picture area, which is exactly where the metadata lines are painted. Only the reported
+       size is widened here, because the fit is geometry. */
     FmPreview *wide = calloc(1, sizeof *wide);
     wide->kind = FMP_IMAGE;
     wide->w = 1000;
@@ -1213,9 +1205,9 @@ static void test_fit(void)
           "fit: a pane with no row left for the picture reports no box");
     fm_set_size(&fm, 40, 40, 40, 20);
 
-    /* A fabricated preview: the geometry must hold for any size, and generating a 1000x500 image
-       file here would test the encoder, not the fit. It carries no metadata lines, so the picture
-       area starts right below the 2-row header and is 18 rows tall. */
+    /* A fabricated preview: the geometry must hold for any size, and generating a 1000x500 image file here would
+       test the encoder, not the fit. It carries no metadata lines, so the picture area starts right below the
+       2-row header and is 18 rows tall. */
     FmPreview *big = calloc(1, sizeof *big);
     big->kind = FMP_IMAGE;
     big->w = 1000;
@@ -1254,9 +1246,8 @@ static void test_fit(void)
 }
 
 /* ---------- the dotfile toggle and the click hit test (fm_set_hidden / fm_row_pos) ----------
-   Both exist because main.c must not re-derive them: the toggle must not re-read the disk, and a click
-   must land on the line it lands on. So the rules live in fm.c next to the painter, and these checks are
-   what pin them. */
+   Both exist because main.c must not re-derive them: the toggle must not re-read the disk, and a click must
+   land on the line it lands on. So the rules live in fm.c next to the painter, and these checks pin them. */
 
 static void test_view_toggle(void)
 {
@@ -1320,14 +1311,12 @@ static void test_view_toggle(void)
     fm_destroy(&fm);
 }
 
-/* ---------- a text selection inside the preview pane (step 3b) ----------
+/* ---------- a text selection inside the preview pane ----------
    The pointer's half of this feature lives in main.c, which is in no test binary; everything about WHAT a
-   gesture selects lives in fm.c and vt.c, and that is what these pin. Every number below was printed by
-   .scratch/s115/selprobe{,2,3} against this exact pane (30 columns x 12 rows, words.txt) before the CHECK
-   was written — the two that the first probe printed wrong (a row span read out of the same printf that
-   filled it, and a scroll invalidation tested on a file with nothing to scroll) are why there are three.
-   The body of a text preview starts at row 2, column 2: rows 0-1 are the head (name, then path), and the
-   two-column gutter is never written, which is what makes the row gesture skip it. */
+   gesture selects lives in fm.c and vt.c, and that is what these pin. The body of a text preview starts at
+   row 2, column 2: rows 0-1 are the head (name, then path), and the two-column gutter is never written,
+   which is what makes the row gesture skip it. Every span below was read off this exact pane (30 columns x
+   12 rows, words.txt) before the CHECK was written. */
 
 /* The text a span covers, read back out of the pane: a check that names the WORD a gesture selects says more
    than one that names two column numbers. */
@@ -1342,10 +1331,10 @@ static void span_text(const FmPane *p, int y, int x0, int x1, char *out, size_t 
     out[o] = 0;
 }
 
-/* Does the painted band agree with the model, cell for cell? The rule a session enforces through
-   term_cell_highlightable(): a band lands only on a cell that HOLDS something (a glyph, a real space, or the
-   continuation half of a wide glyph), never on the never-written space past the end of a line. Counting the
-   disagreements covers every cell of the pane in one check. */
+/* Does the painted band agree with the model, cell for cell? The rule term_cell_highlightable() enforces: a
+   band lands only on a cell that HOLDS something (a glyph, a real space, or the continuation half of a wide
+   glyph), never on the never-written space past the end of a line. Counting the disagreements covers every
+   cell of the pane in one check. */
 static int band_mismatches(const FileMgr *fm, uint32_t sel)
 {
     const FmPane *p = &fm->prev;
@@ -1431,11 +1420,9 @@ static void test_preview_select(void)
           "on the rows after the first");
     fm_paint(&fm, BASE_FG, BASE_BG, SEL_BG);
     CHECK(band_mismatches(&fm, SEL_BG) == 0, "pvsel: a three-row band agrees with the model");
-    /* The case the one above cannot tell apart: a drag that goes DOWN a row but LEFT a column. Normalising
-       by column alone picks the wrong endpoint there, and the stored pair comes out with pv_ay ABOVE pv_by,
-       which makes fm_preview_selected() answer "nothing" for every row — a drag that selected nothing at all.
-       Found by mutation (.scratch/s116/mutate.py no_normalise): the first two checks here pass with that
-       mutant, so without this one the normalisation pinned nothing. */
+    /* The case the one above cannot tell apart: a drag that goes DOWN a row but LEFT a column. Normalising by
+       column alone picks the wrong endpoint there, the stored pair comes out with pv_ay ABOVE pv_by, and
+       fm_preview_selected() answers "nothing" for every row — a drag that selected nothing at all. */
     fm_preview_select(&fm, 10, 2, 2, 4);
     CHECK(fm.pv_ax == 10 && fm.pv_ay == 2 && fm.pv_bx == 2 && fm.pv_by == 4,
           "pvsel: a drag down-and-left still anchors on the row the press started on");
@@ -1544,10 +1531,10 @@ static void test_preview_select(void)
     ok = fm_preview_word_span(&fm, 4, 3, &x0, &x1);
     CHECK(ok == 1 && x0 == 2 && x1 == 5,
           "pvsel: clicking the second glyph's anchor gives the same run, never half a pair");
-    /* A trailing mark that is NOT ASCII: the explicit list in trailing_punct() (the same table a session
-       uses) is what cuts it, and the wide-pair rule is what keeps the cut from splitting it. Measured
-       .scratch/s115/selprobe4: row 5 is 元 at cols 2-3 and 。 (U+3002) at cols 4-5. Without that list the
-       span would be 2..5 - this is the check the ASCII-only mutant of the shared rule fails. */
+    /* A trailing mark that is NOT ASCII: the explicit list in trailing_punct() (the same table the terminal's word
+       selection uses) is what cuts it, and the wide-pair rule is what keeps the cut from splitting it. Row 5
+       is 元 at cols 2-3 and 。 (U+3002) at cols 4-5, so without the list the span would be 2..5 — this is the
+       check an ASCII-only rule fails. */
     ok = fm_preview_word_span(&fm, 2, 5, &x0, &x1);
     span_text(&fm.prev, 5, x0, x1, w, sizeof w);
     CHECK(ok == 1 && x0 == 2 && x1 == 3 && !strcmp(w, "\xe5\x85\x83"),
@@ -1603,11 +1590,10 @@ static void test_preview_select(void)
     one[0] = 'Z';
     n = fm_preview_selection_text(&fm, one, 1);
     CHECK(n == 0 && one[0] == 0, "pvsel: a one-byte buffer copies nothing and stays terminated");
-    /* cap == 0 has no byte to terminate. The function first guarded only its opening store (`if (cap)
-       out[0] = 0;`) and left the terminating one as `out[n < cap ? n : cap - 1]` — for cap 0 that is
-       `out[-1]`, and .scratch/s116/capzero.c under ASan showed the WRITE one byte before the caller's array.
-       The buffer is deliberately the SECOND byte of an array: `pad + 1 - 1` is `pad[0]` by pointer
-       arithmetic, so this check sees the underflow without needing a sanitizer build. */
+    /* cap == 0 has no byte to terminate. The first guard covered only the opening store (`if (cap) out[0] = 0;`)
+       and left the terminating one as `out[n < cap ? n : cap - 1]` — for cap 0 that is `out[-1]`. The buffer
+       here is deliberately the SECOND byte of an array: `pad + 1 - 1` is `pad[0]` by pointer arithmetic, so
+       this check sees the underflow without needing a sanitizer build. */
     char pad[2];
     pad[0] = 'Z';
     pad[1] = 'Y';
@@ -1676,12 +1662,10 @@ static void test_preview_select(void)
 }
 
 /* ---------- the wheel over the band and the keyboard (fm_wheel_focus) ----------
-   The user's report: hovering the pointer over the band (or the preview pane) took the keyboard. The
-   mechanism was NOT a hover handler — there is none — it was fm_wheel() in main.c calling fm_focus_set()
-   on its fifth line, BEFORE it knew whether the gesture had scrolled anything, and returning early when
-   it had not. A wl_pointer.frame with a sub-cell delta therefore moved the keyboard and did nothing
-   else. These checks pin the rule the decision now follows; the first three are the bug itself and fail
-   against the old unconditional rule even with fm_focus_on_hover = 1. */
+   Hovering the pointer over the band used to take the keyboard: fm_wheel() in main.c called fm_focus_set()
+   on its fifth line, before it knew whether the gesture had scrolled anything, and returned early when it
+   had not — so a wheel tick with a sub-cell delta moved the keyboard and did nothing else. The first three
+   checks here are that bug: they fail against the old unconditional rule even with fm_focus_on_hover = 1. */
 static void test_wheel_focus(void)
 {
     /* A gesture that scrolled nothing never moves the keyboard — in EITHER mode. This is the fix, not a
@@ -1693,8 +1677,8 @@ static void test_wheel_focus(void)
     CHECK(fm_wheel_focus(FM_HIT_PREVIEW, 0, 1) == -1,
           "wheel focus: the preview pane is not focused by a zero scroll either");
 
-    /* The default the user asked for: a pane is focused by CLICKING it, so a real scroll over the band
-       scrolls and leaves the keyboard where it was. */
+    /* The default: a pane is focused by CLICKING it, so a real scroll over the band scrolls and leaves
+       the keyboard where it was. */
     CHECK(fm_wheel_focus(FM_HIT_LIST, 3, 0) == -1,
           "wheel focus: a real scroll does NOT take the keyboard by default");
     CHECK(fm_wheel_focus(FM_HIT_PREVIEW, 3, 0) == -1,
