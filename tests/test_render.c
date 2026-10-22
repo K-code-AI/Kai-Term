@@ -1,20 +1,10 @@
-/* Kai-Term — unit tests for the renderer's pure decisions (src/render.c).
+/* Unit tests for the renderer's decisions that need no display: render_chrome() (the configured palette -> the
+ * colours a frame's chrome is drawn with) and render_cursor() / render_hover() (a request -> what one cell is
+ * painted as). Both read plain structs, so a test can fill one by hand.
  *
- * No display, no EGL, no GL context, no font: what is under test is the pair of functions in render.c that
- * decide something without touching a context — render_chrome(), which turns the configured palette into
- * the colours a frame's chrome is drawn with, and render_cursor(), which turns a shape request, a blink
- * phase, a selection band and a cell size into what one cursor cell is painted as. Both read plain structs
- * and nothing else, so a test can call them with a struct filled by hand. That seam exists for one bug
- * (ISSUES.md, s102): `cursor_color =` was defaulted, parsed, stored and asserted on by the config tests,
- * and reached no pixel, because the renderer took the colour from the CURSOR_COL macro. Every check that
- * read Config stayed green. So the checks here sit at the CONSUMER — the value that is about to become a
- * vertex colour, and the shape that is about to become a quad.
- *
- * What a headless test cannot reach, stated plainly: the call inside main() that hands Config's value to
- * render_init(), and the draw loop that turns these decisions into vertices. main() and render_draw() are
- * in no linked test (the same limitation tests/cli_test.sh exists for), so that wiring is pinned by the
- * source scans in group_source_wiring() — text checks, weaker than running it, and they fail loudly if the
- * renderer ever reads the macro again or an argument is dropped.
+ * The wiring in main() and the draw loop in render_draw() are in no test binary; they are pinned by the source
+ * scans in group_source_wiring() — text checks, weaker than running it, and they fail if a value stops being
+ * read at the pixel end.
  */
 #include "kai-term.h"
 
@@ -34,8 +24,8 @@ static int fails, checks;
     }                                                          \
 } while (0)
 
-/* The same blend src/render.c and src/fm.c each keep a private copy of. Copied here on purpose: a check
-   that called the code under test to predict the code under test would pin nothing. */
+/* The same blend src/render.c and src/fm.c each keep a private copy of. Copied here on purpose: a check that
+   called the code under test to predict the code under test would pin nothing. */
 static uint32_t mix_ref(uint32_t a, uint32_t b, int k100)
 {
     uint32_t out = 0;
@@ -47,8 +37,8 @@ static uint32_t mix_ref(uint32_t a, uint32_t b, int k100)
     return out;
 }
 
-/* A Render the way render_init() fills the colour fields (see src/render.c: r->bg, r->fg,
-   r->cursor_color, r->opacity) — everything else in the struct is EGL/GL state this test never touches. */
+/* A Render the way render_init() fills its colour fields; everything else in the struct is EGL/GL state this
+   test never touches. */
 static void render_from_config(Render *r, const Config *c)
 {
     memset(r, 0, sizeof *r);
@@ -76,20 +66,20 @@ static void group_cursor_color(void)
     render_chrome(&r, &ch);
     CHECK(ch.cursor == CURSOR_COL, "default config: the chrome cursor colour is the built-in default");
 
-    /* 2. A configured value is what the visible session's cursor is drawn with. This is the bug: on the
-       code that had the bug this returns CURSOR_COL no matter what the file said. */
+    /* 2. A configured value is what the visible session's cursor is drawn with — on the buggy code this returned
+       CURSOR_COL no matter what the file said. */
     c.cursor_color = 0xffff0000u;
     render_from_config(&r, &c);
     render_chrome(&r, &ch);
     CHECK(ch.cursor == 0xffff0000u, "cursor_color = ff0000: the ACTIVE pane's cursor is drawn with it");
 
-    /* 3. The dimmed cursor of a session that is drawn but not the visible one is derived from the
-       configured value, not from the macro. */
+    /* 3. The dimmed cursor of a session that is drawn but not the visible one is derived from the configured
+       value, not from the macro. */
     CHECK(ch.cursor_off == mix_ref(0xffff0000u, c.bg, 55),
           "cursor_color = ff0000: the INACTIVE session's cursor is that colour mixed with the background");
 
-    /* 4. Two different configured colours give two different dimmed colours. If the base were the macro,
-       both would be identical — the shape the bug had. */
+    /* 4. Two different configured colours give two different dimmed colours; a shared base would make them
+       identical. */
     c.cursor_color = 0xff00ff00u;
     render_from_config(&r, &c);
     Chrome g2;
@@ -97,8 +87,8 @@ static void group_cursor_color(void)
     CHECK(g2.cursor != ch.cursor && g2.cursor_off != ch.cursor_off,
           "two different cursor_color values change BOTH the active and the inactive cursor");
 
-    /* 5. The dimming follows the configured background too (the `background =` line, s101). Compared with
-       g2 — same cursor colour, only bg differs — so the difference can only come from the background. */
+    /* 5. The dimming follows the configured background too. Compared with g2 — same cursor colour, only bg
+       differs — so the difference can only come from the background. */
     Config d = c;
     d.bg = 0xff4a0710u;
     render_from_config(&r, &d);
@@ -108,8 +98,7 @@ static void group_cursor_color(void)
     CHECK(g3.cursor == g2.cursor, "a different background does NOT change the active cursor colour");
 
     /* 6. Chrome colours stay OPAQUE in Chrome: the window alpha is applied per quad in render_draw(), so a
-       configured colour can never be silently halved on the way here. Compared with g2 — same colours,
-       only opacity differs. */
+       configured colour can never be silently halved on the way here. g2 differs only in opacity. */
     Config e = c;
     e.opacity = 0.3f;
     render_from_config(&r, &e);
@@ -119,9 +108,8 @@ static void group_cursor_color(void)
     CHECK(g4.cursor == g2.cursor && g4.cursor_off == g2.cursor_off,
           "window opacity does not change the derived chrome colours");
 
-    /* 7. The highlight colour is the configured one, in all three places that mean "this is selected" —
-       the selection band, the visible session's bar item and the focus border. The built-in default is
-       still SEL_BG, so a user who configured nothing sees what they always saw. */
+    /* 7. The highlight colour is the configured one, in all three places that mean "this is selected" — the
+       selection band, the visible session's bar item and the focus border. */
     CHECK(ch.sel_bg == SEL_BG && ch.item_on_bg == SEL_BG && ch.border == SEL_BG,
           "default config: the selection band, the active bar item and the focus border are SEL_BG");
     c.selection_color = 0xff220088u;
@@ -137,10 +125,9 @@ static void group_cursor_color(void)
           && g5.item_off_fg == mix_ref(c.fg, c.bg, 45),
           "the bar's inactive colours are mixed from the configured fg/bg, not from the highlight");
 
-    /* 8. The confirm-quit row: the highlight for its field, the default ink for its text. It is chrome, so
-       the SAME configured colour owns every "this is the thing in this window" signal — the band, the active
-       bar item, the focus border and the question — and it is checked HERE, at the consumer, which is the
-       place the dead `cursor_color =` bug hid (parsed, stored, tested at the parser, read by nothing). */
+    /* 8. The confirm-quit row: the highlight for its field, the default ink for its text. One configured colour
+       owns every "this is the thing in this window" signal — the band, the active bar item, the focus border
+       and the question. */
     CHECK(ch.notice_bg == SEL_BG && ch.notice_fg == c.fg,
           "default config: the question row's field is SEL_BG and its text is the default ink");
     CHECK(g5.notice_bg == 0xff220088u && g5.notice_fg == c.fg,
@@ -153,13 +140,11 @@ static void group_cursor_color(void)
     CHECK(g6.notice_fg == 0xff11ee22u && g6.notice_bg == g5.notice_bg,
           "a different ink changes the question's TEXT and not its field (compared with g5)");
 
-    /* 9. The confirm-quit DIALOG — a window close's question, drawn OVER the terminal. Six colours, all
-       derived here and read by the draw pass (the source scans below pin the reading). The field is a LIFTED
-       paper: with no GL blending, "in front of" only exists if the colour differs from what is behind it, so
-       a field the exact colour of the cells it covers is a box nobody can see. The border and the Yes label
-       take the one configured colour that already owns every "this is the thing in this window" signal; the
-       No label takes the palette's RED, so a theme that restyles red restyles the button. Values copied from
-       .scratch/s123/colprobe2. */
+    /* 9. The confirm-quit DIALOG — a window close's question, drawn OVER the terminal. Six colours, all derived
+       here and read by the draw pass (the source scans below pin the reading). With no GL blending,
+       "in front of" only exists if the colour differs from what is behind it, so a field the exact colour of
+       the cells it covers is a box nobody can see. The border and the Yes label take the highlight colour; the
+       No label takes the palette's red, so a theme that restyles red restyles the button. */
     CHECK(ch.dialog_bg == mix_ref(c.bg, c.fg, 15) && ch.dialog_bg != c.bg,
           "default config: the box's field is a lifted paper, NOT the paper it is drawn over");
     CHECK(ch.dialog_bg != ch.item_off_bg,
@@ -173,10 +158,9 @@ static void group_cursor_color(void)
     CHECK(g5.dialog_border == 0xff220088u && g5.dialog_yes == 0xff220088u &&
           g5.dialog_no == ch.dialog_no,
           "selection_color = 220088: the box's border and Yes move with it, the red does not");
-    /* The red follows the palette, which is the whole reason it comes from term_palette() and not from a
-       constant: an application that repaints the palette with OSC 4 repaints the button, exactly as it
-       repaints a cell. Restored afterwards — the palette is process-wide state, so leaving it changed would
-       make a later check read a colour this one invented. */
+    /* The red follows the palette rather than being a constant, so an application that repaints the palette with
+       OSC 4 repaints the button exactly as it repaints a cell. The palette is process-wide state, so it is
+       restored: leaving it changed would let a later check read a colour this one invented. */
     term_set_palette_entry(1, 0xff00ff00u);
     Chrome g7;
     render_chrome(&r, &g7);
@@ -190,10 +174,10 @@ static void group_cursor_color(void)
           "leave a colour behind for the checks that follow)");
 }
 
-/* ---------- the visual bell's colour (step 6) ---------------------------------------------
+/* ---------- the visual bell's colour --------------------------------------------------------
    render_draw() is in no test binary, so the two decisions it makes about a flash — how far the paper moves
-   toward the ink, and what happens at the ends of the range — are checked here, at the function that makes
-   them. The timing half (how long, when it stops) is checked in tests/test_vt.c, where bell_strength() lives. */
+   toward the ink, and what happens at the ends of the range — are checked at the function that makes them.
+   The timing half is checked in tests/test_vt.c, where bell_strength() lives. */
 static void group_bell_color(void)
 {
     const uint32_t paper = 0xff101014u, ink = 0xffe5e5e5u;   /* the shipped template's background/foreground */
@@ -201,9 +185,8 @@ static void group_bell_color(void)
           "bell: strength 0 is the paper itself — the last frame of a fade is indistinguishable from no flash");
     CHECK(render_bell(paper, ink, -7) == paper, "bell: a negative strength is the paper too");
     /* The -7 above cannot tell a guard from no guard: 25 * -7 / 1000 is 0 in C, so a mix that skipped the guard
-       would still hand back the paper. A strength far below 0 is the case that separates them — without the
-       guard the percent goes negative and every channel is clamped toward BLACK, which is a colour nobody
-       asked for. Found by `.scratch/s126/mutate.py`'s `bell_color_ignores_strength` surviving. */
+       would still hand back the paper. A strength far below 0 separates them — without the guard the percent
+       goes negative and every channel clamps toward BLACK, a colour nobody asked for. */
     CHECK(render_bell(paper, ink, -1000) == paper,
           "bell: a strength far below 0 is the paper as well — a negative mix percent would drag every "
           "channel toward black, not toward the paper");
@@ -224,8 +207,8 @@ static void group_bell_color(void)
         prevb = v;
     }
     CHECK(mono, "bell: every step of the fade moves the same way — no flicker, no getting brighter");
-    /* A light theme has to flash too: mixing toward a DARK ink is what keeps this from being a feature of
-       dark palettes only (the bug class is a mix that rounds to the paper and shows nothing). */
+    /* A light theme has to flash too: mixing toward a DARK ink is what keeps this from being a feature of dark
+       palettes only. */
     CHECK(render_bell(ink, paper, 1000) != ink,
           "bell: a light paper with dark ink still flashes — the mix is toward the ink either way");
     CHECK((render_bell(ink, paper, 1000) >> 16) < (ink >> 16),
@@ -239,13 +222,10 @@ static void group_bell_color(void)
 
 /* ---------- the two source scans that cover what no headless test can run ---------- */
 
-/* Count code tokens equal to `word` in a source file; -1 when the file cannot be opened, so a moved
-   file fails loudly instead of quietly checking nothing. Two rules make the count mean what the check
-   claims:
-   - whole tokens only: a plain strstr for "ch" would find "chrome", and a substring match would find
-     CURSOR_COL inside a longer name;
-   - comments are skipped (block and line), because a comment may legitimately NAME a macro while the
-     code never reads it — which is exactly what these checks are about. */
+/* Count code tokens equal to `word` in a source file; -1 when the file cannot be opened, so a moved file
+   fails loudly instead of quietly checking nothing. Two rules make the count mean what the check claims:
+   whole tokens only (a substring match would find CURSOR_COL inside a longer name), and comments skipped —
+   a comment may legitimately NAME a macro while the code never reads it. */
 static int is_wordch(int c)
 {
     return c == '_' || isalnum((unsigned char)c);
@@ -281,11 +261,9 @@ static int src_word_count(const char *path, const char *word)
     return n;
 }
 
-/* Count a LITERAL substring in the code (comments skipped the same way src_word_count skips them).
-   Where this is used instead of src_word_count: a word count also counts a token that merely appears in a
-   comment, so a check like "main.c feeds the row to the layout" passes when the assignment is deleted and the
-   comment naming it is left behind. Naming the assignment (`rq.notice_on`) instead of the field makes the
-   check about the code. */
+/* Count a LITERAL substring in the code (comments skipped as src_word_count skips them). A word count also
+   counts a token that only appears in a comment, so a check about an assignment has to name the assignment
+   (`rq.notice_on`) and not just the field. */
 static int src_sub_count(const char *path, const char *needle)
 {
     FILE *f = fopen(path, "r");
@@ -337,11 +315,10 @@ static int src_call_passes_arg(const char *path, const char *call, const char *a
     return found;
 }
 
-/* Does the first CODE occurrence of `first` come before the first code occurrence of `second`? Comments are
-   skipped exactly as the two counters skip them, so the needles have to be code. This is how a DRAW ORDER gets
-   pinned: with no GL blending, a later quad simply wins, so "the underline is after the selection bands and
-   before the glyphs" is a rule the frame depends on and no headless test can run — the passes of render_draw()
-   are in no test binary. A needle that appears once per pass makes the comparison about the passes. */
+/* Does the first CODE occurrence of `first` come before the first code occurrence of `second`? This is how a
+   DRAW ORDER gets pinned: with no GL blending a later quad simply wins, so "the underline is after the
+   selection bands and before the glyphs" is a rule the frame depends on and no headless test can run. The
+   needles have to be code, and one occurrence per layer makes the comparison about the layers. */
 static int src_code_before(const char *path, const char *first, const char *second)
 {
     FILE *f = fopen(path, "r");
@@ -379,21 +356,17 @@ static int src_code_before(const char *path, const char *first, const char *seco
 }
 
 /* ---------- the cursor's shape: one pure decision, the whole truth table ----------
-   The other half of the s102 lesson. The SHAPE rule used to be implicit in the draw loop (the cursor was
-   always the cell's own background), and the draw loop is in no test binary — exactly where a colour rule
-   was uncheckable. render_cursor() is the same seam: no GL, no font, no Term, no allocation, so every
-   combination of (what the application asked for, is it visible, is a selection band on this cell, how big
-   is the cell, how wide did the user ask for) can be pinned here. What it decides matters because THREE
-   passes of a frame ask it the same question about the same cell and must agree — the comment inside
-   render_draw() ("must match pass 2 exactly") exists because a cursor that disagrees with the band erases
-   itself. */
+   The shape rule used to live inside the draw loop, which is in no test binary — where a rule cannot be
+   checked. render_cursor() is the seam that replaced it: no GL, no font, no Term, so every combination of
+   (shape asked for, visible, selection band on this cell, cell size, requested width) is pinned here. Three
+   layers of a frame ask it about the same cell and must agree, or the cursor erases itself. */
 static void group_cursor_shape(void)
 {
     CursorDraw d;
     const int cw = 9, ch = 18;          /* a plausible cell at font_size 14 */
     const int asc = 13, desc = 5;       /* its font's metrics: the baseline sits 5 px above the cell's bottom */
 
-    /* 1. The default is the bar the user asked for: a separate quad, not the cell's background. */
+    /* 1. The default is a bar: a separate quad, not the cell's background. */
     render_cursor(CUR_UNSET, 1, 0, cw, ch, 2, asc, desc, &d);
     CHECK(d.quad == 1 && d.block == 0 && d.invert == 0 && d.tint == 0,
           "no DECSCUSR seen: a separate quad, and NOT the cell's background");
@@ -424,12 +397,10 @@ static void group_cursor_shape(void)
     render_cursor(CUR_BAR, 1, 0, 1, ch, 2, asc, desc, &d);
     CHECK(d.w == 1, "and in a 1 px cell it is still 1 px, so the cursor cannot vanish");
 
-    /* 4. The underline DECSCUSR asks for: full cell width, UNDER the baseline, as thick as the bar.
-       This is the s134 fix. The quad's y is its bottom edge measured UP from the cell's bottom edge, so the
-       old answer `y == ch - 2` put the line in the top two pixel rows of the cell — a strikethrough, which is
-       what the user reported on the hover underline ("it's over the text instead of under it"). The check is
-       now written against the BASELINE of the cell (ch - asc = 5 px above the bottom edge), not against the
-       cell's edges, because "under the text" is a statement about the baseline. */
+    /* 4. The underline DECSCUSR asks for: full cell width, UNDER the baseline, as thick as the bar. A quad's y is
+       its bottom edge measured UP from the cell's bottom edge, so the old answer `y == ch - 2` put the line in
+       the top two pixel rows of the cell — a strikethrough. "Under the text" is a statement about the
+       baseline (ch - asc), not about the cell's edges, and that is what the check is written against. */
     render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, 2, asc, desc, &d);
     CHECK(d.quad == 1 && d.x == 0 && d.w == cw && d.h == 2 && d.y == 0,
           "an underline is the full width of the cell, 2 px tall, at the bottom of the descender band");
@@ -444,8 +415,8 @@ static void group_cursor_shape(void)
     render_cursor(CUR_UNDERLINE, 1, 0, cw, 2, 2, 2, 0, &d);
     CHECK(d.h == 1 && d.y == 0, "in a 2 px-tall cell the underline is 1 px — never 0, and never outside the cell");
 
-    /* 5. A block is today's behaviour, unchanged: it IS the cell's background (pass 1), so it steps aside
-       where a selection band is painted and the ink is tinted with the cursor colour instead. */
+    /* 5. A block is today's behaviour, unchanged: it IS the cell's own background layer, so it steps aside where a
+       selection band is painted and the ink is tinted with the cursor colour instead. */
     render_cursor(CUR_BLOCK, 1, 0, cw, ch, 2, asc, desc, &d);
     CHECK(d.block == 1 && d.invert == 1 && d.tint == 0 && d.quad == 0 && d.w == 0,
           "a block over no band: pass 1 paints the cell background and pass 3 inverts the ink");
@@ -453,8 +424,8 @@ static void group_cursor_shape(void)
     CHECK(d.block == 0 && d.invert == 0 && d.tint == 1 && d.quad == 0,
           "a block under a band steps aside for it and tints the ink — the rule that must not change");
 
-    /* 6. A bar or an underline does NOT step aside: its quad is emitted in batch B AFTER the bands, so it
-       survives where a selection ends on the cursor cell. That is the whole reason it is a separate quad. */
+    /* 6. A bar or an underline does NOT step aside: its quad is emitted in batch B AFTER the bands, so it survives
+       where a selection ends on the cursor cell. That is the whole reason it is a separate quad. */
     render_cursor(CUR_BAR, 1, 1, cw, ch, 2, asc, desc, &d);
     CHECK(d.quad == 1 && d.block == 0 && d.tint == 0 && d.invert == 0,
           "a bar under a band still emits its quad and leaves the ink alone");
@@ -462,12 +433,10 @@ static void group_cursor_shape(void)
     CHECK(d.quad == 1 && d.block == 0 && d.tint == 0 && d.invert == 0,
           "and so does an underline");
 
-    /* 7. The invariants, over every combination — the ones a frame depends on and that a hand-written
-       table of examples would miss.
+    /* 7. The invariants, over every combination — the ones a frame depends on and a hand-written table misses:
        (a) a cell is never painted as BOTH a block and a quad (the cursor would be drawn twice),
        (b) invert only ever comes with block (inverting ink with nothing behind it is a blank cell),
-       (c) a VISIBLE cursor always does something: a block, a quad, or a tint of the ink — so the three
-           passes cannot conspire to erase it,
+       (c) a VISIBLE cursor always does something: a block, a quad, or a tint of the ink,
        (d) the quad's rect is always inside the cell, at every cell size. */
     const int cells[][2] = { { 1, 1 }, { 2, 2 }, { 3, 3 }, { 1, 18 }, { 20, 4 }, { 9, 18 }, { 40, 30 } };
     for (unsigned s = 0; s < sizeof styles / sizeof styles[0]; s++)
@@ -490,21 +459,14 @@ static void group_cursor_shape(void)
                 }
 }
 
-/* ---------- the hover underline's rect: the same seam, one pure decision (s133, position fixed s134) ----------
-   The user asked for a link that "gets underlined when a cursor is on it". WHETHER it is underlined is src/url.c's
-   decision (the `url/hover` checks in tests/test_vt.c); what is checked here is the rect one cell of it draws,
-   because that decision lives in render.c next to render_cursor() and for the same reason: the draw loop is in no
-   test binary, so a rule written inside it is a claim. Three rules matter, and all three are the kind that break
-   by arithmetic and show up only as a look: never 0 px tall (a 0 px quad draws NOTHING — a feature that silently
-   stopped existing), never so thick it reads as a block, and the full cell width so a run reads as ONE underlined
-   address instead of a row of dashes.
-   THE FOURTH RULE IS THE POSITION, and s133 got it wrong in a way these checks could not see: they asserted
-   `y + h == cell_h` ("flush with the cell's bottom edge") in a space where y grows UP, which is the cell's TOP edge,
-   and the user's report was "it's over the text instead of under it". A check that restates the implementation's own
-   assumption tests the assumption, not the world. So the checks below are written against the BASELINE of the cell,
-   and their numbers come from the font this machine really draws with: `font = monospace` resolves to Liberation
-   Mono, and every (cell_h, ascent, descent) triple below is copied from `.scratch/s134/metrics.c`, which asks the
-   shipped loader — not from any assumption made inside render.c. */
+/* ---------- the hover underline's rect: the same seam, one pure decision ----------
+   WHETHER a link is underlined is src/url.c's decision (the `url/hover` checks in tests/test_vt.c); what is
+   checked here is the rect one cell of it draws, for the same reason as render_cursor(): the draw loop is in
+   no test binary, so a rule written inside it is a claim. Four rules, all the kind that break by arithmetic
+   and show up only as a look: never 0 px tall (a 0 px quad draws NOTHING), never so thick it reads as a block,
+   the full cell width so a run reads as ONE address, and the position — written against the BASELINE of the
+   cell, with every (cell_h, ascent, descent) triple asked of the shipped font loader rather than assumed
+   inside render.c. */
 static void group_hover_shape(void)
 {
     HoverDraw d;
@@ -526,9 +488,9 @@ static void group_hover_shape(void)
           "pinned so the old formula cannot come back");
 
     /* 2. The invariants, over the installed font at 7 pixel sizes AND over faces this machine has not got: one with
-          leading under the baseline, one whose ascent fills the cell (no descender band at all), one whose descender
-          is deeper than the cell, and cells from 1 px to 36 px tall. THE TABLE IS SORTED BY cell_h, because the last
-          invariant compares each row with the one before it. */
+       leading under the baseline, one whose ascent fills the cell (no descender band at all), one whose
+       descender is deeper than the cell, and cells from 1 px to 36 px tall. THE TABLE IS SORTED BY cell_h,
+       because the last invariant compares each row with the one before it. */
     const int cells[][4] = {   /* cell_w, cell_h, ascent, descent — Liberation Mono at px 10,12,14,16,20,24,32 */
         { 1, 1, 1, 0 }, { 3, 4, 4, 1 },
         { 6, 11, 9, 3 }, { 7, 14, 10, 4 }, { 8, 16, 12, 5 },
@@ -574,11 +536,10 @@ static void group_hover_shape(void)
     CHECK(thinner == 0, "hover invariant: the line never gets thinner as the cell gets taller");
 
     /* 3. The measured thickness AND the measured place, written out, because "how thick is it, and where, at MY font
-          size" is the question the user asks and a table is the answer. The first seven rows are Liberation Mono at
-          px 10..32 (cell_h, ascent, descent from .scratch/s134/metrics.c): the ladder is 1 px up to a 23 px cell, then
-          one more px per 12 px of cell. Every one of those faces has a descender deeper than the room its cell leaves
-          under the baseline, so y is 0 — the line is the bottom pixel row of the cell. The last row is the leading
-          case: the line lifts off the cell's bottom edge and follows the text instead. */
+       size" is the question the user asks and a table is the answer. The first seven rows are Liberation Mono
+       at px 10..32: the ladder is 1 px up to a 23 px cell, then one more px per 12 px of cell. Each of those
+       faces has a descender deeper than the room its cell leaves under the baseline, so y is 0. The last row is
+       the leading case: the line lifts off the cell's bottom edge and follows the text instead. */
     const int want[][5] = {   /* cell_h, ascent, descent, want h, want y */
         { 11, 9, 3, 1, 0 }, { 14, 10, 4, 1, 0 }, { 16, 12, 5, 1, 0 }, { 18, 14, 5, 1, 0 },
         { 23, 17, 6, 1, 0 }, { 27, 20, 8, 2, 0 }, { 36, 27, 10, 3, 0 },
@@ -596,18 +557,17 @@ static void group_hover_shape(void)
           "the cell's bottom edge, 4 px up from that edge for a font with leading under the baseline, and hanging "
           "from the baseline for a face whose band is thinner than the line");
 
-    /* 3b. The cross-check that the rule is not an opinion. At the default font_size 14 the line's top edge lands 3 px
-          below the baseline (cell_h 16, ascent 12 -> baseline 4; y + h = 1). Liberation Mono's own OS/2 table says
-          usUnderlinePosition = -435 units at upm 2048 = 3 px below the baseline, and a 'p' of that size reaches 3 px
-          below it (.scratch/s134/desc.c) — so Kai-Term underlines where the font says to underline, and clear of the
-          descender in the address of the user's screenshot. */
+    /* 3b. The rule is not an opinion. At the default font_size 14 the line's top edge lands 3 px below the baseline
+       (cell_h 16, ascent 12 -> baseline 4; y + h = 1). Liberation Mono's own OS/2 table says
+       usUnderlinePosition = -435 units at upm 2048 = 3 px below the baseline, and a 'p' of that size reaches
+       3 px below it — so Kai-Term underlines where the font says to underline, clear of the descender. */
     render_hover(8, 16, 12, 5, &d);
     CHECK(16 - 12 - (d.y + d.h) == 3,
           "hover at font_size 14: the line is 3 px under the baseline — the font's own underline position and the "
           "depth of a 'p', measured rather than guessed");
 
-    /* 4. No cell, no line. A zero or negative cell answers an EMPTY rect: a quad with a negative size is a
-          rectangle drawn somewhere else in the window, and the caller's `h <= 0` guard is what skips the pass. */
+    /* 4. No cell, no line. A zero or negative cell answers an EMPTY rect: a quad with a negative size is a rectangle
+       drawn somewhere else in the window, and the caller's `h <= 0` guard is what skips the pass. */
     render_hover(0, 18, asc, desc, &d);
     CHECK(d.x == 0 && d.y == 0 && d.w == 0 && d.h == 0, "hover: a 0-wide cell draws nothing");
     render_hover(9, 0, asc, desc, &d);
@@ -615,18 +575,15 @@ static void group_hover_shape(void)
     render_hover(-5, -40, -1, -1, &d);
     CHECK(d.w == 0 && d.h == 0, "hover: a negative cell draws nothing — never a quad with a negative size");
 
-    /* 5. The thickness does NOT come from `cursor_width`: that key is the cursor's, and a link hint that changed
-          when someone restyled their cursor would be a coincidence. render_hover() takes no width argument, and the
-          pass that calls it passes the cell box, the font's metrics and nothing else — pinned by the scan in the
-          next group. */
+    /* 5. The thickness does NOT come from `cursor_width`: that key is the cursor's, and a link hint that changed when
+       someone restyled their cursor would be a coincidence. render_hover() takes no width argument, and the
+       pass that calls it passes the cell box, the font's metrics and nothing else — pinned by the scan below. */
     render_hover(cw, ch, asc, desc, &d);
     CHECK(d.h == 1 && d.y == 0,
           "hover: the rect is a function of the cell and its font alone — nothing else in the renderer can move it");
 
     /* 6. The two underlines agree. The cursor's underline shape takes its thickness from `cursor_width`, so ask it
-          for exactly the hover thickness and the two rects must come out the same rect: one rule, two callers.
-          Before s134 they did agree — both wrong, in the same direction, which is exactly why the rule is ONE
-          function now instead of two copies of an expression. */
+       for exactly the hover thickness and the two rects must come out the same rect: one rule, two callers. */
     CursorDraw cd;
     render_cursor(CUR_UNDERLINE, 1, 0, cw, ch, d.h, asc, desc, &cd);
     CHECK(cd.quad && cd.x == d.x && cd.y == d.y && cd.w == d.w && cd.h == d.h,
@@ -636,12 +593,12 @@ static void group_hover_shape(void)
 /* The wiring a headless test cannot execute is pinned by the source scans in the next group. */
 static void group_source_wiring(void)
 {
-    /* The renderer must not draw the cursor from the macro any more. On the buggy src/render.c this count
-       is 3 and the check fails; the macro is legitimate only as the DEFAULT (kai-term.h, src/config.c). */
+    /* The renderer must not draw the cursor from the macro any more; the macro is legitimate only as the DEFAULT
+       (kai-term.h, src/config.c). */
     int in_render = src_word_count("src/render.c", "CURSOR_COL");
     CHECK(in_render == 0, "src/render.c never draws the cursor from the CURSOR_COL macro");
-    /* Same for the highlight, in the renderer AND in the file manager's painter: both must use the value
-       they were handed. On the pre-change tree both counts are non-zero. */
+    /* Same for the highlight, in the renderer AND in the file manager's painter: both must use the value they were
+       handed. */
     CHECK(src_word_count("src/render.c", "SEL_BG") == 0,
           "src/render.c never paints the highlight from the SEL_BG macro");
     CHECK(src_word_count("src/fm.c", "SEL_BG") == 0,
@@ -649,29 +606,25 @@ static void group_source_wiring(void)
     /* Not vacuous: the same scan finds a macro the renderer DOES still use. */
     CHECK(src_word_count("src/render.c", "BAR_LABEL_MAX") > 0,
           "the source scan really finds a macro in src/render.c (BAR_LABEL_MAX) — the zeros above mean something");
-    /* The question row's two colours: derived in render_chrome() and READ by the draw loop. Counts, not
-       existence — a field that is filled in but never consumed is exactly the dead `cursor_color =` shape,
-       and the draw loop is in no test binary. Measured on the tree that draws the row: notice_bg three
-       times (the derivation, the field, the text's background), notice_fg twice. */
+    /* The question row's two colours: derived in render_chrome() and READ by the draw loop. Counts, not existence —
+       a field that is filled in but never consumed is the dead-config shape, and the draw loop is in no test
+       binary. On the tree that draws the row: notice_bg three times (the derivation, the field, the text's
+       background), notice_fg twice. */
     CHECK(src_word_count("src/render.c", "notice_bg") == 3
           && src_word_count("src/render.c", "notice_fg") == 2,
           "src/render.c both derives AND consumes the question row's two colours (re-measure, do not copy)");
-    /* And that BOTH passes (the field and its text) are gated on the layout's own flag, plus the staging
-       budget that sizes the buffer they write into: three reads of notice_on. A token scan cannot see a
-       disabled branch, so without this a draw pass could be switched off (`if (0)`) and every count above
-       would still hold — measured, the mutant c_no_text_pass fails here and nowhere else. */
+    /* And that BOTH passes (the field and its text) are gated on the layout's own flag, plus the staging budget that
+       sizes the buffer they write into: three reads of notice_on. A token scan cannot see a disabled branch,
+       so without this a draw pass could be switched off (`if (0)`) and every count above would still hold. */
     CHECK(src_word_count("src/render.c", "notice_on") == 3,
           "src/render.c gates the field pass, the text pass and the staging budget on Layout.notice_on");
 
-    /* ---- confirm-quit: the main.c wiring (step 4, stage D) ----
+    /* ---- confirm-quit: the main.c wiring ----
        The gate, the modal keys and the layout input live in main(), which is in no test binary, so the
-       DECISIONS are checked in src/pty.c, src/mux.c and src/layout.c and only the WIRING can be checked here.
-       Counts, not existence: a gate that is defined but never called is exactly the shape this feature would
-       have if stage D had been skipped, and a gate called from one close path but not the other is the shape
-       that loses work in the path nobody thought about. Counts measured on the tree that has the wiring —
-       re-measure, do not copy. What no count can say: the SIGCHLD path that closes a tab whose process has
-       ALREADY exited must stay ungated (there is nothing to protect), which is a reading of main.c, and the
-       row's look, which is the user's to confirm. */
+       DECISIONS are checked in src/pty.c, src/mux.c and src/layout.c and only the WIRING is checked here.
+       Counts, not existence: a gate defined but never called, or called from one close path but not the other,
+       is exactly what a skipped wiring step leaves behind. What no count can see: the SIGCHLD path that closes
+       a tab whose process has ALREADY exited must stay ungated — there is nothing to protect. */
     CHECK(src_word_count("src/main.c", "confirm_gate_window") == 2,
           "src/main.c defines the window gate AND calls it (toplevel_close)");
     CHECK(src_word_count("src/main.c", "confirm_gate_tab") == 3,
@@ -681,21 +634,19 @@ static void group_source_wiring(void)
           "buttons (re-measured s123: the box's click is the fourth site)");
     CHECK(src_word_count("src/main.c", "confirm_clear") == 4,
           "the question is taken down on both answers AND when the tab it asked about closes on its own");
-    /* The layout input and the visibility rule, as SUBSTRINGS: a word count would also count the comments
-       that name these fields, which is how "the row is fed to the layout" could stay green after the
-       assignment was deleted. */
+    /* The layout input and the visibility rule, as SUBSTRINGS: a word count would also count the comments naming
+       these fields, which is how "the row is fed to the layout" could stay green after the assignment went. */
     CHECK(src_sub_count("src/main.c", "rq.notice_on") == 1
           && src_sub_count("src/main.c", "rq.notice_text") == 1,
           "src/main.c feeds the question row to the layout — without it the row is never drawn");
     CHECK(src_sub_count("src/main.c", "g_layout.notice_on") == 1,
           "src/main.c checks the row really is on screen before it lets the question block a close");
 
-    /* ---- confirm-quit: the WINDOW box's main.c wiring (s123) ----
+    /* ---- confirm-quit: the WINDOW box's main.c wiring ----
        A window close asks with a centred box and two clickable buttons; a tab close keeps the row. The
-       DECISIONS (the sentence, the name, the geometry, the hit test) are all checked in src/mux.c,
-       src/pty.c and src/layout.c — what these scans pin is that main.c actually asks for the box, reads
-       back whether it really got drawn, and gives the pointer to it. Counts measured on the tree that has
-       the wiring; re-measure, do not copy. */
+       decisions (the sentence, the name, the geometry, the hit test) are checked in src/mux.c, src/pty.c and
+       src/layout.c — what these scans pin is that main.c asks for the box, reads back whether it really got
+       drawn, and gives the pointer to it. */
     CHECK(src_sub_count("src/main.c", "rq.dialog_on") == 1
           && src_sub_count("src/main.c", "rq.dialog_text") == 1,
           "src/main.c feeds the box to the layout — without it the box is never drawn");
@@ -710,15 +661,14 @@ static void group_source_wiring(void)
           && src_word_count("src/main.c", "confirm_message") == 1,
           "src/main.c builds the window sentence in mux.c and the tab sentence in mux.c — neither is "
           "invented in a file no test links");
-    /* The row and the box are chosen by the KIND of question, never both for one: a window close that also
-       drew the row would cost a grid row it was supposed to avoid. */
+    /* The row and the box are chosen by the KIND of question, never both for one: a window close that also drew the
+       row would cost a grid row it was supposed to avoid. */
     CHECK(src_sub_count("src/main.c", "confirm_kind == CONFIRM_CLOSE_TAB") == 2
           && src_sub_count("src/main.c", "confirm_kind == CONFIRM_QUIT") == 1,
           "src/main.c gives the row to a tab close and the box to a window close (re-measure, do not copy)");
 
-    /* The box's six colours: derived in render_chrome() AND read by the draw pass. A field that is filled in
-       but never consumed is exactly the dead `cursor_color =` shape, and the draw pass is in no test binary.
-       Counts measured on the tree that draws the box. */
+    /* The box's six colours: derived in render_chrome() AND read by the draw pass. A field that is filled in but
+       never consumed is the dead-config shape, and the draw pass is in no test binary. */
     CHECK(src_word_count("src/render.c", "dialog_bg") == 3
           && src_word_count("src/render.c", "dialog_border") == 2
           && src_word_count("src/render.c", "dialog_fg") == 2
@@ -732,16 +682,15 @@ static void group_source_wiring(void)
           "src/render.c takes the box's red from the process-wide palette, not from a literal");
     /* Both the staging budget and the draw pass are gated on the layout's own flag: a token scan cannot see a
        disabled branch, so without this a draw pass could be switched off (`if (0)`) and every count above
-       would still hold. Measured: the budget and the pass, two reads. */
+       would still hold. Two reads: the budget and the pass. */
     CHECK(src_sub_count("src/render.c", "dialog.on") == 2,
           "src/render.c gates BOTH the staging budget and the draw pass on Layout.dialog.on");
 
-    /* ---- middle-click paste: main.c asks ONE decision, and gates every branch on it (s125) ----
+    /* ---- middle-click paste: main.c asks ONE decision, and gates every branch on it ----
        The precedence (box > bar > band > application-that-asked > pane) is ptr_press_action()'s and is checked
-       as a table in tests/test_vt.c. What these scans pin is that main.c actually consults it, and that each
-       branch of its chain is gated on the answer rather than on a re-derived condition — otherwise the table
-      and the event handler can drift apart and every headless check stays green while the click does something
-       else. Counts measured on the wired tree; re-measure, do not copy. */
+       as a table in tests/test_vt.c. What these scans pin is that main.c consults it, and that each branch of
+       its chain is gated on the answer rather than on a re-derived condition — otherwise the table and the
+       event handler drift apart and every headless check stays green while the click does something else. */
     CHECK(src_word_count("src/main.c", "ptr_press_action") == 2,
           "src/main.c asks the decision twice: once for the whole window, once after a click that switched "
           "session (the session it lands on may be the one that asked for the mouse)");
@@ -758,11 +707,11 @@ static void group_source_wiring(void)
     CHECK(src_word_count("src/main.c", "mux_running") == 2 && src_word_count("src/main.c", "pty_fg_busy") == 2,
           "src/main.c asks the measured predicate rather than inventing its own busy test");
 
-    /* ---- the visual bell: the draw loop asks two decisions and makes none of its own (s126) ----
-       The flash is one quad, so the two things that can be wrong about it are its timing and its colour, and
-       both are functions a test calls. What these scans pin is that render_draw() consults them instead of
-       doing arithmetic of its own — and that the staging budget pays for the pass, which is the one mistake
-       that turns a new quad into a buffer overrun in a wide window. Counts measured on the wired tree. */
+    /* ---- the visual bell: the draw loop asks two decisions and makes none of its own ----
+       The flash is one quad, so what can be wrong about it is its timing and its colour, and both are
+       functions a test calls. What these scans pin is that render_draw() consults them instead of doing
+       arithmetic of its own — and that the staging budget pays for the pass, the one mistake that turns a new
+       quad into a buffer overrun in a wide window. */
     CHECK(src_word_count("src/render.c", "bell_strength") == 1,
           "src/render.c asks bell_strength() once — how long a flash lasts is vt.c's decision, not a number "
           "in the draw loop");
@@ -773,9 +722,8 @@ static void group_source_wiring(void)
           "checks that pin it");
     CHECK(src_sub_count("src/render.c", "+ lay->npane") == 1,
           "the staging budget pays for one quad per drawn pane, so the bell pass cannot overrun the buffer");
-    /* ... and that main.c actually feeds it. Without these the renderer would ask bell_strength() with a
-       now_ms of 0 and a bell_ms of 0 forever: every check above stays green while no bell is ever drawn, which
-       is the dead-cursor_color shape again (a key parsed, stored and tested at the parser, reaching no pixel). */
+    /* ... and that main.c actually feeds it. Without these the renderer would ask bell_strength() with a now_ms of
+       0 and a bell_ms of 0 forever: every check above stays green while no bell is ever drawn. */
     CHECK(src_call_passes_arg("src/main.c", "render_init(&", "conf.bell") == 1,
           "src/main.c passes conf.bell to render_init() — `bell = off` has to reach the drawing decision");
     CHECK(src_sub_count("src/render.c", "r->bell_on") == 2,
@@ -805,14 +753,11 @@ static void group_source_wiring(void)
     CHECK(src_word_count("src/mux.c", "bell_ms") == 2,
           "src/mux.c names the ring time twice and only twice: mux_open() clears a reused slot (a new tab cannot "
           "inherit a dead session's bell) and mux_bell_live() reads it");
-    /* ---- the bell a click caused: main.c asks one decision, and stamps one moment (s128) -------
-       The user's report: "clicking the terminal when 'less' is active makes it flash. while it shouldn't".
-       Measured (.scratch/s128/bellprobe4): a click in `less` becomes Up presses, `less` cannot scroll before the
-       beginning of its file, and its BEL arrives 0-1 ms later. The decision itself — bell_is_ours() — is checked
-       as a table in tests/test_vt.c; what these scans pin is that main.c consults it, that the stamp exists on
-       BOTH sides of the pair, and that the WHEEL path stays unstamped (there the user asked to scroll, so "there
-       is nothing further" is a message addressed to them). Counts measured on the wired tree with
-       .scratch/s128/scancount.py — re-measure, do not copy. */
+    /* ---- the bell a click caused: main.c asks one decision, and stamps one moment -------
+       A click in `less` becomes Up presses, `less` cannot scroll before the beginning of its file, and its BEL
+       arrives 0-1 ms later. The decision itself — bell_is_ours() — is checked as a table in tests/test_vt.c;
+       what these scans pin is that main.c consults it, that the stamp exists on BOTH sides of the pair, and
+       that the WHEEL path stays unstamped (a wheel turn is not a request to be told nothing happened). */
     CHECK(src_word_count("src/main.c", "bell_is_ours") == 1,
           "src/main.c asks the mute decision exactly once, where a BEL becomes a flash — one owner for the rule "
           "that Kai-Term does not flash for its own typing");
@@ -830,19 +775,16 @@ static void group_source_wiring(void)
           "src/mux.c clears the stamp for a reused slot, so a new tab cannot inherit a closed session's mute and "
           "lose its first real bell");
     /* Which session gets the stamp matters: the mute is per session, and the session that was clicked is the one
-       whose Tab mux_cur() returns — the same one cur_term() handed the keystrokes to. Two scans pin the pair;
-       a mutant that stamps mux.tab[0] instead breaks the second. */
+       whose Tab mux_cur() returns — the same one cur_term() handed the keystrokes to. A mutant that stamps
+       mux.tab[0] instead breaks the second scan. */
     CHECK(src_sub_count("src/main.c", "Tab *st = mux_cur(&mux);") == 1
           && src_sub_count("src/main.c", "st->synth_ms") == 1,
           "the stamp is written through the CURRENT session's Tab — the one the click sent its presses to, not a "
           "slot index that would mute whichever tab happens to be first");
-    /* ---- a plain click opens a URL: main.c computes the flags, url.c owns every rule (s129) ---
-       The feature is a click, and a click is handled in a file no test binary links. The run rule, the
-       gates, the wait and the spawn are all checked as functions in tests/test_vt.c; what these scans pin
-       is that main.c CONSULTS them rather than keeping its own copy — the dead-`cursor_color` shape is a
-       key parsed, stored and tested at the parser while nothing at the pixel end reads it, and the URL
-       version of that would be a click that opens nothing (or opens something the gate refused).
-       Every count measured on the wired tree with .scratch/s129/scancount.py — re-measure, do not copy. */
+    /* ---- a plain click opens a URL: main.c computes the flags, url.c owns every rule ----
+       The run rule, the gates, the wait and the spawn are all checked as functions in tests/test_vt.c; what
+       these scans pin is that main.c CONSULTS them rather than keeping its own copy — the failure shape is a
+       click that opens nothing, or opens something the gate refused. */
     CHECK(src_word_count("src/main.c", "url_refusal") == 1 &&
           src_word_count("src/main.c", "url_refusal_name") == 1 &&
           src_word_count("src/main.c", "url_click_opens") == 0,
@@ -904,8 +846,7 @@ static void group_source_wiring(void)
           "no shell and no second exec path anywhere in the feature — the argument is data, always");
     CHECK(src_sub_count("src/url.c", "char *argv[3]") == 1,
           "the opener is started with exactly one argument and a NULL terminator");
-    /* ---- the HOVER underline's wiring (s133): the frame asks, the renderer draws, url.c decides ----
-       Every count measured on the wired tree with .scratch/s129/scancount.py — re-measure, do not copy. */
+    /* ---- the HOVER underline's wiring: the frame asks, the renderer draws, url.c decides ---- */
     CHECK(src_word_count("src/main.c", "url_hover_shows") == 1 &&
           src_word_count("src/url.c", "url_hover_shows") == 1 &&
           src_word_count("src/render.c", "url_hover_shows") == 0,
@@ -921,8 +862,8 @@ static void group_source_wiring(void)
           "the underline stays on screen after the pointer is gone, because ptr_x/ptr_y keep their last value");
     CHECK(src_sub_count("src/main.c", "W.ptr_in = 1") == 1 && src_sub_count("src/main.c", "W.ptr_in = 0") == 1,
           "the pointer's presence on the surface is set in exactly the two listeners that can know it");
-    /* …and OBED by the mapping that asks for the cell. A mutant that deleted this guard survived every s133 check
-       (measured, .scratch/s134/mutate_run.txt): pinning the two assignments is not pinning the gate that reads them. */
+    /* …and OBED by the mapping that asks for the cell: pinning the two assignments is not pinning the gate that
+   reads them. */
     CHECK(src_sub_count("src/main.c", "if (!W.ptr_in)") == 1,
           "the pointer's presence is the FIRST question the cell mapping asks — wl_pointer.leave does not clear "
           "ptr_x/ptr_y, so without this the last cell the pointer was over keeps its underline after the hand leaves "
@@ -939,11 +880,10 @@ static void group_source_wiring(void)
           "the underline's shape is one function asked once per pane per frame, with the CELL BOX and the font's "
           "metrics and nothing else — no cursor_width, so restyling the cursor cannot restyle the link hint, and no "
           "made-up baseline, so the line is placed by the font that is actually drawn");
-    /* The position rule, which is what the user's report was about. ONE helper answers "where in the cell does a
-       line under the characters go", and BOTH underlines ask it: 3 = the definition + the cursor's underline branch
-       + the hover rect. And the wrong answer is pinned absent, by its own text: `cell_h - h` is the expression that
-       put the line across the letters ("it's over the text instead of under it", 2026-10-22), and a scan is the only
-       check that can see it, because no headless test draws a pixel. */
+    /* The position rule. ONE helper answers "where in the cell does a line under the characters go", and BOTH
+   underlines ask it: 3 = the definition + the cursor's underline branch + the hover rect. And the wrong answer
+   is pinned absent by its own text: `cell_h - h` is the expression that put the line across the letters, and a
+   scan is the only check that can see it, because no headless test draws a pixel. */
     CHECK(src_word_count("src/render.c", "underline_y") == 3,
           "the two underlines ask ONE position rule (definition + both call sites) — two copies of the expression "
           "is how they came to be wrong in the same direction");
@@ -966,8 +906,8 @@ static void group_source_wiring(void)
     CHECK(src_sub_count("src/render.c", "col2f(ink, fg)") == 1,
           "the line takes the CELL's own ink, not a chrome colour: an address printed in blue underlines in blue, "
           "and no new colour key is needed");
-    /* The same claim by its own text, because the check above cannot see WHERE `ink` came from — a mutant that fed
-       it a chrome colour instead of the cell's survived every s133 check (measured). */
+    /* The same claim by its own text, because the check above cannot see WHERE `ink` came from: feeding it a chrome
+   colour instead of the cell's survives every other check here. */
     CHECK(src_sub_count("src/render.c", "uint32_t ink = c->fg;") == 1 &&
           src_sub_count("src/render.c", "ink = c->bg;") == 1,
           "and the ink is read from the CELL — its own fg, swapped to its bg exactly where the cell is inverted, the "
@@ -976,8 +916,8 @@ static void group_source_wiring(void)
           "the frame's quad budget counts the hover pass (at most URL_MAX cells) — a budget that forgets a pass "
           "is a staging-buffer overrun waiting for a long address");
     /* The draw ORDER, which no headless test can run and the frame depends on: with no GL blending the later quad
-       simply wins, so the underline must be after the selection bands and the cursor quad (or a highlight eats it)
-       and before the glyphs (or it hides a character). Each needle appears once in render_draw(). */
+   simply wins, so the underline must come after the selection bands and the cursor quad (or a highlight eats
+   it) and before the glyphs (or it hides a character). Each needle appears once in render_draw(). */
     CHECK(src_code_before("src/render.c", "if (!term_cell_highlightable", "render_hover((int)cw") == 1,
           "the underline is emitted AFTER the selection bands, so a highlight never paints over it");
     CHECK(src_code_before("src/render.c", "if (!cd.quad)", "render_hover((int)cw") == 1,
@@ -985,26 +925,25 @@ static void group_source_wiring(void)
     CHECK(src_code_before("src/render.c", "render_hover((int)cw",
                           "emit_cell_glyph(f, c, px, py, cw, ch, ascent, fg, bg, band0, band1, &vp)") == 1,
           "and BEFORE the glyphs, so a character is never hidden behind its own underline");
-    /* The one link a headless test cannot execute: main() handing the configured value to the renderer and
-       to the band's painter. The call string includes the '&' so a COMMENT that merely names the function
-       (main.c has two) cannot start the scan. */
+    /* The one link a headless test cannot execute: main() handing the configured value to the renderer and to the
+   band's painter. The call string includes the '&' so a COMMENT that merely names the function (main.c has
+   two) cannot start the scan. */
     CHECK(src_call_passes_arg("src/main.c", "render_init(&", "conf.cursor_color") == 1,
           "src/main.c passes conf.cursor_color to render_init()");
     CHECK(src_call_passes_arg("src/main.c", "render_init(&", "conf.selection_color") == 1,
           "src/main.c passes conf.selection_color to render_init()");
     CHECK(src_call_passes_arg("src/main.c", "fm_paint(&", "conf.selection_color") == 1,
           "src/main.c passes conf.selection_color to fm_paint()");
-    /* The cursor's two numbers, same reason: a key that stops in Config is not implemented (s102). */
+    /* The cursor's two numbers, same reason: a key that stops in Config is not implemented. */
     CHECK(src_call_passes_arg("src/main.c", "render_init(&", "conf.cursor_width") == 1,
           "src/main.c passes conf.cursor_width to render_init()");
-    /* The blink phase reaches the renderer as a COPY of window state, not as a Term field: on the tree
-       before the blink existed this line is absent and the count is 0. The scan's second argument is any
-       code string, so this pins the assignment itself (main.c has no comment holding it). */
+    /* The blink phase reaches the renderer as a COPY of window state, not as a Term field. The scan's second
+   argument is any code string, so this pins the assignment itself. */
     CHECK(src_call_passes_arg("src/main.c", "rend.cursor_on = W.cursor_on", "W.cursor_on") == 1,
           "src/main.c copies the blink phase into Render.cursor_on every frame");
-    /* The three passes of render_draw() must ask the SAME question about the cursor cell, or a bar
-       painted in one pass and not the next erases itself (the "must match pass 2" comment). The scanner
-       skips comments, so 4 is the definition plus the three call sites — re-diff, do not copy. */
+    /* The three layers of render_draw() that paint a cursor cell must ask the SAME question, or a bar drawn by one
+   and not the next erases itself. The scanner skips comments, so 4 is the definition plus the three call
+   sites — re-diff, do not copy. */
     CHECK(src_word_count("src/render.c", "render_cursor") == 4,
           "src/render.c calls render_cursor() from all three passes (definition + 3 call sites)");
     CHECK(src_word_count("src/render.c", "cursor_on") == 3,
@@ -1013,14 +952,11 @@ static void group_source_wiring(void)
           "CURSOR_COL survives as the built-in DEFAULT in src/config.c");
 }
 
-/* The scanner itself, pinned — against a file this test writes, NOT against this file. The first version
-   scanned tests/test_render.c itself and came out RED for a reason worth keeping: the CHECK lines that name
-   a probe token are themselves code containing that token, so the scan counted its own argument (3 for the
-   code token — declaration, (void) cast, CHECK argument — and 1 for the comment token, against the expected
-   1 and 0). A probe file this test creates has exactly the occurrences the checks claim, and it can also pin
-   the rules a self-scan could not: a line comment and a block comment spanning several lines. Every mention
-   of a probe token below is split by string concatenation, so this source never holds the whole word and can
-   never count itself. */
+/* The scanner itself, pinned — against a file this test writes, NOT against this file. A self-scan came out RED
+   for a reason worth keeping: the CHECK lines that name a probe token are themselves code holding that token,
+   so the scan counted its own argument. A probe file this test creates has exactly the occurrences the checks
+   claim, and it can pin rules a self-scan cannot (a line comment, a block comment over several lines). Every
+   mention of a probe token below is split by string concatenation, so this source never holds the whole word. */
 static void group_scanner_selfcheck(void)
 {
     char path[128];
