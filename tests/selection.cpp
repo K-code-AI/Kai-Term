@@ -253,6 +253,69 @@ int main() {
                selectionTextAt(8, Selection{CellPos{0, 0}, CellPos{0, 8}}, pick), "old");
     }
 
+    {
+        // Panes: a drag belongs to the pane it started in and stops at its edge.
+        const PaneRect left{0, 0, 10, 40};
+        const PaneRect right{0, 40, 10, 40};
+        const PaneRect below{10, 0, 10, 80};
+
+        expectTrue("a pane holds its own first row", left.contains(0, 0));
+        expectTrue("and its own last row", left.contains(9, 20));
+        expectTrue("but not the row a neighbour starts on", !left.contains(10, 20));
+        expectTrue("a pane holds its last column", left.contains(5, 39));
+        expectTrue("and not the first column of its neighbour", !left.contains(5, 40));
+
+        expectTrue("a row below is pulled up to the pane's last row",
+                   left.clampRow(17) == 9);
+        expectTrue("a row above is pulled down", left.clampRow(-4) == 0);
+        // Ends are exclusive, so stopping at the boundary is legal and one past it is
+        // not: the neighbour's first cell is not ours to select.
+        expectTrue("a selection end may sit on the boundary", left.clampEndCol(99) == 40);
+        expectTrue("and may not go past it", left.clampEndCol(-3) == 0);
+
+        expectTrue("a drag is the pane it started in, not where it reached",
+                   paneForDrag({left, right, below}, CellPos{2, 5}, 20, 80).col == 0);
+        expectTrue("including when it started in the right-hand one",
+                   paneForDrag({left, right, below}, CellPos{2, 60}, 20, 80).col == 40);
+        expectTrue("or the one underneath",
+                   paneForDrag({left, right, below}, CellPos{15, 60}, 20, 80).row == 10);
+
+        // Saying nothing about panes, or saying it badly, has to leave a terminal that
+        // still selects.
+        expectTrue("with no panes the screen is one pane",
+                   paneForDrag({}, CellPos{7, 63}, 20, 80).cols == 80);
+        expectTrue("a press on a divider between panes still selects",
+                   paneForDrag({PaneRect{0, 0, 10, 40}, PaneRect{0, 42, 10, 38}},
+                               CellPos{5, 41}, 20, 80)
+                           .cols == 80);
+        expectTrue("and so does a pane described as holding nothing",
+                   paneForDrag({PaneRect{0, 0, 0, 0}}, CellPos{1, 1}, 20, 80).rows == 20);
+
+        {
+            // The reason for all of it: copying out of one pane gives that pane's
+            // text and nothing of its neighbour's, line by line. Twelve columns wide,
+            // so the divider is column six.
+            // Twelve columns, so each half is six: "lone" and "rtwo" numbered.
+            const std::vector<Row> rows = {makeRow("lone01rtwo01", 12),
+                                           makeRow("lone02rtwo02", 12)};
+            auto pick = [&](int r) -> const Row& { return rows[static_cast<std::size_t>(r)]; };
+            expect("across the whole row both halves come out",
+                   selectionTextAt(12, Selection{CellPos{0, 0}, CellPos{1, 12}}, pick),
+                   "lone01rtwo01\nlone02rtwo02");
+
+            // The same drag, told it belongs to a pane six columns wide: the row in the
+            // middle of it stops at the divider instead of running on.
+            const PaneRect half{0, 0, 2, 6};
+            expect("and only the pane's own part of it",
+                   selectionTextInPane(half, Selection{CellPos{0, 0}, CellPos{1, 6}}, pick),
+                   "lone01\nlone02");
+            expect("a drag in the right-hand pane gets its own text",
+                   selectionTextInPane(PaneRect{0, 6, 2, 6},
+                                       Selection{CellPos{0, 6}, CellPos{1, 12}}, pick),
+                   "rtwo01\nrtwo02");
+        }
+    }
+
     if (failures == 0) {
         std::cout << "PASS: " << checks << " selection and text-extraction checks passed\n";
         return 0;

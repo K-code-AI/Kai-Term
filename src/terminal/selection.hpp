@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <vector>
 
 namespace kai {
 
@@ -98,6 +99,61 @@ inline void expandToWord(int cols, int col, KindOf kind_of, int& start, int& end
     end = col + 1;
     while (end < cols && kind_of(end) == CellKind::Word)
         ++end;
+}
+
+// The part of the grid one pane owns, in cell coordinates.
+//
+// A terminal showing several shells at once has to keep a drag inside the one it
+// started in. Text copied out of the left half of a split should not arrive with the
+// right half's text glued onto the end of every line, and a drag that wanders down
+// into the pane below picks up commands from a shell the person was not looking at.
+//
+// Rows are inclusive at both ends — the last row of a pane is part of it — while the
+// end column is exclusive, because that is how a selection end is written: a drag
+// stopping at the pane boundary is a drag that selected up to, but not including, the
+// first cell of its neighbour.
+struct PaneRect {
+    int row = 0;
+    int col = 0;
+    int rows = 0;
+    int cols = 0;
+
+    int firstRow() const { return row; }
+    int lastRow() const { return row + rows - 1; }
+    int firstCol() const { return col; }
+    int endCol() const { return col + cols; }
+
+    bool valid() const { return rows > 0 && cols > 0; }
+
+    bool contains(int r, int c) const {
+        return r >= firstRow() && r <= lastRow() && c >= firstCol() && c < endCol();
+    }
+
+    int clampRow(int r) const { return std::clamp(r, firstRow(), lastRow()); }
+
+    int clampEndCol(int c) const { return std::clamp(c, firstCol(), endCol()); }
+};
+
+// One pane, the screen: what a terminal with no panes has.
+inline PaneRect wholeGridPane(int rows, int cols) {
+    return PaneRect{0, 0, rows, cols};
+}
+
+// The pane a drag belongs to, which is the one holding the cell the drag started in —
+// not wherever it happens to have reached.
+//
+// A host that has not said where its panes are gets the whole grid, and so does a press
+// that lands on nothing: a divider between panes, or a cell outside every listed pane.
+// A drag that refuses to start is worse than one that is not clipped, and a terminal
+// that stops selecting whenever a layout is described badly is a bug report nobody can
+// reproduce.
+inline PaneRect paneForDrag(const std::vector<PaneRect>& panes, const CellPos& at, int rows,
+                            int cols) {
+    for (const PaneRect& pane : panes) {
+        if (pane.valid() && pane.contains(at.row, at.col))
+            return pane;
+    }
+    return wholeGridPane(rows, cols);
 }
 
 } // namespace kai

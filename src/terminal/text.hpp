@@ -4,6 +4,7 @@
 #include "selection.hpp"
 
 #include <string>
+#include <utility>
 
 namespace kai {
 
@@ -65,7 +66,7 @@ inline std::string screenText(const Screen& s, bool trim_trailing_spaces = true)
 // without duplicating this logic.
 template <typename RowAt>
 inline std::string selectionTextAt(int cols, const Selection& sel, RowAt&& row_at,
-                                   bool trim_trailing_spaces = true) {
+                                   bool trim_trailing_spaces = true, int first_col = 0) {
     if (sel.empty())
         return {};
 
@@ -75,7 +76,11 @@ inline std::string selectionTextAt(int cols, const Selection& sel, RowAt&& row_a
 
     std::string out;
     for (int r = f.row; r <= last_row; ++r) {
-        const int lo = (r == f.row) ? f.col : 0;
+        // The first and last rows go from wherever the drag began to wherever it
+        // ended; the rows in between run the width of the grid, or of the pane when one
+        // was asked for. Without that, the middle rows of a drag in a split window
+        // carry in a neighbour's text, line by line.
+        const int lo = (r == f.row) ? f.col : first_col;
         const int hi = (r == l.row) ? l.col : cols;
         if (r > f.row)
             out += '\n';
@@ -93,6 +98,18 @@ inline std::string selectionText(const Screen& s, const Selection& sel,
                                  bool trim_trailing_spaces = true) {
     return selectionTextAt(s.cols(), sel, [&](int r) -> const Row& { return s.row(r); },
                            trim_trailing_spaces);
+}
+
+// Text of a selection that belongs to one pane, read across that pane's columns.
+//
+// Keeping the ends inside the pane is half of it; what is left is how far a row in the
+// middle of a multi-row drag reaches, because the ordinary answer — as far as the
+// screen goes — is a neighbour's cells.
+template <typename RowAt>
+inline std::string selectionTextInPane(const PaneRect& pane, const Selection& sel,
+                                       RowAt&& row_at, bool trim_trailing_spaces = true) {
+    return selectionTextAt(pane.endCol(), sel, std::forward<RowAt>(row_at),
+                           trim_trailing_spaces, pane.firstCol());
 }
 
 } // namespace kai

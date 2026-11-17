@@ -143,11 +143,43 @@ public:
     // How far the view could scroll back right now.
     int scrollRange() const { return screen_.inAlternateScreen() ? 0 : screen_.historySize(); }
 
+    // Say where the panes are, so a drag stays inside the one it started in. An empty
+    // list is the ordinary terminal: one pane, the whole screen. A host drawing its own
+    // splits calls this with the cells each one owns; nothing else has to know it
+    // exists.
+    void setPanes(std::vector<PaneRect> panes) {
+        panes_ = std::move(panes);
+        // A layout change moves the walls around any selection already out there.
+        // Pulling the ends in to the pane they started from beats leaving a highlight
+        // that now runs through a neighbour, and the person can drag again.
+        if (!selection_.empty()) {
+            const PaneRect pane = paneForDrag(panes_, dragging_ ? anchor_ : selection_.anchor,
+                                              rows_, cols_);
+            selection_.anchor.row = pane.clampRow(selection_.anchor.row);
+            selection_.head.row = pane.clampRow(selection_.head.row);
+            selection_.anchor.col = pane.clampEndCol(selection_.anchor.col);
+            selection_.head.col = pane.clampEndCol(selection_.head.col);
+        }
+        update();
+    }
+
+    const std::vector<PaneRect>& panes() const { return panes_; }
+
     // The current text selection, in display coordinates, and the text it covers.
     Selection selection() const { return selection_; }
     std::string selectedText() const {
-        return selectionTextAt(cols_, selection_,
-                               [&](int r) -> const Row& { return displayRow(r); });
+        const PaneRect pane = paneForDrag(panes_, selection_.anchor, rows_, cols_);
+        return selectionTextInPane(pane, selection_,
+                                   [&](int r) -> const Row& { return displayRow(r); });
+    }
+
+    // Whether a cell is highlighted. The pane a selection started in clips it, because
+    // the rows in the middle of a drag run to the end of the line, and past the divider
+    // that line belongs to another shell.
+    bool selectedAt(int row, int col) const {
+        if (!selection_.contains(row, col))
+            return false;
+        return paneForDrag(panes_, selection_.anchor, rows_, cols_).contains(row, col);
     }
 
     // Geometry for anything that has to aim at a character: the size of one cell
@@ -485,10 +517,13 @@ public:
             // the anchor left. Text that has scrolled out of reach is not added to
             // the selection; what is on screen is.
             dragging_ = true;
-            anchor_.row = std::clamp(anchor_before.row + (view_top_before - viewTop()), 0,
-                                     rows_ - 1);
+            const PaneRect kept = paneForDrag(panes_, anchor_before, rows_, cols_);
+            anchor_.row = kept.clampRow(anchor_before.row + (view_top_before - viewTop()));
         }
-        extendSelection(CellPos{direction > 0 ? 0 : rows_ - 1, edge_col_});
+        // Crawling to the edge of the window stops at the edge of the pane: the rows
+        // beyond it are somebody else's shell.
+        const PaneRect pane = paneForDrag(panes_, anchor_, rows_, cols_);
+        extendSelection(CellPos{direction > 0 ? pane.firstRow() : pane.lastRow(), edge_col_});
         update();
     }
 
@@ -623,7 +658,7 @@ public:
 
                 // Blank cells are skipped below, so the highlight for them has
                 // to be painted here or a dragged band would show gaps.
-                if (selection_.contains(r, c) && (cell.text.empty() || cell.width <= 0)) {
+                if (selectedAt(r, c) && (cell.text.empty() || cell.width <= 0)) {
                     p.fillRect(QRectF(x, y, cw, ch),
                                QColor(selection_bg.r, selection_bg.g, selection_bg.b));
                 }
@@ -637,7 +672,7 @@ public:
                 Color bg = cell.bg;
                 if (cell.attr.reverse)
                     std::swap(fg, bg);
-                if (selection_.contains(r, c)) {
+                if (selectedAt(r, c)) {
                     bg = selection_bg;
                     fg = selection_fg;
                 }
@@ -803,6 +838,8 @@ private:
     enum class DragMode { Char, Word, Line };
 
     Selection selection_{};
+    // Where the panes are, when a host has said. Empty means the screen is one pane.
+    std::vector<PaneRect> panes_;
     bool dragging_ = false;
     DragMode drag_mode_ = DragMode::Char;
     CellPos anchor_{};
@@ -996,29 +1033,42 @@ private:
     }
 
     // Grow the selection to `to` the way the gesture that started it wants:
-    // character by character, whole words, or whole rows.
+    // character by character, whole words, or whole rows. Wherever it wants to go, it
+    // stops at the edge of the pane the drag started in.
     void extendSelection(const CellPos& to) {
+        const PaneRect pane = paneForDrag(panes_, anchor_, rows_, cols_);
+        const CellPos inside{pane.clampRow(to.row), pane.clampEndCol(to.col)};
         switch (drag_mode_) {
             case DragMode::Char:
-                selection_ = Selection{anchor_, to};
+                selection_ = Selection{anchor_, inside};
                 break;
             case DragMode::Word:
-                selectWord(anchor_, to);
+                selectWord(anchor_, inside, pane);
                 break;
             case DragMode::Line:
-                selection_ = Selection{CellPos{anchor_.row, 0}, CellPos{to.row, cols_}};
+                // A whole row means the row of the pane, not of the screen: the line
+                // next door belongs to a different shell.
+                selection_ = Selection{CellPos{anchor_.row, pane.firstCol()},
+                                       CellPos{inside.row, pane.endCol()}};
                 break;
         }
     }
 
     // Snap both ends of a drag to word boundaries so dragging across a path
     // selects whole words at both ends.
-    void selectWord(const CellPos& from, const CellPos& to) {
+    void selectWord(const CellPos& from, const CellPos& to, const PaneRect& pane) {
         int from_start = from.col, from_end = from.col;
         int to_start = to.col, to_end = to.col;
         expandToWord(cols_, from.col, [&](int c) { return kindAt(from.row, c); },
                      from_start, from_end);
         expandToWord(cols_, to.col, [&](int c) { return kindAt(to.row, c); }, to_start, to_end);
+
+        // A word that touches the boundary is still only ours up to the boundary:
+        // where a neighbour's text begins is its business.
+        from_start = std::max(pane.clampEndCol(from_start), pane.firstCol());
+        from_end = pane.clampEndCol(from_end);
+        to_start = std::max(pane.clampEndCol(to_start), pane.firstCol());
+        to_end = pane.clampEndCol(to_end);
 
         if (from.row <= to.row)
             selection_ = Selection{CellPos{from.row, from_start}, CellPos{to.row, to_end}};
