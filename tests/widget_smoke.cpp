@@ -795,6 +795,26 @@ int main(int argc, char** argv) {
     expect("an application can give the title back", waitFor(
         [&] { return w.windowTitle().isEmpty(); }, 4000));
 
+    // ?2026 synchronized output: an application drawing a frame as one block asks
+    // not to be shown half of it. The pacing is asserted as the decision the widget
+    // makes, because asserting it as a wall-clock race would fail on a loaded
+    // machine and pass for the wrong reason everywhere else.
+    expect("outside a synchronized block every chunk may repaint",
+           kai::TerminalWidget::repaintAllowed(false, 0));
+    expect("inside a block a repaint is held back",
+           !kai::TerminalWidget::repaintAllowed(true, 5));
+    expect("and released once the interval has passed", kai::TerminalWidget::repaintAllowed(
+        true, kai::TerminalWidget::kSyncRepaintIntervalMs));
+
+    // The frame itself still has to arrive, mode or no mode: holding a repaint is
+    // not holding the text.
+    sendText(&w, "printf '\\033[?2026hinside a synchronized frame\\033[?2026l\\n'");
+    sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    expect("a frame written inside a synchronized block still reaches the screen",
+           waitFor([&] { return screenDump(w).find("inside a synchronized frame") != std::string::npos; },
+                   4000));
+    expect("the application leaves the mode off again", !w.screen().synchronizedOutput());
+
     // DECSCUSR: the application picks the cursor shape, and a different shape has
     // to be a different picture. The sequence has to come from a program inside
     // the terminal — bytes typed at the prompt are swallowed by the line editor and

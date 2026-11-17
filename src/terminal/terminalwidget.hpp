@@ -147,6 +147,17 @@ public:
     // a mouse event at a specific piece of text; a scrollbar or tooltip would
     // want the same numbers.
     QSizeF cellSize() const { return QSizeF(cellWidth(), cellHeight()); }
+
+    // How long a synchronized output block (?2026) may hold a repaint back. Long
+    // enough that a redraw of a whole screen fits inside one block, short enough
+    // that nothing on screen ever looks stuck.
+    static constexpr qint64 kSyncRepaintIntervalMs = 100;
+
+    // Whether this much time since the last repaint is enough to paint again. A
+    // pure decision, public so the pacing can be asserted without racing a clock.
+    static bool repaintAllowed(bool synchronized_output, qint64 ms_since_last_repaint) {
+        return !synchronized_output || ms_since_last_repaint >= kSyncRepaintIntervalMs;
+    }
     QPointF cellTopLeft(int row, int col) const {
         return QPointF(padding_ + col * cellWidth(), padding_ + row * cellHeight());
     }
@@ -235,7 +246,19 @@ public:
             // text nobody selected.
             keepSelectionOnScreen(view_top_before);
 
-            update();
+            // ?2026 synchronized output: an application drawing a whole frame
+            // writes it as one block and asks not to be shown half of it. Each read
+            // from the PTY already ends in one repaint, but a burst can still land
+            // mid-frame, so inside a block repaints are limited to one every
+            // kSyncRepaintIntervalMs. The block ending is itself a chunk, so the
+            // finished frame is painted then; and a program that turns the mode on
+            // and dies cannot freeze the screen, because the next chunk repaints
+            // once the interval has passed whether the mode is off or not.
+            const qint64 now_ms = repaintClockElapsed();
+            if (repaintAllowed(screen_.synchronizedOutput(), now_ms - last_repaint_ms_)) {
+                last_repaint_ms_ = now_ms;
+                update();
+            }
             return true;
         }
         if (dynamic_cast<TerminalExitEvent*>(e)) {
@@ -768,6 +791,17 @@ private:
     // Last cell reported to the application, so motion is only sent when the
     // pointer moves onto a different character.
     CellPos last_reported_{};
+    // Repaint pacing for ?2026, measured from the widget's own clock.
+    QElapsedTimer repaint_clock_;
+    qint64 last_repaint_ms_ = 0;
+
+    qint64 repaintClockElapsed() {
+        if (!repaint_clock_.isValid()) {
+            repaint_clock_.start();
+            return 0;
+        }
+        return repaint_clock_.elapsed();
+    }
 
     void scrollBy(int lines) {
         const int view_top_before = viewTop();

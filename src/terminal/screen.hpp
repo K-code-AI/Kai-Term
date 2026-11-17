@@ -163,6 +163,10 @@ public:
         return MouseCoord::Classic;
     }
 
+    // ?2026: the application is writing a frame as one block and would rather not
+    // be shown half of it. The consumer (the widget) decides when to repaint.
+    bool synchronizedOutput() const { return synchronized_output_; }
+
     // ?2004: the application wants pasted text fenced by ESC[200~ and ESC[201~.
     bool bracketedPaste() const { return bracketed_paste_; }
 
@@ -609,6 +613,7 @@ private:
     bool mouse_sgr_ = false;
     bool mouse_sgr_hex_ = false;
     bool mouse_utf8_ = false;
+    bool synchronized_output_ = false;
     bool bracketed_paste_ = false;
     Color saved_fg_{220, 220, 220};
     Color saved_bg_{30, 30, 30};
@@ -1247,6 +1252,7 @@ private:
         mouse_sgr_ = false;
         mouse_sgr_hex_ = false;
         mouse_utf8_ = false;
+        synchronized_output_ = false;
         bracketed_paste_ = false;
         autowrap_ = true;
         pending_wrap_ = false;
@@ -1386,8 +1392,9 @@ private:
                 case 1015: mouse_urxvt_ = set; break;
                 case 1016: mouse_sgr_hex_ = set; break;
                 case 2004: bracketed_paste_ = set; break;
+                case 2026: synchronized_output_ = set; break;
                 default:
-                    // ?12, ?128, ?2026 and the rest are accepted and ignored;
+                    // ?12, ?128 and the rest are accepted and ignored;
                     // features the terminal does not implement must still not
                     // disturb the application's byte stream.
                     break;

@@ -48,7 +48,8 @@ Implemented:
   and `ESC[23 t` stack, OSC 7 working directory, OSC 52 clipboard set and query,
   OSC 10/11 and OSC 4/104 colours, XTWINOPS size and title queries, the kitty
   keyboard query answered, SGR sub-parameters in both spellings, `?1005` UTF-8 mouse
-  coordinates, and DECSCUSR
+  coordinates, `?2026` synchronized output paced to one repaint per 100 ms inside a
+  block, and DECSCUSR
   (`ESC[<n> q`) cursor shapes — block, underline, vertical bar — all three drawn and
   asserted offscreen by comparing the picture of the cell the cursor stands on.
 - Headless parser, PTY, tmux ground-truth, input, PTY-input, scrollback, scroll
@@ -69,8 +70,10 @@ Known limits, deliberately left:
 - OSC 8 hyperlinks are consumed, not stored: the text renders and cannot be
   followed.
 - Cursor blink is not animated: DECSCUSR's blinking variants select their steady shape, and SGR 5 and 6 set a flag nothing reads yet.
-- `?2026` synchronized output is accepted and ignored, so a program that relies on
-  it for tear-free updates gets the ordinary paint cadence.
+- `?2026` is repaint pacing, not an off-screen frame: inside a synchronized block the
+  widget paints at most once every 100 ms, which is what removes the half-drawn
+  frames, but a repaint still shows whatever had arrived at that moment rather than a
+  complete frame assembled somewhere else.
 
 ## M2 — Terminal reliability
 
@@ -130,8 +133,6 @@ Needed:
 - Interactive applications driven with the mouse by a person: vim, less, htop, tmux.
 - SGR 53 (overline), accepted and ignored because there is nothing to draw it with.
 - Cursor blink: a timer for SGR 5/6 and for DECSCUSR's blinking variants.
-- `?2026` synchronized output, if tearing ever turns out to matter at a real frame
-  rate.
 
 ## M3 — Native session infrastructure
 

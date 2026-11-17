@@ -306,6 +306,11 @@ int main() {
         expectTrue("ESC[?1005l stops asking for UTF-8 coordinates",
                    s.mouseCoord() == kai::MouseCoord::Classic);
 
+        s.feed("\x1b[?2026h");
+        expectTrue("ESC[?2026h asks for synchronized output", s.synchronizedOutput());
+        s.feed("\x1b[?2026l");
+        expectTrue("ESC[?2026l ends the synchronized block", !s.synchronizedOutput());
+
         s.feed("\x1b[?2004h");
         expectTrue("ESC[?2004h asks for bracketed paste", s.bracketedPaste());
         s.feed("\x1b[?2004l");
@@ -313,13 +318,14 @@ int main() {
 
         // An application that exits without cleaning up must not leave the
         // terminal in a mode the next program did not ask for.
-        s.feed("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1005h\x1b[?1006h\x1b[?1015h\x1b[?1016h\x1b[?2004h");
+        s.feed("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1005h\x1b[?1006h\x1b[?1015h\x1b[?1016h\x1b[?2004h\x1b[?2026h");
         expectTrue("all modes are on before the reset", s.mouseMode() == kai::MouseMode::Any);
         s.feed("\x1b" "c");
         expectTrue("hard reset stops mouse reporting", !s.mouseReporting());
         expectTrue("hard reset restores classic coordinates",
                    s.mouseCoord() == kai::MouseCoord::Classic);
         expectTrue("hard reset stops bracketed paste", !s.bracketedPaste());
+        expectTrue("hard reset ends a synchronized block", !s.synchronizedOutput());
     }
 
     if (failures == 0) {
