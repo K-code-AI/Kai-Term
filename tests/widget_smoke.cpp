@@ -393,6 +393,14 @@ int main(int argc, char** argv) {
     if (QClipboard* clip = QGuiApplication::clipboard()) {
         expectStr("finishing the drag leaves the clipboard alone",
                   clip->text(QClipboard::Clipboard).toStdString(), "sentinel");
+        // The chord is built one key at a time, which is how a hand builds it.
+        // Qt reports a lone Ctrl or Shift as a key press of its own, and treating
+        // it as ordinary input dropped the selection before C ever arrived, so
+        // there was nothing left to copy.
+        sendKey(&w, Qt::Key_Control, Qt::ControlModifier);
+        expectStr("pressing Ctrl alone keeps the selection", w.selectedText(), "alpha");
+        sendKey(&w, Qt::Key_Shift, Qt::ShiftModifier);
+        expectStr("pressing Shift alone keeps the selection", w.selectedText(), "alpha");
         sendKey(&w, Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
         expectStr("Ctrl+Shift+C copies the selection",
                   clip->text(QClipboard::Clipboard).toStdString(), "alpha");

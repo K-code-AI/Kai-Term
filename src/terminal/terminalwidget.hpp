@@ -192,6 +192,14 @@ public:
         const int key = ev->key();
         const bool shift = mods.testFlag(Qt::ShiftModifier);
 
+        // A modifier pressed on its own is not a key press in any sense: it is
+        // the first half of a chord. Qt delivers it as Key_Control, Key_Shift and
+        // so on, and treating it as ordinary input threw away the selection the
+        // moment the user started pressing Ctrl+Shift+C to copy that selection.
+        if (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt ||
+            key == Qt::Key_AltGr || key == Qt::Key_Meta)
+            return;
+
         // Ctrl+Shift+C and Ctrl+Shift+V are the terminal's own, handled before
         // anything else and never written to the PTY. Without the early return
         // Ctrl+Shift+C would encode as Ctrl+C and interrupt whatever is running.
@@ -341,12 +349,9 @@ public:
         if (!dragging_)
             return;
         dragging_ = false;
-        // A finished drag does not touch the clipboard: the highlight stays for
-        // the user to read and Ctrl+Shift+C is what copies it. On X11 the text is
-        // still offered as PRIMARY, because that is what selecting text has
-        // always meant there and middle click reads it back.
-        if (!selection_.empty())
-            offerSelection();
+        // A finished drag copies nothing, in either direction. The highlight
+        // stays on screen for the user to read, and Ctrl+Shift+C is what puts the
+        // text where anything can paste it.
         update();
     }
 
@@ -721,20 +726,6 @@ private:
         selection_ = Selection{};
         dragging_ = false;
         update();
-    }
-
-    // Offer the selection as PRIMARY without copying it, the X11 meaning of
-    // highlighting text: a middle click in another application can read it, but
-    // the clipboard the user pastes from with Ctrl+Shift+V is untouched.
-    void offerSelection() {
-        const std::string text = selectedText();
-        if (text.empty())
-            return;
-        QClipboard* clip = QGuiApplication::clipboard();
-        // Not every platform has a separate selection; asking for one that does
-        // not exist makes Qt complain and changes nothing.
-        if (clip && clip->supportsSelection())
-            clip->setText(QString::fromStdString(text), QClipboard::Selection);
     }
 
     // Copy on demand: Ctrl+Shift+C. Both modes are set so a middle click in
