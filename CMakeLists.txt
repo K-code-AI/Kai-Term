@@ -101,6 +101,14 @@ add_test(NAME scrollbar COMMAND kai-term-scrollbar)
 add_executable(kai-term-process tests/process.cpp)
 add_test(NAME process COMMAND kai-term-process)
 
+# Daemon protocol: framing, field escaping, record lists. Pure bytes, no sockets.
+add_executable(kai-term-ipc tests/ipc.cpp)
+add_test(NAME ipc COMMAND kai-term-ipc)
+
+# The Unix-socket layer under the daemon: real sockets, real filesystem, no display.
+add_executable(kai-term-sockets tests/sockets.cpp)
+add_test(NAME sockets COMMAND kai-term-sockets)
+
 add_executable(kai-term-mouse-app tests/mouse_app.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-mouse-app PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
 
