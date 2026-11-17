@@ -134,11 +134,14 @@ inline std::string encodeMouse(const MouseReport& ev, MouseMode mode, MouseCoord
 
     switch (coord) {
         case MouseCoord::Sgr:
-            return "\x1b[" + std::to_string(col) + ";" + std::to_string(row) + ";" +
-                   std::to_string(cb_extended) + (ev.action == MouseAction::Release ? "m" : "M");
+            // xterm's SGR form is CSI < button ; column ; row M (or m to release).
+            // The leading < is what tells a reader this is a mouse report and not
+            // a colour change, and the button comes first, not the coordinates.
+            return "\x1b[<" + std::to_string(cb_extended) + ";" + std::to_string(col) + ";" +
+                   std::to_string(row) + (ev.action == MouseAction::Release ? "m" : "M");
         case MouseCoord::SgrHex: {
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "\x1b[<%x;%x;%x%c", col, row, cb_extended,
+            std::snprintf(buf, sizeof(buf), "\x1b[<%x;%x;%x%c", cb_extended, col, row,
                           ev.action == MouseAction::Release ? 'm' : 'M');
             return std::string(buf);
         }

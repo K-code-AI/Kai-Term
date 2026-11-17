@@ -87,6 +87,11 @@ add_test(NAME input-pty COMMAND kai-term-input-pty)
 add_test(NAME scrollback COMMAND kai-term-scrollback)
 add_test(NAME mouse COMMAND kai-term-mouse)
 add_test(NAME selection COMMAND kai-term-selection)
+
+add_executable(kai-term-mouse-app tests/mouse_app.cpp src/terminal/vtparser.cpp)
+target_link_libraries(kai-term-mouse-app PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
+
+add_test(NAME mouse-app COMMAND kai-term-mouse-app)
 add_test(NAME widget-smoke COMMAND kai-term-widget-smoke)
 
 target_compile_definitions(kai-term PRIVATE KAI_TERM_VERSION="0.0.0")

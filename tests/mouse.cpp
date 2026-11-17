@@ -171,54 +171,57 @@ int main() {
            classic(0, 1, 223));
 
     // --- SGR ------------------------------------------------------------------
+    // CSI < button ; column ; row M, with the button first and a leading <.
+    // Getting this order wrong makes every report unreadable to the
+    // application, so these bytes are what btop and friends actually parse.
     expect("sgr left press",
            encodeMouse(ev(MouseKey::Left, MouseAction::Press, 0, 0), MouseMode::Click,
                        MouseCoord::Sgr),
-           std::string(esc) + "[1;1;0M");
+           std::string(esc) + "[<0;1;1M");
     // SGR names the released button and ends a release with a lower-case m.
     expect("sgr release",
            encodeMouse(ev(MouseKey::Left, MouseAction::Release, 0, 0), MouseMode::Click,
                        MouseCoord::Sgr),
-           std::string(esc) + "[1;1;0m");
+           std::string(esc) + "[<0;1;1m");
     expect("sgr right press bottom-right",
            encodeMouse(ev(MouseKey::Right, MouseAction::Press, 2, 79), MouseMode::Click,
                        MouseCoord::Sgr),
-           std::string(esc) + "[80;3;2M");
+           std::string(esc) + "[<2;80;3M");
     expect("sgr wheel up",
            encodeMouse(ev(MouseKey::WheelUp, MouseAction::Press, 0, 0), MouseMode::Click,
                        MouseCoord::Sgr),
-           std::string(esc) + "[1;1;64M");
+           std::string(esc) + "[<64;1;1M");
     expect("sgr left drag",
            encodeMouse(ev(MouseKey::None, MouseAction::Motion, 0, 0, mouseKeyBit(MouseKey::Left)),
                        MouseMode::Drag, MouseCoord::Sgr),
-           std::string(esc) + "[1;1;32M");
+           std::string(esc) + "[<32;1;1M");
     expect("sgr any-event motion",
            encodeMouse(ev(MouseKey::None, MouseAction::Motion, 0, 0, 0), MouseMode::Any,
                        MouseCoord::Sgr),
-           std::string(esc) + "[1;1;35M");
+           std::string(esc) + "[<35;1;1M");
     expect("sgr shift+ctrl wheel down",
            encodeMouse(ev(MouseKey::WheelDown, MouseAction::Press, 0, 0, 0, MouseShift | MouseCtrl),
                        MouseMode::Click, MouseCoord::Sgr),
-           std::string(esc) + "[1;1;85M");
+           std::string(esc) + "[<85;1;1M");
     // No byte limit, so a wide terminal reports its real column.
     expect("sgr wide column",
            encodeMouse(ev(MouseKey::Left, MouseAction::Press, 0, 255), MouseMode::Click,
                        MouseCoord::Sgr),
-           std::string(esc) + "[256;1;0M");
+           std::string(esc) + "[<0;256;1M");
 
     // --- SGR in hexadecimal ---------------------------------------------------
     expect("sgr hex press",
            encodeMouse(ev(MouseKey::Left, MouseAction::Press, 0, 0), MouseMode::Click,
                        MouseCoord::SgrHex),
-           std::string(esc) + "[<1;1;0M");
+           std::string(esc) + "[<0;1;1M");
     expect("sgr hex release",
            encodeMouse(ev(MouseKey::Right, MouseAction::Release, 0, 0), MouseMode::Click,
                        MouseCoord::SgrHex),
-           std::string(esc) + "[<1;1;2m");
+           std::string(esc) + "[<2;1;1m");
     expect("sgr hex column 256",
            encodeMouse(ev(MouseKey::Left, MouseAction::Press, 0, 255), MouseMode::Click,
                        MouseCoord::SgrHex),
-           std::string(esc) + "[<100;1;0M");
+           std::string(esc) + "[<0;100;1M");
 
     // --- urxvt ----------------------------------------------------------------
     // cb is offset by 32 and the order is cb, column, row.
