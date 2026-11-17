@@ -1,6 +1,7 @@
 #include "../terminal/terminalwidget.hpp"
 #include "../platform/platform.hpp"
 #include "../session/cli.hpp"
+#include "../session/sessionbackend.hpp"
 
 #include <QApplication>
 #include <QMainWindow>
@@ -11,9 +12,10 @@
 static void print_help()
 {
     std::cout << "Kai-Term " << KAI_TERM_VERSION << "\n"
-              << "Usage: kai-term [--version] [--help] [session <command>]\n"
+              << "Usage: kai-term [--version] [--help] [open <session>] [session <command>]\n"
               << "A native terminal emulator and PTY-backed shell.\n"
-              << "Run `kai-term session --help` for sessions that outlive the window.\n";
+              << "Run `kai-term session --help` for sessions that outlive the window,\n"
+              << "and `kai-term open NAME` for a window onto one that is already running.\n";
 }
 
 int main(int argc, char **argv)
@@ -31,6 +33,19 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    // `kai-term open NAME` is the graphical counterpart of `session attach NAME`:
+    // that one takes over the terminal it was run from, this one opens a window. Both
+    // are views of the same session, so a shell can be started in a window, picked up
+    // in a terminal over ssh, and left running when both go away.
+    std::string_view attach_to;
+    if (first == "open") {
+        if (argc < 3) {
+            std::cerr << "kai-term open: which session? try `kai-term session list`\n";
+            return 2;
+        }
+        attach_to = argv[2];
+    }
+
     // Sessions are handled before Qt exists: they are a conversation with a daemon
     // over a socket, and none of it needs a display. `kai-term session list` on a
     // headless machine should work, and does.
@@ -44,9 +59,20 @@ int main(int argc, char **argv)
         kai::prepareQtPlatform();
         QApplication app(argc, argv);
         QMainWindow window;
-        window.setWindowTitle("Kai-Term");
+        window.setWindowTitle(QString::fromStdString(
+            attach_to.empty() ? std::string("Kai-Term")
+                              : "Kai-Term - " + std::string(attach_to)));
 
-        auto* term = new kai::TerminalWidget();
+        // The window does not know which of the two it is looking at; the backend
+        // decides where bytes come from. Starting a window onto a session that is not
+        // running throws rather than opening an empty frame, because an empty window
+        // looks like a working terminal and is not one.
+        auto* term = attach_to.empty()
+                         ? new kai::TerminalWidget()
+                         : new kai::TerminalWidget(
+                               24, 80,
+                               std::make_unique<kai::SessionBackend>(std::string(attach_to), 24,
+                                                                     80));
         term->setFocus();
         window.setCentralWidget(term);
         window.resize(1000, 700);

@@ -6,7 +6,7 @@
 #include "scrollbar.hpp"
 #include "selection.hpp"
 #include "text.hpp"
-#include "../process/pty.hpp"
+#include "backend.hpp"
 
 #include <poll.h>
 
@@ -51,7 +51,14 @@ struct TerminalExitEvent : QEvent {
 class TerminalWidget : public QWidget {
 public:
     explicit TerminalWidget(int rows = 24, int cols = 80, std::string shell = {})
-        : pty_(rows, cols, shell), screen_(rows, cols),
+        : TerminalWidget(rows, cols, std::make_unique<PtyBackend>(rows, cols, std::move(shell))) {
+    }
+
+    // A window showing a session that lives somewhere else. Everything past this
+    // point is the same: bytes in, screen out, keys back — what differs is on the far
+    // side of the backend.
+    TerminalWidget(int rows, int cols, std::unique_ptr<TerminalBackend> backend)
+        : backend_(std::move(backend)), screen_(rows, cols),
           rows_(rows), cols_(cols), running_(true), shell_alive_(true)
     {
         font_ = QFont("Monospace");
@@ -68,11 +75,11 @@ public:
                 // job that inherited the terminal can keep the stream open after
                 // the shell itself is gone, and the window has to close on the
                 // shell leaving, not on whoever else lets go.
-                struct pollfd watched {pty_.master(), POLLIN, 0};
+                struct pollfd watched {backend_->descriptor(), POLLIN, 0};
                 const int ready = ::poll(&watched, 1, 200);
                 if (ready < 0 && errno == EINTR)
                     continue;
-                if (pty_.reap()) {
+                if (backend_->collectsChild() && backend_->collect()) {
                     // The shell is gone. Anything it printed on the way out has
                     // already been read and queued as an event, so there is
                     // nothing left to wait for.
@@ -82,13 +89,14 @@ public:
                 }
                 if (ready == 0)
                     continue;
-                ssize_t n = pty_.read(buf, sizeof(buf));
+                ssize_t n = backend_->read(buf, sizeof(buf));
                 if (n <= 0) {
                     // The shell closed the terminal. Collect it here so the exit
                     // status means something; the master stays open until
                     // shutdown has joined this thread. (A successful write is no
                     // sign of life — see Pty::write.)
-                    pty_.reap();
+                    if (backend_->collectsChild())
+                        backend_->collect();
                     shell_alive_ = false;
                     QCoreApplication::postEvent(this, new TerminalExitEvent());
                     break;
@@ -106,10 +114,10 @@ public:
         // that number free to be handed to somebody else's open() while the read
         // is still in flight, so teardown waits for the reader to notice the end
         // of the stream on its own.
-        pty_.terminate();
+        backend_->stopProcess();
         if (reader_.joinable())
             reader_.join();
-        pty_.closeMaster();
+        backend_->release();
         shell_alive_ = false;
     }
 
@@ -167,7 +175,7 @@ public:
     // paste. Exposed because the middle-click path needs a clipboard, and a test
     // should still be able to check what the terminal would send.
     void pasteText(const std::string& text) {
-        if (text.empty() || !shell_alive_ || !pty_.alive())
+        if (text.empty() || !shell_alive_ || !backend_->alive())
             return;
 
         // A line feed is delivered as Enter, so pasting a script would run
@@ -208,9 +216,17 @@ public:
             // produces one and the application is waiting for it.
             if (auto title = screen_.takeTitle())
                 setWindowTitle(QString::fromStdString(*title));
-            for (const auto& request : screen_.takeClipboardRequests()) {
+            // A copy request reaches us from the model when the session is a shell
+            // started here, and from the daemon when it is a session elsewhere: the
+            // program asked the same question either way.
+            std::vector<Screen::ClipboardRequest> requests = screen_.takeClipboardRequests();
+            for (auto& request : backend_->takeClipboardRequests())
+                requests.push_back(std::move(request));
+            for (const auto& request : requests) {
                 const QClipboard::Mode mode =
                     request.primary ? QClipboard::Selection : QClipboard::Clipboard;
+                if (request.query && !backend_->answersQueries())
+                    continue; // the far side owns the answer to that
                 if (request.query) {
                     // The application is asking to paste, over a link such as
                     // ssh, where its own clipboard is not reachable.
@@ -229,8 +245,8 @@ public:
             // fish and tmux both probe the terminal at startup, and tmux uses
             // DSR 6n cursor position reports for output leak detection.
             const std::string response = screen_.takeResponse();
-            if (!response.empty())
-                pty_.write(response);
+            if (!response.empty() && backend_->answersQueries())
+                static_cast<void>(backend_->write(response));
 
             // The alternate screen has no history of its own, and the
             // application inside it (vim, less, tmux) owns scrolling there.
@@ -317,14 +333,14 @@ public:
         scroll_offset_ = 0;
         clearSelection();
 
-        if (!shell_alive_ || !pty_.alive())
+        if (!shell_alive_ || !backend_->alive())
             return;
 
         const std::string bytes = encodeKey(key, mods, ev->text(),
                                             screen_.applicationCursorKeys());
         if (bytes.empty())
             return;
-        pty_.write(bytes);
+        static_cast<void>(backend_->write(bytes));
     }
 
     // Mouse handling splits on what the application asked for. With reporting on
@@ -567,7 +583,7 @@ public:
         rows_ = new_rows;
         cols_ = new_cols;
         screen_.resize(rows_, cols_);
-        pty_.resize(rows_, cols_);
+        backend_->resize(rows_, cols_);
         // Reflow moves text between rows and columns, so a highlight drawn before
         // the resize would be sitting over different characters afterwards. It is
         // dropped rather than left to drift onto text nobody selected.
@@ -748,7 +764,7 @@ private:
         update();
     }
 
-    Pty pty_;
+    std::unique_ptr<TerminalBackend> backend_;
     Screen screen_;
     QFont font_;
     // Declared in the order the constructor initialises them: members are built
@@ -941,9 +957,9 @@ private:
     }
 
     void writeToPty(const std::string& bytes) {
-        if (bytes.empty() || !shell_alive_ || !pty_.alive())
+        if (bytes.empty() || !shell_alive_ || !backend_->alive())
             return;
-        pty_.write(bytes);
+        static_cast<void>(backend_->write(bytes));
     }
 
     // Classification for word-wise selection. Word characters are ASCII letters,

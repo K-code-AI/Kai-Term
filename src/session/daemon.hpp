@@ -332,6 +332,20 @@ public:
         return true;
     }
 
+    // Type into a session without becoming a view of it.
+    bool type(const std::string& name, const std::string& text) {
+        std::shared_ptr<Record> record;
+        {
+            std::lock_guard<std::mutex> lock(table_mutex_);
+            const auto found = table_.find(name);
+            if (found != table_.end())
+                record = found->second;
+        }
+        if (!record || record->dead)
+            return false;
+        return record->pty->write(text);
+    }
+
     // Kick the views without touching the shell.
     bool detachAll(const std::string& name, std::string& error) {
         std::shared_ptr<Record> record;
@@ -425,8 +439,13 @@ private:
             // program gets two replies and takes the wrong one.
             if (!answer.empty())
                 static_cast<void>(record->pty->write(answer));
-            for (const Screen::ClipboardRequest& request : copies)
-                broadcast(*record, MsgKind::Clipboard, request.text);
+            for (const Screen::ClipboardRequest& request : copies) {
+                // Which clipboard it came from travels with it, so a view can put the
+                // text where the program asked for it to go.
+                broadcast(*record, MsgKind::Clipboard,
+                          encodeFields({{"text", request.text},
+                                        {"primary", request.primary ? "1" : "0"}}));
+            }
             broadcast(*record, MsgKind::Data, std::string(chunk));
         }
         static_cast<void>(record->pty->reap());
@@ -647,19 +666,7 @@ private:
             // wants to type into a shell should not have to become a window first,
             // and a window that attached only to type a line would show the answer to
             // nobody.
-            std::shared_ptr<Record> record;
-            {
-                std::lock_guard<std::mutex> lock(table_mutex_);
-                const auto found = table_.find(name);
-                if (found != table_.end())
-                    record = found->second;
-            }
-            if (!record || record->dead) {
-                static_cast<void>(detail::sendFrame(
-                    fd, MsgKind::Error, encodeFields({{"message", "no such session: " + name}})));
-                return;
-            }
-            if (!record->pty->write(fieldValue(fields, "text"))) {
+            if (!type(name, fieldValue(fields, "text"))) {
                 static_cast<void>(detail::sendFrame(
                     fd, MsgKind::Error,
                     encodeFields({{"message", "the session would not take the text"}})));

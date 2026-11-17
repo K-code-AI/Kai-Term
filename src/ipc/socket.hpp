@@ -68,16 +68,23 @@ inline bool makeSocketDirectory(std::string_view path) {
     if (slash == std::string::npos || slash == 0)
         return false;
     dir.resize(slash);
-    if (::mkdir(dir.c_str(), 0700) == 0)
-        return true;
-    if (errno == EEXIST) {
-        // Existing but not ours to trust: refuse rather than loosen it or write into
-        // a directory someone else owns.
-        struct stat st {};
-        return ::stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == ::getuid() &&
-               (st.st_mode & 0777) == 0700;
+    // $XDG_RUNTIME_DIR is meant to be there already, and normally is. Pointing it at a
+    // path of your own is how sessions end up somewhere specific, though, and then the
+    // level we make is not the only one missing — so every level is made, not just
+    // ours. Without this the daemon cannot bind and the only clue is a socket that
+    // never appears.
+    for (std::size_t end = dir.find('/', 1);; end = dir.find('/', end + 1)) {
+        const std::string level = dir.substr(0, end == std::string::npos ? dir.size() : end);
+        if (::mkdir(level.c_str(), 0700) != 0 && errno != EEXIST)
+            return false;
+        if (end == std::string::npos)
+            break;
     }
-    return false;
+    struct stat st {};
+    // Ours to use only if it is a directory we own and nobody else can read: refuse
+    // rather than loosen it or write into a directory someone else owns.
+    return ::stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == ::getuid() &&
+           (st.st_mode & 0777) == 0700;
 }
 
 inline bool fillAddress(const std::string& path, sockaddr_un& addr, socklen_t& len) {

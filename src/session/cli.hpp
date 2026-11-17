@@ -19,6 +19,7 @@
 #include <poll.h>
 #include <string>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <thread>
 #include <unistd.h>
@@ -109,8 +110,20 @@ inline bool startDaemon(std::string& error) {
         _exit(127);
     }
     for (int waited = 0; waited < kDaemonReadyWaitMs; waited += 50) {
-        if (daemonAlive())
+        if (daemonAlive()) {
+            // Ours, or one started by a command run in the same moment; either way
+            // there is something to talk to. It is not waited for: that would be
+            // waiting for the sessions to end.
             return true;
+        }
+        int status = 0;
+        if (::waitpid(pid, &status, WNOHANG) == pid) {
+            // It gave up instead of answering, and its reason went to /dev/null along
+            // with the rest of its output. That trade is right for a background
+            // process; it just means the way to see the reason has to be said.
+            error = "the daemon could not start; run `kai-term session serve` to see why";
+            return false;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     error = "the daemon did not answer within " + std::to_string(kDaemonReadyWaitMs / 1000) +

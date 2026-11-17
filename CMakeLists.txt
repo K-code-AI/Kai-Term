@@ -126,6 +126,18 @@ add_executable(kai-term-session tests/session.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-session PRIVATE Threads::Threads)
 add_test(NAME session COMMAND kai-term-session)
 
+# A window rendering a session owned by the daemon: the backend seam, exercised with a
+# real pty, a real socket and the offscreen platform.
+add_executable(kai-term-widget-session
+    tests/widget_session.cpp
+    src/terminal/vtparser.cpp
+)
+target_link_libraries(kai-term-widget-session PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core Threads::Threads)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-widget-session PRIVATE ${UTIL_LIBRARY})
+endif()
+add_test(NAME widget-session COMMAND kai-term-widget-session)
+
 add_executable(kai-term-mouse-app tests/mouse_app.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-mouse-app PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
 

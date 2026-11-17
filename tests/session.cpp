@@ -512,7 +512,11 @@ int main() {
                 }
                 Frame frame;
                 while (copier.reader.pop(frame)) {
-                    if (frame.kind == MsgKind::Clipboard && frame.body == "hello")
+                    if (frame.kind != MsgKind::Clipboard)
+                        continue;
+                    const Fields fields = decodeFields(frame.body);
+                    if (fieldValue(fields, "text") == "hello" &&
+                        fieldValue(fields, "primary") == "0")
                         heard_the_copy = true;
                 }
             }

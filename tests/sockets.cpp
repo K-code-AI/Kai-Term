@@ -93,6 +93,31 @@ int main() {
         expect("a path too long for the kernel is refused", sessionSocketPath("work").empty());
         ::setenv("XDG_RUNTIME_DIR", saved.c_str(), 1);
     }
+    {
+        // Pointing $XDG_RUNTIME_DIR at a place that does not exist yet is how someone
+        // puts sessions somewhere of their own, and it is the tidiest way to end up
+        // with a daemon that will not start: only our own directory is one we think to
+        // make, so the levels above it have to be made too.
+        const std::string saved = root;
+        const std::string nested = root + "/made/nested";
+        ::setenv("XDG_RUNTIME_DIR", nested.c_str(), 1);
+        const std::string deep_path = sessionSocketPath("deep");
+        std::string error;
+        const int listener = bindListen(deep_path, 4, error);
+        expect("a runtime directory that is missing is made (" + error + ")", listener >= 0);
+        struct stat st {};
+        expect("and the directory holding the sockets is private",
+               ::stat((nested + "/kai-term").c_str(), &st) == 0 && (st.st_mode & 0777) == 0700);
+        expect("and so is the one above it, which we had to make as well",
+               ::stat(nested.c_str(), &st) == 0 && (st.st_mode & 0777) == 0700);
+        if (listener >= 0)
+            ::close(listener);
+        ::unlink(deep_path.c_str());
+        ::rmdir((nested + "/kai-term").c_str());
+        ::rmdir(nested.c_str());
+        ::rmdir((root + "/made").c_str());
+        ::setenv("XDG_RUNTIME_DIR", saved.c_str(), 1);
+    }
 
     // Bind, connect, and see who the kernel says is on the other end.
     const std::string path = sessionSocketPath("work");
