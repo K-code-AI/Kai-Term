@@ -448,6 +448,103 @@ int main() {
         ok &= lok;
     }
 
+    // OSC: the commands an application sends to the terminal itself.
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b]0;first window\x07");
+        lok &= (s.windowTitle() == "first window");
+        const auto taken = s.takeTitle();
+        lok &= taken.has_value() && *taken == "first window";
+        lok &= !s.takeTitle().has_value(); // handed over once, not on every read
+        s.feed("\x1b]2;second\x1b\\"); // OSC 2, terminated by ESC backslash
+        lok &= (s.windowTitle() == "second");
+        s.feed("\x1b]0;par"); // split where a PTY read is likely to split it
+        s.feed("tial\x1b\\");
+        lok &= (s.windowTitle() == "partial");
+        s.feed("\x1b]110;\x07"); // the prompt asking for its default title back
+        lok &= (s.windowTitle().empty());
+        if (!lok) fail("OSC window title");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        // A command this terminal does not implement is consumed, not drawn.
+        s.feed("\x1b]66;whatever\x07X");
+        lok &= (s.at(0, 0).text == "X");
+        lok &= (s.cursorX() == 1);
+        // An application that lost its terminator must not be able to make the
+        // terminal eat memory until it is killed.
+        s.feed("\x1b]0;");
+        for (int i = 0; i < 4000; ++i)
+            s.feed(std::string(64, 'x'));
+        s.feed("\x07Y");
+        lok &= (s.windowTitle().size() <= 65536);
+        lok &= (s.at(0, 1).text == "Y");
+        if (!lok) fail("OSC is consumed and bounded");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b]52;c;YWJjZA==\x07"); // "abcd"
+        auto requests = s.takeClipboardRequests();
+        lok &= (requests.size() == 1);
+        lok &= (!requests.empty() && requests[0].text == "abcd");
+        lok &= (!requests.empty() && !requests[0].primary);
+        s.feed("\x1b]52;p;aGVsbG8=\x07"); // "hello", to the selection instead
+        requests = s.takeClipboardRequests();
+        lok &= (requests.size() == 1 && !requests.empty() && requests[0].primary &&
+                requests[0].text == "hello");
+        s.feed("\x1b]52;c;YWJj\nZA==\x07"); // wrapped across a line, still decodes
+        requests = s.takeClipboardRequests();
+        lok &= (!requests.empty() && requests[0].text == "abcd");
+        s.feed("\x1b]52;c;\x07"); // no payload: the application wants to read
+        requests = s.takeClipboardRequests();
+        lok &= (!requests.empty() && requests[0].query);
+        static_cast<void>(s.takeResponse());
+        s.answerClipboardQuery("abcd");
+        lok &= (s.takeResponse() == "\x1b]52;c;YWJjZA==\x07");
+        if (!lok) fail("OSC 52 clipboard");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b]7;file://example/home/kaida/My%20Dir\x07");
+        lok &= (s.workingDirectory() == "/home/kaida/My Dir");
+        if (!lok) fail("OSC 7 working directory");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b]11;rgb:ff/00/00\x07\x1b[2J"); // background red, then clear
+        lok &= (s.defaultBackground().r == 255 && s.defaultBackground().g == 0);
+        lok &= (s.at(0, 0).bg.r == 255); // cleared cells are the default colour
+        s.feed("\x1b]11;?\x07");
+        lok &= (s.takeResponse() == "\x1b]11;rgb:ffff/0000/0000\x07");
+        s.feed("\x1b]11;\x07"); // hand it back to the terminal's own
+        lok &= (s.defaultBackground().r == 30);
+        if (!lok) fail("OSC 10/11 default colours");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b]4;1;rgb:00/ff/00\x07"); // recolour red
+        lok &= (s.paletteColor(1).g == 255);
+        s.feed("\x1b[31mg");
+        lok &= (s.at(0, 0).fg.g == 255); // text uses what the palette says now
+        s.feed("\x1b]4;1;?\x07");
+        lok &= (s.takeResponse() == "\x1b]4;1;rgb:0000/ffff/0000\x07");
+        s.feed("\x1b]104;1\x07\x1b[31mh"); // give the entry back
+        lok &= (s.at(0, 1).fg.r == 128 && s.at(0, 1).fg.g == 0);
+        if (!lok) fail("OSC 4 palette");
+        ok &= lok;
+    }
+
     if (ok) {
         std::cout << "PASS\n";
         return 0;

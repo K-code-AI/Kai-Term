@@ -4,9 +4,16 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <array>
+#include <bitset>
 #include <cstdint>
+#include <cstdio>
 #include <string>
+#include <optional>
 #include <string_view>
+#include <vector>
+
+#include "base64.hpp"
 #include <utility>
 #include <vector>
 
@@ -147,6 +154,52 @@ public:
         std::string out;
         out.swap(response_out_);
         return out;
+    }
+
+    // What an OSC command asked the terminal program to do. The model cannot set
+    // a window title or touch a clipboard, and the tests drive it with no display
+    // attached at all, so it records the request and the widget carries it out.
+    struct ClipboardRequest {
+        std::string text;     // what to store; empty for a read
+        bool primary = false; // the selection rather than the clipboard
+        bool query = false;   // the application wants the contents, not the reverse
+    };
+
+    // The window title, when an OSC 0/2 has changed it since the last call.
+    std::optional<std::string> takeTitle() {
+        if (!title_dirty_)
+            return std::nullopt;
+        title_dirty_ = false;
+        return title_;
+    }
+
+    std::vector<ClipboardRequest> takeClipboardRequests() {
+        std::vector<ClipboardRequest> out;
+        out.swap(clipboard_requests_);
+        return out;
+    }
+
+    // Answers an OSC 52 read request. The reply leaves by the same channel as
+    // every other terminal-to-host response.
+    void answerClipboardQuery(std::string_view text) {
+        response_out_ += "\x1b]52;c;" + base64Encode(text) + "\x07";
+    }
+
+    const std::string& windowTitle() const { return title_; }
+
+    // The directory an application says it is in, from OSC 7. Empty until one
+    // says so, which a shell only does if it is configured to.
+    const std::string& workingDirectory() const { return cwd_; }
+
+    // The colours in use. Cells hold the colour they were written with rather
+    // than an index into a table, so an OSC 4/10/11 change shows up in what is
+    // drawn afterwards and does not repaint what is already on the screen.
+    Color defaultForeground() const { return default_fg_; }
+    Color defaultBackground() const { return default_bg_; }
+    Color paletteColor(int index) const {
+        if (index >= 0 && index < 256 && palette_custom_[static_cast<std::size_t>(index)])
+            return palette_custom_color_[static_cast<std::size_t>(index)];
+        return palette(index);
     }
 
     void resize(int new_rows, int new_cols) {
@@ -355,7 +408,8 @@ public:
     void clear() {
         for (auto& r : grid_) {
             r.wrapped = false;
-            std::fill(r.begin(), r.end(), Cell{});
+            for (auto& c : r)
+                clearCell(c); // the defaults, which OSC 10/11 may have changed
         }
         cursor_x_ = cursor_y_ = 0;
         saved_valid_ = false;
@@ -366,8 +420,8 @@ public:
     void clearCell(Cell& c) {
         c.text.clear();
         c.width = 0;
-        c.fg = Color{220, 220, 220};
-        c.bg = Color{30, 30, 30};
+        c.fg = default_fg_;
+        c.bg = default_bg_;
         c.attr = Attr{};
     }
 
@@ -477,6 +531,19 @@ private:
     std::string csi_;
     char esc_intermediate_ = 0;
     bool osc_esc_pending_ = false;
+    // An OSC payload with no terminator would otherwise grow without limit, so
+    // one over the cap is dropped rather than stored.
+    static constexpr std::size_t kMaxOscLength = 65536;
+    std::string osc_;
+    bool osc_truncated_ = false;
+    std::string title_;
+    bool title_dirty_ = false;
+    std::string cwd_;
+    std::vector<ClipboardRequest> clipboard_requests_;
+    std::array<Color, 256> palette_custom_color_{};
+    std::bitset<256> palette_custom_{};
+    Color default_fg_{220, 220, 220};
+    Color default_bg_{30, 30, 30};
     Color current_fg_{220, 220, 220};
     Color current_bg_{30, 30, 30};
     Attr current_attr_{};
@@ -906,16 +973,16 @@ private:
             } else if (v == 49) {
                 current_bg_ = Color{30, 30, 30};
             } else if (v >= 30 && v <= 37) {
-                current_fg_ = palette(v - 30);
+                current_fg_ = paletteColor(v - 30);
             } else if (v >= 40 && v <= 47) {
-                current_bg_ = palette(v - 40);
+                current_bg_ = paletteColor(v - 40);
             } else if (v >= 90 && v <= 97) {
-                current_fg_ = palette(v - 90 + 8);
+                current_fg_ = paletteColor(v - 90 + 8);
             } else if (v >= 100 && v <= 107) {
-                current_bg_ = palette(v - 100 + 8);
+                current_bg_ = paletteColor(v - 100 + 8);
             } else if (v == 38) {
                 if (k + 2 < p.size() && p[k + 1] == 5) {
-                    current_fg_ = palette(p[k + 2]);
+                    current_fg_ = paletteColor(p[k + 2]);
                     k += 2;
                 } else if (k + 4 < p.size() && p[k + 1] == 2) {
                     current_fg_ = Color{
@@ -927,7 +994,7 @@ private:
                 }
             } else if (v == 48) {
                 if (k + 2 < p.size() && p[k + 1] == 5) {
-                    current_bg_ = palette(p[k + 2]);
+                    current_bg_ = paletteColor(p[k + 2]);
                     k += 2;
                 } else if (k + 4 < p.size() && p[k + 1] == 2) {
                     current_bg_ = Color{
@@ -1152,6 +1219,254 @@ private:
                     break;
             }
         }
+    }
+
+    static int hexDigit(char c) {
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F')
+            return c - 'A' + 10;
+        return -1;
+    }
+
+    static int parseInt(std::string_view text) {
+        if (text.empty())
+            return -1;
+        int v = 0;
+        for (const char c : text) {
+            if (c < '0' || c > '9')
+                return -1;
+            v = v * 10 + (c - '0');
+            if (v > (1 << 20))
+                return -1;
+        }
+        return v;
+    }
+
+    // OSC is what an application says to the terminal itself rather than about
+    // its own text: set my title, copy this, here is the directory I am in.
+    // Anything unrecognised is consumed and forgotten, which is what a terminal
+    // is for — an application cannot handle a refusal, and an unfamiliar sequence
+    // must never end up drawn as characters.
+    void processOsc(std::string_view osc) {
+        const std::size_t semi = osc.find(';');
+        const std::string_view code =
+            semi == std::string_view::npos ? osc : osc.substr(0, semi);
+        const std::string_view data =
+            semi == std::string_view::npos ? std::string_view{} : osc.substr(semi + 1);
+
+        if (code == "0" || code == "2") { // icon and window title, window title
+            title_ = std::string(data);
+            title_dirty_ = true;
+            return;
+        }
+        if (code == "110") { // the shell prompt asking for the default title back
+            title_.clear();
+            title_dirty_ = true;
+            return;
+        }
+        if (code == "1" || code == "111") // an icon this terminal does not have
+            return;
+        if (code == "52") {
+            oscClipboard(data);
+            return;
+        }
+        if (code == "7") {
+            oscWorkingDirectory(data);
+            return;
+        }
+        if (code == "10") {
+            oscColour(data, true);
+            return;
+        }
+        if (code == "11") {
+            oscColour(data, false);
+            return;
+        }
+        if (code == "4") {
+            oscPalette(data);
+            return;
+        }
+        if (code == "104") {
+            resetPalette(data);
+            return;
+        }
+        // OSC 8 (a hyperlink around the text that follows) is consumed here, so
+        // the text itself survives; the URI has nowhere to go until links can be
+        // followed.
+    }
+
+    // OSC 52 ; <targets> ; <base64>. The target letters name which of the
+    // clipboard, the selection and the eight cut buffers to write. This terminal
+    // has the first two; a letter it has never heard of still means "copy", and
+    // no payload at all means the application wants to read instead.
+    void oscClipboard(std::string_view data) {
+        const std::size_t semi = data.find(';');
+        const std::string_view targets =
+            semi == std::string_view::npos ? data : data.substr(0, semi);
+        const std::string_view payload =
+            semi == std::string_view::npos ? std::string_view{} : data.substr(semi + 1);
+
+        bool clipboard = false;
+        bool primary = false;
+        for (const char c : targets) {
+            if (c == 'c' || c == '+' || (c >= '0' && c <= '7'))
+                clipboard = true;
+            else if (c == 'p' || c == 's' || c == 'q')
+                primary = true;
+        }
+        if (!clipboard && !primary)
+            clipboard = true;
+
+        ClipboardRequest request;
+        request.primary = primary && !clipboard;
+        if (payload.empty()) {
+            request.query = true;
+        } else {
+            request.text = base64Decode(payload);
+        }
+        clipboard_requests_.push_back(std::move(request));
+    }
+
+    // OSC 7 ; file://host/directory. Only the path is kept. The host in it is
+    // whatever machine the shell is on, which during an ssh session is not this
+    // one, and the terminal has no use for either.
+    void oscWorkingDirectory(std::string_view data) {
+        constexpr std::string_view scheme = "file://";
+        std::string_view path = data;
+        if (path.substr(0, scheme.size()) == scheme) {
+            path = path.substr(scheme.size());
+            const std::size_t slash = path.find('/');
+            if (slash == std::string_view::npos)
+                path = std::string_view{};
+            else
+                path = path.substr(slash);
+        }
+        std::string out;
+        out.reserve(path.size());
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            if (path[i] == '%' && i + 2 < path.size()) {
+                const int hi = hexDigit(path[i + 1]);
+                const int lo = hexDigit(path[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    out.push_back(static_cast<char>(hi * 16 + lo));
+                    i += 2;
+                    continue;
+                }
+            }
+            out.push_back(path[i]);
+        }
+        cwd_ = std::move(out);
+    }
+
+    // "rgb:r/g/b" with one to four hex digits per channel, which is both what a
+    // terminal reports and what it accepts. Fewer digits are repeated out to
+    // sixteen bits, so "rgb:f/0/0" is full red rather than nearly black.
+    bool parseColourSpec(std::string_view spec, Color& out) {
+        constexpr std::string_view prefix = "rgb:";
+        if (spec.substr(0, prefix.size()) == prefix)
+            spec = spec.substr(prefix.size());
+        static const int kFull[5] = {1, 15, 255, 4095, 65535};
+        int channel[3] = {0, 0, 0};
+        std::size_t part = 0;
+        std::size_t i = 0;
+        while (part < 3) {
+            const std::size_t slash = spec.find('/', i);
+            const std::string_view field = spec.substr(
+                i, slash == std::string_view::npos ? std::string_view::npos : slash - i);
+            if (field.empty() || field.size() > 4)
+                return false;
+            int v = 0;
+            for (const char c : field) {
+                const int d = hexDigit(c);
+                if (d < 0)
+                    return false;
+                v = v * 16 + d;
+            }
+            channel[part++] = v * 255 / kFull[field.size()];
+            if (slash == std::string_view::npos)
+                break;
+            i = slash + 1;
+        }
+        if (part < 3)
+            return false;
+        out = Color{static_cast<std::uint8_t>(channel[0]), static_cast<std::uint8_t>(channel[1]),
+                    static_cast<std::uint8_t>(channel[2])};
+        return true;
+    }
+
+    static std::string colourSpec(Color c) {
+        char buf[40];
+        std::snprintf(buf, sizeof(buf), "rgb:%04x/%04x/%04x", c.r * 257, c.g * 257, c.b * 257);
+        return buf;
+    }
+
+    // OSC 10 and 11 are the application's default text and background colours:
+    // "?" asks what they are, a colour sets them, and an empty parameter hands
+    // back the terminal's own.
+    void oscColour(std::string_view data, bool foreground) {
+        const std::size_t semi = data.find(';');
+        const std::string_view spec =
+            semi == std::string_view::npos ? data : data.substr(0, semi);
+        Color& slot = foreground ? default_fg_ : default_bg_;
+        if (spec == "?") {
+            response_out_ += "\x1b]" + std::string(foreground ? "10;" : "11;") + colourSpec(slot) +
+                             "\x07";
+            return;
+        }
+        if (spec.empty()) {
+            slot = foreground ? Color{220, 220, 220} : Color{30, 30, 30};
+            return;
+        }
+        Color parsed{};
+        if (parseColourSpec(spec, parsed))
+            slot = parsed;
+    }
+
+    // OSC 4 ; index ; colour [; index ; colour]... and the same shape with "?" in
+    // place of a colour to ask what an index holds.
+    void oscPalette(std::string_view data) {
+        std::size_t i = 0;
+        while (i < data.size()) {
+            const std::size_t at = data.find(';', i);
+            if (at == std::string_view::npos)
+                break; // an index with no colour after it
+            const std::string_view index_text = data.substr(i, at - i);
+            const std::size_t next = data.find(';', at + 1);
+            const std::string_view spec = data.substr(
+                at + 1, next == std::string_view::npos ? std::string_view::npos : next - at - 1);
+            const int index = parseInt(index_text);
+            if (index >= 0 && index < 256) {
+                if (spec == "?") {
+                    response_out_ +=
+                        "\x1b]4;" + std::to_string(index) + ";" + colourSpec(paletteColor(index)) +
+                        "\x07";
+                } else {
+                    Color parsed{};
+                    if (parseColourSpec(spec, parsed)) {
+                        palette_custom_color_[static_cast<std::size_t>(index)] = parsed;
+                        palette_custom_.set(static_cast<std::size_t>(index));
+                    }
+                }
+            }
+            if (next == std::string_view::npos)
+                break;
+            i = next + 1;
+        }
+    }
+
+    // OSC 104 hands palette entries back, with no parameter meaning all of them.
+    void resetPalette(std::string_view data) {
+        if (data.empty() || data == "?") {
+            palette_custom_.reset();
+            return;
+        }
+        const std::size_t semi = data.find(';');
+        const int index = parseInt(data.substr(0, semi));
+        if (index >= 0 && index < 256)
+            palette_custom_.reset(static_cast<std::size_t>(index));
     }
 
     void processCsi(const std::string& params, char final) {

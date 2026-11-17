@@ -769,6 +769,32 @@ int main(int argc, char** argv) {
     pump(300);
     expect("widget survives an interrupt", w.screen().rows() == w.rows());
 
+    // An application asking for the window title, and one asking for its
+    // contents to be copied. The second is how copy and paste work for an editor
+    // running on a machine reached over ssh, where its own clipboard is elsewhere.
+    sendText(&w, "printf '\\033]0;kai title check\\007'");
+    sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    expect("an application can set the window title", waitFor(
+        [&] { return w.windowTitle() == QStringLiteral("kai title check"); }, 4000));
+
+    if (clipboard_available) {
+        QGuiApplication::clipboard()->setText(QStringLiteral("sentinel"));
+        sendText(&w, "printf '\\033]52;c;Y29waWVkIGJ5IG9zYw==\\007'");
+        sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+        expect("OSC 52 from an application reaches the clipboard", waitFor(
+            [&] {
+                QClipboard* clip = QGuiApplication::clipboard();
+                return clip && clip->text() == QStringLiteral("copied by osc");
+            },
+            4000));
+    }
+
+    // The prompt asking for the default title back.
+    sendText(&w, "printf '\\033]110;\\007'");
+    sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    expect("an application can give the title back", waitFor(
+        [&] { return w.windowTitle().isEmpty(); }, 4000));
+
     w.shutdown();
 
     if (failures == 0) {

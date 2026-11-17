@@ -191,6 +191,28 @@ public:
             const int view_top_before = viewTop();
             screen_.feed(out->data);
 
+            // What an OSC sequence asked of the program around the model. This
+            // runs before the replies are drained below, because an OSC 52 read
+            // produces one and the application is waiting for it.
+            if (auto title = screen_.takeTitle())
+                setWindowTitle(QString::fromStdString(*title));
+            for (const auto& request : screen_.takeClipboardRequests()) {
+                const QClipboard::Mode mode =
+                    request.primary ? QClipboard::Selection : QClipboard::Clipboard;
+                if (request.query) {
+                    // The application is asking to paste, over a link such as
+                    // ssh, where its own clipboard is not reachable.
+                    screen_.answerClipboardQuery(
+                        QGuiApplication::clipboard()->text(mode).toStdString());
+                    continue;
+                }
+                // This is the application asking for its contents to be copied,
+                // which is on demand like Ctrl+Shift+C is; selecting text in the
+                // window still does not touch the clipboard by itself.
+                QGuiApplication::clipboard()->setText(
+                    QString::fromStdString(request.text), mode);
+            }
+
             // Forward terminal-to-host query replies (DA1, DSR 5n/6n) to the PTY.
             // fish and tmux both probe the terminal at startup, and tmux uses
             // DSR 6n cursor position reports for output leak detection.
@@ -524,7 +546,8 @@ public:
 
     void paintEvent(QPaintEvent*) override {
         QPainter p(this);
-        p.fillRect(0, 0, width(), height(), QColor(30, 30, 30));
+        const Color background = screen_.defaultBackground();
+        p.fillRect(0, 0, width(), height(), QColor(background.r, background.g, background.b));
 
         QFontMetricsF fm(font_);
         double cw = fm.horizontalAdvance(QChar('M'));
@@ -534,7 +557,7 @@ public:
         if (cw <= 0.0 || ch <= 0.0)
             return;
 
-        const Color default_bg{30, 30, 30};
+        const Color default_bg = background; // an OSC 11 may have changed it
         // Selection is drawn as a solid band with light text so it stays legible
         // whatever colours the application had chosen for those cells.
         const Color selection_bg{62, 96, 168};

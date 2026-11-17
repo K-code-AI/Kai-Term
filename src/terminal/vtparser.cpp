@@ -22,15 +22,35 @@ void Screen::feed(std::string_view bytes) {
         }
 
         if (mode_ == 3) {
-            // OSC: ignore payload until BEL or ESC backslash.
-            if (raw == 0x07) {
+            // OSC: a command for the terminal itself, ended by BEL or ESC
+            // backslash. The payload is collected and handed over at the end,
+            // because it is the command — a title, a clipboard write — and not
+            // text to be drawn.
+            if (raw == 0x07 || (osc_esc_pending_ && raw == 0x5C)) {
+                processOsc(osc_);
                 mode_ = 0;
                 osc_esc_pending_ = false;
-            } else if (osc_esc_pending_ && raw == 0x5C) {
-                mode_ = 0;
+                continue;
+            }
+            if (osc_esc_pending_) {
+                // An ESC that turned out not to introduce the terminator is part
+                // of the payload; keeping it beats silently dropping a byte.
+                if (!osc_truncated_ && osc_.size() + 1 < kMaxOscLength)
+                    osc_.push_back('\x1b');
                 osc_esc_pending_ = false;
-            } else {
-                osc_esc_pending_ = (raw == 0x1B);
+            }
+            if (raw == 0x1B) {
+                osc_esc_pending_ = true;
+                continue;
+            }
+            // A payload over the cap is dropped rather than grown into: an
+            // application that lost its terminator would otherwise be able to
+            // make the terminal eat memory until it was killed.
+            if (!osc_truncated_) {
+                if (osc_.size() < kMaxOscLength)
+                    osc_.push_back(c);
+                else
+                    osc_truncated_ = true;
             }
             continue;
         }
@@ -91,6 +111,8 @@ void Screen::feed(std::string_view bytes) {
                 csi_.clear();
             } else if (c == ']') {
                 mode_ = 3;
+                osc_.clear();
+                osc_truncated_ = false;
                 osc_esc_pending_ = false;
             } else if (c == 'P') {
                 mode_ = 5;
