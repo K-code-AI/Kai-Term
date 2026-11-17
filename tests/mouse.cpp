@@ -238,6 +238,25 @@ int main() {
                        MouseMode::Click, MouseCoord::Urxvt),
            std::string(esc) + "[36;1;1M");
 
+    // ?1005: the classic framing with the coordinates written as UTF-8, which is
+    // how a report gets past the 223-column ceiling of the plain three-byte form.
+    expect("utf8 press inside the classic range",
+           encodeMouse(ev(MouseKey::Left, MouseAction::Press, 2, 79), MouseMode::Click,
+                       MouseCoord::Utf8),
+           std::string(esc) + "[M p#"); // button 0, column 80, row 3, each offset by 32
+    expect("utf8 wheel",
+           encodeMouse(ev(MouseKey::WheelUp, MouseAction::Press, 0, 0), MouseMode::Drag,
+                       MouseCoord::Utf8),
+           std::string(esc) + "[M`!!");
+    expect("utf8 column 300 does not clamp",
+           encodeMouse(ev(MouseKey::Left, MouseAction::Press, 0, 299), MouseMode::Click,
+                       MouseCoord::Utf8),
+           std::string(esc) + "[M \xC5\x8C!"); // column 300 plus 32 is U+014C, in UTF-8 C5 8C
+    expect("utf8 row 500 does not clamp",
+           encodeMouse(ev(MouseKey::Left, MouseAction::Press, 499, 0), MouseMode::Click,
+                       MouseCoord::Utf8),
+           std::string(esc) + "[M !\xC8\x94"); // row 500 plus 32 is U+0214, in UTF-8 C8 94
+
     if (failures == 0) {
         std::cout << "PASS: " << checks
                   << " mouse encodings match the expected PTY bytes\n";

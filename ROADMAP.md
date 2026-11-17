@@ -47,7 +47,8 @@ Implemented:
 - Escape-sequence coverage beyond the basics: OSC 0/1/2 titles with the `ESC[22 t`
   and `ESC[23 t` stack, OSC 7 working directory, OSC 52 clipboard set and query,
   OSC 10/11 and OSC 4/104 colours, XTWINOPS size and title queries, the kitty
-  keyboard query answered, SGR sub-parameters in both spellings, and DECSCUSR
+  keyboard query answered, SGR sub-parameters in both spellings, `?1005` UTF-8 mouse
+  coordinates, and DECSCUSR
   (`ESC[<n> q`) cursor shapes — block, underline, vertical bar — all three drawn and
   asserted offscreen by comparing the picture of the cell the cursor stands on.
 - Headless parser, PTY, tmux ground-truth, input, PTY-input, scrollback, scroll
@@ -129,8 +130,6 @@ Needed:
 - Interactive applications driven with the mouse by a person: vim, less, htop, tmux.
 - SGR 53 (overline), accepted and ignored because there is nothing to draw it with.
 - Cursor blink: a timer for SGR 5/6 and for DECSCUSR's blinking variants.
-- `?1005` UTF-8 mouse coordinates, unhandled; every application worth supporting
-  asks for SGR (`?1006`) instead, and `?1016` covers the wide-window case.
 - `?2026` synchronized output, if tearing ever turns out to matter at a real frame
   rate.
 

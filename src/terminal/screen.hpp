@@ -158,6 +158,7 @@ public:
     MouseCoord mouseCoord() const {
         if (mouse_sgr_) return MouseCoord::Sgr;
         if (mouse_sgr_hex_) return MouseCoord::SgrHex;
+        if (mouse_utf8_) return MouseCoord::Utf8;
         if (mouse_urxvt_) return MouseCoord::Urxvt;
         return MouseCoord::Classic;
     }
@@ -607,6 +608,7 @@ private:
     bool mouse_urxvt_ = false;
     bool mouse_sgr_ = false;
     bool mouse_sgr_hex_ = false;
+    bool mouse_utf8_ = false;
     bool bracketed_paste_ = false;
     Color saved_fg_{220, 220, 220};
     Color saved_bg_{30, 30, 30};
@@ -1244,6 +1246,7 @@ private:
         mouse_urxvt_ = false;
         mouse_sgr_ = false;
         mouse_sgr_hex_ = false;
+        mouse_utf8_ = false;
         bracketed_paste_ = false;
         autowrap_ = true;
         pending_wrap_ = false;
@@ -1378,6 +1381,7 @@ private:
                 case 1000: mouse_click_ = set; break;
                 case 1002: mouse_drag_ = set; break;
                 case 1003: mouse_any_event_ = set; break;
+                case 1005: mouse_utf8_ = set; break;
                 case 1006: mouse_sgr_ = set; break;
                 case 1015: mouse_urxvt_ = set; break;
                 case 1016: mouse_sgr_hex_ = set; break;

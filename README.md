@@ -76,9 +76,13 @@ Implemented:
   `ESC[200~` and `ESC[201~`.
 - Mouse reporting for applications: click (`ESC[?1000h`), drag (`ESC[?1002h`) and
   any-event (`ESC[?1003h`) tracking, wheel as buttons 64 and 65, Shift/Meta/Ctrl
-  bits, and the classic three-byte, urxvt (`ESC[?1015h`), SGR (`ESC[?1006h`) and
-  hexadecimal SGR (`ESC[?1016h`) coordinate forms. The encoding is a pure function
-  in `src/terminal/mouseencode.hpp`, asserted on exact bytes.
+  bits, and the classic three-byte, UTF-8 (`ESC[?1005h`), urxvt (`ESC[?1015h`), SGR
+  (`ESC[?1006h`) and hexadecimal SGR (`ESC[?1016h`) coordinate forms. The encoding is
+  a pure function in `src/terminal/mouseencode.hpp`, asserted on exact bytes. UTF-8
+  coordinates are the same `ESC[M` framing with each coordinate written as UTF-8 of
+  its value plus 32, so a click in a window 300 columns wide arrives intact instead of
+  clamping at 223; SGR outranks it and hexadecimal SGR outranks both, because that is
+  the order applications expect when they ask for more than one.
   `kai-term-mouse-app` also runs a real application (btop) inside the widget and
   confirms the reports are understood: btop asks for `?1002;1006`, and its own
   scroll counter moves when the wheel is turned. That test exists because the SGR
@@ -201,10 +205,10 @@ Verified results on this machine:
 - `kai-term-input` prints `PASS: 66 key encodings match the expected PTY bytes`.
 - `kai-term-input-pty` prints `PASS: 47 input sequences round-tripped through a real PTY unchanged`
   (35 key sequences and 12 mouse reports, classic and extended forms).
-- `kai-term-scrollback` prints `PASS: 79 scrollback, cursor-mode and mouse-mode checks passed`.
+- `kai-term-scrollback` prints `PASS: 83 scrollback, cursor-mode and mouse-mode checks passed`.
 - `kai-term-scrollbar` prints `PASS: 25 scroll indicator geometry checks passed`.
 - `kai-term-process` prints `PASS: 31 process lifecycle checks passed`.
-- `kai-term-mouse` prints `PASS: 36 mouse encodings match the expected PTY bytes`.
+- `kai-term-mouse` prints `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `kai-term-selection` prints `PASS: 101 selection and text-extraction checks passed`.
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
   inspection performed)`. When btop is not installed it prints that the checks were not

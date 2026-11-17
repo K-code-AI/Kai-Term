@@ -293,6 +293,18 @@ int main() {
         s.feed("\x1b[?1015l\x1b[?1016h");
         expectTrue("ESC[?1016h asks for hexadecimal SGR",
                    s.mouseCoord() == kai::MouseCoord::SgrHex);
+        s.feed("\x1b[?1016l\x1b[?1005h");
+        expectTrue("ESC[?1005h asks for UTF-8 coordinates",
+                   s.mouseCoord() == kai::MouseCoord::Utf8);
+        s.feed("\x1b[?1006h");
+        expectTrue("ESC[?1006h outranks UTF-8 coordinates",
+                   s.mouseCoord() == kai::MouseCoord::Sgr);
+        s.feed("\x1b[?1006l");
+        expectTrue("dropping SGR falls back to the UTF-8 form still asked for",
+                   s.mouseCoord() == kai::MouseCoord::Utf8);
+        s.feed("\x1b[?1005l");
+        expectTrue("ESC[?1005l stops asking for UTF-8 coordinates",
+                   s.mouseCoord() == kai::MouseCoord::Classic);
 
         s.feed("\x1b[?2004h");
         expectTrue("ESC[?2004h asks for bracketed paste", s.bracketedPaste());
@@ -301,7 +313,7 @@ int main() {
 
         // An application that exits without cleaning up must not leave the
         // terminal in a mode the next program did not ask for.
-        s.feed("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1015h\x1b[?1016h\x1b[?2004h");
+        s.feed("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1005h\x1b[?1006h\x1b[?1015h\x1b[?1016h\x1b[?2004h");
         expectTrue("all modes are on before the reset", s.mouseMode() == kai::MouseMode::Any);
         s.feed("\x1b" "c");
         expectTrue("hard reset stops mouse reporting", !s.mouseReporting());

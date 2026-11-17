@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 
@@ -18,7 +19,11 @@ enum class MouseMode {
 // Coordinate encoding requested by the application. SGR takes precedence over
 // urxvt, which takes precedence over the classic three-byte form, the way
 // xterm resolves overlapping modes.
-enum class MouseCoord { Classic, Urxvt, Sgr, SgrHex };
+// Where the coordinates go and in what encoding. Utf8 is ?1005: the button is
+// still the classic single byte, but each coordinate is written as the UTF-8
+// encoding of its value plus 32, which is how it gets past the 223-column ceiling
+// of the classic three-byte form without leaving the ESC [ M framing behind.
+enum class MouseCoord { Classic, Utf8, Urxvt, Sgr, SgrHex };
 
 enum class MouseAction { Press, Release, Motion };
 
@@ -78,6 +83,23 @@ inline int heldCode(unsigned held) {
     if (held & mouseKeyBit(MouseKey::Middle)) return 1;
     if (held & mouseKeyBit(MouseKey::Right)) return 2;
     return 3; // motion with no button held, only sent in any-event mode
+}
+
+// The UTF-8 encoding of a codepoint, for ?1005 coordinates. Kept here because
+// this header is deliberately free of both Qt and the screen model.
+inline std::string utf8(std::uint32_t cp) {
+    std::string out;
+    if (cp < 0x80) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+    return out;
 }
 
 } // namespace detail
@@ -144,6 +166,15 @@ inline std::string encodeMouse(const MouseReport& ev, MouseMode mode, MouseCoord
             std::snprintf(buf, sizeof(buf), "\x1b[<%x;%x;%x%c", cb_extended, col, row,
                           ev.action == MouseAction::Release ? 'm' : 'M');
             return std::string(buf);
+        }
+        case MouseCoord::Utf8: {
+            // Coordinates are offset by 32 like the classic form, then written as
+            // UTF-8, so column 300 arrives intact instead of clamping.
+            std::string out = "\x1b[M";
+            out += static_cast<char>(32 + std::min(cb_classic, 255 - 32));
+            out += detail::utf8(static_cast<std::uint32_t>(col) + 32);
+            out += detail::utf8(static_cast<std::uint32_t>(row) + 32);
+            return out;
         }
         case MouseCoord::Urxvt:
             // The urxvt form carries the same button numbering as the classic

@@ -86,6 +86,10 @@ Work done after M2 closed, from an audit of what the terminal silently ignored:
   assertion compares the cell the cursor stands on rather than the whole window. A
   full and a soft reset hand the shape back, and `ESC c` now also returns the colour
   defaults and any custom palette entries.
+- `?1005` UTF-8 mouse coordinates, with the report bytes pinned by test: column 300
+  plus 32 is U+014C, which is `C5 8C` on the wire. Getting that expectation right
+  mattered more than the code — an expectation written wrong in the same way as the
+  implementation proves nothing.
 - `-Wall -Wextra` on for the whole build, compiling clean. What it found the same
   day: a `string_view` over a temporary `std::string` in the SGR parser — invisible
   at `-O1`, wrong at `-O3` — and an initialiser list whose order was not the
@@ -175,10 +179,10 @@ Individual results:
 - `./build/kai-term-tmux-e2e` → `PASS: tmux E2E matches tmux ground truth at all stages`.
 - `./build/kai-term-input` → `PASS: 66 key encodings match the expected PTY bytes`.
 - `./build/kai-term-input-pty` → `PASS: 47 input sequences round-tripped through a real PTY unchanged` (35 keys, 12 mouse reports in classic, urxvt, SGR and hex-SGR forms).
-- `./build/kai-term-scrollback` → `PASS: 79 scrollback, cursor-mode and mouse-mode checks passed`.
+- `./build/kai-term-scrollback` → `PASS: 83 scrollback, cursor-mode and mouse-mode checks passed`.
 - `./build/kai-term-scrollbar` → `PASS: 25 scroll indicator geometry checks passed`.
 - `./build/kai-term-process` → `PASS: 31 process lifecycle checks passed`.
-- `./build/kai-term-mouse` → `PASS: 36 mouse encodings match the expected PTY bytes`.
+- `./build/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `./build/kai-term-selection` → `PASS: 101 selection and text-extraction checks passed`.
 - `./build/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
 - `./build/kai-term-widget-smoke` → `PASS: 91 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
@@ -221,8 +225,10 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
   overline and `?2026` synchronized output. Cursor blink is the same category:
   DECSCUSR's blinking variants select their steady shape, and SGR 5 and 6 set a flag
   nothing animates.
-- `?1005` UTF-8 mouse coordinates are unhandled. Applications ask for SGR (`?1006`),
-  and `?1016` covers coordinates past 223.
+- `?1005` UTF-8 mouse coordinates are handled: the classic `ESC [ M` framing with
+  each coordinate written as UTF-8 of its value plus 32, so a click in a window 300
+  columns wide arrives intact instead of clamping at 223. SGR (`?1006`) still outranks
+  it and `?1016` outranks both, which is the order applications actually see today.
 - A one-sided scroll region (`ESC[3r`), a bottom bound past the last row and an
   inverted region behave the way xterm does — checked by hand rather than assumed,
   because an audit report claimed otherwise and was wrong: it expected scrolling
