@@ -20,7 +20,7 @@ Status: **done**.
 
 ## M1 — Basic terminal
 
-Status: **in progress; window launch verified**.
+Status: **in progress; runtime verified offscreen, on-screen appearance not inspected**.
 
 Implemented:
 
@@ -28,16 +28,22 @@ Implemented:
 - Application window and Qt terminal widget.
 - PTY creation with `forkpty()`.
 - Shell execution with configurable shell.
-- Keyboard input and terminal output.
+- Keyboard input and terminal output, with the byte encoding isolated in
+  `src/terminal/keyencode.hpp` and checked both as pure bytes and through a real
+  PTY.
 - Basic resizing through `TIOCSWINSZ`.
-- Scrollback buffer.
+- Scrollback buffer and a scrollback view: mouse wheel, Shift+PageUp,
+  Shift+PageDown, Shift+Home, Shift+End.
+- DECCKM application cursor keys for vim, less and fish Vi mode.
 - Native VT parser for colors, cursor movement, erasing, and Unicode.
-- Headless parser test and PTY test.
+- Headless parser, PTY, tmux ground-truth, input, PTY-input, scrollback and
+  offscreen widget tests; `ctest` runs all seven.
 
 Not yet verified:
 
-- GUI rendering and keyboard behavior without launching a window.
-- Scrollback UI.
+- How the rendered terminal looks to a person on a live Wayland or X11 session.
+- Scrollback with a visible scrollbar, a scroll indicator, and mouse text
+  selection.
 - Full shell compatibility across interactive applications.
 
 ## M2 — Terminal reliability
