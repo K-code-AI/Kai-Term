@@ -6,7 +6,8 @@
 
 M3 put the pty and the screen model in a process of their own: a session is
 something a window looks at rather than something a window keeps alive. There is a
-daemon (`kai-term session serve`, or `kai-daemon`), a framed protocol over a Unix
+daemon (`kai-term session serve` — the same binary as the window, started a different
+way), a framed protocol over a Unix
 socket, `session new|list|attach|detach|kill|send|shutdown` on the command line,
 `kai-term open NAME` for a window onto a running session, a backend seam so the widget
 cannot tell a local shell from a session across the socket, and pane-scoped selection
@@ -258,24 +259,24 @@ real signals, and `session` waits on real shells).
 
 Individual results:
 
-- `./build/kai-term-parser` → `PASS`.
-- `./build/kai-term-pty` → `PASS: PTY output contains HELLO and resize 6 40`.
-- `./build/kai-term-tmux-e2e` → `PASS: tmux E2E matches tmux ground truth at all stages`.
-- `./build/kai-term-input` → `PASS: 66 key encodings match the expected PTY bytes`.
-- `./build/kai-term-input-pty` → `PASS: 47 input sequences round-tripped through a real PTY unchanged` (35 keys, 12 mouse reports in classic, urxvt, SGR and hex-SGR forms).
-- `./build/kai-term-scrollback` → `PASS: 86 scrollback, cursor-mode and mouse-mode checks passed`.
-- `./build/kai-term-scrollbar` → `PASS: 25 scroll indicator geometry checks passed`.
-- `./build/kai-term-process` → `PASS: 31 process lifecycle checks passed`.
-- `./build/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
-- `./build/kai-term-selection` → `PASS: 119 selection and text-extraction checks passed`.
-- `./build/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
-- `./build/kai-term-widget-smoke` → `PASS: 100 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
-- `./build/kai-term-ipc` → `PASS: 43 protocol framing and field checks passed`.
-- `./build/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
-- `./build/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.
-- `./build/kai-term-session` → `PASS: 69 session daemon checks passed`.
-- `./build/kai-term-widget-session` → `PASS: 14 window-showing-a-session checks passed`.
-- `./build/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
+- `./build/tests/kai-term-parser` → `PASS`.
+- `./build/tests/kai-term-pty` → `PASS: PTY output contains HELLO and resize 6 40`.
+- `./build/tests/kai-term-tmux-e2e` → `PASS: tmux E2E matches tmux ground truth at all stages`.
+- `./build/tests/kai-term-input` → `PASS: 66 key encodings match the expected PTY bytes`.
+- `./build/tests/kai-term-input-pty` → `PASS: 47 input sequences round-tripped through a real PTY unchanged` (35 keys, 12 mouse reports in classic, urxvt, SGR and hex-SGR forms).
+- `./build/tests/kai-term-scrollback` → `PASS: 86 scrollback, cursor-mode and mouse-mode checks passed`.
+- `./build/tests/kai-term-scrollbar` → `PASS: 25 scroll indicator geometry checks passed`.
+- `./build/tests/kai-term-process` → `PASS: 31 process lifecycle checks passed`.
+- `./build/tests/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
+- `./build/tests/kai-term-selection` → `PASS: 119 selection and text-extraction checks passed`.
+- `./build/tests/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
+- `./build/tests/kai-term-widget-smoke` → `PASS: 100 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/tests/kai-term-ipc` → `PASS: 43 protocol framing and field checks passed`.
+- `./build/tests/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
+- `./build/tests/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.
+- `./build/tests/kai-term-session` → `PASS: 69 session daemon checks passed`.
+- `./build/tests/kai-term-widget-session` → `PASS: 14 window-showing-a-session checks passed`.
+- `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
 - `QT_QPA_PLATFORM=offscreen KAI_SHELL=/bin/true ./build/kai-term` → exits 0.
@@ -372,7 +373,6 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 - `src/ipc/protocol.hpp`, `src/ipc/socket.hpp` — frames, fields, and the Unix socket.
 - `src/session/snapshot.hpp`, `daemon.hpp`, `sessionbackend.hpp`, `cli.hpp` — the session daemon, screen snapshots, the remote backend, and the `session` verbs.
 - `src/terminal/backend.hpp` — the seam between the widget and whatever is on the other end.
-- `src/daemon/main.cpp` — `kai-daemon`, the daemon loop in the foreground.
 - `tests/parser.cpp`, `tests/pty.cpp`, `tests/tmux_e2e.cpp`, `tests/input.cpp`,
   `tests/input_pty.cpp`, `tests/scrollback.cpp`, `tests/mouse.cpp`,
   `tests/selection.cpp`, `tests/scrollbar.cpp`, `tests/process.cpp`,

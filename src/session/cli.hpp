@@ -207,7 +207,8 @@ inline void daemonStopSignal(int) {
 }
 
 // Sit in the accept loop until asked to leave, then take the sessions with us. Used
-// by `kai-daemon` in the foreground and by the background daemon `session new` starts.
+// by `session serve` in the foreground and by the background daemon a window or
+// `session new` starts.
 inline int serveDaemonForeground(std::string& error) {
     Daemon daemon;
     if (!daemon.start(error)) {
@@ -436,8 +437,15 @@ inline int runSessionCommand(int argc, char** argv) {
         return usage();
 
     // The daemon's own foreground life, which is what `session start` forks into and
-    // what `kai-daemon` runs. No name, no options: it owns everything or nothing.
+    // what a foreground `session serve` runs. No name, no options: it owns
+    // everything or nothing.
     if (verb == "serve") {
+        // Say where it is before blocking: this is the way to watch a daemon that
+        // will not start, and a debugging session where you cannot tell whether it
+        // bound anything is a waste of a debugging session.
+        std::cout << "listening on " << daemonSocketPath() << "\n"
+                  << "Ctrl-C, or `kai-term session shutdown`, to stop\n"
+                  << std::flush;
         const int status = serveDaemonForeground(error);
         if (!error.empty())
             std::cerr << "kai-term: " << error << "\n";

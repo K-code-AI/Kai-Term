@@ -21,8 +21,6 @@ add_executable(kai-term
 
 # The daemon that keeps sessions alive. No Qt: it is a socket, a pty and a screen
 # model, and it has no business needing a display server to start.
-add_executable(kai-daemon src/daemon/main.cpp src/terminal/vtparser.cpp)
-target_link_libraries(kai-daemon PRIVATE Threads::Threads)
 
 target_link_libraries(kai-term PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
 
@@ -154,6 +152,34 @@ add_executable(kai-term-mouse-app tests/mouse_app.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-mouse-app PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
 
 add_test(NAME mouse-app COMMAND kai-term-mouse-app)
+
+# Only the application belongs in the build root. Everything else here is a test, and a
+# person who has just built the project should find `kai-term` and no dozen siblings to
+# wonder about. `add_test` finds these by target, so moving them changes nothing about
+# how the suite runs.
+set(KAI_TEST_TARGETS
+    kai-term-parser
+    kai-term-pty
+    kai-term-tmux-e2e
+    kai-term-input
+    kai-term-input-pty
+    kai-term-scrollback
+    kai-term-mouse
+    kai-term-selection
+    kai-term-widget-smoke
+    kai-term-scrollbar
+    kai-term-process
+    kai-term-ipc
+    kai-term-sockets
+    kai-term-snapshot
+    kai-term-session
+    kai-term-widget-session
+    kai-term-widget-panes
+    kai-term-mouse-app)
+foreach(kai_test ${KAI_TEST_TARGETS})
+    set_target_properties(${kai_test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                                                 ${CMAKE_BINARY_DIR}/tests)
+endforeach()
 add_test(NAME widget-smoke COMMAND kai-term-widget-smoke)
 
 target_compile_definitions(kai-term PRIVATE KAI_TERM_VERSION="0.0.0")

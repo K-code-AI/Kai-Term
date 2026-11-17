@@ -150,8 +150,10 @@ a person: what a window showing a session looks like is still unverified.
 A session is a pty and a screen model owned by a process of their own, so a window is a
 view of a session rather than the thing keeping it alive.
 
-- Session daemon: `kai-term session serve`, and `kai-daemon` for whoever is watching it
-  in a terminal. One daemon per user, listening on
+- Session daemon: `kai-term session serve`, in the foreground for whoever is watching it
+  in a terminal. `kai-term` is the only program built — the daemon is the same binary
+  started a different way, which matters because a separate daemon binary is a second
+  thing to install, version and get wrong. One daemon per user, listening on
   `$XDG_RUNTIME_DIR/kai-term/daemon.sock` (directory 0700, socket 0600, and the peer's
   uid checked on every connection). Every missing level of that path is created, because
   pointing `$XDG_RUNTIME_DIR` somewhere of your own is how sessions end up somewhere

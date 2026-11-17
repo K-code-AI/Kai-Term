@@ -9,7 +9,8 @@
 
 namespace kai {
 
-// The bytes that pass between `kai-term` and `kai-daemon`.
+// The bytes that pass between two copies of `kai-term`: a window and the session
+// daemon, which is the same program started a different way.
 //
 // Two shapes are needed and they are genuinely different, so the protocol has two
 // layers rather than pretending one covers both. Terminal output is opaque bytes

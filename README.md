@@ -192,24 +192,24 @@ ctest --test-dir build --output-on-failure
 or individually:
 
 ```sh
-./build/kai-term-parser
-./build/kai-term-pty
-./build/kai-term-tmux-e2e
-./build/kai-term-input
-./build/kai-term-input-pty
-./build/kai-term-scrollback
-./build/kai-term-mouse
-./build/kai-term-selection
-./build/kai-term-scrollbar
-./build/kai-term-process
-./build/kai-term-mouse-app
-./build/kai-term-widget-smoke
-./build/kai-term-ipc
-./build/kai-term-sockets
-./build/kai-term-snapshot
-./build/kai-term-session
-./build/kai-term-widget-session
-./build/kai-term-widget-panes
+./build/tests/kai-term-parser
+./build/tests/kai-term-pty
+./build/tests/kai-term-tmux-e2e
+./build/tests/kai-term-input
+./build/tests/kai-term-input-pty
+./build/tests/kai-term-scrollback
+./build/tests/kai-term-mouse
+./build/tests/kai-term-selection
+./build/tests/kai-term-scrollbar
+./build/tests/kai-term-process
+./build/tests/kai-term-mouse-app
+./build/tests/kai-term-widget-smoke
+./build/tests/kai-term-ipc
+./build/tests/kai-term-sockets
+./build/tests/kai-term-snapshot
+./build/tests/kai-term-session
+./build/tests/kai-term-widget-session
+./build/tests/kai-term-widget-panes
 ./tests/version.sh ./build/kai-term
 ```
 
@@ -282,8 +282,10 @@ Sessions — shells that stay alive when the window closes:
 ./build/kai-term session shutdown                  # stop the daemon and everything
 ```
 
-The socket is `$XDG_RUNTIME_DIR/kai-term/daemon.sock`. `kai-daemon` runs the same loop in
-the foreground, which is the way to see why a daemon would not start. What is on the
+The socket is `$XDG_RUNTIME_DIR/kai-term/daemon.sock`, and `kai-term session serve` runs
+the daemon in the foreground instead of the background — that is the way to see why a
+daemon would not start. `kai-term` is the only program built; the daemon is the same
+binary started a different way. What is on the
 screen when attaching comes from the daemon's own model, so a session started this
 morning shows this morning; the scrollback above the visible screen is not transferred
 yet.
@@ -318,7 +320,6 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `src/session/daemon.hpp` — the session daemon: pty ownership, views, commands.
 - `src/session/sessionbackend.hpp` — a session across the socket, as a terminal backend.
 - `src/session/cli.hpp` — the `session` verbs.
-- `src/daemon/main.cpp` — `kai-daemon`, the same loop in the foreground.
 - `tests/parser.cpp` — parser test.
 - `tests/pty.cpp` — PTY test.
 - `tests/tmux_e2e.cpp` — tmux ground-truth comparison.
