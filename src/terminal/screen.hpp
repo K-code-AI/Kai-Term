@@ -194,6 +194,14 @@ public:
     // The colours in use. Cells hold the colour they were written with rather
     // than an index into a table, so an OSC 4/10/11 change shows up in what is
     // drawn afterwards and does not repaint what is already on the screen.
+    // The pixel size of one cell. The model has no font and no way to measure
+    // one, but a geometry query has to be answered in pixels, so the widget says
+    // what it is drawing with.
+    void setCellPixels(int width, int height) {
+        cell_px_w_ = std::max(1, width);
+        cell_px_h_ = std::max(1, height);
+    }
+
     Color defaultForeground() const { return default_fg_; }
     Color defaultBackground() const { return default_bg_; }
     Color paletteColor(int index) const {
@@ -544,6 +552,12 @@ private:
     std::bitset<256> palette_custom_{};
     Color default_fg_{220, 220, 220};
     Color default_bg_{30, 30, 30};
+    int cell_px_w_ = 8;
+    int cell_px_h_ = 16;
+    // xterm keeps ten; more is a program that forgot to pop, and the oldest
+    // title in a stack that deep is not worth remembering.
+    static constexpr std::size_t kTitleStackDepth = 10;
+    std::vector<std::string> title_stack_;
     Color current_fg_{220, 220, 220};
     Color current_bg_{30, 30, 30};
     Attr current_attr_{};
@@ -1560,11 +1574,68 @@ private:
                     saveCursor();
                 break;
             case 'u':
-                // ESC[?u is the kitty keyboard query (no reply, no restore);
-                // plain ESC[u and ESC[>u variants restore.
+                if (params == "?") {
+                    // The kitty keyboard protocol query. This terminal does not
+                    // implement that protocol; saying so with a reply of no flags
+                    // is what lets an application get on with starting up rather
+                    // than waiting for an answer that never comes. It is not a
+                    // cursor restore, whatever the final byte would otherwise mean.
+                    response_out_ += "\x1b[?0u";
+                    break;
+                }
                 if (params.empty() || params[0] == '>' || params[0] == '=')
                     restoreCursor();
                 break;
+            case 't': {
+                // XTWINOPS. tmux emits CSI 22;0;0t on entering the alternate
+                // screen and CSI 18 t to ask how large the window is, and this
+                // machine's own terminfo puts CSI 22;0;0t inside smcup. A program
+                // that gets no answer sits waiting for one, so the queries are
+                // answered and the title stack is kept.
+                const int op = get(0, 1);
+                const int sub_param = p.size() > 1 ? p[1] : -1;
+                const bool about_title = sub_param != 1; // 1 means the icon only
+                switch (op) {
+                    case 10: // the icon name; there is no icon to name
+                        response_out_ += "\x1b]l\x07";
+                        break;
+                    case 11:
+                    case 21: // the window title
+                        response_out_ += "\x1b]l" + title_ + "\x07";
+                        break;
+                    case 14: // the text area, in pixels
+                        response_out_ += "\x1b[4;" + std::to_string(rows_ * cell_px_h_) + ';' +
+                                         std::to_string(cols_ * cell_px_w_) + 't';
+                        break;
+                    case 16: // one cell, in pixels
+                        response_out_ += "\x1b[6;" + std::to_string(cell_px_h_) + ';' +
+                                         std::to_string(cell_px_w_) + 't';
+                        break;
+                    case 18: // the text area, in characters
+                        response_out_ += "\x1b[8;" + std::to_string(rows_) + ';' +
+                                         std::to_string(cols_) + 't';
+                        break;
+                    case 22: // remember the title...
+                        if (about_title) {
+                            title_stack_.push_back(title_);
+                            if (title_stack_.size() > kTitleStackDepth)
+                                title_stack_.erase(title_stack_.begin());
+                        }
+                        break;
+                    case 23: // ... and hand it back
+                        if (about_title && !title_stack_.empty()) {
+                            title_ = title_stack_.back();
+                            title_stack_.pop_back();
+                            title_dirty_ = true;
+                        }
+                        break;
+                    default:
+                        // 20 (window id), 22/23 with an icon-only parameter and
+                        // the rest have nothing to answer here.
+                        break;
+                }
+                break;
+            }
             case 'r':
                 setScrollRegion(get(0, 1) - 1,
                                 get(1, rows_) - 1);
@@ -1605,7 +1676,8 @@ private:
                 break;
             default:
                 // Ignore unsupported final bytes rather than corrupting text.
-                // (DECSCUSR " q", XTWINOPS "t", DECSCNM, etc. land here.)
+                // (DECSCUSR " q", DECSCNM, and the XTWINOPS operations with
+                // nothing to report land here.)
                 break;
         }
         (void)plain_csi;

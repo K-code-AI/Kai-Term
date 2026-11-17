@@ -56,6 +56,7 @@ public:
     {
         font_ = QFont("Monospace");
         font_.setPixelSize(14);
+        updateCellPixels();
         setFocusPolicy(Qt::StrongFocus);
         // Any-event mouse reporting (?1003) needs motion with no button held.
         setMouseTracking(true);
@@ -72,9 +73,9 @@ public:
                 if (ready < 0 && errno == EINTR)
                     continue;
                 if (pty_.reap()) {
-                    // The shell is gone. Drain anything still readable first is
-                    // not worth it here: whatever it printed on the way out has
-                    // already been queued as an event by the read below.
+                    // The shell is gone. Anything it printed on the way out has
+                    // already been read and queued as an event, so there is
+                    // nothing left to wait for.
                     shell_alive_ = false;
                     QCoreApplication::postEvent(this, new TerminalExitEvent());
                     break;
@@ -518,6 +519,13 @@ public:
         ev->accept();
     }
 
+    // The model has no font and no way to measure one, but answers geometry
+    // queries (XTWINOPS) in pixels, so it is told what a cell measures here.
+    void updateCellPixels() {
+        screen_.setCellPixels(static_cast<int>(cellWidth() + 0.5),
+                              static_cast<int>(cellHeight() + 0.5));
+    }
+
     void resizeEvent(QResizeEvent*) override {
         QFontMetricsF fm(font_);
         double cw = fm.horizontalAdvance(QChar('M'));
@@ -526,6 +534,7 @@ public:
         const double ch = fm.height();
         if (cw <= 0.0 || ch <= 0.0)
             return;
+        updateCellPixels(); // the cell size may have changed with a different font
 
         const int new_cols = std::max(1, static_cast<int>((width() - 2.0 * padding_) / cw));
         const int new_rows = std::max(1, static_cast<int>((height() - 2.0 * padding_) / ch));

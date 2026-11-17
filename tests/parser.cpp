@@ -250,17 +250,49 @@ int main() {
         ok &= lok;
     }
 
-    // DA1 answers and private queries (kitty keyboard ESC[?u) produce no reply.
+    // DA1 answers, and the kitty keyboard query answers too — but does not
+    // restore the cursor, which is the trap in sharing a final byte with DECRC.
     {
         bool lok = true;
         kai::Screen y(6, 8);
+        y.feed("\x1b[5;5H\x1b[s"); // a saved position to be wrongly restored to
+        y.feed("\x1b[1;1H");
         y.takeResponse();
         y.feed("\x1b[c");
         lok &= (y.takeResponse() == "\x1b[?1;2c");
-        y.feed("\x1b[5;5H\x1b[?u");      // must not restore cursor, must not answer
-        lok &= (y.cursorY() == 4 && y.cursorX() == 4);
-        lok &= (y.takeResponse() == "");
-        if (!lok) fail("DA1 / kitty query guard");
+        y.feed("\x1b[?u");
+        lok &= (y.cursorY() == 0 && y.cursorX() == 0); // no restore
+        lok &= (y.takeResponse() == "\x1b[?0u"); // and an answer, so the app moves on
+        if (!lok) fail("DA1 / kitty query");
+        ok &= lok;
+    }
+
+    // XTWINOPS: the geometry and title queries tmux and friends block on, and
+    // the title stack that CSI 22 t and CSI 23 t push and pop.
+    {
+        bool lok = true;
+        kai::Screen y(30, 100);
+        y.setCellPixels(9, 18);
+        y.takeResponse();
+        y.feed("\x1b[18t");
+        lok &= (y.takeResponse() == "\x1b[8;30;100t");
+        y.feed("\x1b[14t");
+        lok &= (y.takeResponse() == "\x1b[4;540;900t");
+        y.feed("\x1b[16t");
+        lok &= (y.takeResponse() == "\x1b[6;18;9t");
+        y.feed("\x1b]0;a title\x07");
+        static_cast<void>(y.takeTitle());
+        y.feed("\x1b[22;0;0t\x1b]0;while inside\x07");
+        lok &= (y.windowTitle() == "while inside");
+        y.feed("\x1b[23t");
+        lok &= (y.windowTitle() == "a title");
+        lok &= (y.takeTitle().value_or("") == "a title");
+        y.feed("\x1b[21t");
+        lok &= (y.takeResponse() == "\x1b]la title\x07");
+        // An empty stack must not invent a title.
+        y.feed("\x1b[23t");
+        lok &= (y.windowTitle() == "a title");
+        if (!lok) fail("XTWINOPS geometry, title, and the title stack");
         ok &= lok;
     }
 
