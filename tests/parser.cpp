@@ -653,6 +653,64 @@ int main() {
         ok &= lok;
     }
 
+    // DECRC puts back what DECSC took: the position, and the colours and
+    // attributes the cursor was carrying with it.
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        // The digit after ESC is a hex digit, so these two escape sequences are
+        // written as separate literals: "\x1b7" is one out-of-range character.
+        s.feed("\x1b" "[1;31m" "\x1b" "7" "\x1b" "[0m" "\x1b" "[?7l" "\x1b" "8" "X");
+        lok &= (s.at(0, 0).fg.r == 128 && s.at(0, 0).attr.bold);
+        lok &= s.autoWrap(); // the wrap flag was on when it was saved
+        s.feed("\x1b" "[?7l" "\x1b" "7" "\x1b" "[?7h" "\x1b" "8" "Y");
+        lok &= !s.autoWrap();
+        if (!lok) fail("DECSC/DECRC carry rendition and wrap state");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        // Sequences that encode something UTF-8 does not have: a surrogate half,
+        // a codepoint past the last one, and a long way of writing a short one.
+        s.feed("\xED\xA0\x80\xF4\x90\x80\x80\xC0\x80");
+        const std::string replacement = "\xEF\xBF\xBD";
+        lok &= (s.at(0, 0).text == replacement);
+        lok &= (s.at(0, 1).text == replacement);
+        lok &= (s.at(0, 2).text == replacement);
+        lok &= (s.cursorX() == 3);
+        s.feed("\xF0\x9F\x98\x80"); // a real 4-byte codepoint still arrives
+        lok &= (s.at(0, 3).text == "\xF0\x9F\x98\x80");
+        if (!lok) fail("UTF-8 rejects surrogates, overflow and overlong forms");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        // The leading Hangul jamo are wide by default; the ones after them are not.
+        s.feed("\xE1\x84\x80"); // U+1100, the leading consonant
+        lok &= (s.cursorX() == 2);
+        s.feed("\xE1\x85\xA0"); // U+1160, the vowel that follows it
+        lok &= (s.cursorX() == 3);
+        if (!lok) fail("Hangul jamo width");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(10, 10);
+        s.feed("\x1b[?6h"); // DECOM on
+        s.resize(20, 10);
+        lok &= s.originMode(); // a flag with nothing to clamp, so nothing to forget
+        // The region itself does go back to the whole window: old row numbers do
+        // not mean anything in a taller screen, and keeping the old bottom margin
+        // would stop the new rows from scrolling at all.
+        lok &= (s.scrollRegionTop() == 0 && s.scrollRegionBottom() == 19);
+        s.feed("\x1b" "[4;10r" "\x1b" "[H" "Z"); // with origin mode still on, home is the top margin
+        lok &= (s.at(3, 0).text == "Z");
+        if (!lok) fail("resize keeps origin mode and resets the region");
+        ok &= lok;
+    }
+
     if (ok) {
         std::cout << "PASS\n";
         return 0;

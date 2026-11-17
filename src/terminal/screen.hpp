@@ -95,6 +95,13 @@ public:
     }
 
     int rows() const { return rows_; }
+    // The scroll region, origin mode and wrap flag, readable for the same reason
+    // the mouse modes are: an application sets them and a resize must not quietly
+    // change them, which is worth asserting rather than reasoning about.
+    int scrollRegionTop() const { return scroll_top_; }
+    int scrollRegionBottom() const { return scroll_bottom_; }
+    bool originMode() const { return origin_mode_; }
+    bool autoWrap() const { return autowrap_; }
     int cols() const { return cols_; }
     int cursorX() const { return cursor_x_; }
     int cursorY() const { return cursor_y_; }
@@ -236,10 +243,18 @@ public:
         }
         rows_ = new_rows;
         cols_ = new_cols;
-        // A resize invalidates any scroll region; tmux re-establishes its own.
+        // A resize resets the scroll region to the whole screen, which looks like
+        // the careless thing to do and is the correct one. A region is a pair of row
+        // numbers in a window that no longer has those rows: keeping the old bottom
+        // margin means a window that grew from 24 rows to 50 quietly stops scrolling
+        // at row 24, because rows 25 to 49 are outside the region. That is what
+        // happened when this clamped instead — the widget test's `seq 1 60` produced
+        // no scrollback at all, since the shell never wrote inside the region again.
+        // An application that cares re-establishes its margins when SIGWINCH
+        // arrives, which tmux does; origin mode is a flag rather than a position, so
+        // it is the one thing here with nothing to invalidate it.
         scroll_top_ = 0;
         scroll_bottom_ = rows_ - 1;
-        origin_mode_ = false;
         pending_wrap_ = false;
 
         // When an alternate-screen application is running, the saved primary
@@ -474,9 +489,18 @@ public:
         }
     }
 
+    // DECSC and DECRC. The VT says the saved cursor carries its rendition and its
+    // character set alongside its position, which is what lets a program write
+    // something in its own colours over someone else's text and put the text back
+    // the way it found it. Saving only the position left that program drawing in
+    // whatever colours were current before.
     void saveCursor() {
         saved_x_ = cursor_x_;
         saved_y_ = cursor_y_;
+        saved_fg_ = current_fg_;
+        saved_bg_ = current_bg_;
+        saved_attr_ = current_attr_;
+        saved_autowrap_ = autowrap_;
         saved_valid_ = true;
     }
 
@@ -487,6 +511,10 @@ public:
             // write past the end of the row.
             cursor_x_ = std::min(saved_x_, cols_ - 1);
             cursor_y_ = std::min(saved_y_, rows_ - 1);
+            current_fg_ = saved_fg_;
+            current_bg_ = saved_bg_;
+            current_attr_ = saved_attr_;
+            autowrap_ = saved_autowrap_;
         }
         pending_wrap_ = false;
     }
@@ -570,6 +598,10 @@ private:
     bool mouse_sgr_ = false;
     bool mouse_sgr_hex_ = false;
     bool bracketed_paste_ = false;
+    Color saved_fg_{220, 220, 220};
+    Color saved_bg_{30, 30, 30};
+    Attr saved_attr_{};
+    bool saved_autowrap_ = true;
     bool autowrap_ = true;
     bool pending_wrap_ = false;
     bool origin_mode_ = false;
@@ -676,15 +708,35 @@ private:
         return true;
     }
 
+    // Decoding with the checks UTF-8 actually has: a sequence must be the shortest
+    // way to write its codepoint, must not land in the surrogate range, and must
+    // not exceed the last codepoint. A lone surrogate is the one that matters in
+    // practice — a program that emits one produces text that cannot be written back
+    // out as UTF-8, so anything downstream that re-encodes the screen fails on it.
+    // Anything that fails becomes the replacement character, which is at least a
+    // visible answer.
     static std::uint32_t decodeUtf8(const std::string& s) {
         if (s.empty()) return 0xFFFD;
         std::uint32_t cp;
-        if (s.size() == 2) cp = s[0] & 0x1F;
-        else if (s.size() == 3) cp = s[0] & 0x0F;
-        else if (s.size() == 4) cp = s[0] & 0x07;
-        else return 0xFFFD;
+        std::uint32_t minimum = 0;
+        if (s.size() == 2) {
+            cp = s[0] & 0x1F;
+            minimum = 0x80;
+        } else if (s.size() == 3) {
+            cp = s[0] & 0x0F;
+            minimum = 0x800;
+        } else if (s.size() == 4) {
+            cp = s[0] & 0x07;
+            minimum = 0x10000;
+        } else {
+            return 0xFFFD;
+        }
         for (std::size_t i = 1; i < s.size(); ++i)
             cp = (cp << 6) | (static_cast<unsigned char>(s[i]) & 0x3F);
+        if (cp < minimum || cp > 0x10FFFF)
+            return 0xFFFD;
+        if (cp >= 0xD800 && cp <= 0xDFFF)
+            return 0xFFFD;
         return cp;
     }
 
@@ -760,7 +812,13 @@ private:
         // Basic width classification. Zero-width combining marks attach to the
         // preceding cell; CJK/emoji ranges occupy two cells.
         if (cp < 0x20 || (cp >= 0x7F && cp < 0x80)) return 0;
-        if (cp >= 0x1100 && cp <= 0x11FF) return 1;
+        // Hangul jamo split in two: the leading consonants (U+1100-U+115F) are
+        // wide by default, the medial and final jungseong after them are not. They
+        // were all treated as one narrow block, which is why Korean text set in
+        // jamo came out half a cell off and every cell after it was misaligned.
+        if (cp >= 0x1100 && cp <= 0x115F) return 2;
+        if (cp >= 0xA960 && cp <= 0xA97C) return 2;
+        if (cp >= 0xD7B0 && cp <= 0xD7FF) return 2;
         if ((cp >= 0x2E80 && cp <= 0x9FFF) ||
             (cp >= 0xA000 && cp <= 0xAFFF) ||
             (cp >= 0xF900 && cp <= 0xFAFF) ||
