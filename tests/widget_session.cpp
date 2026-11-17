@@ -55,6 +55,40 @@ bool waitFor(std::function<bool()> pred, int timeout_ms = 6000) {
 
 std::string onScreen(const kai::TerminalWidget& w) { return w.screen().text(); }
 
+// What a session's screen says right now, straight from the daemon. The snapshot is
+// escape bytes, but the text in it is still text, which is enough to ask whether
+// something was typed into a session nobody is looking at.
+std::string writtenInto(const std::string& name) {
+    DaemonClient client;
+    std::string error;
+    if (!client.connect(error))
+        return {};
+    if (!client.request({{"command", "attach"},
+                         {"name", name},
+                         {"rows", "24"},
+                         {"cols", "80"}}))
+        return {};
+    Frame welcome;
+    if (!client.nextFrame(welcome, error))
+        return {};
+    Frame snapshot;
+    std::string text;
+    if (client.nextFrame(snapshot, error) &&
+        (snapshot.kind == MsgKind::Snapshot || snapshot.kind == MsgKind::Data))
+        text = snapshot.body;
+    client.close();
+    return text;
+}
+
+bool sees(const Daemon& daemon, const std::string& name,
+          const std::function<bool(const SessionInfo&)>& about) {
+    for (const SessionInfo& info : daemon.list()) {
+        if (info.name == name)
+            return about(info);
+    }
+    return false;
+}
+
 void sendKey(kai::TerminalWidget* w, int key, Qt::KeyboardModifiers mods = Qt::NoModifier,
              const QString& text = QString()) {
     QKeyEvent ev(QEvent::KeyPress, key, mods, text);
@@ -169,6 +203,140 @@ int main(int argc, char** argv) {
            !daemon.list().empty() && daemon.list()[0].alive);
     expect("and killing it is the only thing that ends it", daemon.kill("shown", error));
     expect("with nothing left running", waitFor([&daemon] { return daemon.list().empty(); }));
+
+    {
+        // One window, two shells. A kept session gets restored into the window that is
+        // already open, so the window has to stop looking at one shell and start
+        // looking at another — without dying, without showing the wrong screen, and
+        // without taking the shell it leaves down with it.
+        SessionSpec first_spec;
+        first_spec.name = "first";
+        first_spec.saved = false;
+        first_spec.rows = 24;
+        first_spec.cols = 80;
+        expect("a shell starts for the window", daemon.create(first_spec, error));
+        pump(400);
+
+        kai::TerminalWidget window(24, 80, std::make_unique<SessionBackend>("first", 24, 80));
+        window.resize(800, 500);
+        window.show();
+        window.pasteText("echo FIRST-SHELL\n");
+        expect("the window shows the shell it started with",
+               waitFor([&window] { return onScreen(window).find("FIRST-SHELL") != std::string::npos; }));
+
+        SessionSpec second_spec;
+        second_spec.name = "second";
+        second_spec.rows = 24;
+        second_spec.cols = 80;
+        expect("a kept session exists to be restored", daemon.create(second_spec, error));
+        pump(400);
+        expect("and it has something on its screen already",
+               daemon.type("second", "echo SECOND-SHELL\n"));
+        pump(500);
+
+        window.showSession(std::make_unique<SessionBackend>("second", 24, 80), false);
+        expect("the window shows the session it was pointed at",
+               waitFor([&window] { return onScreen(window).find("SECOND-SHELL") != std::string::npos; }));
+        expect("and nothing of the one it left",
+               onScreen(window).find("FIRST-SHELL") == std::string::npos);
+        expect("typing after the switch reaches the new shell",
+               waitFor([&window, &daemon] {
+                   static bool typed = false;
+                   if (!typed) {
+                       typed = true;
+                       window.pasteText("echo AFTER-THE-SWITCH\n");
+                   }
+                   return onScreen(window).find("AFTER-THE-SWITCH") != std::string::npos;
+               }));
+        expect("and not to the shell behind it",
+               writtenInto("first").find("AFTER-THE-SWITCH") == std::string::npos);
+        // Left behind, and waiting: the view that had been looking at it has to be
+        // noticed as gone by the daemon before the count says so, which is a matter of
+        // when that thread wakes up rather than of what it decides.
+        expect("the shell it left is left behind rather than lost",
+               waitFor([&daemon] {
+                   return sees(daemon, "first", [](const SessionInfo& info) {
+                       return info.alive && info.clients == 0 && !info.saved;
+                   });
+               }));
+
+        SessionSpec third_spec;
+        third_spec.name = "third";
+        third_spec.saved = false;
+        third_spec.rows = 24;
+        third_spec.cols = 80;
+        expect("a third shell starts", daemon.create(third_spec, error));
+        pump(300);
+        // Moving on from a session the person kept is not a way of destroying it. They
+        // asked for that one to be kept, and a window that goes to look at something
+        // else has no authority over that decision.
+        window.showSession(std::make_unique<SessionBackend>("third", 24, 80), true);
+        expect("the window is not left without a shell",
+               waitFor([&daemon] {
+                   return sees(daemon, "third",
+                               [](const SessionInfo& info) { return info.clients == 1; });
+               }));
+        expect("and the kept session outlives the window moving on",
+               sees(daemon, "second",
+                    [](const SessionInfo& info) { return info.alive && info.saved; }));
+
+        SessionSpec fourth_spec;
+        fourth_spec.name = "fourth";
+        fourth_spec.saved = false;
+        fourth_spec.rows = 24;
+        fourth_spec.cols = 80;
+        expect("a fourth shell starts", daemon.create(fourth_spec, error));
+        pump(300);
+        // The unsaved one is the other story: the window said it was done with it.
+        window.showSession(std::make_unique<SessionBackend>("fourth", 24, 80), true);
+        expect("switching away on purpose ends an unsaved shell",
+               waitFor([&daemon] {
+                   return !sees(daemon, "third", [](const SessionInfo&) { return true; });
+               }));
+        window.shutdown();
+        expect("closing the window leaves the shell it was showing alone",
+               waitFor([&daemon] {
+                   return sees(daemon, "fourth", [](const SessionInfo& info) {
+                       return info.alive && info.clients == 0;
+                   });
+               }));
+        static_cast<void>(daemon.kill("first", error));
+        static_cast<void>(daemon.kill("second", error));
+        static_cast<void>(daemon.kill("third", error));
+        static_cast<void>(daemon.kill("fourth", error));
+        static_cast<void>(waitFor([&daemon] { return daemon.list().empty(); }));
+    }
+
+    {
+        // The window's own two keybinds, and the line it says for itself. Both are
+        // checked offscreen; what they look like is for a person to look at.
+        kai::TerminalWidget window(24, 80);
+        window.show();
+        pump(300);
+        int saved_calls = 0;
+        int menu_calls = 0;
+        window.on_save_session = [&saved_calls] { ++saved_calls; };
+        window.on_session_menu = [&menu_calls] { ++menu_calls; };
+        sendKey(&window, Qt::Key_D, Qt::ControlModifier | Qt::ShiftModifier);
+        sendKey(&window, Qt::Key_A, Qt::ControlModifier | Qt::ShiftModifier);
+        expect("Ctrl+Shift+D belongs to the window", saved_calls == 1);
+        expect("and Ctrl+Shift+A asks for the list of sessions", menu_calls == 1);
+        // Sent on, Ctrl+Shift+D would be an end-of-file at the prompt and the shell
+        // would be gone, so the shell being alive afterwards is the proof it never
+        // arrived.
+        window.pasteText("echo AFTER-THE-BINDS\n");
+        expect("neither keybind reaches the shell",
+               waitFor([&window] {
+                   return onScreen(window).find("AFTER-THE-BINDS") != std::string::npos;
+               }));
+        window.setStatusText("session 'work' saved");
+        expect("the window can say a line for itself",
+               window.statusText() == "session 'work' saved");
+        window.setStatusText("gone shortly", 0);
+        pump(200);
+        expect("and stops saying it after a while", window.statusText().empty());
+        window.shutdown();
+    }
 
     daemon.stop();
     serving.join();

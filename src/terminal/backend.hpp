@@ -25,6 +25,7 @@
 #include <string_view>
 #include <vector>
 
+#include "../process/job.hpp"
 #include "../process/pty.hpp"
 #include "../terminal/screen.hpp"
 
@@ -63,8 +64,19 @@ public:
 
     // Make the far end go away, then let go of the descriptor. Split because a thread
     // may be blocked reading it: the descriptor goes last, once that has finished.
-    virtual void stopProcess() {}
+    //
+    // `closing` says the view is going away for good and what it was showing was never
+    // saved. For a shell running here that changes nothing — the process goes either
+    // way. For a session owned by the daemon it is the whole question: a view that
+    // merely stops watching leaves the shell alone, and a view that is being closed
+    // takes an unsaved shell with it.
+    virtual void stopProcess(bool /*closing*/ = false) {}
     virtual void release() {}
+
+    // The program running out front, when it is not just the shell, or empty when this
+    // kind of backend cannot say. A window showing a daemon's session asks the daemon,
+    // which is where the shell actually is.
+    virtual std::string foregroundJobName() const { return {}; }
 };
 
 // A shell started here, on the other end of a pseudo-terminal.
@@ -85,8 +97,15 @@ public:
     bool collectsChild() const override { return true; }
     bool collect() override { return pty_.reap(); }
 
-    void stopProcess() override { pty_.terminate(); }
+    // Nothing here is worth keeping after the window goes: a local shell has no
+    // session to detach into, which is exactly why saving is what moves one to the
+    // daemon in the first place.
+    void stopProcess(bool /*closing*/) override { pty_.terminate(); }
     void release() override { pty_.closeMaster(); }
+
+    std::string foregroundJobName() const override {
+        return foregroundJob(pty_.master(), pty_.child());
+    }
 
     const Pty& pty() const { return pty_; }
 

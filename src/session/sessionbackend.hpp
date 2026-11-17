@@ -97,8 +97,14 @@ public:
     // Hanging up on the socket is what wakes a thread blocked in read() here, so that
     // a window can be closed while its reader is waiting for output that the session
     // has no reason to send.
-    void stopProcess() override {
-        static_cast<void>(client_.send(MsgKind::Detach));
+    void stopProcess(bool closing) override {
+        // Detaching means "stop showing this to me"; detaching while closing means
+        // "this window is going and the shell was not kept". The daemon keeps the
+        // shell in the first case and ends it in the second, and only hears about the
+        // difference when it is told.
+        static_cast<void>(client_.send(MsgKind::Detach,
+                                       closing ? encodeFields({{"discard", "1"}})
+                                               : std::string()));
         ::shutdown(client_.descriptor(), SHUT_RDWR);
     }
 

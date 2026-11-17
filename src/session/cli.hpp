@@ -1,10 +1,13 @@
 #pragma once
 
-// `kai-term session ...`: the command line's side of the daemon.
+// The client's side of the daemon: `kai-term session ...` in a terminal, and the same
+// operations for a window that needs a shell to show.
 //
-// Kept Qt-free on purpose. The window does not need this, the daemon does not need it,
-// and a test that wants to know whether the command line works should not have to
-// start a display to find out.
+// Kept Qt-free on purpose. The daemon does not need any of it, and a test that wants to
+// know whether the command line works should not have to start a display to find out.
+// The window uses the operations at the bottom of the file, and shares them with the
+// command line rather than keeping a second set of answers about what the daemon will
+// do and when it will refuse.
 
 #include <algorithm>
 #include <cerrno>
@@ -426,15 +429,88 @@ inline std::vector<SessionInfo> listSessions(std::string& error) {
 }
 
 // A name nobody is using, so `session new` without one still does the obvious thing.
-inline std::string freeName(const std::vector<SessionInfo>& sessions) {
+// Windows and typed commands pick from different ranges so that a window's shell is
+// recognisable as one, and cannot be handed the name a person meant for a session.
+inline std::string freeName(const std::vector<SessionInfo>& sessions,
+                            const std::string& prefix = "s") {
     for (int n = 1; n < 10000; ++n) {
-        const std::string candidate = "s" + std::to_string(n);
+        const std::string candidate = prefix + std::to_string(n);
         const bool taken = std::any_of(sessions.begin(), sessions.end(),
                                        [&](const SessionInfo& s) { return s.name == candidate; });
         if (!taken)
             return candidate;
     }
     return {};
+}
+
+// ---------------------------------------------------------------------------
+// The same operations for a program rather than a typed command.
+//
+// A window has to get a shell started, be told which ones were kept, keep the one it
+// is showing and throw one away. Those are the verbs above with the parsing taken out;
+// they live here so a window and a command line cannot drift into disagreeing about
+// what the daemon will accept.
+// ---------------------------------------------------------------------------
+
+// One request, one answer. Anything the daemon refuses comes back in `error`, already
+// in the words the daemon chose, because a window that invents its own message about a
+// refusal would be a window that is wrong about its own daemon.
+inline bool daemonCommand(const Fields& command, std::string& error) {
+    DaemonClient client;
+    if (!client.connect(error))
+        return false;
+    Frame reply;
+    if (!client.command(command, reply, error))
+        return false;
+    if (reply.kind == MsgKind::Ack)
+        return true;
+    error = fieldValue(decodeFields(reply.body), "message", "the daemon refused");
+    return false;
+}
+
+inline bool saveSession(const std::string& name, const std::string& as, std::string& error) {
+    return daemonCommand({{"command", "save"}, {"name", name}, {"as", as}}, error);
+}
+
+inline bool discardSession(const std::string& name, std::string& error) {
+    return daemonCommand({{"command", "discard"}, {"name", name}}, error);
+}
+
+// The kept sessions, in the order a menu should show them: oldest first, so the list
+// does not rearrange itself under the pointer every time something is saved.
+inline std::vector<SessionInfo> savedSessions(std::string& error) {
+    std::vector<SessionInfo> kept;
+    for (const SessionInfo& info : listSessions(error)) {
+        if (info.saved)
+            kept.push_back(info);
+    }
+    std::stable_sort(kept.begin(), kept.end(), [](const SessionInfo& a, const SessionInfo& b) {
+        return a.started < b.started;
+    });
+    return kept;
+}
+
+// Start the shell a window will show: unsaved, because it is the shell in that window
+// and nobody has asked to keep it yet, and named from the range no typed command uses.
+// The daemon is started if nothing is running, which is the only way a window can hold
+// on to a shell past its own closing.
+inline std::string startWindowSession(int rows, int cols, std::string& error) {
+    if (!ensureDaemon(error))
+        return {};
+    const std::vector<SessionInfo> existing = listSessions(error);
+    const std::string name = freeName(existing, "w");
+    if (name.empty()) {
+        error = "every session name up to w9999 is taken";
+        return {};
+    }
+    if (!daemonCommand({{"command", "new"},
+                        {"name", name},
+                        {"rows", std::to_string(rows)},
+                        {"cols", std::to_string(cols)},
+                        {"saved", "0"}},
+                       error))
+        return {};
+    return name;
 }
 
 // `kai-term session ...`. Returns an exit code, or -1 when the first word was not

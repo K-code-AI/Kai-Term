@@ -28,6 +28,7 @@
 #include <QGuiApplication>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <functional>
 #include <QSizeF>
 
 #include <algorithm>
@@ -38,14 +39,21 @@
 
 namespace kai {
 
+// Both carry the number of the shell that produced them. A window can be pointed at a
+// different shell at runtime, and bytes from the one it left behind must not be
+// painted onto the screen of the one it is looking at now — an event queue is not a
+// pipe, and it does not empty itself just because the writer stopped.
 struct TerminalOutputEvent : QEvent {
-    explicit TerminalOutputEvent(std::string data)
-        : QEvent(QEvent::None), data(std::move(data)) {}
+    explicit TerminalOutputEvent(std::string data, int generation)
+        : QEvent(QEvent::None), data(std::move(data)), generation(generation) {}
     std::string data;
+    int generation;
 };
 
 struct TerminalExitEvent : QEvent {
-    TerminalExitEvent() : QEvent(QEvent::None) {}
+    explicit TerminalExitEvent(int generation)
+        : QEvent(QEvent::None), generation(generation) {}
+    int generation;
 };
 
 class TerminalWidget : public QWidget {
@@ -68,41 +76,55 @@ public:
         // Any-event mouse reporting (?1003) needs motion with no button held.
         setMouseTracking(true);
 
-        reader_ = std::thread([this] {
+        startReader();
+    }
+
+    // The thread that turns bytes from the far end into events for this window. Its own
+    // method because a window can be shown a different shell, and the new one needs a
+    // reader of its own. The generation number and the backend are both taken here, at
+    // the start of a shell's life, so everything this reader reports afterwards belongs
+    // to that shell — including anything it is holding when the window moves on.
+    void startReader() {
+        const int generation = generation_;
+        TerminalBackend* const backend = backend_.get();
+        running_ = true;
+        shell_alive_ = true;
+        reader_ = std::thread([this, backend, generation] {
             char buf[4096];
             while (running_ && shell_alive_) {
                 // Wait on the descriptor rather than blocking in read(): a stray
                 // job that inherited the terminal can keep the stream open after
                 // the shell itself is gone, and the window has to close on the
                 // shell leaving, not on whoever else lets go.
-                struct pollfd watched {backend_->descriptor(), POLLIN, 0};
+                struct pollfd watched {backend->descriptor(), POLLIN, 0};
                 const int ready = ::poll(&watched, 1, 200);
                 if (ready < 0 && errno == EINTR)
                     continue;
-                if (backend_->collectsChild() && backend_->collect()) {
+                if (backend->collectsChild() && backend->collect()) {
                     // The shell is gone. Anything it printed on the way out has
                     // already been read and queued as an event, so there is
                     // nothing left to wait for.
                     shell_alive_ = false;
-                    QCoreApplication::postEvent(this, new TerminalExitEvent());
+                    QCoreApplication::postEvent(this, new TerminalExitEvent(generation));
                     break;
                 }
                 if (ready == 0)
                     continue;
-                ssize_t n = backend_->read(buf, sizeof(buf));
+                ssize_t n = backend->read(buf, sizeof(buf));
                 if (n <= 0) {
                     // The shell closed the terminal. Collect it here so the exit
                     // status means something; the master stays open until
                     // shutdown has joined this thread. (A successful write is no
                     // sign of life — see Pty::write.)
-                    if (backend_->collectsChild())
-                        backend_->collect();
+                    if (backend->collectsChild())
+                        backend->collect();
                     shell_alive_ = false;
-                    QCoreApplication::postEvent(this, new TerminalExitEvent());
+                    QCoreApplication::postEvent(this, new TerminalExitEvent(generation));
                     break;
                 }
                 QCoreApplication::postEvent(
-                    this, new TerminalOutputEvent(std::string(buf, static_cast<size_t>(n))));
+                    this, new TerminalOutputEvent(std::string(buf, static_cast<size_t>(n)),
+                                                  generation));
             }
         });
     }
@@ -124,6 +146,61 @@ public:
     ~TerminalWidget() override {
         shutdown();
     }
+
+    // Point this window at a different shell, and stop showing the one it had.
+    //
+    // The order is the whole of this. The reader has to be joined before the backend it
+    // reads from is destroyed; the shell on the far end has to be told whether this
+    // window is closing or merely looking elsewhere, because that is what decides
+    // whether an unsaved session outlives the window; and the screen has to be emptied,
+    // because a window still showing the previous shell would be showing a session that
+    // is not there. Anything the old shell sends after this is tagged with a generation
+    // this window has stopped listening for.
+    void showSession(std::unique_ptr<TerminalBackend> next, bool discard_current) {
+        if (!next)
+            return;
+        running_ = false;
+        backend_->stopProcess(discard_current); // also wakes the read the reader is in
+        if (reader_.joinable())
+            reader_.join();
+        backend_->release();
+
+        backend_ = std::move(next);
+        ++generation_;
+        screen_ = Screen(rows_, cols_);
+        scroll_offset_ = 0;
+        clearSelection();
+        status_.clear();
+        // The new shell is asked to fit this window rather than the size it was started
+        // at: a session restored into a small window should be a small session.
+        backend_->resize(rows_, cols_);
+        startReader();
+        update();
+    }
+
+    // What the window's own keybinds mean, set by whoever owns the window. The widget
+    // does not know what a session is, does not draw a menu and has never heard of the
+    // daemon; it knows Ctrl+Shift+D was pressed and that somebody asked to be told.
+    std::function<void()> on_save_session;
+    std::function<void()> on_session_menu;
+
+    // One line the window says for itself, shown in the corner for a moment and then
+    // gone. A keybind that keeps your work and says nothing is a keybind that gets
+    // pressed twice, and then stopped being trusted.
+    void setStatusText(const std::string& text, int show_ms = 4000) {
+        status_ = text;
+        if (!status_timer_) {
+            status_timer_ = new QTimer(this);
+            status_timer_->setSingleShot(true);
+            connect(status_timer_, &QTimer::timeout, this, [this] {
+                status_.clear();
+                update();
+            });
+        }
+        status_timer_->start(show_ms);
+        update();
+    }
+    const std::string& statusText() const { return status_; }
 
     // Read-only view of the terminal model, for tests and for UI pieces such as
     // a scrollbar that must agree with the painted content.
@@ -239,6 +316,8 @@ public:
 
     bool event(QEvent* e) override {
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
+            if (out->generation != generation_)
+                return true; // belongs to a shell this window no longer shows
             const int history_before = screen_.historySize();
             const int view_top_before = viewTop();
             screen_.feed(out->data);
@@ -309,7 +388,10 @@ public:
             }
             return true;
         }
-        if (dynamic_cast<TerminalExitEvent*>(e)) {
+        if (auto* leaving = dynamic_cast<TerminalExitEvent*>(e)) {
+            // The shell this window has moved on from, saying goodbye late.
+            if (leaving->generation != generation_)
+                return true;
             shell_alive_ = false;
             QCoreApplication::quit();
             return true;
@@ -345,6 +427,19 @@ public:
             if (key == Qt::Key_V) {
                 scroll_offset_ = 0;
                 pasteFromClipboard();
+                return;
+            }
+            // Ctrl+Shift+D keeps the shell this window is showing and starts a fresh
+            // one in its place; Ctrl+Shift+A asks for the list of kept sessions. Both
+            // belong to the window and never reach the shell: sent on, Ctrl+Shift+D
+            // would be an end-of-file at the prompt and Ctrl+Shift+A a control
+            // character, both of which do the opposite of what was asked.
+            if (key == Qt::Key_D && on_save_session) {
+                on_save_session();
+                return;
+            }
+            if (key == Qt::Key_A && on_session_menu) {
+                on_session_menu();
                 return;
             }
         }
@@ -756,6 +851,21 @@ public:
             p.drawRoundedRect(scroll_bar_.thumb.adjusted(2, 0, -2, 0), kScrollBarRadius,
                               kScrollBarRadius);
         }
+
+        // The window's own line, drawn last and over everything else, because it is a
+        // word about the window rather than part of the shell inside it.
+        if (!status_.empty()) {
+            const QString line = QString::fromStdString(status_);
+            const double box_w = fm.horizontalAdvance(line) + 2 * padding_;
+            const double box_h = ch + padding_;
+            const QRectF box(width() - box_w - padding_, height() - box_h - padding_, box_w,
+                             box_h);
+            p.setPen(QPen(QColor(220, 220, 220, 200), 1));
+            p.setBrush(QColor(20, 20, 20, 235));
+            p.drawRoundedRect(box, kScrollBarRadius, kScrollBarRadius);
+            p.setPen(QColor(240, 240, 240));
+            p.drawText(box, Qt::AlignVCenter | Qt::AlignLeft | Qt::TextSingleLine, line);
+        }
     }
 
 private:
@@ -810,6 +920,11 @@ private:
     std::thread reader_;
     std::atomic<bool> running_;
     std::atomic<bool> shell_alive_;
+    // Which shell the reader thread is reading. Raised when the window is pointed at
+    // another one, so events from the old shell can be recognised and dropped.
+    std::atomic<int> generation_{0};
+    std::string status_;
+    QTimer* status_timer_ = nullptr;
     double padding_ = 10.0;
 
     // Rows moved by one wheel notch, and how far the view is scrolled back from
