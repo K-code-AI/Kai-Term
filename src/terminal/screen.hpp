@@ -1,9 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace kai {
@@ -62,6 +64,23 @@ public:
     const Cell& at(int r, int c) const { return grid_.at(r).at(c); }
     const std::vector<Row>& scrollback() const { return scrollback_; }
 
+    // Scrollback access for the UI. Index 0 is the oldest retained line and the
+    // last entry is the line that scrolled off most recently. Rows keep the
+    // width they were written at, so callers must tolerate shorter rows.
+    int historySize() const { return static_cast<int>(scrollback_.size()); }
+    const Row* historyRow(int i) const {
+        if (i < 0 || i >= static_cast<int>(scrollback_.size()))
+            return nullptr;
+        return &scrollback_[static_cast<std::size_t>(i)];
+    }
+
+    // True while the alternate screen (vim, less, tmux) is active. Scrolling the
+    // primary-screen history is then the application's job, not the terminal's.
+    bool inAlternateScreen() const { return alternate_valid_; }
+
+    // DECCKM (ESC[?1h): applications ask for SS3 cursor sequences.
+    bool applicationCursorKeys() const { return application_cursor_keys_; }
+
     // Terminal-to-host replies produced by queries (DA1, DSR 5n/6n).
     // The consumer (widget or test harness) drains this and writes it to the PTY.
     std::string takeResponse() {
@@ -77,26 +96,14 @@ public:
             return;
 
         const std::vector<Row> old = grid_;
-        const int old_rows = static_cast<int>(old.size());
-        const int offset = std::max(0, old_rows - new_rows);
-        grid_.assign(new_rows, Row(new_cols));
-
-        for (int r = 0; r < new_rows; ++r) {
-            const int source = offset + r;
-            if (source >= old_rows)
-                continue;
-            const int copy_cols = std::min(new_cols, static_cast<int>(old[source].size()));
-            for (int c = 0; c < copy_cols; ++c)
-                grid_[r][c] = old[source][c];
-        }
-
+        const int offset = fitGrid(grid_, new_rows, new_cols);
         if (offset > 0) {
             cursor_y_ = std::max(0, cursor_y_ - offset);
-            // Rows pushed off the top of a full-screen scroll belong in scrollback.
-            for (int r = 0; r < offset; ++r) {
-                scrollback_.push_back(old[r]);
-                if (scrollback_.size() > 1000)
-                    scrollback_.erase(scrollback_.begin());
+            // Rows pushed off the top of a full-screen scroll belong in
+            // scrollback, except on the alternate screen, which has none.
+            if (!alternate_valid_) {
+                for (int r = 0; r < offset; ++r)
+                    pushHistory(scrollback_, old[r]);
             }
         }
         cursor_y_ = std::min(cursor_y_, new_rows - 1);
@@ -108,13 +115,20 @@ public:
         scroll_bottom_ = rows_ - 1;
         origin_mode_ = false;
         pending_wrap_ = false;
+
+        // When an alternate-screen application is running, the saved primary
+        // screen and its history have to survive the resize: re-fit them instead
+        // of discarding them, or leaving vim after a resize would reveal an
+        // empty shell with no scrollback.
         if (alternate_valid_) {
-            alternate_grid_.assign(rows_, Row(cols_));
-            alternate_scrollback_.clear();
-            alternate_cursor_x_ = 0;
-            alternate_cursor_y_ = 0;
+            const std::vector<Row> saved = alternate_grid_;
+            const int saved_offset = fitGrid(alternate_grid_, new_rows, new_cols);
+            for (int r = 0; r < saved_offset; ++r)
+                pushHistory(alternate_scrollback_, saved[r]);
+            alternate_cursor_x_ = std::min(alternate_cursor_x_, new_cols);
+            alternate_cursor_y_ = std::clamp(alternate_cursor_y_ - saved_offset, 0, new_rows - 1);
             alternate_scroll_top_ = 0;
-            alternate_scroll_bottom_ = rows_ - 1;
+            alternate_scroll_bottom_ = new_rows - 1;
         }
     }
 
@@ -235,6 +249,7 @@ private:
     Color current_bg_{30, 30, 30};
     Attr current_attr_{};
     bool cursor_visible_ = true;
+    bool application_cursor_keys_ = false;
     bool autowrap_ = true;
     bool pending_wrap_ = false;
     bool origin_mode_ = false;
@@ -246,15 +261,42 @@ private:
         return Row(cols_);
     }
 
+    // Scrollback depth. Bounded so a runaway `yes` in a loop cannot exhaust
+    // memory while still covering a long build log.
+    static constexpr std::size_t kMaxHistory = 1000;
+
+    static void pushHistory(std::vector<Row>& history, Row row) {
+        history.push_back(std::move(row));
+        if (history.size() > kMaxHistory)
+            history.erase(history.begin());
+    }
+
+    // Re-fit a grid to a new size, keeping the bottom-most rows when shrinking.
+    // Returns how many rows were dropped off the top.
+    static int fitGrid(std::vector<Row>& grid, int new_rows, int new_cols) {
+        const int old_rows = static_cast<int>(grid.size());
+        const int offset = std::max(0, old_rows - new_rows);
+        std::vector<Row> next(static_cast<std::size_t>(new_rows), Row(new_cols));
+        for (int r = 0; r < new_rows; ++r) {
+            const int source = offset + r;
+            if (source >= old_rows)
+                continue;
+            const int copy_cols = std::min(new_cols, static_cast<int>(grid[source].size()));
+            for (int c = 0; c < copy_cols; ++c)
+                next[static_cast<std::size_t>(r)][c] = grid[static_cast<std::size_t>(source)][c];
+        }
+        grid = std::move(next);
+        return offset;
+    }
+
     // Scroll the scroll region up by one line. Content leaving the top of a
     // full-screen region is history and goes to scrollback; content leaving a
-    // partial region (tmux panes, status lines) is discarded.
+    // partial region (tmux panes, status lines) is discarded. The alternate
+    // screen has no history at all, which is why vim and less output does not
+    // pollute the shell's scrollback.
     void scrollUpInRegion() {
-        if (scroll_top_ == 0 && scroll_bottom_ == rows_ - 1) {
-            scrollback_.push_back(grid_[frontRowIndex()]);
-            if (scrollback_.size() > 1000)
-                scrollback_.erase(scrollback_.begin());
-        }
+        if (!alternate_valid_ && scroll_top_ == 0 && scroll_bottom_ == rows_ - 1)
+            pushHistory(scrollback_, grid_[frontRowIndex()]);
         for (int r = scroll_top_; r < scroll_bottom_; ++r)
             grid_[r] = grid_[r + 1];
         grid_[scroll_bottom_] = blankRow();
@@ -722,6 +764,7 @@ private:
         current_bg_ = Color{30, 30, 30};
         current_attr_ = Attr{};
         cursor_visible_ = true;
+        application_cursor_keys_ = false;
         autowrap_ = true;
         pending_wrap_ = false;
         origin_mode_ = false;
@@ -827,6 +870,7 @@ private:
             if (!priv)
                 continue; // non-private modes (e.g. ANSI insert/replace) are ignored
             switch (v) {
+                case 1: application_cursor_keys_ = set; break;
                 case 6: origin_mode_ = set; break;
                 case 7: autowrap_ = set; break;
                 case 25: cursor_visible_ = set; break;
@@ -839,7 +883,7 @@ private:
                     if (set) enterAlternateScreen(); else leaveAlternateScreen();
                     break;
                 default:
-                    // ?1, ?12, ?128, ?1000..?1006, ?2004, ?2026 etc. are accepted
+                    // ?12, ?128, ?1000..?1006, ?2004, ?2026 etc. are accepted
                     // and ignored; input-side features arrive with M4/M5 work.
                     break;
             }

@@ -29,8 +29,51 @@ add_executable(kai-term-tmux-e2e
     tests/tmux_e2e.cpp
     src/terminal/vtparser.cpp
 )
-if(EXISTS "/usr/lib64/libutil.a" OR EXISTS "/usr/lib64/libutil.so" OR EXISTS "/usr/lib/libutil.a")
-    target_link_libraries(kai-term-tmux-e2e PRIVATE util)
+
+# forkpty() lives in libutil on glibc systems.
+find_library(UTIL_LIBRARY util)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-tmux-e2e PRIVATE ${UTIL_LIBRARY})
 endif()
+
+# Keyboard encoding, asserted on the exact bytes sent to the PTY.
+add_executable(kai-term-input
+    tests/input.cpp
+)
+target_link_libraries(kai-term-input PRIVATE Qt6::Core)
+
+# The same sequences replayed through a real PTY, read back from the other end.
+add_executable(kai-term-input-pty
+    tests/input_pty.cpp
+)
+target_link_libraries(kai-term-input-pty PRIVATE Qt6::Core)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-input-pty PRIVATE ${UTIL_LIBRARY})
+endif()
+
+# Scrollback model behind the scrollback UI.
+add_executable(kai-term-scrollback
+    tests/scrollback.cpp
+    src/terminal/vtparser.cpp
+)
+
+# Offscreen widget exercise: real widget, real shell, no display server.
+add_executable(kai-term-widget-smoke
+    tests/widget_smoke.cpp
+    src/terminal/vtparser.cpp
+)
+target_link_libraries(kai-term-widget-smoke PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-widget-smoke PRIVATE ${UTIL_LIBRARY})
+endif()
+
+enable_testing()
+add_test(NAME parser COMMAND kai-term-parser)
+add_test(NAME pty COMMAND kai-term-pty)
+add_test(NAME tmux-e2e COMMAND kai-term-tmux-e2e)
+add_test(NAME input COMMAND kai-term-input)
+add_test(NAME input-pty COMMAND kai-term-input-pty)
+add_test(NAME scrollback COMMAND kai-term-scrollback)
+add_test(NAME widget-smoke COMMAND kai-term-widget-smoke)
 
 target_compile_definitions(kai-term PRIVATE KAI_TERM_VERSION="0.0.0")
