@@ -95,7 +95,7 @@ public:
 
     void moveCursor(int dx, int dy) {
         pending_wrap_ = false;
-        cursor_x_ = std::clamp(cursor_x_ + dx, 0, cols_);
+        cursor_x_ = std::clamp(cursor_x_ + dx, 0, cols_ - 1);
         cursor_y_ = std::clamp(cursor_y_ + dy, 0, rows_ - 1);
     }
 
@@ -170,7 +170,7 @@ public:
             (void)offset; // the alternate screen has no scrollback to keep
             reflow(alternate_scrollback_, alternate_grid_, new_rows, new_cols,
                    alternate_cursor_y_, alternate_cursor_x_);
-            cursor_x_ = std::min(cursor_x_, new_cols);
+            cursor_x_ = std::min(cursor_x_, new_cols - 1);
             cursor_y_ = std::min(cursor_y_, new_rows - 1);
         }
         rows_ = new_rows;
@@ -420,7 +420,10 @@ public:
 
     void restoreCursor() {
         if (saved_valid_) {
-            cursor_x_ = std::min(saved_x_, cols_);
+            // A saved one-past column is not restored: the wrap flag that made
+            // it legal was not saved with it, and printing into it would be a
+            // write past the end of the row.
+            cursor_x_ = std::min(saved_x_, cols_ - 1);
             cursor_y_ = std::min(saved_y_, rows_ - 1);
         }
         pending_wrap_ = false;
@@ -432,7 +435,12 @@ public:
             col = std::clamp(col, 0, cols_ - 1);
         } else {
             row = std::clamp(row, 0, rows_ - 1);
-            col = std::clamp(col, 0, cols_);
+            // The last column is `cols_ - 1`. `cols_` is reserved for the
+            // one-past position that deferred autowrap uses, and reaching it any
+            // other way means the next character would be written out of bounds,
+            // so an out-of-range CUP lands on the last column as it does in
+            // xterm rather than anywhere at all.
+            col = std::clamp(col, 0, cols_ - 1);
         }
         cursor_y_ = row;
         cursor_x_ = col;
@@ -727,6 +735,14 @@ private:
 
         if (cursor_y_ < 0 || cursor_y_ >= rows_)
             return;
+        // Reaching the one-past column without pending_wrap_ set would be a
+        // write past the end of the row, so it is refused here as well as at the
+        // places that set the cursor. Whatever an escape sequence claims, the
+        // screen never indexes outside its own grid.
+        if (cursor_x_ < 0)
+            cursor_x_ = 0;
+        if (cursor_x_ >= cols_)
+            cursor_x_ = cols_ - 1;
 
         Cell& c = grid_[cursor_y_][cursor_x_];
         c.text = encodeUtf8(cp);
@@ -952,7 +968,7 @@ private:
             return;
         grid_ = std::move(alternate_grid_);
         scrollback_ = std::move(alternate_scrollback_);
-        cursor_x_ = std::min(alternate_cursor_x_, cols_);
+        cursor_x_ = std::min(alternate_cursor_x_, cols_ - 1);
         cursor_y_ = std::min(alternate_cursor_y_, rows_ - 1);
         scroll_top_ = std::min(alternate_scroll_top_, rows_ - 1);
         scroll_bottom_ = std::min(alternate_scroll_bottom_, rows_ - 1);
@@ -1177,18 +1193,18 @@ private:
             case 'C':
             case 'a':
                 pending_wrap_ = false;
-                cursor_x_ = std::min(cols_, cursor_x_ + get(0, 1));
+                cursor_x_ = std::min(cols_ - 1, cursor_x_ + get(0, 1));
                 break;
             case 'D':
             case '`':
                 pending_wrap_ = false;
                 if (final == '`')
-                    cursor_x_ = std::clamp(get(0, 1) - 1, 0, cols_);
+                    cursor_x_ = std::clamp(get(0, 1) - 1, 0, cols_ - 1);
                 else
                     cursor_x_ = std::max(0, cursor_x_ - get(0, 1));
                 break;
             case 'G':
-                cursor_x_ = std::clamp(get(0, 1) - 1, 0, cols_);
+                cursor_x_ = std::clamp(get(0, 1) - 1, 0, cols_ - 1);
                 pending_wrap_ = false;
                 break;
             case 'd':

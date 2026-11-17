@@ -364,6 +364,90 @@ int main() {
         ok &= lok;
     }
 
+    // A column number past the right edge puts the cursor on the last column.
+    // It used to land one past it, which is the position deferred autowrap uses
+    // to mean "wrap on the next character" — so the next printable character was
+    // written outside the grid and took the process down with it.
+    {
+        bool lok = true;
+        kai::Screen cup(3, 10);
+        cup.feed("\x1b[1;99HX"); // CUP far past the right edge, then type
+        lok &= (lineText(cup, 0) == "         X");
+        lok &= (cup.cursorX() == cup.cols()); // legitimately one-past now
+        cup.feed("Y"); // ... and the character after it still wraps
+        lok &= (lineText(cup, 1) == "Y");
+        if (!lok) fail("CUP past the right edge");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen cuf(3, 10);
+        cuf.feed("ab\x1b[10CX"); // CUF running off the end
+        lok &= (lineText(cuf, 0) == "ab       X");
+        // Running into the right margin with a cursor movement is not the same
+        // as being left there by a character: the pending wrap is gone, so the
+        // next character overwrites the last column instead of wrapping.
+        cuf.feed("\x1b[999CZ");
+        lok &= (lineText(cuf, 0) == "ab       Z");
+        cuf.feed("W");
+        lok &= (lineText(cuf, 1) == "W");
+        if (!lok) fail("CUF past the right edge");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen cha(3, 10);
+        cha.feed("\x1b[999GZ"); // CHA to a column that does not exist
+        lok &= (lineText(cha, 0) == "         Z");
+        cha.feed("\x1b[1;1H\x1b[99aY"); // HPR from column 0 by more than a screen
+        lok &= (lineText(cha, 0) == "         Y");
+        if (!lok) fail("CHA and HPR past the right edge");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        // A cursor saved while one past the last column comes back onto the
+        // screen, even after a resize in between made the position impossible.
+        kai::Screen saved(3, 10);
+        saved.feed("0123456789"); // cursor ends one past the edge, pending wrap
+        saved.feed("\x1b[s");
+        saved.resize(3, 8);
+        saved.feed("\x1b[uQ");
+        // One past the last column of the *new* width is fine — that is what
+        // filling a line means — but indexing outside the grid is not. Where the
+        // reflowed text ends up is the resize test's business; this one is about
+        // the character landing somewhere and not outside the screen.
+        lok &= (saved.cursorX() <= saved.cols());
+        bool found = false;
+        for (int r = 0; r < saved.rows(); ++r)
+            found |= (lineText(saved, r).find('Q') != std::string::npos);
+        lok &= found;
+        if (!lok) fail("restore cursor after resize");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        // The arrow-key path is the same clamp; a right arrow at the edge has to
+        // stay on the last column.
+        kai::Screen arrows(2, 10);
+        arrows.feed("0123456789");
+        arrows.moveCursor(50, 0);
+        lok &= (arrows.cursorX() == arrows.cols() - 1);
+        arrows.feed("Q"); // overwrites the last column rather than wrapping
+        lok &= (lineText(arrows, 0) == "012345678Q");
+        if (!lok) fail("cursor movement clamps to the last column");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        // A position report has to name a column that exists.
+        kai::Screen cpr(2, 10);
+        cpr.feed("\x1b[1;99H\x1b[6n");
+        lok &= (cpr.takeResponse() == "\x1b[1;10R");
+        if (!lok) fail("cursor position report after a clamped move");
+        ok &= lok;
+    }
+
     if (ok) {
         std::cout << "PASS\n";
         return 0;
