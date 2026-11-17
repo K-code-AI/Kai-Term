@@ -8,6 +8,8 @@
 #include "text.hpp"
 #include "../process/pty.hpp"
 
+#include <poll.h>
+
 #include <QWidget>
 #include <QClipboard>
 #include <QFont>
@@ -61,8 +63,31 @@ public:
         reader_ = std::thread([this] {
             char buf[4096];
             while (running_ && shell_alive_) {
+                // Wait on the descriptor rather than blocking in read(): a stray
+                // job that inherited the terminal can keep the stream open after
+                // the shell itself is gone, and the window has to close on the
+                // shell leaving, not on whoever else lets go.
+                struct pollfd watched {pty_.master(), POLLIN, 0};
+                const int ready = ::poll(&watched, 1, 200);
+                if (ready < 0 && errno == EINTR)
+                    continue;
+                if (pty_.reap()) {
+                    // The shell is gone. Drain anything still readable first is
+                    // not worth it here: whatever it printed on the way out has
+                    // already been queued as an event by the read below.
+                    shell_alive_ = false;
+                    QCoreApplication::postEvent(this, new TerminalExitEvent());
+                    break;
+                }
+                if (ready == 0)
+                    continue;
                 ssize_t n = pty_.read(buf, sizeof(buf));
                 if (n <= 0) {
+                    // The shell closed the terminal. Collect it here so the exit
+                    // status means something; the master stays open until
+                    // shutdown has joined this thread. (A successful write is no
+                    // sign of life — see Pty::write.)
+                    pty_.reap();
                     shell_alive_ = false;
                     QCoreApplication::postEvent(this, new TerminalExitEvent());
                     break;
@@ -75,9 +100,15 @@ public:
 
     void shutdown() {
         running_ = false;
-        pty_.stop();
+        // The child goes first, and the reader is joined before the master is
+        // closed. Closing a descriptor under a thread blocked reading it leaves
+        // that number free to be handed to somebody else's open() while the read
+        // is still in flight, so teardown waits for the reader to notice the end
+        // of the stream on its own.
+        pty_.terminate();
         if (reader_.joinable())
             reader_.join();
+        pty_.closeMaster();
         shell_alive_ = false;
     }
 

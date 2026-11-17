@@ -185,6 +185,16 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
   `tests/version.sh` — the test binaries behind the results above.
 - `.gitignore` — ignores build artifacts, generated Qt code, editor state and scratch.
 
+## A requirement carried into M3
+
+Selection must be clipped to the pane it started in once Kai-Term has its own
+multiplexer: dragging inside one pane must never select text from a neighbouring
+pane. The terminal will know its own pane rectangles, so this is exact rather than
+guessed. It is deliberately **not** done for applications like tmux that draw their
+own splits inside a single screen — the terminal has no way to know where those
+panes are, and inferring them from box-drawing characters would be wrong often
+enough to be worse than useless. Agreed with Kaida on 2026-11-17.
+
 ## Next concrete tasks
 
 1. Launch the real GUI in a Wayland and an X11 session and have a person confirm rendering, keyboard feel, scrollback scrolling and resize. Offscreen checks cannot substitute for this.

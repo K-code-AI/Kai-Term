@@ -112,6 +112,17 @@ Needed:
 
 Status: **pending**.
 
+Required:
+
+- **Pane-scoped selection.** When Kai-Term runs its own multiplexer, a selection
+  must be clipped to the pane it started in, so dragging in one pane never picks up
+  text from a neighbouring one. The terminal knows its own pane rectangles, so this
+  is exact rather than a guess. It is deliberately not attempted for applications
+  such as tmux that draw their own splits inside one screen: the terminal cannot
+  know where those panes are without a protocol, and inferring them from
+  box-drawing characters would be wrong often enough to be worse than not trying.
+  Agreed with Kaida on 2026-11-17.
+
 Needed:
 
 - Session daemon.
