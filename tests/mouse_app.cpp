@@ -42,7 +42,7 @@ void expect(const char* what, bool ok) {
     }
 }
 
-void expectStr(const char* what, const std::string& got, const std::string& want) {
+[[maybe_unused]] void expectStr(const char* what, const std::string& got, const std::string& want) {
     ++checks;
     if (got == want)
         return;
@@ -50,7 +50,7 @@ void expectStr(const char* what, const std::string& got, const std::string& want
     std::cerr << "FAIL: " << what << ": want [" << want << "] got [" << got << "]\n";
 }
 
-void expectEq(const char* what, int got, int want) {
+[[maybe_unused]] void expectEq(const char* what, int got, int want) {
     ++checks;
     if (got == want)
         return;
@@ -92,7 +92,7 @@ std::string rowString(const kai::TerminalWidget& w, int r) {
 // on the screen, so walk the cells and return the column directly. Clicking at a
 // byte offset lands in the wrong cell, which looks exactly like the application
 // ignoring the mouse.
-std::pair<int, int> findCell(const kai::TerminalWidget& w, const std::string& needle) {
+[[maybe_unused]] std::pair<int, int> findCell(const kai::TerminalWidget& w, const std::string& needle) {
     const kai::Screen& s = w.screen();
     for (int r = 0; r < s.rows(); ++r) {
         std::string line;

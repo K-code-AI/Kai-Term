@@ -1,9 +1,15 @@
 # Kai-Term build scaffold (M0)
-cmake_minimum_required(VERSION 3.5)
+# Qt 6's own CMake package needs 3.16, so that is the honest floor.
+cmake_minimum_required(VERSION 3.16)
 project(Kai-Term VERSION 0.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# The class of bug this code keeps running into — a view left pointing at a
+# temporary, a member initialised out of order — is the class the compiler can
+# see. Qt's own headers trip one diagnostic that has nothing to do with us.
+add_compile_options(-Wall -Wextra -Wno-sfinae-incomplete)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Gui Core)
 

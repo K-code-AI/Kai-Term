@@ -695,11 +695,14 @@ private:
     Pty pty_;
     Screen screen_;
     QFont font_;
+    // Declared in the order the constructor initialises them: members are built
+    // in declaration order whatever the initialiser list says, so keeping the two
+    // in step is what makes the list safe to read.
+    int rows_;
+    int cols_;
     std::thread reader_;
     std::atomic<bool> running_;
     std::atomic<bool> shell_alive_;
-    int rows_;
-    int cols_;
     double padding_ = 10.0;
 
     // Rows moved by one wheel notch, and how far the view is scrolled back from

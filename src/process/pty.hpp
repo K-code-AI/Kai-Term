@@ -252,9 +252,8 @@ public:
         while (const dirent* entry = readdir(dir)) {
             if (!std::isdigit(static_cast<unsigned char>(entry->d_name[0])))
                 continue;
-            char path[64];
-            std::snprintf(path, sizeof(path), "/proc/%s/stat", entry->d_name);
-            const int fd = open(path, O_RDONLY | O_CLOEXEC);
+            const std::string path = std::string("/proc/") + entry->d_name + "/stat";
+            const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
             if (fd < 0)
                 continue;
             char buf[512];
