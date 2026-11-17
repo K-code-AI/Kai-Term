@@ -88,6 +88,10 @@ add_test(NAME scrollback COMMAND kai-term-scrollback)
 add_test(NAME mouse COMMAND kai-term-mouse)
 add_test(NAME selection COMMAND kai-term-selection)
 
+add_executable(kai-term-scrollbar tests/scrollbar.cpp)
+target_link_libraries(kai-term-scrollbar PRIVATE Qt6::Gui Qt6::Core)
+add_test(NAME scrollbar COMMAND kai-term-scrollbar)
+
 add_executable(kai-term-mouse-app tests/mouse_app.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-mouse-app PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
 

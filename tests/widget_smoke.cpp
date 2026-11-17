@@ -598,6 +598,71 @@ int main(int argc, char** argv) {
                   got, std::string("\x1b" "[200~one\rtwo\rthree\r\x1b" "[201~"));
     }
 
+    // ---- The scroll indicator -------------------------------------------
+    {
+        expect("the indicator is there exactly when there is history",
+               w.scrollIndicator().visible == (w.screen().historySize() > 0));
+        // Enough output to have somewhere to look.
+        sendText(&w, "seq 1 300");
+        sendKey(&w, Qt::Key_Return);
+        pump(600);
+        const kai::ScrollBar bar = w.scrollIndicator();
+        expect("output that does not fit shows the indicator", bar.visible);
+        expect("and there is history to look through", w.screen().historySize() > 0);
+        expect("starting at the live bottom", w.scrollOffset() == 0);
+        expect("the thumb starts at the bottom of the track",
+               bar.thumb.bottom() == bar.track.bottom());
+
+        // A click in the track above the thumb is a request for older text.
+        const QPoint above(bar.track.center().x(), bar.track.top() + 2);
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, QPointF(above));
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, QPointF(above));
+        expect("clicking above the thumb scrolls back a page",
+               w.scrollOffset() >= w.rows() - 1 && w.scrollOffset() > 0);
+
+        // Grabbing the thumb and walking it to either end walks the history.
+        const kai::ScrollBar scrolled = w.scrollIndicator();
+        const QPoint grab(scrolled.track.center().x(), scrolled.thumb.center().y());
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, QPointF(grab));
+        sendMouse(&w, QEvent::MouseMove, Qt::LeftButton, Qt::LeftButton,
+                  QPointF(bar.track.center().x(), bar.track.top() + 1));
+        expect("dragging the thumb to the top reaches the oldest line",
+               w.scrollOffset() == w.screen().historySize());
+        sendMouse(&w, QEvent::MouseMove, Qt::LeftButton, Qt::LeftButton,
+                  QPointF(bar.track.center().x(), bar.track.bottom()));
+        expect("and back down reaches the live bottom", w.scrollOffset() == 0);
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
+                  QPointF(bar.track.center().x(), bar.track.bottom()));
+        expect("releasing the thumb ends the drag", w.scrollOffset() == 0);
+
+        // A drag on the indicator is not a drag over text and selects nothing.
+        const kai::ScrollBar again = w.scrollIndicator();
+        const QPoint grab2(again.track.center().x(), again.thumb.center().y());
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, QPointF(grab2));
+        sendMouse(&w, QEvent::MouseMove, Qt::LeftButton, Qt::LeftButton,
+                  QPointF(bar.track.center().x(), bar.track.top() + 2));
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
+                  QPointF(bar.track.center().x(), bar.track.top() + 2));
+        expect("dragging the indicator scrolls without selecting",
+               w.scrollOffset() > 0 && w.selectedText().empty());
+
+        // The indicator must not eat a click meant for the text beside it, so a
+        // drag started well inside the grid still selects.
+        sendKey(&w, Qt::Key_End, Qt::ShiftModifier);
+        pump(100);
+        std::string held_text;
+        const kai::CellPos text = topTextRow(w, held_text);
+        expect("there is text on screen to aim at", text.row >= 0);
+        const QPointF from = cellPoint(&w, text.row, text.col);
+        const QPointF to = cellPoint(&w, text.row, text.col + 3);
+        expect("and it is nowhere near the indicator",
+               to.x() < w.scrollIndicator().track.left());
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, from);
+        sendMouse(&w, QEvent::MouseMove, Qt::LeftButton, Qt::LeftButton, to, Qt::ShiftModifier);
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, to);
+        expect("a click left of the indicator still selects text", !w.selectedText().empty());
+    }
+
     // ---- A resize re-breaks the lines the terminal broke ------------------
     {
         // Everything the terminal is holding, retained lines first, in the order

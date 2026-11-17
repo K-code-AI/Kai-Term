@@ -3,6 +3,7 @@
 #include "screen.hpp"
 #include "keyencode.hpp"
 #include "mouseencode.hpp"
+#include "scrollbar.hpp"
 #include "selection.hpp"
 #include "text.hpp"
 #include "../process/pty.hpp"
@@ -91,6 +92,13 @@ public:
 
     // Lines scrolled back from the live bottom; zero means following the shell.
     int scrollOffset() const { return scroll_offset_; }
+
+    // Where the scroll indicator sits right now, in this widget's pixels. Aimed
+    // at by the mouse handlers and by anything that needs to click on it.
+    ScrollBar scrollIndicator() const {
+        return scrollBarGeometry(QSize(width(), height()), screen_.historySize(), rows_,
+                                 scroll_offset_);
+    }
     // How far the view could scroll back right now.
     int scrollRange() const { return screen_.inAlternateScreen() ? 0 : screen_.historySize(); }
 
@@ -249,6 +257,8 @@ public:
     // mouse.
     void mousePressEvent(QMouseEvent* ev) override {
         setFocus();
+        if (scrollBarPress(ev->position()))
+            return;
         const CellPos pos = cellAt(ev->position());
         const bool force_local = ev->modifiers().testFlag(Qt::ShiftModifier);
 
@@ -301,6 +311,10 @@ public:
     }
 
     void mouseMoveEvent(QMouseEvent* ev) override {
+        if (scrollbar_drag_) {
+            scrollBarDragTo(ev->position());
+            return;
+        }
         const CellPos pos = cellAt(ev->position());
         const bool force_local = ev->modifiers().testFlag(Qt::ShiftModifier);
 
@@ -331,6 +345,10 @@ public:
     }
 
     void mouseReleaseEvent(QMouseEvent* ev) override {
+        if (scrollbar_drag_) {
+            endScrollBarDrag();
+            return;
+        }
         const CellPos pos = cellAt(ev->position());
         const bool force_local = ev->modifiers().testFlag(Qt::ShiftModifier);
 
@@ -494,9 +512,61 @@ public:
                         cw, 2.0),
                        QColor(220, 220, 220, 210));
         }
+
+        // The scroll indicator is painted last, over the grid, so it never takes
+        // a column away from the text. It only appears when there is somewhere
+        // else to look.
+        scroll_bar_ = scrollIndicator();
+        if (scroll_bar_.visible) {
+            const int alpha = scrollbar_drag_ ? 190 : 90;
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(220, 220, 220, alpha));
+            p.drawRoundedRect(scroll_bar_.thumb.adjusted(2, 0, -2, 0), kScrollBarRadius,
+                              kScrollBarRadius);
+        }
     }
 
 private:
+    // A press that lands on the indicator belongs to the terminal, not to the
+    // application inside it and not to a text selection.
+    bool scrollBarPress(const QPointF& where) {
+        scroll_bar_ = scrollIndicator();
+        if (!scroll_bar_.visible)
+            return false;
+        const QPoint point = where.toPoint();
+        if (!trackContains(scroll_bar_, point))
+            return false;
+        if (thumbContains(scroll_bar_, point)) {
+            scrollbar_drag_ = true;
+            scrollbar_grab_ = point.y() - scroll_bar_.thumb.top();
+            setCursor(Qt::SizeVerCursor);
+        } else if (point.y() < scroll_bar_.thumb.top()) {
+            scrollBy(std::max(1, rows_ - 1)); // click above the thumb: older
+        } else {
+            scrollBy(-std::max(1, rows_ - 1)); // below it: newer
+        }
+        return true;
+    }
+
+    void scrollBarDragTo(const QPointF& where) {
+        scroll_bar_ = scrollIndicator();
+        const int top = where.toPoint().y() - scrollbar_grab_;
+        const int offset = scrollOffsetForThumbY(top, scroll_bar_, screen_.historySize(), rows_);
+        scrollBy(offset - scroll_offset_);
+        // The thumb follows the pointer even at either end of the scrollback,
+        // where the offset itself cannot move.
+        scroll_bar_ = scrollBarWithThumbTop(scroll_bar_, top);
+        update();
+    }
+
+    void endScrollBarDrag() {
+        if (!scrollbar_drag_)
+            return;
+        scrollbar_drag_ = false;
+        unsetCursor();
+        update();
+    }
+
     Pty pty_;
     Screen screen_;
     QFont font_;
@@ -514,6 +584,12 @@ private:
     // same span Qt's double-click interval uses by default.
     static constexpr qint64 kDoubleClickMs = 400;
     int scroll_offset_ = 0;
+
+    // The indicator's geometry, recomputed whenever the screen is painted, and
+    // the state of a drag on its thumb.
+    ScrollBar scroll_bar_;
+    bool scrollbar_drag_ = false;
+    int scrollbar_grab_ = 0;
 
     // Text selection in display coordinates, plus the drag state that builds it.
     enum class DragMode { Char, Word, Line };
