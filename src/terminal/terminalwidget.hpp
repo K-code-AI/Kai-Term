@@ -148,6 +148,7 @@ public:
     bool event(QEvent* e) override {
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
             const int history_before = screen_.historySize();
+            const int view_top_before = viewTop();
             screen_.feed(out->data);
 
             // Forward terminal-to-host query replies (DA1, DSR 5n/6n) to the PTY.
@@ -164,10 +165,12 @@ public:
             else
                 followScroll(history_before);
 
-            // New output moves text under a selection, and a highlight that
-            // silently drifts onto different characters is worse than one that
-            // goes away. Keeping a selection pinned to its text is later work.
-            clearSelection();
+            // New output moves the text under a selection. The highlight follows
+            // it instead of being thrown away, so selecting from a log that is
+            // still filling up keeps working; once the selected lines have gone
+            // off the top the selection is dropped rather than left pointing at
+            // text nobody selected.
+            keepSelectionOnScreen(view_top_before);
 
             update();
             return true;
@@ -188,6 +191,22 @@ public:
         const Qt::KeyboardModifiers mods = ev->modifiers();
         const int key = ev->key();
         const bool shift = mods.testFlag(Qt::ShiftModifier);
+
+        // Ctrl+Shift+C and Ctrl+Shift+V are the terminal's own, handled before
+        // anything else and never written to the PTY. Without the early return
+        // Ctrl+Shift+C would encode as Ctrl+C and interrupt whatever is running.
+        if (mods.testFlag(Qt::ControlModifier) && shift) {
+            if (key == Qt::Key_C) {
+                copySelection();
+                return;
+            }
+            if (key == Qt::Key_V) {
+                scroll_offset_ = 0;
+                pasteFromClipboard();
+                return;
+            }
+        }
+
         if (shift && (key == Qt::Key_PageUp || key == Qt::Key_PageDown ||
                       key == Qt::Key_Home || key == Qt::Key_End)) {
             if (key == Qt::Key_PageUp)
@@ -244,6 +263,17 @@ public:
         }
         if (ev->button() != Qt::LeftButton)
             return;
+
+        // Shift+click moves the end of an existing selection, which is what
+        // every other text surface does and the only way to make a long
+        // selection without dragging across the whole window. The gesture that
+        // started the selection decides whether it still grows by words or lines.
+        if (force_local && !selection_.empty()) {
+            dragging_ = true;
+            extendSelection(pos);
+            update();
+            return;
+        }
 
         // Qt 6.11 as packaged here exposes no click count on QMouseEvent, and a
         // synthesized event would not carry one anyway, so presses that land on
@@ -311,10 +341,12 @@ public:
         if (!dragging_)
             return;
         dragging_ = false;
-        // Copy-on-select, like xterm: finishing a drag is enough to make the
-        // text available, no key chord required.
+        // A finished drag does not touch the clipboard: the highlight stays for
+        // the user to read and Ctrl+Shift+C is what copies it. On X11 the text is
+        // still offered as PRIMARY, because that is what selecting text has
+        // always meant there and middle click reads it back.
         if (!selection_.empty())
-            copySelection();
+            offerSelection();
         update();
     }
 
@@ -491,9 +523,38 @@ private:
     CellPos last_reported_{};
 
     void scrollBy(int lines) {
+        const int view_top_before = viewTop();
         scroll_offset_ += lines;
         clampScroll();
+        keepSelectionOnScreen(view_top_before);
         update();
+    }
+
+    // The absolute buffer line shown at the top of the window. Selections are
+    // kept on their text by watching how far this moves.
+    int viewTop() const { return screen_.historySize() - scroll_offset_; }
+
+    // Slide a selection by however far the text underneath it moved, and drop
+    // it once any part of it leaves the window. Called after output and after
+    // scrolling, which are the two things that move content on screen.
+    void keepSelectionOnScreen(int view_top_before) {
+        if (selection_.empty())
+            return;
+        const int shift = view_top_before - viewTop();
+        if (shift == 0)
+            return;
+        const int anchor_row = selection_.anchor.row + shift;
+        const int head_row = selection_.head.row + shift;
+        if (anchor_row < 0 || head_row < 0 || anchor_row >= rows_ || head_row >= rows_) {
+            selection_ = Selection{};
+            dragging_ = false;
+            return;
+        }
+        selection_.anchor.row = anchor_row;
+        selection_.head.row = head_row;
+        // A drag that resumes after output has to extend the same text, so the
+        // end it grew from has to move with it.
+        anchor_.row += shift;
     }
 
     void clampScroll() {
@@ -662,10 +723,22 @@ private:
         update();
     }
 
-    // Put the selection on the clipboard as soon as the drag ends. Both modes
-    // are set: on X11 Selection is PRIMARY, which is what a middle click reads,
-    // and Clipboard is what Ctrl+Shift+V and other applications read. On Wayland
-    // Qt has only the clipboard and maps or ignores the other.
+    // Offer the selection as PRIMARY without copying it, the X11 meaning of
+    // highlighting text: a middle click in another application can read it, but
+    // the clipboard the user pastes from with Ctrl+Shift+V is untouched.
+    void offerSelection() {
+        const std::string text = selectedText();
+        if (text.empty())
+            return;
+        QClipboard* clip = QGuiApplication::clipboard();
+        // Not every platform has a separate selection; asking for one that does
+        // not exist makes Qt complain and changes nothing.
+        if (clip && clip->supportsSelection())
+            clip->setText(QString::fromStdString(text), QClipboard::Selection);
+    }
+
+    // Copy on demand: Ctrl+Shift+C. Both modes are set so a middle click in
+    // another application and a Ctrl+Shift+V in this one both find the same text.
     void copySelection() {
         const std::string text = selectedText();
         if (text.empty())
@@ -675,8 +748,6 @@ private:
             return;
         const QString qtext = QString::fromStdString(text);
         clip->setText(qtext, QClipboard::Clipboard);
-        // Not every platform has a separate selection; asking for one that does
-        // not exist makes Qt complain and changes nothing.
         if (clip->supportsSelection())
             clip->setText(qtext, QClipboard::Selection);
     }

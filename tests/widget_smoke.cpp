@@ -197,6 +197,35 @@ kai::CellPos findText(const kai::TerminalWidget& w, const std::string& needle) {
     return kai::CellPos{-1, -1};
 }
 
+// The first row from the top carrying three plain characters, with the column
+// they start at. The scroll tests need a selection that stays on screen when the
+// view moves, so it cannot be the line at the bottom where commands run.
+kai::CellPos topTextRow(const kai::TerminalWidget& w, std::string& text) {
+    const kai::Screen& s = w.screen();
+    for (int r = 0; r + 6 < s.rows(); ++r) {
+        std::string line;
+        for (int c = 0; c < s.cols(); ++c) {
+            const std::string& t = s.at(r, c).text;
+            line += t.empty() ? " " : t;
+        }
+        const std::size_t start = line.find_first_not_of(' ');
+        if (start == std::string::npos)
+            continue;
+        // At least two characters with no space in them: a selection ending on a
+        // space would be trimmed on extraction and say nothing about where the
+        // drag stopped. Numbered lines from `seq` are two characters wide.
+        std::size_t run = start;
+        while (run < line.size() && line[run] != ' ')
+            ++run;
+        if (run - start < 2)
+            continue;
+        text = line.substr(start, std::min<std::size_t>(run - start, 3));
+        return kai::CellPos{r, static_cast<int>(start)};
+    }
+    text.clear();
+    return kai::CellPos{-1, -1};
+}
+
 std::string capturePath() {
     return "/tmp/kai-widget-capture-" + std::to_string(static_cast<long>(::getpid())) + ".bin";
 }
@@ -343,7 +372,12 @@ int main(int argc, char** argv) {
     expect("a click selects nothing", w.selection().empty());
     pump(500); // let the repeat-click window expire
 
-    // A drag across five cells selects exactly those five characters.
+    // A drag across five cells selects exactly those five characters. The
+    // clipboard is loaded with a sentinel first: finishing a drag must leave it
+    // alone, because a terminal that copied on release overwrote whatever the
+    // user had put there.
+    if (QClipboard* clip = QGuiApplication::clipboard())
+        clip->setText(QStringLiteral("sentinel"), QClipboard::Clipboard);
     const QImage before_drag = grabImage(&w);
     sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton,
               cellPoint(&w, alpha.row, alpha.col));
@@ -357,8 +391,13 @@ int main(int argc, char** argv) {
            differingPixels(before_drag, grabImage(&w)) > 0);
 
     if (QClipboard* clip = QGuiApplication::clipboard()) {
-        expectStr("finishing the drag copied the text",
+        expectStr("finishing the drag leaves the clipboard alone",
+                  clip->text(QClipboard::Clipboard).toStdString(), "sentinel");
+        sendKey(&w, Qt::Key_C, Qt::ControlModifier | Qt::ShiftModifier);
+        expectStr("Ctrl+Shift+C copies the selection",
                   clip->text(QClipboard::Clipboard).toStdString(), "alpha");
+        expectStr("and Ctrl+Shift+C did not send Ctrl+C to the shell",
+                  w.selectedText(), "alpha");
         if (clip->supportsSelection()) {
             expectStr("and put it in the X11-style selection as well",
                       clip->text(QClipboard::Selection).toStdString(), "alpha");
@@ -370,6 +409,14 @@ int main(int argc, char** argv) {
         // than counting a check that never ran.
         clipboard_available = false;
     }
+
+    // Shift+click moves the end of the selection instead of starting a new one.
+    sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton,
+              cellPoint(&w, alpha.row, alpha.col + 11), Qt::ShiftModifier);
+    sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
+              cellPoint(&w, alpha.row, alpha.col + 11), Qt::ShiftModifier);
+    expectStr("Shift+click extends the selection to where it was clicked",
+              w.selectedText(), "alpha bravo");
     pump(500);
 
     // A double click takes the whole word, though both clicks land inside it.
@@ -392,6 +439,52 @@ int main(int argc, char** argv) {
     }
     expectStr("a triple click selects the line", w.selectedText(), "alpha bravo charlie");
     pump(500);
+
+    // ---- A selection stays on its text --------------------------------------
+    // Scrolling moves the text under the highlight, so the highlight has to move
+    // with it. One notch back is three lines: enough to see the highlight move,
+    // not enough to push a line near the top out of the window.
+    std::string held;
+    const kai::CellPos top = topTextRow(w, held);
+    expect("a line near the top of the screen can be selected",
+           top.row >= 0 && held.size() >= 2);
+    sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton,
+              cellPoint(&w, top.row, top.col));
+    sendMouse(&w, QEvent::MouseMove, Qt::NoButton, Qt::LeftButton,
+              cellPoint(&w, top.row, top.col + static_cast<int>(held.size())));
+    sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
+              cellPoint(&w, top.row, top.col + static_cast<int>(held.size())));
+    expectStr("a drag selected the start of that line", w.selectedText(), held);
+    sendWheelAt(&w, 120, cellPoint(&w, 10, 10));
+    expectEq("one notch scrolled the view back three lines", w.scrollOffset(), 3);
+    expectStr("scrolling keeps the selection on the same text", w.selectedText(), held);
+    sendWheelAt(&w, -120, cellPoint(&w, 10, 10));
+    expectEq("and scrolling forward returns to the bottom", w.scrollOffset(), 0);
+    expectStr("the selection is still the same text", w.selectedText(), held);
+
+    // Output moves it too. A background loop keeps writing lines while nothing
+    // is typed, which is the case that used to throw the selection away: a log
+    // you were copying from, still filling up.
+    sendText(&w, "for i in $(seq 1 400); do echo tick$i; sleep 0.05; done &");
+    sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    expect("the background loop is writing",
+           waitFor([&] { return findLine(w, "tick5").row >= 0; }, 4000));
+    const kai::CellPos tick = findLine(w, "tick5");
+    sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton,
+              cellPoint(&w, tick.row, tick.col));
+    sendMouse(&w, QEvent::MouseMove, Qt::NoButton, Qt::LeftButton,
+              cellPoint(&w, tick.row, tick.col + 5));
+    sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
+              cellPoint(&w, tick.row, tick.col + 5));
+    expectStr("the drag selected the line the loop wrote", w.selectedText(), "tick5");
+    pump(700); // the loop has written more lines in the meantime
+    expectStr("new output does not steal the selection off its text",
+              w.selectedText(), "tick5");
+    expect("and the selection is dropped once its lines scroll away",
+           waitFor([&] { return w.selection().empty(); }, 8000));
+    sendText(&w, "kill %1");
+    sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    pump(400);
 
     // ---- Selecting while scrolled back -------------------------------------
     sendKey(&w, Qt::Key_PageUp, Qt::ShiftModifier);
