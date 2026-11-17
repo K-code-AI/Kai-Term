@@ -67,10 +67,22 @@ Work done after M2 closed, from an audit of what the terminal silently ignored:
 - SGR sub-parameters in both spellings (`38:2::r:g:b`), out-of-range palette
   indices left alone instead of clamped to a grey, and 21, 28 and 6 doing something.
 - Lines SU pushes off a whole screen go into the scrollback, as a newline's would.
+- DECRC puts back the rendition and the wrap flag that DECSC saved, not just the
+  position. UTF-8 is decoded with its three checks — shortest form, no surrogates,
+  nothing past the last codepoint — so a lone surrogate becomes a replacement
+  character instead of a cell whose text cannot be written back out. The leading
+  Hangul jamo are wide and the vowels after them are not; they had been one narrow
+  block, which put Korean in jamo half a cell out and took every cell after it with
+  it. Origin mode survives a resize; the scroll region deliberately does not —
+  keeping the old margins, which seemed the better behaviour, left a window that
+  grew from 24 rows to 50 unable to scroll at all, because rows 25 to 49 were
+  outside the region, and the widget test's `seq 1 60` produced no history.
 - `-Wall -Wextra` on for the whole build, compiling clean. What it found the same
   day: a `string_view` over a temporary `std::string` in the SGR parser — invisible
   at `-O1`, wrong at `-O3` — and an initialiser list whose order was not the
-  declaration order.
+  declaration order. The same run of warnings caught `"\x1b7"` in a test, where
+  the digit after ESC is itself a hex digit; that trap is written down above, and
+  still managed to happen again.
 
 ## Current implementation
 
