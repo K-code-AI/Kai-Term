@@ -1,0 +1,46 @@
+# Build output
+build/
+out/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+*.pdb
+compile_commands.json
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+
+# Qt / moc / uic generated code
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+*.qrc.bak
+*.rcc
+.qmake.stash
+Makefile.qmake
+
+# Editor and IDE
+.idea/
+.vscode/
+*.swp
+*~
+.dir-locals.el
+.cache/
+clangd/
+
+# Scratch and local notes
+.scratch/
+tmp/
+*.log
+
+# OS
+.DS_Store
