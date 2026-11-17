@@ -915,7 +915,7 @@ private:
             clearCell(line[c]);
     }
 
-    static int parseNumber(const std::string& s) {
+    static int parseNumber(std::string_view s) {
         int v = 0;
         for (char c : s) {
             if (c < '0' || c > '9')
@@ -927,30 +927,114 @@ private:
         return v;
     }
 
+    // One SGR parameter. Colons introduce sub-parameters, so `38:5:196` is a
+    // single parameter carrying a whole colour. An empty sub-parameter means
+    // "not given" rather than zero, which matters because `38:2::r:g:b` leaves
+    // the colour-space identifier empty on purpose.
+    struct SgrParam {
+        std::vector<int> parts;
+        int value() const { return parts.empty() ? 0 : parts[0]; }
+        int part(std::size_t index) const {
+            return index < parts.size() ? parts[index] : -1;
+        }
+    };
+
+    static std::vector<SgrParam> parseSgr(const std::string& params) {
+        // A view over the caller's string, deliberately: substr on a std::string
+        // returns a temporary, and holding a view of that across the loop is a
+        // dangling reference that only shows up once the optimiser reuses the
+        // storage — which is exactly how it first appeared, at -O3.
+        const std::string_view all = params;
+        std::vector<SgrParam> out;
+        std::size_t i = 0;
+        for (;;) {
+            const std::size_t semi = all.find(';', i);
+            const std::string_view field =
+                all.substr(i, semi == std::string::npos ? std::string::npos : semi - i);
+            SgrParam param;
+            std::size_t j = 0;
+            for (;;) {
+                const std::size_t colon = field.find(':', j);
+                const std::string_view part = field.substr(
+                    j, colon == std::string_view::npos ? std::string_view::npos : colon - j);
+                if (part.empty())
+                    param.parts.push_back(param.parts.empty() ? 0 : -1);
+                else
+                    param.parts.push_back(parseNumber(part));
+                if (colon == std::string_view::npos)
+                    break;
+                j = colon + 1;
+            }
+            out.push_back(std::move(param));
+            if (semi == std::string::npos)
+                break;
+            i = semi + 1;
+        }
+        return out;
+    }
+
+    static std::uint8_t clamp255(int v) {
+        return static_cast<std::uint8_t>(std::clamp(v, 0, 255));
+    }
+
+    // A palette or truecolour colour, spelled either way: `38;5;196` and
+    // `38:5:196`, `38;2;r;g;b` and `38:2::r:g:b`. Different programs pick
+    // different spellings, and one that was not accepted would render in the
+    // default colour with nothing to say about why. Returns how many following
+    // parameters the semicolon form used up. A specification this terminal cannot
+    // honour — an index outside the palette, say — leaves the colour as it was
+    // rather than inventing a substitute.
+    int applyExtendedColour(const std::vector<SgrParam>& p, std::size_t k, bool foreground) {
+        const SgrParam& here = p[k];
+        Color& slot = foreground ? current_fg_ : current_bg_;
+
+        if (here.parts.size() > 1) { // the colon form carries it all in one field
+            const int kind = here.part(1);
+            if (kind == 5) {
+                const int index = here.part(2);
+                if (index >= 0 && index < 256)
+                    slot = paletteColor(index);
+            } else if (kind == 2) {
+                const int off = here.parts.size() >= 6 ? 3 : 2; // colour space id or not
+                if (static_cast<int>(here.parts.size()) >= off + 3)
+                    slot = Color{clamp255(here.part(off)), clamp255(here.part(off + 1)),
+                                 clamp255(here.part(off + 2))};
+            }
+            return 0;
+        }
+
+        if (k + 1 >= p.size())
+            return 0; // nothing follows: there is no colour here to apply
+        const int kind = p[k + 1].value();
+        if (kind == 5) {
+            if (k + 2 < p.size()) {
+                const int index = p[k + 2].value();
+                if (index >= 0 && index < 256)
+                    slot = paletteColor(index);
+            }
+            return static_cast<int>(p.size()) - static_cast<int>(k) - 1;
+        }
+        if (kind == 2) {
+            if (k + 4 < p.size())
+                slot = Color{clamp255(p[k + 2].value()), clamp255(p[k + 3].value()),
+                             clamp255(p[k + 4].value())};
+            return static_cast<int>(p.size()) - static_cast<int>(k) - 1;
+        }
+        return 0;
+    }
+
     void handleSgr(const std::string& params) {
         // Private SGR like ESC[>4;2m (modifyOtherKeys) must not be parsed as
         // ordinary color/attribute parameters.
         if (!params.empty() && !(params[0] >= '0' && params[0] <= '9') && params[0] != ';')
             return;
-        std::vector<int> p;
-        std::size_t i = 0;
-        while (i < params.size()) {
-            std::size_t j = i;
-            while (j < params.size() && params[j] != ';') ++j;
-            if (j == i)
-                p.push_back(0);
-            else
-                p.push_back(parseNumber(params.substr(i, j - i)));
-            i = (j < params.size() ? j + 1 : j);
-        }
-        if (p.empty())
-            p.push_back(0);
+        const std::vector<SgrParam> p = parseSgr(params);
 
         for (std::size_t k = 0; k < p.size(); ++k) {
-            int v = p[k];
+            const int v = p[k].value();
             if (v == 0) {
-                current_fg_ = Color{220, 220, 220};
-                current_bg_ = Color{30, 30, 30};
+                current_fg_ = default_fg_;
+                current_bg_ = default_bg_;
                 current_attr_ = Attr{};
             } else if (v == 1) {
                 current_attr_.bold = true;
@@ -961,7 +1045,10 @@ private:
                 current_attr_.italic = true;
             } else if (v == 4) {
                 current_attr_.underline = true;
-            } else if (v == 5) {
+            } else if (v == 5 || v == 6) {
+                // 6 is rapid blink. Nothing animates either of them yet, and a
+                // cell that blinks slowly is closer to a cell that blinks fast
+                // than a plain one is.
                 current_attr_.blink = true;
             } else if (v == 7) {
                 current_attr_.reverse = true;
@@ -969,6 +1056,11 @@ private:
                 current_attr_.hidden = true;
             } else if (v == 9) {
                 current_attr_.strike = true;
+            } else if (v == 21) {
+                // "not bold", which is what scripts ending a bold run with 21
+                // expect. xterm draws a double underline for it instead, and
+                // there is no double underline to draw here yet.
+                current_attr_.bold = false;
             } else if (v == 22) {
                 current_attr_.bold = false;
                 current_attr_.dim = false;
@@ -980,12 +1072,14 @@ private:
                 current_attr_.blink = false;
             } else if (v == 27) {
                 current_attr_.reverse = false;
+            } else if (v == 28) {
+                current_attr_.hidden = false;
             } else if (v == 29) {
                 current_attr_.strike = false;
             } else if (v == 39) {
-                current_fg_ = Color{220, 220, 220};
+                current_fg_ = default_fg_;
             } else if (v == 49) {
-                current_bg_ = Color{30, 30, 30};
+                current_bg_ = default_bg_;
             } else if (v >= 30 && v <= 37) {
                 current_fg_ = paletteColor(v - 30);
             } else if (v >= 40 && v <= 47) {
@@ -995,29 +1089,9 @@ private:
             } else if (v >= 100 && v <= 107) {
                 current_bg_ = paletteColor(v - 100 + 8);
             } else if (v == 38) {
-                if (k + 2 < p.size() && p[k + 1] == 5) {
-                    current_fg_ = paletteColor(p[k + 2]);
-                    k += 2;
-                } else if (k + 4 < p.size() && p[k + 1] == 2) {
-                    current_fg_ = Color{
-                        static_cast<std::uint8_t>(std::clamp(p[k + 2], 0, 255)),
-                        static_cast<std::uint8_t>(std::clamp(p[k + 3], 0, 255)),
-                        static_cast<std::uint8_t>(std::clamp(p[k + 4], 0, 255))
-                    };
-                    k += 4;
-                }
+                k += static_cast<std::size_t>(applyExtendedColour(p, k, true));
             } else if (v == 48) {
-                if (k + 2 < p.size() && p[k + 1] == 5) {
-                    current_bg_ = paletteColor(p[k + 2]);
-                    k += 2;
-                } else if (k + 4 < p.size() && p[k + 1] == 2) {
-                    current_bg_ = Color{
-                        static_cast<std::uint8_t>(std::clamp(p[k + 2], 0, 255)),
-                        static_cast<std::uint8_t>(std::clamp(p[k + 3], 0, 255)),
-                        static_cast<std::uint8_t>(std::clamp(p[k + 4], 0, 255))
-                    };
-                    k += 4;
-                }
+                k += static_cast<std::size_t>(applyExtendedColour(p, k, false));
             }
         }
     }
@@ -1132,6 +1206,15 @@ private:
         const int count = bottom - top + 1;
         if (lines > count)
             lines = count;
+
+        // What a sweep of SU pushes off the top is the same text a newline would
+        // have pushed off, and belongs in the scrollback just the same. The rule
+        // is index()'s: a whole-screen region only, and never on the alternate
+        // screen, where the application owns what scrolling means.
+        if (!alternate_valid_ && top == 0 && bottom == rows_ - 1) {
+            for (int r = 0; r < lines; ++r)
+                pushHistory(scrollback_, grid_[r]);
+        }
 
         for (int r = top; r <= bottom - lines; ++r)
             grid_[r] = grid_[r + lines];

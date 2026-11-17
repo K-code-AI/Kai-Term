@@ -577,6 +577,82 @@ int main() {
         ok &= lok;
     }
 
+    // SGR colours in both spellings, and attributes with a reset of their own.
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b[38:2::200:30:40mX"); // truecolour, colon form
+        lok &= (s.at(0, 0).fg.r == 200 && s.at(0, 0).fg.g == 30 && s.at(0, 0).fg.b == 40);
+        s.feed("\x1b[0m\x1b[38:5:196mY"); // palette colour, colon form
+        lok &= (s.at(0, 1).fg.r == 255 && s.at(0, 1).fg.g == 0);
+        s.feed("\x1b[0m\x1b[48:5:4mZ"); // and the same for the background
+        lok &= (s.at(0, 2).bg.b == 128 && s.at(0, 2).bg.r == 0);
+        s.feed("\x1b[0m\x1b[38:2:1:5:6:7mW"); // with a colour-space identifier filled in
+        lok &= (s.at(0, 3).fg.r == 5 && s.at(0, 3).fg.g == 6 && s.at(0, 3).fg.b == 7);
+        if (!lok) fail("SGR colon sub-parameters");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b[38;2;10;20;30mA"); // the semicolon form, unchanged
+        lok &= (s.at(0, 0).fg.r == 10 && s.at(0, 0).fg.b == 30);
+        s.feed("\x1b[0m\x1b[31mB"); // red
+        lok &= (s.at(0, 1).fg.r == 128);
+        // An index outside the palette leaves the colour alone. Inventing a grey
+        // for it would look like a deliberate choice.
+        s.feed("\x1b[38;5;999mC");
+        lok &= (s.at(0, 2).fg.r == 128 && s.at(0, 2).fg.g == 0);
+        s.feed("\x1b[38:5:999mD");
+        lok &= (s.at(0, 3).fg.r == 128);
+        // A truncated specification must not leak into the next parameter: 38;5
+        // with nothing after it is not a request for blinking text.
+        s.feed("\x1b[0m\x1b[38;5mE");
+        lok &= (!s.at(0, 0).attr.blink);
+        if (!lok) fail("SGR extended colour range");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b[1m\x1b[21mA"); // 21 is how scripts end a bold run
+        lok &= (!s.at(0, 0).attr.bold);
+        s.feed("\x1b[8m\x1b[28mB"); // 28 reveals what 8 hid
+        lok &= (!s.at(0, 1).attr.hidden);
+        s.feed("\x1b[6mC"); // rapid blink, drawn as blink
+        lok &= (s.at(0, 2).attr.blink);
+        s.feed("\x1b[25mD");
+        lok &= (!s.at(0, 3).attr.blink);
+        if (!lok) fail("SGR 21, 28 and 6");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        // 39 and 49 mean "the terminal's own colour", which is whatever an OSC 10
+        // or 11 made it, not a hardcoded grey.
+        s.feed("\x1b]10;rgb:ff/00/00\x07\x1b]11;rgb:00/00/ff\x07");
+        s.feed("\x1b[39m\x1b[49mA");
+        lok &= (s.at(0, 0).fg.r == 255 && s.at(0, 0).bg.b == 255);
+        s.feed("\x1b[0mB");
+        lok &= (s.at(0, 1).fg.r == 255); // a reset goes back to those too
+        if (!lok) fail("SGR 39/49 follow the OSC colours");
+        ok &= lok;
+    }
+    {
+        bool lok = true;
+        // Sweeping the screen up with SU loses the same lines a newline would,
+        // so they belong in the scrollback rather than being thrown away.
+        kai::Screen s(4, 10);
+        s.feed("a\r\nb\r\nc\r\nd");
+        lok &= (s.historySize() == 0);
+        s.feed("\x1b[1S");
+        lok &= (s.historySize() == 1);
+        lok &= (s.at(0, 0).text == "b");
+        if (!lok) fail("SU pushes the scrolled-off line into the scrollback");
+        ok &= lok;
+    }
+
     if (ok) {
         std::cout << "PASS\n";
         return 0;
