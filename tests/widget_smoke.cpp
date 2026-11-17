@@ -663,6 +663,52 @@ int main(int argc, char** argv) {
         expect("a click left of the indicator still selects text", !w.selectedText().empty());
     }
 
+    // ---- A drag held against an edge keeps going -------------------------
+    {
+        // Start from the oldest line with the button held down at the bottom of
+        // the window: the view has to crawl forward for the selection to grow.
+        sendKey(&w, Qt::Key_Home, Qt::ShiftModifier);
+        pump(100);
+        expect("the view is at the oldest line", w.scrollOffset() == w.screen().historySize());
+        const QPointF bottom = cellPoint(&w, w.rows() - 1, 4);
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, bottom);
+        sendMouse(&w, QEvent::MouseMove, Qt::LeftButton, Qt::LeftButton, bottom,
+                  Qt::ShiftModifier);
+        const int offset_at_start = w.scrollOffset();
+        pump(400);
+        expect("holding the drag at the bottom scrolls the view",
+               w.scrollOffset() < offset_at_start);
+        expect("and the selection is still being built", !w.selectedText().empty());
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, bottom);
+        pump(50);
+
+        // The same at the top edge, from the live bottom.
+        sendKey(&w, Qt::Key_End, Qt::ShiftModifier);
+        pump(100);
+        expect("back at the live bottom", w.scrollOffset() == 0);
+        const QPointF top = cellPoint(&w, 0, 4);
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, top);
+        sendMouse(&w, QEvent::MouseMove, Qt::LeftButton, Qt::LeftButton, top, Qt::ShiftModifier);
+        pump(400);
+        expect("holding the drag at the top scrolls into history", w.scrollOffset() > 0);
+        expect("with a selection that grew with it", !w.selectedText().empty());
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, top);
+
+        // Moving away from the edge stops the crawl, or the view would run on
+        // while the person is still choosing where the selection ends.
+        const int offset_when_stopped = w.scrollOffset();
+        const QPointF middle = cellPoint(&w, w.rows() / 2, 4);
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, middle);
+        sendMouse(&w, QEvent::MouseMove, Qt::LeftButton, Qt::LeftButton, middle,
+                  Qt::ShiftModifier);
+        pump(300);
+        expect("a drag in the middle of the window does not scroll",
+               w.scrollOffset() == offset_when_stopped);
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, middle);
+        sendKey(&w, Qt::Key_End, Qt::ShiftModifier);
+        pump(100);
+    }
+
     // ---- A resize re-breaks the lines the terminal broke ------------------
     {
         // Everything the terminal is holding, retained lines first, in the order

@@ -25,6 +25,7 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QElapsedTimer>
+#include <QTimer>
 #include <QSizeF>
 
 #include <algorithm>
@@ -257,6 +258,7 @@ public:
     // mouse.
     void mousePressEvent(QMouseEvent* ev) override {
         setFocus();
+        stopEdgeScroll();
         if (scrollBarPress(ev->position()))
             return;
         const CellPos pos = cellAt(ev->position());
@@ -340,11 +342,71 @@ public:
 
         if (!dragging_)
             return;
+        updateEdgeScroll(pos);
         extendSelection(pos);
         update();
     }
 
+    // Selecting in any other text surface keeps going when the pointer is held
+    // against the top or bottom of the window: the view crawls and the selection
+    // grows with it. Without this, a drag stops dead one row from the edge and
+    // text further away can only be reached by letting go and dragging again.
+    void updateEdgeScroll(const CellPos& pos) {
+        edge_col_ = pos.col;
+        int direction = 0;
+        if (pos.row <= 0 && scroll_offset_ < screen_.historySize())
+            direction = 1; // held at the top: bring older lines in
+        else if (pos.row >= rows_ - 1 && scroll_offset_ > 0)
+            direction = -1; // held at the bottom: bring newer lines back
+        if (direction == edge_direction_)
+            return;
+        edge_direction_ = direction;
+        if (direction == 0) {
+            stopEdgeScroll();
+            return;
+        }
+        if (!edge_timer_) {
+            edge_timer_ = new QTimer(this);
+            edge_timer_->setInterval(kEdgeScrollMs);
+            connect(edge_timer_, &QTimer::timeout, this, [this] { edgeScrollStep(); });
+        }
+        edge_timer_->start();
+    }
+
+    void stopEdgeScroll() {
+        edge_direction_ = 0;
+        if (edge_timer_)
+            edge_timer_->stop();
+    }
+
+    void edgeScrollStep() {
+        const int direction = edge_direction_;
+        const int view_top_before = viewTop();
+        const CellPos anchor_before = anchor_;
+        const bool had_selection = !selection_.empty();
+        scrollBy(direction);
+        if (had_selection && selection_.empty()) {
+            // The view carried the anchor out of the window and the ordinary rule
+            // dropped the selection. Mid-drag that is wrong: the pointer is still
+            // held down and still selecting, so keep the drag alive at the edge
+            // the anchor left. Text that has scrolled out of reach is not added to
+            // the selection; what is on screen is.
+            dragging_ = true;
+            anchor_.row = std::clamp(anchor_before.row + (view_top_before - viewTop()), 0,
+                                     rows_ - 1);
+        }
+        extendSelection(CellPos{direction > 0 ? 0 : rows_ - 1, edge_col_});
+        update();
+    }
+
+    // Letting go, or taking the pointer out of the window, ends the crawl.
+    void leaveEvent(QEvent* ev) override {
+        stopEdgeScroll();
+        QWidget::leaveEvent(ev);
+    }
+
     void mouseReleaseEvent(QMouseEvent* ev) override {
+        stopEdgeScroll();
         if (scrollbar_drag_) {
             endScrollBarDrag();
             return;
@@ -591,6 +653,14 @@ private:
     bool scrollbar_drag_ = false;
     int scrollbar_grab_ = 0;
 
+    // Auto-scroll while a selection drag is held against an edge: the timer that
+    // crawls the view, which way it is crawling, and the column the pointer is
+    // over so the selection grows sideways as well as down.
+    static constexpr int kEdgeScrollMs = 60;
+    QTimer* edge_timer_ = nullptr;
+    int edge_direction_ = 0;
+    int edge_col_ = 0;
+
     // Text selection in display coordinates, plus the drag state that builds it.
     enum class DragMode { Char, Word, Line };
 
@@ -623,11 +693,18 @@ private:
     // it once any part of it leaves the window. Called after output and after
     // scrolling, which are the two things that move content on screen.
     void keepSelectionOnScreen(int view_top_before) {
-        if (selection_.empty())
-            return;
         const int shift = view_top_before - viewTop();
         if (shift == 0)
             return;
+        if (selection_.empty()) {
+            // A drag that has not produced a range yet still has an anchor, and it
+            // has to travel with its text too — otherwise the moment the view
+            // moves, the drag is left pointing at whatever moved into the cell it
+            // started on.
+            if (dragging_)
+                anchor_.row = std::clamp(anchor_.row + shift, 0, rows_ - 1);
+            return;
+        }
         const int anchor_row = selection_.anchor.row + shift;
         const int head_row = selection_.head.row + shift;
         if (anchor_row < 0 || head_row < 0 || anchor_row >= rows_ || head_row >= rows_) {
