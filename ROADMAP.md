@@ -61,7 +61,15 @@ Not yet verified:
 - How the rendered terminal looks to a person on a live X11 session. There is no X
   server, and no `Xvfb`, on the machine this is developed on, and the Wayland
   compositor here is not reachable from a shell session, so the X11 code path is
-  reasoned about and not run.
+  reasoned about and not run. What was checked rather than assumed: the Qt plugins
+  installed here are `linuxfb`, `minimal`, `offscreen`, `vkkhrdisplay`, `vnc`,
+  `wayland` and `xcb`; the only server binary is `Xwayland`, which needs a compositor
+  to run under and there is none installed (`weston`, `cage`), no `DISPLAY` or
+  `WAYLAND_DISPLAY` in a shell session, no `/dev/fb0` for `linuxfb`, and no
+  passwordless `sudo` to install any of it. The `vnc` plugin does start — the app
+  comes up with `QVncServer created on port 5911` and a listening socket — so a real
+  raster platform runs the widget here, but it is not the X11 path and its
+  framebuffer would not yield to a hand-written RFB 3.3 client.
 - Full shell compatibility across interactive applications.
 
 Known limits, deliberately left:

@@ -16,7 +16,15 @@ been exercised with Qt's offscreen platform, and a person has used it at a live
 Wayland session for selection, paste into other applications and general
 appearance. It has **not** been inspected on X11, and this machine cannot do that:
 there is no X server and no `Xvfb`, and the live compositor is not reachable from a
-shell session. The offscreen platform also has no X11-style PRIMARY selection, so
+shell session. The full inventory was checked — Qt plugins `linuxfb`, `minimal`,
+`offscreen`, `vkkhrdisplay`, `vnc`, `wayland`, `xcb`; the only server binary is
+`Xwayland`, which needs a compositor above it and none is installed; no `DISPLAY`, no
+`WAYLAND_DISPLAY`, no `/dev/fb0`, no passwordless `sudo`. The `vnc` plugin does bring
+the app up (`QVncServer created on port 5911`, socket listening), which shows the
+widget works on a real raster platform, but that is not the X11 path either. Note also
+that `kai-term-widget-smoke` sets `QT_QPA_PLATFORM=offscreen` itself, so pointing the
+environment at another platform does not move the suite — which was worth finding out
+before believing a run that had not actually moved. The offscreen platform also has no X11-style PRIMARY selection, so
 PRIMARY behaviour against a real desktop is **not** verified either.
 
 The old project of the same name was deliberately not reused; this is a fresh tree at `/home/kaida/Project/Kai-Term`. The project does **not** depend on `libvterm` or any external terminal emulator. Kai-Term is GPL-3.0-only (`LICENSE`).
