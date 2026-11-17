@@ -711,6 +711,50 @@ int main() {
         ok &= lok;
     }
 
+    // The SGR attribute table: every code that turns something on, the code xterm
+    // uses to turn it back off, and a reset clearing it. Overline (53) is here
+    // because it was the last one still being dropped on the floor.
+    {
+        bool lok = true;
+        struct AttrCase {
+            int on;
+            int off;
+            bool kai::Attr::*field;
+            const char* name;
+        };
+        const AttrCase cases[] = {
+            {1, 22, &kai::Attr::bold, "bold"},
+            {2, 22, &kai::Attr::dim, "dim"},
+            {3, 23, &kai::Attr::italic, "italic"},
+            {4, 24, &kai::Attr::underline, "underline"},
+            {5, 25, &kai::Attr::blink, "blink"},
+            {7, 27, &kai::Attr::reverse, "reverse"},
+            {8, 28, &kai::Attr::hidden, "hidden"},
+            {9, 29, &kai::Attr::strike, "strike"},
+            {53, 55, &kai::Attr::overline, "overline"},
+        };
+        for (const AttrCase& c : cases) {
+            kai::Screen s(4, 20);
+            s.feed("\x1b[" + std::to_string(c.on) + "mX");
+            if (!(s.at(0, 0).attr.*(c.field))) {
+                std::printf("SGR %d did not turn %s on\n", c.on, c.name);
+                lok = false;
+            }
+            s.feed("\x1b[" + std::to_string(c.off) + "mY");
+            if (s.at(0, 1).attr.*(c.field)) {
+                std::printf("SGR %d did not turn %s off\n", c.off, c.name);
+                lok = false;
+            }
+            s.feed("\x1b[" + std::to_string(c.on) + "m\x1b" "[0mZ");
+            if (s.at(0, 2).attr.*(c.field)) {
+                std::printf("a reset left %s set\n", c.name);
+                lok = false;
+            }
+        }
+        if (!lok) fail("SGR attribute table");
+        ok &= lok;
+    }
+
     // DECSCUSR: `CSI Ps SP q` picks the cursor shape.
     {
         bool lok = true;

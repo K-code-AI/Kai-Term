@@ -99,6 +99,14 @@ Work done after M2 closed, from an audit of what the terminal silently ignored:
   passed either way. The pacing is asserted as the decision the widget makes rather
   than as a wall-clock race, which would fail on a loaded machine and pass for the
   wrong reason everywhere else.
+- SGR 53 overline, and the whole attribute table pinned by test: each of bold, dim,
+  italic, underline, blink, reverse, hidden, strike and overline checked on, off with
+  the code xterm uses, and cleared by a reset. Adding overline exposed a painting
+  mistake underneath: underline, strike and overline shared one position variable, so
+  whichever was asked for last won and the others were silently dropped — a struck
+  word with an underline lost its underline. Each now draws its own line, and the
+  test compares two rows carrying the same word, one overlined, so the difference it
+  measures is that line.
 - `-Wall -Wextra` on for the whole build, compiling clean. What it found the same
   day: a `string_view` over a temporary `std::string` in the SGR parser — invisible
   at `-O1`, wrong at `-O3` — and an initialiser list whose order was not the
@@ -194,7 +202,7 @@ Individual results:
 - `./build/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `./build/kai-term-selection` → `PASS: 101 selection and text-extraction checks passed`.
 - `./build/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
-- `./build/kai-term-widget-smoke` → `PASS: 96 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/kai-term-widget-smoke` → `PASS: 100 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
 - `QT_QPA_PLATFORM=offscreen KAI_SHELL=/bin/true ./build/kai-term` → exits 0.
@@ -230,9 +238,9 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 - Cells store a resolved RGB colour, not a palette index, so `OSC 4` and `OSC 10/11`
   recolour what is written from then on and leave what is already on screen alone.
 - `OSC 8` hyperlinks are parsed and discarded: the text renders and cannot be followed.
-- Accepted and ignored, because there is nothing to draw them with yet: SGR 53
-  overline. Cursor blink is the same category: DECSCUSR's blinking variants select
-  their steady shape, and SGR 5 and 6 set a flag nothing animates.
+- Cursor blink is accepted and ignored, because nothing animates yet: DECSCUSR's
+  blinking variants select their steady shape, and SGR 5 and 6 set a flag no timer
+  reads.
 - `?1005` UTF-8 mouse coordinates are handled: the classic `ESC [ M` framing with
   each coordinate written as UTF-8 of its value plus 32, so a click in a window 300
   columns wide arrives intact instead of clamping at 223. SGR (`?1006`) still outranks

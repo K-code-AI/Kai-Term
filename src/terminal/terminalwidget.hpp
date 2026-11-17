@@ -640,12 +640,19 @@ public:
                 QString text = QString::fromUtf8(cell.text.c_str(), cell.text.size());
                 p.drawText(QPointF(x, y + fm.ascent()), text);
 
-                if (cell.attr.underline || cell.attr.strike) {
+                // Underline, strike and overline are independent attributes, so
+                // each draws its own line. Sharing one variable for the position
+                // made the last of them win, which is how a struck-out word with an
+                // underline on lost its underline.
+                if (cell.attr.underline || cell.attr.strike || cell.attr.overline) {
                     p.setPen(QPen(QColor(fg.r, fg.g, fg.b), 1.0));
-                    double ly = y + ch - 1.5;
+                    const double right = x + cw * cell.width;
+                    if (cell.attr.underline)
+                        p.drawLine(QPointF(x, y + ch - 1.5), QPointF(right, y + ch - 1.5));
                     if (cell.attr.strike)
-                        ly = y + ch / 2.0;
-                    p.drawLine(QPointF(x, ly), QPointF(x + cw * cell.width, ly));
+                        p.drawLine(QPointF(x, y + ch / 2.0), QPointF(right, y + ch / 2.0));
+                    if (cell.attr.overline)
+                        p.drawLine(QPointF(x, y + 0.5), QPointF(right, y + 0.5));
                 }
             }
         }

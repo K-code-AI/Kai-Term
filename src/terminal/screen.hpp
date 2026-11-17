@@ -34,6 +34,7 @@ struct Attr {
     bool reverse = false;
     bool hidden = false;
     bool strike = false;
+    bool overline = false;
 };
 
 struct Cell {
@@ -53,7 +54,7 @@ inline bool operator!=(const Color& a, const Color& b) {
 inline bool operator==(const Attr& a, const Attr& b) {
     return a.bold == b.bold && a.dim == b.dim && a.italic == b.italic &&
            a.underline == b.underline && a.blink == b.blink && a.reverse == b.reverse &&
-           a.hidden == b.hidden && a.strike == b.strike;
+           a.hidden == b.hidden && a.strike == b.strike && a.overline == b.overline;
 }
 inline bool operator!=(const Attr& a, const Attr& b) {
     return !(a == b);
@@ -1132,6 +1133,8 @@ private:
                 current_attr_.hidden = true;
             } else if (v == 9) {
                 current_attr_.strike = true;
+            } else if (v == 53) {
+                current_attr_.overline = true;
             } else if (v == 21) {
                 // "not bold", which is what scripts ending a bold run with 21
                 // expect. xterm draws a double underline for it instead, and
@@ -1152,6 +1155,8 @@ private:
                 current_attr_.hidden = false;
             } else if (v == 29) {
                 current_attr_.strike = false;
+            } else if (v == 55) {
+                current_attr_.overline = false;
             } else if (v == 39) {
                 current_fg_ = default_fg_;
             } else if (v == 49) {

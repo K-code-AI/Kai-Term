@@ -57,6 +57,10 @@ Implemented:
   at most one repaint per 100 ms inside that block, and the finished frame as soon
   as the block ends. It is pacing rather than an off-screen frame — a repaint shows
   what had arrived by then — but it is what removes half-drawn screens.
+- SGR attributes are drawn, not just stored: bold, dim, italic, underline, reverse,
+  hidden, strike and overline (`53`, off with `55`). Underline, strike and overline
+  each draw their own line; they used to share one position variable, so a struck
+  word that also carried an underline silently lost the underline.
 - DECSCUSR (`ESC[<n> q`) sets the cursor shape: block, underline or vertical bar. Kai-Term's own default stays the underline it has always drawn, so nothing changes for an application that never asks; the blinking variants select their steady shape, since nothing here animates yet. A full reset (`ESC c`) hands the shape back along with the colour defaults and any palette entries an application changed.
 - Colour specifications in both spellings: `38;5;196` and `38:5:196`, `38;2;r;g;b` and `38:2::r:g:b`. An index outside the palette leaves the colour alone rather than inventing one.
 - Primary Device Attribute queries (`ESC[c]` and `ESC[0c]`) are answered.
@@ -217,7 +221,7 @@ Verified results on this machine:
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
   inspection performed)`. When btop is not installed it prints that the checks were not
   exercised instead of pretending to pass.
-- `kai-term-widget-smoke` prints `PASS: 96 offscreen widget checks passed (no visual inspection
+- `kai-term-widget-smoke` prints `PASS: 100 offscreen widget checks passed (no visual inspection
   performed) [this platform has no separate X11-style selection: only the clipboard copy was
   exercised]`. The bracketed note is the test being honest about the platform it ran on.
 - `tests/version.sh` prints `Kai-Term 0.0.0`.

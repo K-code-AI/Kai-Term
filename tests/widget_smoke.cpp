@@ -795,6 +795,54 @@ int main(int argc, char** argv) {
     expect("an application can give the title back", waitFor(
         [&] { return w.windowTitle().isEmpty(); }, 4000));
 
+    // SGR 53 overline. Two rows carrying the same word, one overlined: whatever
+    // differs between their pictures is the line above the text and nothing else,
+    // because the glyphs, colours and positions are identical. The rows are found by
+    // what starts them rather than by searching the screen, because the command that
+    // printed them is itself sitting on the screen carrying the same word.
+    {
+        sendText(&w, "printf '\\033[53mOVERLINE\\033[55m\\nOVERLINE\\n'");
+        sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+
+        std::vector<int> rows;
+        const bool printed = waitFor([&] {
+            rows.clear();
+            const std::string dump = screenDump(w);
+            int row = -1;
+            std::size_t start_of_line = 0;
+            for (std::size_t i = 0; i <= dump.size(); ++i) {
+                if (i != dump.size() && dump[i] != '\n')
+                    continue;
+                ++row;
+                if (dump.compare(start_of_line, 8, "OVERLINE") == 0)
+                    rows.push_back(row);
+                start_of_line = i + 1;
+            }
+            return rows.size() >= 2;
+        }, 4000);
+        expect("SGR 53 prints both rows", printed);
+
+        const int overlined_row = rows.empty() ? 0 : rows[0];
+        const int plain_row = rows.size() > 1 ? rows[1] : 0;
+        expect("the first row carries the overline and the second does not",
+               w.screen().at(overlined_row, 0).attr.overline &&
+                   !w.screen().at(plain_row, 0).attr.overline);
+
+        const QImage image = grabImage(&w);
+        const int row_height = static_cast<int>(w.cellSize().height());
+        const QRect over_rect(0, static_cast<int>(w.cellTopLeft(overlined_row, 0).y()),
+                              image.width(), row_height);
+        const QRect plain_rect(0, static_cast<int>(w.cellTopLeft(plain_row, 0).y()),
+                               image.width(), row_height);
+        const QImage overlined = image.copy(over_rect.intersected(image.rect()));
+        const QImage plain = image.copy(plain_rect.intersected(image.rect()));
+        const long long row_pixels =
+            static_cast<long long>(overlined.width()) * overlined.height();
+        const long long line_pixels = differingPixels(overlined, plain);
+        expect("an overline is drawn", line_pixels > 0);
+        expect("and it is a line, not the row repainted", line_pixels * 8 < row_pixels);
+    }
+
     // ?2026 synchronized output: an application drawing a frame as one block asks
     // not to be shown half of it. The pacing is asserted as the decision the widget
     // makes, because asserting it as a wall-clock race would fail on a loaded

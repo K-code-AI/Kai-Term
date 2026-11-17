@@ -49,7 +49,8 @@ Implemented:
   OSC 10/11 and OSC 4/104 colours, XTWINOPS size and title queries, the kitty
   keyboard query answered, SGR sub-parameters in both spellings, `?1005` UTF-8 mouse
   coordinates, `?2026` synchronized output paced to one repaint per 100 ms inside a
-  block, and DECSCUSR
+  block, the whole SGR attribute table including overline drawn as its own line, and
+  DECSCUSR
   (`ESC[<n> q`) cursor shapes — block, underline, vertical bar — all three drawn and
   asserted offscreen by comparing the picture of the cell the cursor stands on.
 - Headless parser, PTY, tmux ground-truth, input, PTY-input, scrollback, scroll
@@ -131,7 +132,6 @@ Needed:
 
 - X11 runtime verification, which needs a machine with an X server on it.
 - Interactive applications driven with the mouse by a person: vim, less, htop, tmux.
-- SGR 53 (overline), accepted and ignored because there is nothing to draw it with.
 - Cursor blink: a timer for SGR 5/6 and for DECSCUSR's blinking variants.
 
 ## M3 — Native session infrastructure
