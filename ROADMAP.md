@@ -20,7 +20,8 @@ Status: **done**.
 
 ## M1 — Basic terminal
 
-Status: **in progress; runtime verified offscreen, on-screen appearance not inspected**.
+Status: **done; runtime verified offscreen and at a live Wayland session, on-screen
+appearance not formally inspected**.
 
 Implemented:
 
@@ -33,26 +34,46 @@ Implemented:
   PTY.
 - Basic resizing through `TIOCSWINSZ`.
 - Scrollback buffer and a scrollback view: mouse wheel, Shift+PageUp,
-  Shift+PageDown, Shift+Home, Shift+End.
+  Shift+PageDown, Shift+Home, Shift+End, and an indicator along the right edge that
+  shows how much history there is and where the window sits in it.
+- Reflow. Retained lines are stored logically and re-wrapped when the width
+  changes; the cursor keeps its window row and the line under it survives.
+- Shell lifecycle. The session is signalled rather than the process group, so
+  background jobs an exited shell left behind go with it; a job that traps HUP and
+  TERM is killed after a short grace period; exit code and signal are reported; a
+  shell named explicitly and found unusable says so instead of falling back.
 - DECCKM application cursor keys for vim, less and fish Vi mode.
 - Native VT parser for colors, cursor movement, erasing, and Unicode.
-- Headless parser, PTY, tmux ground-truth, input, PTY-input, scrollback and
-  offscreen widget tests.
+- Escape-sequence coverage beyond the basics: OSC 0/1/2 titles with the `ESC[22 t`
+  and `ESC[23 t` stack, OSC 7 working directory, OSC 52 clipboard set and query,
+  OSC 10/11 and OSC 4/104 colours, XTWINOPS size and title queries, the kitty
+  keyboard query answered, SGR sub-parameters in both spellings.
+- Headless parser, PTY, tmux ground-truth, input, PTY-input, scrollback, scroll
+  indicator, process lifecycle and offscreen widget tests.
 
 Not yet verified:
 
-- How the rendered terminal looks to a person on a live Wayland or X11 session.
-- Scrollback with a visible scrollbar and a scroll indicator; the view position is
-  currently nowhere to be seen except in the text itself.
-- Reflowing retained lines when the window is resized: they keep the width they
-  were written at.
+- How the rendered terminal looks to a person on a live X11 session. There is no X
+  server, and no `Xvfb`, on the machine this is developed on, and the Wayland
+  compositor here is not reachable from a shell session, so the X11 code path is
+  reasoned about and not run.
 - Full shell compatibility across interactive applications.
+
+Known limits, deliberately left:
+
+- Cells hold a resolved colour, not a palette index, so an OSC 4 or OSC 10 change
+  affects what is drawn afterwards and not what is already on screen.
+- OSC 8 hyperlinks are consumed, not stored: the text renders and cannot be
+  followed.
+- DECSCUSR (`ESC[<n> q`) is accepted and ignored; there is one cursor shape to draw.
+- `?2026` synchronized output is accepted and ignored, so a program that relies on
+  it for tear-free updates gets the ordinary paint cadence.
 
 ## M2 — Terminal reliability
 
-Status: **in progress; selection, clipboard, paste and mouse reporting verified
-headlessly, offscreen, and against a live session; interactive applications other
-than btop have not been driven with the mouse**.
+Status: **done; selection, clipboard, paste and mouse reporting verified headlessly,
+offscreen, and against a live session; interactive applications other than btop have
+not been driven with the mouse**.
 
 Implemented:
 
@@ -62,7 +83,7 @@ Implemented:
   highlight follows its text as output arrives or the view scrolls, and is dropped
   once it leaves the window.
 - Copy on demand with Ctrl+Shift+C, paste with Ctrl+Shift+V or middle click.
-  A finished drag offers PRIMARY on X11 and leaves the clipboard alone. Newlines in
+  A finished drag copies nothing anywhere. Newlines in
   a paste become carriage returns, and the payload is fenced with `ESC[200~` /
   `ESC[201~` when the application asked for bracketed paste.
 - Mouse reporting: click, drag and any-event tracking, wheel reports, modifier
@@ -83,8 +104,10 @@ Implemented:
   through a real PTY), mode-state checks in `kai-term-scrollback`, selection, paste
   and reporting checks in `kai-term-widget-smoke`, where the reports are read back
   from the terminal's own tty with `cat`, and `kai-term-mouse-app`, which runs btop
-  inside the widget and checks that its own scroll counter moves. `ctest` runs all
-  ten.
+  inside the widget and checks that its own scroll counter moves.
+- New since the milestone closed: `kai-term-scrollbar` (the indicator's geometry and
+  the view bounds it reads) and `kai-term-process` (exit status, signals, jobs left
+  behind by an exited shell, an unusable shell). `ctest` runs all twelve.
 
 Confirmed at a live Wayland session (2026-11-17): the selection reads as a
 selection, selected text pastes into other applications, and general appearance is
@@ -100,13 +123,14 @@ Not yet verified:
 
 Needed:
 
-- Unicode and color refinements.
-- Broader escape-sequence coverage.
-- A scrollbar or scroll indicator.
-- Dragging a selection past the top or bottom edge of the window should keep
-  scrolling; right now the drag stops at the edge.
-- Process lifecycle edge cases.
-- X11 and Wayland runtime verification.
+- X11 runtime verification, which needs a machine with an X server on it.
+- Interactive applications driven with the mouse by a person: vim, less, htop, tmux.
+- SGR 53 (overline) and DECSCUSR cursor shapes, both accepted-and-ignored today
+  because there is nothing to draw them with yet.
+- `?1005` UTF-8 mouse coordinates, unhandled; every application worth supporting
+  asks for SGR (`?1006`) instead, and `?1016` covers the wide-window case.
+- `?2026` synchronized output, if tearing ever turns out to matter at a real frame
+  rate.
 
 ## M3 — Native session infrastructure
 

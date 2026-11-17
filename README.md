@@ -4,10 +4,15 @@ Kai-Term is a native Linux terminal workspace: a terminal emulator, a dual-pane 
 
 ## Current status
 
-M1 (the native terminal emulator) is implemented. M2 (input reliability: text
-selection, clipboard, paste, and mouse reporting) is implemented, tested headlessly
-and offscreen, and has been used at a live Wayland session; the milestone list is in
-[ROADMAP.md](ROADMAP.md).
+M1 (the native terminal emulator) and M2 (input reliability: text selection,
+clipboard, paste, and mouse reporting) are implemented, tested headlessly and
+offscreen, and have been used at a live Wayland session. Since that milestone
+closed, the parts an audit found thin have been filled in: scrollback reflows when
+the window changes width, the view says where it is in the history, a selection
+dragged to an edge scrolls, the shell's process tree is taken down with it, and the
+escape-sequence coverage applications actually send (window titles, OSC 52 clipboard,
+working directory, colour queries, window-size queries) is answered instead of
+dropped. The milestone list is in [ROADMAP.md](ROADMAP.md).
 
 The terminal emulator does **not** depend on `libvterm`; Kai-Term uses its own VT parser and screen model. Rendering uses a monospace font with cell spacing derived from the font advance.
 
@@ -20,12 +25,21 @@ Implemented:
 - Shell input and output.
 - Basic terminal resize through `TIOCSWINSZ`.
 - Colors, attributes, cursor movement, erasing, and Unicode text.
-- Scrollback buffer retained in memory, now visible: the mouse wheel scrolls
-  history three rows per notch, and Shift+PageUp, Shift+PageDown, Shift+Home and
-  Shift+End scroll by a screen, to the oldest line, and back to the live bottom.
-  Typing any key returns the view to the bottom. There is no scrollbar widget
-  yet: the view moves with the wheel and the Shift keys, and the position is not
-  shown anywhere.
+- Scrollback buffer retained in memory: the mouse wheel scrolls history three rows
+  per notch, and Shift+PageUp, Shift+PageDown, Shift+Home and Shift+End scroll by a
+  screen, to the oldest line, and back to the live bottom. Typing any key returns
+  the view to the bottom. While the view is anywhere but at the bottom a narrow
+  indicator along the right edge shows how much history there is and where this
+  window sits in it; at the bottom it is gone, because "following the shell" is
+  worth more screen than it is worth a bar.
+- Scrollback **reflows**. Retained lines are stored as logical lines, so changing
+  the window width re-wraps them instead of leaving a ragged column of text that
+  stops where the old width did. The cursor keeps its place in the window, and the
+  line it was on survives the rewrap.
+- A selection dragged to the top or bottom edge of the window scrolls on its own,
+  so a drag can reach further than the window is tall. Whatever scrolls out of the
+  window during a downward drag is gone from the selection — the same trade every
+  terminal makes here.
 - Key encoding lives in `src/terminal/keyencode.hpp` as a pure function, so the
   exact bytes sent to the shell are asserted in tests rather than inferred.
 - Enter sends carriage return (`0x0D`) and Backspace sends `0x7F`, matching xterm
@@ -36,7 +50,10 @@ Implemented:
 - Arrow keys are sent to fish as ANSI cursor bindings (`ESC[A]`, `ESC[B]`, `ESC[C]`, `ESC[D]`); fish moves its own command-line cursor and updates autosuggestions. A visible cursor marker follows the screen cursor.
 - Rendering has a small padding buffer around the glyph grid.
 - Alternate screen buffers (`ESC[?1049h` / `ESC[?1049l`) are supported; `ESC[3J` clears the screen and scrollback. Lines that scroll off the alternate screen are discarded instead of entering the shell's history, and resizing while an alternate-screen application is running preserves the primary screen and its scrollback.
-- Scroll regions (`ESC[...r]`) and scroll-content-up/down (`ESC[...S]` / `ESC[...T]`) are supported for tmux-style layouts.
+- Scroll regions (`ESC[...r]`) and scroll-content-up/down (`ESC[...S]` / `ESC[...T]`) are supported for tmux-style layouts, including a region given on one side only (`ESC[3r`) and a bottom bound past the last row. Lines SU pushes off the top of a whole screen go into the scrollback, as a newline's would.
+- OSC sequences that applications send and expect an answer from: window and icon title (`OSC 0/1/2`, with `OSC 23;1` and the `ESC[22 t` / `ESC[23 t` title stack), the working directory (`OSC 7`, percent-decoded), the clipboard (`OSC 52`, both set and query — a program inside the terminal can copy text out, and can read the clipboard when it asks), the default foreground and background (`OSC 10/11`) and palette entries (`OSC 4`, reset by `OSC 104`).
+- XTWINOPS (`ESC[...t`) answers the questions programs block waiting on: text area in pixels and in characters, cell size in pixels, and the window title. The kitty keyboard query (`ESC[?u`) is answered with "no", which is what lets a program finish starting up.
+- Colour specifications in both spellings: `38;5;196` and `38:5:196`, `38;2;r;g;b` and `38:2::r:g:b`. An index outside the palette leaves the colour alone rather than inventing one.
 - Primary Device Attribute queries (`ESC[c]` and `ESC[0c]`) are answered.
 - Answers fish’s Primary Device Attribute query (`ESC[0c`) so fish startup does not print the 10-second warning.
 - Ignores DCS payloads and handles `ESC =` at chunk boundaries without printing stray `[K` text.
@@ -70,12 +87,27 @@ Implemented:
 - Text extraction is a pure function too (`src/terminal/text.hpp`): the text of a
   row, of the whole screen, or of a selection, with the padding that terminal rows
   carry trimmed off and double-width glyphs counted once.
-- Clipboard support is Qt's. Ctrl+Shift+C sets both the clipboard and, on X11,
-  PRIMARY; a finished drag offers PRIMARY only, which is what selecting text has
-  always meant there. Middle click reads PRIMARY first and falls back to the
-  clipboard, so a selection in one terminal still pastes into another. On platforms
-  without a separate selection only the clipboard exists.
+- Clipboard support is Qt's. Ctrl+Shift+C is the only thing that copies: it sets
+  the clipboard and, where the platform has one, PRIMARY. A finished drag copies
+  nothing anywhere, because selecting a path should not throw away what you were
+  about to paste. The one exception is the terminal doing what a program inside it
+  asked: OSC 52 with an empty payload reads the clipboard, and a payload copies to
+  the clipboard or to PRIMARY depending on the target it names. Middle click reads
+  PRIMARY first and falls back to the clipboard, so a selection in one terminal
+  still pastes into another. On platforms without a separate selection only the
+  clipboard exists.
+- The shell is taken down with the window. `forkpty()` makes it a session leader,
+  so the teardown signals the session rather than a process group: a background
+  `sleep 300 &` left behind by an exited shell goes with it, and one that traps
+  HUP and TERM is killed outright after a short grace period. The exit status and
+  signal are reported, and a shell named by `KAI_SHELL` that cannot be run says so
+  in the window instead of silently falling back to `/bin/sh`.
 - Session daemon, multiplexer, and file manager are not implemented yet.
+
+Two limits worth knowing before they surprise you. Cells store a resolved colour,
+not a palette index, so an OSC 4 or OSC 10 change recolours text as it is written
+from then on and leaves what is already on screen alone. And OSC 8 hyperlinks are
+consumed without being stored: the text renders, but there is nothing to follow.
 
 The widget has been exercised without a display server (`QT_QPA_PLATFORM=offscreen`):
 the real widget is constructed, painted into an image, given synthetic key, wheel
@@ -130,6 +162,8 @@ This builds:
 - `build/kai-term-scrollback` — scrollback model, cursor-mode and mouse-mode state.
 - `build/kai-term-mouse` — mouse encoding, asserted on exact bytes.
 - `build/kai-term-selection` — selection geometry and the text it produces.
+- `build/kai-term-scrollbar` — the scroll-position indicator and the view bounds it reads.
+- `build/kai-term-process` — shell lifecycle: exit status, signals, leftover jobs, an unusable shell.
 - `build/kai-term-mouse-app` — a real application (btop) driven with the mouse.
 - `build/kai-term-widget-smoke` — the real widget driven offscreen.
 
@@ -150,6 +184,8 @@ or individually:
 ./build/kai-term-scrollback
 ./build/kai-term-mouse
 ./build/kai-term-selection
+./build/kai-term-scrollbar
+./build/kai-term-process
 ./build/kai-term-mouse-app
 ./build/kai-term-widget-smoke
 ./tests/version.sh ./build/kai-term
@@ -157,20 +193,22 @@ or individually:
 
 Verified results on this machine:
 
-- `ctest` — `100% tests passed, 0 tests failed out of 10` (34 s).
+- `ctest` — `100% tests passed, 0 tests failed out of 12` (41 s).
 - `kai-term-parser` prints `PASS`.
 - `kai-term-pty` prints `PASS: PTY output contains HELLO and resize 6 40`.
 - `kai-term-tmux-e2e` prints `PASS: tmux E2E matches tmux ground truth at all stages`.
 - `kai-term-input` prints `PASS: 66 key encodings match the expected PTY bytes`.
 - `kai-term-input-pty` prints `PASS: 47 input sequences round-tripped through a real PTY unchanged`
   (35 key sequences and 12 mouse reports, classic and extended forms).
-- `kai-term-scrollback` prints `PASS: 56 scrollback, cursor-mode and mouse-mode checks passed`.
+- `kai-term-scrollback` prints `PASS: 79 scrollback, cursor-mode and mouse-mode checks passed`.
+- `kai-term-scrollbar` prints `PASS: 25 scroll indicator geometry checks passed`.
+- `kai-term-process` prints `PASS: 31 process lifecycle checks passed`.
 - `kai-term-mouse` prints `PASS: 36 mouse encodings match the expected PTY bytes`.
 - `kai-term-selection` prints `PASS: 101 selection and text-extraction checks passed`.
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
   inspection performed)`. When btop is not installed it prints that the checks were not
   exercised instead of pretending to pass.
-- `kai-term-widget-smoke` prints `PASS: 53 offscreen widget checks passed (no visual inspection
+- `kai-term-widget-smoke` prints `PASS: 86 offscreen widget checks passed (no visual inspection
   performed) [this platform has no separate X11-style selection: only the clipboard copy was
   exercised]`. The bracketed note is the test being honest about the platform it ran on.
 - `tests/version.sh` prints `Kai-Term 0.0.0`.
@@ -217,6 +255,7 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `src/terminal/selection.hpp` — selection geometry and word expansion.
 - `src/terminal/text.hpp` — screen, row and selection text extraction.
 - `src/terminal/vtparser.cpp` — native VT parser.
+- `src/terminal/base64.hpp` — the decoding OSC 52 needs, with no toolkit in it.
 - `src/terminal/terminalwidget.hpp` — Qt terminal widget, including the scrollback view.
 - `src/process/pty.hpp` — PTY and shell lifecycle.
 - `tests/parser.cpp` — parser test.
@@ -227,6 +266,8 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `tests/scrollback.cpp` — scrollback model and mode-state test.
 - `tests/mouse.cpp` — mouse encoding byte assertions.
 - `tests/selection.cpp` — selection geometry and text extraction.
+- `tests/scrollbar.cpp` — scroll indicator geometry.
+- `tests/process.cpp` — shell lifecycle against real processes.
 - `tests/mouse_app.cpp` — btop driven with the mouse inside the widget.
 - `tests/widget_smoke.cpp` — offscreen widget test.
 - `tests/version.sh` — version test.
