@@ -227,6 +227,13 @@ public:
 
     Color defaultForeground() const { return default_fg_; }
     Color defaultBackground() const { return default_bg_; }
+    // Whether an OSC 4 has changed this entry from the built-in palette. A session
+    // being attached to has to hand its recolours over, or a theme that repaints the
+    // palette arrives at the new window as the defaults.
+    bool paletteCustomised(int index) const {
+        return index >= 0 && index < 256 && palette_custom_[static_cast<std::size_t>(index)];
+    }
+
     Color paletteColor(int index) const {
         if (index >= 0 && index < 256 && palette_custom_[static_cast<std::size_t>(index)])
             return palette_custom_color_[static_cast<std::size_t>(index)];
@@ -1083,19 +1090,23 @@ private:
         if (k + 1 >= p.size())
             return 0; // nothing follows: there is no colour here to apply
         const int kind = p[k + 1].value();
+        // The return value is how many parameters this consumed, and it has to be the
+        // number actually used: consuming "the rest" made `ESC[38;2;r;g;b;48;2;r;g;b` —
+        // a foreground and a background in one sequence, which is what any program
+        // setting both sends — lose the background silently.
         if (kind == 5) {
             if (k + 2 < p.size()) {
                 const int index = p[k + 2].value();
                 if (index >= 0 && index < 256)
                     slot = paletteColor(index);
             }
-            return static_cast<int>(p.size()) - static_cast<int>(k) - 1;
+            return 2;
         }
         if (kind == 2) {
             if (k + 4 < p.size())
                 slot = Color{clamp255(p[k + 2].value()), clamp255(p[k + 3].value()),
                              clamp255(p[k + 4].value())};
-            return static_cast<int>(p.size()) - static_cast<int>(k) - 1;
+            return 4;
         }
         return 0;
     }
@@ -1551,6 +1562,36 @@ private:
     // terminal reports and what it accepts. Fewer digits are repeated out to
     // sixteen bits, so "rgb:f/0/0" is full red rather than nearly black.
     bool parseColourSpec(std::string_view spec, Color& out) {
+        // `#rrggbb` and its relatives. This is the form applications actually send —
+        // vim, neovim and the scripts that set a window's colours all use `#`, while
+        // `rgb:` is what the specification spells out first — and accepting only the
+        // second meant a colour a program asked for was silently kept at whatever the
+        // terminal already had. Length has to be one, two, three or four digits per
+        // channel, scaled to a byte, exactly as `rgb:` does below.
+        if (!spec.empty() && spec.front() == '#') {
+            const std::string_view digits = spec.substr(1);
+            if (digits.size() != 3 && digits.size() != 6 && digits.size() != 9 &&
+                digits.size() != 12)
+                return false;
+            const std::size_t width = digits.size() / 3;
+            int channel[3] = {0, 0, 0};
+            for (int part = 0; part < 3; ++part) {
+                int v = 0;
+                for (std::size_t i = 0; i < width; ++i) {
+                    const int d = hexDigit(digits[static_cast<std::size_t>(part) * width + i]);
+                    if (d < 0)
+                        return false;
+                    v = v * 16 + d;
+                }
+                int full = 1;
+                for (std::size_t i = 0; i < width; ++i)
+                    full *= 16;
+                channel[part] = v * 255 / (full - 1);
+            }
+            out = Color{static_cast<std::uint8_t>(channel[0]), static_cast<std::uint8_t>(channel[1]),
+                        static_cast<std::uint8_t>(channel[2])};
+            return true;
+        }
         constexpr std::string_view prefix = "rgb:";
         if (spec.substr(0, prefix.size()) == prefix)
             spec = spec.substr(prefix.size());
@@ -1602,13 +1643,32 @@ private:
                              "\x07";
             return;
         }
+        const Color previous = slot;
         if (spec.empty()) {
             slot = foreground ? Color{220, 220, 220} : Color{30, 30, 30};
-            return;
+        } else {
+            Color parsed{};
+            if (parseColourSpec(spec, parsed))
+                slot = parsed;
         }
-        Color parsed{};
-        if (parseColourSpec(spec, parsed))
-            slot = parsed;
+        if (slot == previous)
+            return;
+        // Cells resolve their colour as they are written, so a rendition still
+        // carrying the old default has to follow it to the new one. Without this, an
+        // application that sets its colours and then prints gets the colours it
+        // replaced. A rendition holding an explicit colour is left alone: `ESC[31m`
+        // asked for red and stays red.
+        if (foreground) {
+            if (current_fg_ == previous)
+                current_fg_ = slot;
+            if (saved_fg_ == previous)
+                saved_fg_ = slot;
+        } else {
+            if (current_bg_ == previous)
+                current_bg_ = slot;
+            if (saved_bg_ == previous)
+                saved_bg_ = slot;
+        }
     }
 
     // OSC 4 ; index ; colour [; index ; colour]... and the same shape with "?" in

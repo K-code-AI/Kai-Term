@@ -711,6 +711,100 @@ int main() {
         ok &= lok;
     }
 
+    // Two colours in one sequence. A program setting both foreground and background
+    // sends them together, and consuming "the rest of the parameters" after the first
+    // one made the second silently vanish.
+    {
+        bool lok = true;
+        kai::Screen s(4, 20);
+        s.feed("\x1b[38;2;10;20;30;48;2;40;50;60m" "AB");
+        const kai::Color fg = s.at(0, 0).fg;
+        const kai::Color bg = s.at(0, 0).bg;
+        if (!(fg == kai::Color{10, 20, 30}) || !(bg == kai::Color{40, 50, 60})) {
+            std::printf("foreground and background in one SGR: fg %d,%d,%d bg %d,%d,%d\n", fg.r,
+                        fg.g, fg.b, bg.r, bg.g, bg.b);
+            lok = false;
+        }
+        s.feed("\x1b[0m\x1b[38;5;196;48;5;21m" "CD");
+        if (!(s.at(0, 2).fg == s.paletteColor(196)) || !(s.at(0, 2).bg == s.paletteColor(21)))
+            lok = false;
+        // A parameter after the colour this code consumed is its own code: the `5`
+        // below is blink, not a second index.
+        s.feed("\x1b[0m\x1b[38;5;196;5m" "EF");
+        if (!s.at(0, 4).attr.blink)
+            lok = false;
+        // And what follows a foreground on its own is untouched: a background that
+        // arrives later still applies.
+        s.feed("\x1b[0m\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m" "GH");
+        if (!(s.at(0, 6).fg == kai::Color{1, 2, 3}) || !(s.at(0, 6).bg == kai::Color{4, 5, 6}))
+            lok = false;
+        if (!lok) fail("two colours in one SGR");
+        ok &= lok;
+    }
+
+    // An application that sets its own colours and then prints: the text it writes
+    // afterwards carries the colours it just asked for, not the ones it replaced.
+    {
+        bool lok = true;
+        kai::Screen s(4, 30);
+        s.feed("before\r\n");
+        const kai::Color before = s.at(0, 0).bg;
+        s.feed("\x1b]11;#fedcba\x07");
+        s.feed("after");
+        if (!(s.at(1, 0).bg == kai::Color{0xfe, 0xdc, 0xba}))
+            lok = false;
+        if (!(s.at(0, 0).bg == before))
+            lok = false; // what is already on screen stays as it was drawn
+        // An explicit colour is a request of its own and does not follow the default.
+        s.feed("\x1b[31mred");
+        if (s.at(1, 5).fg == s.defaultForeground())
+            lok = false;
+        s.feed("\x1b[39mdefault again");
+        if (!(s.at(1, 10).fg == s.defaultForeground()))
+            lok = false;
+        if (!lok) fail("OSC 10 and OSC 11 change what is written next");
+        ok &= lok;
+    }
+
+    // Colour specifications. `#` and `rgb:` are both sent in practice, with one to
+    // four digits per channel; a length that is not a whole number of channels is not
+    // a colour at all and must leave the current one alone.
+    {
+        bool lok = true;
+        struct Case {
+            const char* spec;
+            kai::Color want;
+        };
+        const Case cases[] = {
+            {"#f00", {255, 0, 0}},
+            {"#ff0000", {255, 0, 0}},
+            {"#fff000000", {255, 0, 0}},   // twelve digits: 0xfff = 4095 scaled to 255
+            {"rgb:ff/00/00", {255, 0, 0}},
+            {"#808080", {128, 128, 128}},
+            {"#010101", {1, 1, 1}},
+        };
+        for (const Case& c : cases) {
+            kai::Screen s(2, 10);
+            s.feed("\x1b]10;" + std::string(c.spec) + "\x07" "X");
+            if (!(s.at(0, 0).fg == c.want)) {
+                std::printf("colour %s became %d,%d,%d not %d,%d,%d\n", c.spec, s.at(0, 0).fg.r,
+                            s.at(0, 0).fg.g, s.at(0, 0).fg.b, c.want.r, c.want.g, c.want.b);
+                lok = false;
+            }
+        }
+        for (const char* bad : {"#12345", "#ff00ff0", "##ff0000", "#gg0000", "#", "rgb:ff/00"}) {
+            kai::Screen s(2, 10);
+            s.feed("\x1b]10;#ff0000\x07"); // a colour to be left alone
+            s.feed("\x1b]10;" + std::string(bad) + "\x07" "X");
+            if (!(s.at(0, 0).fg == kai::Color{255, 0, 0})) {
+                std::printf("nonsense colour %s changed the foreground anyway\n", bad);
+                lok = false;
+            }
+        }
+        if (!lok) fail("colour specifications");
+        ok &= lok;
+    }
+
     // The SGR attribute table: every code that turns something on, the code xterm
     // uses to turn it back off, and a reset clearing it. Overline (53) is here
     // because it was the last one still being dropped on the floor.

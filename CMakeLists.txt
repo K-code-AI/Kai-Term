@@ -109,6 +109,10 @@ add_test(NAME ipc COMMAND kai-term-ipc)
 add_executable(kai-term-sockets tests/sockets.cpp)
 add_test(NAME sockets COMMAND kai-term-sockets)
 
+# Screen snapshots: what a window attaching to a running session is shown.
+add_executable(kai-term-snapshot tests/snapshot.cpp src/terminal/vtparser.cpp)
+add_test(NAME snapshot COMMAND kai-term-snapshot)
+
 add_executable(kai-term-mouse-app tests/mouse_app.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-mouse-app PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
 
