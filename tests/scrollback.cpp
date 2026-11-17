@@ -17,8 +17,15 @@ int failures = 0;
 
 std::string rowText(const kai::Row& r) {
     std::string out;
-    for (const auto& c : r)
+    int previous_width = 1;
+    for (const auto& c : r) {
+        // A double-width glyph reserves the cell after it; that cell is not a
+        // space, it is the second half of the glyph before it.
+        if (c.text.empty() && c.width == 0 && previous_width == 2)
+            continue;
         out += c.text.empty() ? std::string(" ") : c.text;
+        previous_width = c.width;
+    }
     while (!out.empty() && out.back() == ' ')
         out.pop_back();
     return out;
@@ -122,7 +129,7 @@ int main() {
         expect("hard reset drops history", std::to_string(s.historySize()), "0");
     }
 
-    // ---- A shrinking resize pushes the rows that no longer fit ------------
+    // ---- A shrinking resize keeps the rows that no longer fit -------------
     {
         kai::Screen s(3, 4);
         s.feed("L1\r\nL2\r\nL3");
@@ -131,9 +138,80 @@ int main() {
         s.resize(2, 8);
         expectTrue("shrinking the screen creates history", s.historySize() >= 1);
         expect("the row pushed off the top is the oldest line", historyText(s, 0), "L1");
-        expectTrue("rows keep the width they were written at",
-                   s.historyRow(0)->size() == 4);
         expectTrue("live rows use the new width", s.row(0).size() == 8);
+        if (const kai::Row* h = s.historyRow(0))
+            expectTrue("retained rows are re-broken at the new width", h->size() == 8);
+    }
+
+    // ---- Reflow: what the terminal broke, the terminal re-breaks ----------
+    {
+        // Twenty columns of text the terminal had to break, then two lines the
+        // application ended itself, on a screen 10 columns wide.
+        kai::Screen s(4, 10);
+        s.feed("ABCDEFGHIJ0123456789\r\nsecond\r\nthird");
+        s.resize(4, 5);
+        expect("a wrapped line re-breaks at the new width", screenRowText(s, 0), "56789");
+        expect("a line the application ended starts a new line", screenRowText(s, 1), "secon");
+        expect("and is not glued to the line above it", screenRowText(s, 2), "d");
+        expect("the last line is still the last line", screenRowText(s, 3), "third");
+        expect("the part that scrolled off is kept", historyText(s, 0), "ABCDE");
+        expect("and keeps its order", historyText(s, 2), "01234");
+
+        // Growing back has to give the text that was written, which is only true
+        // if the joins were remembered rather than guessed at.
+        s.resize(4, 10);
+        expect("the wrapped line rejoins", screenRowText(s, 0), "ABCDEFGHIJ");
+        expect("and re-breaks at the old width", screenRowText(s, 1), "0123456789");
+        expect("a hard newline survived the round trip", screenRowText(s, 2), "second");
+        expect("nothing was lost or duplicated", screenRowText(s, 3), "third");
+        expect("with nothing left in history", std::to_string(s.historySize()), "0");
+        expect("the cursor stayed on the last line", std::to_string(s.cursorY()), "3");
+    }
+
+    // ---- The cursor stays over the text it was over -----------------------
+    {
+        kai::Screen s(3, 20);
+        s.feed("line one\r\nline two\r\nline three");
+        const int row_before = s.cursorY();
+        s.resize(3, 10);
+        expect("the cursor stays on the same screen row", std::to_string(s.cursorY()),
+               std::to_string(row_before));
+        expect("and the line under it is the one it was on", screenRowText(s, s.cursorY()),
+               "line three");
+        expect("the row above is still the row above", screenRowText(s, 0), "line one");
+    }
+
+    // ---- A double-width glyph is never cut in half ------------------------
+    {
+        kai::Screen s(3, 10);
+        s.feed("123456789\xe6\xbc\xa2next"); // nine columns in, then a wide glyph
+        expect("a wide glyph with no room moves to the next row", screenRowText(s, 0),
+               "123456789");
+        expect("and starts the row below", screenRowText(s, 1), "\xe6\xbc\xa2next");
+        s.resize(3, 20);
+        expect("reflow puts the wide glyph back after its text", screenRowText(s, 0),
+               "123456789\xe6\xbc\xa2next");
+        expect("leaving the joined line whole", std::to_string(s.row(1).size()), "20");
+    }
+
+    // ---- The shell screen behind an application reflows too --------------
+    {
+        kai::Screen s(4, 10);
+        s.feed("0123456789abcdefghij\r\nprompt$ ");
+        s.feed("\x1b[?1049h"); // an application takes the screen
+        s.feed("alt output");
+        s.resize(4, 5);
+        expect("the application screen is left for it to redraw", screenRowText(s, 0), "alt o");
+        s.feed("\x1b[?1049l");
+        // Nothing may be lost or reordered across a resize that happened while
+        // the application had the screen. Where the split falls between history
+        // and screen follows from keeping the cursor on its own row.
+        expect("the shell text survives the resize intact",
+               historyText(s, 0) + historyText(s, 1) + historyText(s, 2) + screenRowText(s, 0) +
+                   screenRowText(s, 1) + screenRowText(s, 2),
+               "0123456789abcdefghijprompt$");
+        expect("the shell cursor stays on its row", std::to_string(s.cursorY()), "2");
+        expect("still at the end of the prompt", screenRowText(s, s.cursorY()), "t$");
     }
 
     // ---- A partial scroll region discards; it is not shell history --------

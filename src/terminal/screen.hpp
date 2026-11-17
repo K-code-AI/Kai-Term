@@ -37,7 +37,44 @@ struct Cell {
     Attr attr{};
 };
 
-using Row = std::vector<Cell>;
+inline bool operator==(const Color& a, const Color& b) {
+    return a.r == b.r && a.g == b.g && a.b == b.b;
+}
+inline bool operator!=(const Color& a, const Color& b) {
+    return !(a == b);
+}
+inline bool operator==(const Attr& a, const Attr& b) {
+    return a.bold == b.bold && a.dim == b.dim && a.italic == b.italic &&
+           a.underline == b.underline && a.blink == b.blink && a.reverse == b.reverse &&
+           a.hidden == b.hidden && a.strike == b.strike;
+}
+inline bool operator!=(const Attr& a, const Attr& b) {
+    return !(a == b);
+}
+
+// A screen row: the cells, plus whether this row is the tail of a line the
+// terminal broke because it ran out of columns. The flag is what makes reflow
+// possible — a row that wrapped belongs to the row above it, a row the
+// application ended with a newline does not.
+struct Row {
+    std::vector<Cell> cells;
+    bool wrapped = false;
+
+    Row() = default;
+    explicit Row(std::size_t n) : cells(n) {}
+
+    std::size_t size() const { return cells.size(); }
+    bool empty() const { return cells.empty(); }
+    void resize(std::size_t n) { cells.resize(n); }
+    Cell& at(std::size_t i) { return cells.at(i); }
+    const Cell& at(std::size_t i) const { return cells.at(i); }
+    Cell& operator[](std::size_t i) { return cells[i]; }
+    const Cell& operator[](std::size_t i) const { return cells[i]; }
+    auto begin() { return cells.begin(); }
+    auto end() { return cells.end(); }
+    auto begin() const { return cells.begin(); }
+    auto end() const { return cells.end(); }
+};
 
 class Screen {
 public:
@@ -118,19 +155,24 @@ public:
         if (new_rows == rows_ && new_cols == cols_)
             return;
 
-        const std::vector<Row> old = grid_;
-        const int offset = fitGrid(grid_, new_rows, new_cols);
-        if (offset > 0) {
-            cursor_y_ = std::max(0, cursor_y_ - offset);
-            // Rows pushed off the top of a full-screen scroll belong in
-            // scrollback, except on the alternate screen, which has none.
-            if (!alternate_valid_) {
-                for (int r = 0; r < offset; ++r)
-                    pushHistory(scrollback_, old[r]);
-            }
+        if (!alternate_valid_) {
+            // The shell screen keeps its history and its text: lines the
+            // terminal had broken are re-broken for the new width.
+            reflow(scrollback_, grid_, new_rows, new_cols, cursor_y_, cursor_x_);
+        } else {
+            // An application on the alternate screen redraws itself when the
+            // window changes size, so its screen is only re-fitted. The shell
+            // screen it is covering is not going to redraw anything, so that one
+            // is reflowed; otherwise leaving vim after a resize would show a
+            // shell whose history was still cut at the old width.
+            const std::vector<Row> old = grid_;
+            const int offset = fitGrid(grid_, new_rows, new_cols);
+            (void)offset; // the alternate screen has no scrollback to keep
+            reflow(alternate_scrollback_, alternate_grid_, new_rows, new_cols,
+                   alternate_cursor_y_, alternate_cursor_x_);
+            cursor_x_ = std::min(cursor_x_, new_cols);
+            cursor_y_ = std::min(cursor_y_, new_rows - 1);
         }
-        cursor_y_ = std::min(cursor_y_, new_rows - 1);
-        cursor_x_ = std::min(cursor_x_, new_cols);
         rows_ = new_rows;
         cols_ = new_cols;
         // A resize invalidates any scroll region; tmux re-establishes its own.
@@ -144,20 +186,177 @@ public:
         // of discarding them, or leaving vim after a resize would reveal an
         // empty shell with no scrollback.
         if (alternate_valid_) {
-            const std::vector<Row> saved = alternate_grid_;
-            const int saved_offset = fitGrid(alternate_grid_, new_rows, new_cols);
-            for (int r = 0; r < saved_offset; ++r)
-                pushHistory(alternate_scrollback_, saved[r]);
-            alternate_cursor_x_ = std::min(alternate_cursor_x_, new_cols);
-            alternate_cursor_y_ = std::clamp(alternate_cursor_y_ - saved_offset, 0, new_rows - 1);
             alternate_scroll_top_ = 0;
             alternate_scroll_bottom_ = new_rows - 1;
         }
     }
 
+    // Reflow a screen and its history to a new width. Rows whose wrapped flag is
+    // set are joined back onto the row above, giving the lines the application
+    // actually wrote, and those lines are then broken again at the new width.
+    // The cursor is kept over the same character and, where the geometry allows,
+    // on the same row of the window, so a resize does not shove the prompt away.
+    static void reflow(std::vector<Row>& history, std::vector<Row>& grid, int new_rows,
+                       int new_cols, int& cursor_y, int& cursor_x) {
+        std::vector<Row> all;
+        all.reserve(history.size() + grid.size());
+        for (const Row& r : history)
+            all.push_back(r);
+        for (const Row& r : grid)
+            all.push_back(r);
+        if (all.empty()) {
+            grid.assign(new_rows, Row(new_cols));
+            history.clear();
+            cursor_y = 0;
+            cursor_x = 0;
+            return;
+        }
+
+        const int cursor_row =
+            std::min(static_cast<int>(all.size()) - 1, static_cast<int>(history.size()) + cursor_y);
+        const int cursor_col = std::min(cursor_x, static_cast<int>(all[cursor_row].size()));
+
+        // Join the physical rows into the lines the application wrote. Continuation
+        // cells of a double-width glyph are dropped and rebuilt while re-breaking;
+        // every other empty cell becomes an ordinary blank so it can be told apart
+        // from a continuation. Each row gives up its trailing blanks first: a row
+        // that wrapped because a double-width glyph would not fit ends in one, and
+        // joining it in would put a space in the middle of the rejoined line.
+        // A cell that carries nothing at all: no text, and no colour or attribute
+        // of its own. Only these may be trimmed off the end of a row. A space
+        // painted with a background is not blank — that is what a status bar is
+        // made of, and losing it would shorten the bar by however much of it was
+        // unpainted text.
+        auto plainBlank = [](const Cell& c) {
+            static const Cell blank{};
+            return c.text.empty() && c.fg == blank.fg && c.bg == blank.bg &&
+                   !(c.attr != blank.attr);
+        };
+
+        std::vector<std::vector<Cell>> lines;
+        std::vector<int> line_of(all.size());
+        int cursor_line = 0;
+        int cursor_offset = 0;
+        for (std::size_t i = 0; i < all.size(); ++i) {
+            if (i == 0 || !all[i].wrapped)
+                lines.emplace_back();
+            line_of[i] = static_cast<int>(lines.size()) - 1;
+            std::vector<Cell>& out = lines.back();
+            std::size_t used = all[i].size();
+            while (used > 0 && plainBlank(all[i][used - 1]))
+                --used;
+            for (std::size_t c = 0; c < used; ++c) {
+                const Cell& cell = all[i][c];
+                const bool continuation =
+                    cell.width == 0 && cell.text.empty() && !out.empty() && out.back().width == 2;
+                if (continuation)
+                    continue;
+                if (i == static_cast<std::size_t>(cursor_row) && c < static_cast<std::size_t>(cursor_col))
+                    ++cursor_offset;
+                Cell flat = cell;
+                if (flat.width == 0)
+                    flat.width = 1;
+                out.push_back(flat);
+            }
+        }
+        cursor_line = line_of[static_cast<std::size_t>(cursor_row)];
+
+        // Break each line again at the new width.
+        std::vector<Row> broken;
+        std::vector<int> line_first(lines.size());
+        std::vector<int> line_count(lines.size());
+        for (std::size_t l = 0; l < lines.size(); ++l) {
+            std::vector<Cell>& flat = lines[l];
+            line_first[l] = static_cast<int>(broken.size());
+            int produced = 0;
+            int col = 0;
+            Row cur(new_cols);
+            auto flush = [&]() {
+                cur.wrapped = produced > 0;
+                broken.push_back(cur);
+                cur = Row(new_cols);
+                ++produced;
+                col = 0;
+            };
+            for (const Cell& cell : flat) {
+                const int w = std::max(1, cell.width);
+                if (col + w > new_cols)
+                    flush(); // a double-width glyph will not fit in the last column
+                cur[col] = cell;
+                if (w == 2) {
+                    if (col + 1 < new_cols) {
+                        Cell cont;
+                        cont.width = 0;
+                        cont.fg = cell.fg;
+                        cont.bg = cell.bg;
+                        cur[col + 1] = cont;
+                    }
+                    col += 2;
+                } else {
+                    ++col;
+                }
+                if (col >= new_cols)
+                    flush();
+            }
+            if (col > 0 || produced == 0)
+                flush(); // an empty line is still a line
+            line_count[l] = produced;
+        }
+
+        // Find where the cursor's character landed.
+        int cursor_new = line_first[static_cast<std::size_t>(cursor_line)];
+        int new_col = 0;
+        {
+            int remaining = cursor_offset;
+            const int first = line_first[static_cast<std::size_t>(cursor_line)];
+            const int count = line_count[static_cast<std::size_t>(cursor_line)];
+            for (int r = 0; r < count; ++r) {
+                const Row& row = broken[static_cast<std::size_t>(first + r)];
+                int real = 0;
+                int last_real = 0;
+                for (std::size_t c = 0; c < row.size(); ++c) {
+                    if (row[c].width == 0 && row[c].text.empty())
+                        continue; // continuation of a double-width glyph
+                    if (real == remaining) {
+                        cursor_new = first + r;
+                        new_col = static_cast<int>(c);
+                        remaining = -1;
+                        break;
+                    }
+                    ++real;
+                    last_real = static_cast<int>(c) + 1;
+                }
+                if (remaining < 0)
+                    break;
+                remaining -= real;
+                if (r == count - 1) { // the cursor sat past the end of the line
+                    cursor_new = first + r;
+                    new_col = last_real;
+                }
+            }
+        }
+
+        // Split the reflowed rows back into history and screen, keeping the cursor
+        // on the row of the window it was on before.
+        const int target = std::clamp(cursor_y, 0, new_rows - 1);
+        int split = cursor_new - target;
+        split = std::clamp(split, 0, std::max(0, static_cast<int>(broken.size()) - new_rows));
+        history.assign(broken.begin(), broken.begin() + split);
+        if (history.size() > kMaxHistory)
+            history.erase(history.begin(), history.begin() + (history.size() - kMaxHistory));
+        grid.assign(broken.begin() + split,
+                    broken.begin() + std::min(broken.size(), static_cast<std::size_t>(split + new_rows)));
+        while (grid.size() < static_cast<std::size_t>(new_rows))
+            grid.push_back(Row(new_cols));
+        cursor_y = cursor_new - split;
+        cursor_x = std::clamp(new_col, 0, new_cols - 1);
+    }
+
     void clear() {
-        for (auto& r : grid_)
+        for (auto& r : grid_) {
+            r.wrapped = false;
             std::fill(r.begin(), r.end(), Cell{});
+        }
         cursor_x_ = cursor_y_ = 0;
         saved_valid_ = false;
         pending_wrap_ = false;
@@ -203,9 +402,11 @@ public:
                     clearCell(grid_[r][c]);
             }
         } else {
-            for (auto& r : grid_)
+            for (auto& r : grid_) {
+                r.wrapped = false; // nothing continues into a cleared screen
                 for (auto& c : r)
                     clearCell(c);
+            }
             if (mode == 3)
                 scrollback_.clear();
         }
@@ -506,6 +707,7 @@ private:
             if (autowrap_) {
                 cursor_x_ = 0;
                 index();
+                grid_[cursor_y_].wrapped = true;
             } else {
                 cursor_x_ = cols_ - 1; // wrap was disabled while pending
             }
@@ -517,6 +719,7 @@ private:
             if (autowrap_ && cursor_x_ != 0) {
                 cursor_x_ = 0;
                 index();
+                grid_[cursor_y_].wrapped = true;
             } else {
                 w = 1; // no room for a double-width cell; clip
             }

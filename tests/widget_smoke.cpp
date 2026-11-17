@@ -598,6 +598,61 @@ int main(int argc, char** argv) {
                   got, std::string("\x1b" "[200~one\rtwo\rthree\r\x1b" "[201~"));
     }
 
+    // ---- A resize re-breaks the lines the terminal broke ------------------
+    {
+        // Everything the terminal is holding, retained lines first, in the order
+        // a person scrolling up would meet it.
+        auto fullText = [&w]() {
+            std::string out;
+            const kai::Screen& sc = w.screen();
+            for (int i = 0; i < sc.historySize(); ++i) {
+                const kai::Row* row = sc.historyRow(i);
+                if (!row)
+                    continue;
+                for (const kai::Cell& cell : *row)
+                    out += cell.text;
+            }
+            for (int r = 0; r < sc.rows(); ++r)
+                for (int c = 0; c < sc.cols(); ++c)
+                    out += sc.at(r, c).text;
+            return out;
+        };
+
+        // A line far wider than the window, printed by the shell. The command
+        // itself never contains a long run of x, so a run found in the text can
+        // only be the output that was re-broken.
+        sendText(&w, "printf '%0.sx' $(seq 1 150); echo");
+        sendKey(&w, Qt::Key_Return);
+        pump(400);
+        const std::string run(150, 'x');
+        expect("the long line is on screen before the resize",
+                   fullText().find(run) != std::string::npos);
+
+        // A highlight drawn against the old geometry cannot keep its meaning.
+        const kai::CellPos mark = findText(w, run.substr(0, 24));
+        expect("the long line can be found", mark.row >= 0);
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton,
+                  cellPoint(&w, mark.row, mark.col));
+        sendMouse(&w, QEvent::MouseMove, Qt::LeftButton, Qt::LeftButton,
+                  cellPoint(&w, mark.row, mark.col + 20), Qt::ShiftModifier);
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
+                  cellPoint(&w, mark.row, mark.col + 20));
+        expect("and selected", w.selectedText().size() > 10);
+        const int cols_before = w.cols();
+        w.resize(420, 500);
+        pump(100);
+        expect("resizing really changed the width", w.cols() < cols_before);
+        expectStr("a resize drops a selection it can no longer point at", w.selectedText(),
+                  std::string());
+        expect("narrower keeps every character of the line",
+                   fullText().find(run) != std::string::npos);
+        w.resize(900, 500);
+        pump(100);
+        expect("wider puts the line back together again",
+                   fullText().find(run) != std::string::npos);
+        expect("and the widget is still on the live bottom", w.scrollOffset() == 0);
+    }
+
     // Ctrl+C interrupts the shell through the same path; the widget stays alive.
     sendKey(&w, Qt::Key_C, Qt::ControlModifier);
     pump(300);

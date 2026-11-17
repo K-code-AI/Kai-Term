@@ -403,6 +403,10 @@ public:
         cols_ = new_cols;
         screen_.resize(rows_, cols_);
         pty_.resize(rows_, cols_);
+        // Reflow moves text between rows and columns, so a highlight drawn before
+        // the resize would be sitting over different characters afterwards. It is
+        // dropped rather than left to drift onto text nobody selected.
+        clearSelection();
         clampScroll();
         update();
     }
