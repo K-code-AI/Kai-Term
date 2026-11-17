@@ -1,8 +1,10 @@
 // Headless check of the scrollback model the terminal UI reads from: which
 // lines are retained, in what order, how the cap trims them, and what the
-// alternate screen does to history. Also covers DECCKM, which decides the
-// shape of the cursor-key bytes the encoder emits.
+// alternate screen does to history. Also covers the mode bits the input side
+// reads: DECCKM, which decides the shape of the cursor-key bytes, and the
+// mouse-reporting modes, which decide whether a mouse event is encoded at all.
 
+#include "../src/terminal/mouseencode.hpp"
 #include "../src/terminal/screen.hpp"
 
 #include <iostream>
@@ -172,8 +174,67 @@ int main() {
         expectTrue("hard reset returns to normal cursor keys", !s.applicationCursorKeys());
     }
 
+    // ---- Mouse reporting modes the encoder reads --------------------------
+    {
+        kai::Screen s(4, 10);
+        expectTrue("mouse reporting starts off", !s.mouseReporting());
+        expectTrue("no mode means no reporting", s.mouseMode() == kai::MouseMode::Off);
+        expectTrue("coordinates start in the classic form",
+                   s.mouseCoord() == kai::MouseCoord::Classic);
+        expectTrue("bracketed paste starts off", !s.bracketedPaste());
+
+        s.feed("\x1b[?1000h");
+        expectTrue("ESC[?1000h reports clicks", s.mouseMode() == kai::MouseMode::Click);
+        expectTrue("click reporting is reporting", s.mouseReporting());
+        s.feed("\x1b[?1000l");
+        expectTrue("ESC[?1000l stops reporting", !s.mouseReporting());
+
+        // The modes nest: drag tracking still reports clicks, and dropping
+        // any-event tracking falls back to whatever lower mode is still set.
+        s.feed("\x1b[?1002h");
+        expectTrue("ESC[?1002h reports drags", s.mouseMode() == kai::MouseMode::Drag);
+        s.feed("\x1b[?1003h");
+        expectTrue("ESC[?1003h reports all motion", s.mouseMode() == kai::MouseMode::Any);
+        s.feed("\x1b[?1003l");
+        expectTrue("dropping any-event falls back to drag",
+                   s.mouseMode() == kai::MouseMode::Drag);
+        s.feed("\x1b[?1000h\x1b[?1002l");
+        expectTrue("drag off with click still set reports clicks",
+                   s.mouseMode() == kai::MouseMode::Click);
+        s.feed("\x1b[?1000l");
+
+        // The most modern coordinate request wins when several are set.
+        s.feed("\x1b[?1015h");
+        expectTrue("ESC[?1015h asks for urxvt coordinates",
+                   s.mouseCoord() == kai::MouseCoord::Urxvt);
+        s.feed("\x1b[?1006h");
+        expectTrue("ESC[?1006h outranks urxvt", s.mouseCoord() == kai::MouseCoord::Sgr);
+        s.feed("\x1b[?1006l");
+        expectTrue("dropping SGR falls back to urxvt",
+                   s.mouseCoord() == kai::MouseCoord::Urxvt);
+        s.feed("\x1b[?1015l\x1b[?1016h");
+        expectTrue("ESC[?1016h asks for hexadecimal SGR",
+                   s.mouseCoord() == kai::MouseCoord::SgrHex);
+
+        s.feed("\x1b[?2004h");
+        expectTrue("ESC[?2004h asks for bracketed paste", s.bracketedPaste());
+        s.feed("\x1b[?2004l");
+        expectTrue("ESC[?2004l stops asking", !s.bracketedPaste());
+
+        // An application that exits without cleaning up must not leave the
+        // terminal in a mode the next program did not ask for.
+        s.feed("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1015h\x1b[?1016h\x1b[?2004h");
+        expectTrue("all modes are on before the reset", s.mouseMode() == kai::MouseMode::Any);
+        s.feed("\x1b" "c");
+        expectTrue("hard reset stops mouse reporting", !s.mouseReporting());
+        expectTrue("hard reset restores classic coordinates",
+                   s.mouseCoord() == kai::MouseCoord::Classic);
+        expectTrue("hard reset stops bracketed paste", !s.bracketedPaste());
+    }
+
     if (failures == 0) {
-        std::cout << "PASS: " << checks << " scrollback and cursor-mode checks passed\n";
+        std::cout << "PASS: " << checks
+                  << " scrollback, cursor-mode and mouse-mode checks passed\n";
         return 0;
     }
     std::cerr << failures << " of " << checks << " scrollback checks failed\n";

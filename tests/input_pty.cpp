@@ -7,9 +7,12 @@
 // carriage return and erase are interpreted by the line discipline.
 // Phase 2 switches the tty to raw mode, where every byte must come back
 // unchanged, sequence included.
+// Phase 3 replays the mouse reports an application would receive with mouse
+// reporting on, classic and extended forms alike.
 
 #include "../src/process/pty.hpp"
 #include "../src/terminal/keyencode.hpp"
+#include "../src/terminal/mouseencode.hpp"
 
 #include <QString>
 #include <QtGlobal>
@@ -125,6 +128,22 @@ void expect_roundtrip(kai::Pty& p, const char* what, const std::string& bytes) {
     expect_output(p, what, bytes, bytes);
 }
 
+// Build a mouse report the way the widget would, then encode it, so the PTY sees
+// exactly the bytes the terminal would send rather than a hand-written copy.
+std::string report(kai::MouseKey button, kai::MouseAction action, int row, int col,
+                   kai::MouseMode mode = kai::MouseMode::Click,
+                   kai::MouseCoord coord = kai::MouseCoord::Classic, unsigned held = 0,
+                   int mods = 0) {
+    kai::MouseReport r;
+    r.button = button;
+    r.action = action;
+    r.row = row;
+    r.col = col;
+    r.held = held;
+    r.mods = mods;
+    return kai::encodeMouse(r, mode, coord);
+}
+
 } // namespace
 
 int main() {
@@ -214,6 +233,57 @@ int main() {
     expect_roundtrip(p, "arrow-key burst",
                      enc(Qt::Key_Up) + enc(Qt::Key_Up) + enc(Qt::Key_Left) + "ls");
 
+    // ---- Phase 3: mouse reports -------------------------------------------
+    // An application inside the PTY turns mouse reporting on the way vim, htop
+    // and tmux do. Reports have to arrive byte for byte: the classic form carries
+    // the button code and both coordinates as raw bytes, including values above
+    // 0x7F, so a tty that stripped bit 7 or translated a control byte would
+    // corrupt it in a way no screen diff would show.
+    using kai::MouseAction;
+    using kai::MouseCoord;
+    using kai::MouseKey;
+    using kai::MouseMode;
+
+    expect_roundtrip(p, "classic click", report(MouseKey::Left, MouseAction::Press, 0, 0));
+    expect_roundtrip(p, "classic click at the bottom-right cell",
+                     report(MouseKey::Left, MouseAction::Press, 23, 79));
+    expect_roundtrip(p, "classic release", report(MouseKey::Left, MouseAction::Release, 23, 79));
+    expect_roundtrip(p, "classic wheel up then down",
+                     report(MouseKey::WheelUp, MouseAction::Press, 5, 10) +
+                         report(MouseKey::WheelDown, MouseAction::Press, 5, 10));
+    expect_roundtrip(p, "classic drag with the left button held",
+                     report(MouseKey::None, MouseAction::Motion, 3, 4, MouseMode::Drag,
+                            MouseCoord::Classic, kai::mouseKeyBit(MouseKey::Left)));
+    expect_roundtrip(p, "classic motion with no button held",
+                     report(MouseKey::None, MouseAction::Motion, 3, 4, MouseMode::Any));
+    expect_roundtrip(p, "classic press with shift and ctrl",
+                     report(MouseKey::Right, MouseAction::Press, 1, 1, MouseMode::Click,
+                            MouseCoord::Classic, 0, kai::MouseShift | kai::MouseCtrl));
+    // The furthest cell a classic report can name, which puts 0xFF on the wire.
+    expect_roundtrip(p, "classic report of the farthest reportable cell",
+                     report(MouseKey::Left, MouseAction::Press, 222, 222));
+    expect_roundtrip(p, "SGR press then release",
+                     report(MouseKey::Left, MouseAction::Press, 2, 79, MouseMode::Click,
+                            MouseCoord::Sgr) +
+                         report(MouseKey::Left, MouseAction::Release, 2, 79, MouseMode::Click,
+                                MouseCoord::Sgr));
+    expect_roundtrip(p, "urxvt press",
+                     report(MouseKey::Middle, MouseAction::Press, 2, 79, MouseMode::Click,
+                            MouseCoord::Urxvt));
+    expect_roundtrip(p, "hexadecimal SGR press",
+                     report(MouseKey::Left, MouseAction::Press, 0, 255, MouseMode::Click,
+                            MouseCoord::SgrHex));
+
+    // One write holding a press, two drags and a release, which is how a fast
+    // drag across cells reaches a program.
+    expect_roundtrip(p, "drag burst in one write",
+                     report(MouseKey::Left, MouseAction::Press, 4, 4, MouseMode::Drag) +
+                         report(MouseKey::None, MouseAction::Motion, 4, 7, MouseMode::Drag,
+                                MouseCoord::Classic, kai::mouseKeyBit(MouseKey::Left)) +
+                         report(MouseKey::None, MouseAction::Motion, 4, 9, MouseMode::Drag,
+                                MouseCoord::Classic, kai::mouseKeyBit(MouseKey::Left)) +
+                         report(MouseKey::Left, MouseAction::Release, 4, 9, MouseMode::Drag));
+
     p.write(std::string(1, '\x04'));
     drain(p, 200);
     p.write("stty sane\n");
@@ -221,7 +291,7 @@ int main() {
 
     if (failures == 0) {
         std::cout << "PASS: " << checks
-                  << " key sequences round-tripped through a real PTY unchanged\n";
+                  << " input sequences round-tripped through a real PTY unchanged\n";
         return 0;
     }
     std::cerr << failures << " of " << checks << " PTY input checks failed\n";

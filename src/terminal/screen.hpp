@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mouseencode.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -80,6 +82,27 @@ public:
 
     // DECCKM (ESC[?1h): applications ask for SS3 cursor sequences.
     bool applicationCursorKeys() const { return application_cursor_keys_; }
+
+    // Mouse reporting requested by the application. The modes nest, so drag or
+    // any-event tracking still implies press, release and wheel reporting.
+    MouseMode mouseMode() const {
+        if (mouse_any_event_) return MouseMode::Any;
+        if (mouse_drag_) return MouseMode::Drag;
+        if (mouse_click_) return MouseMode::Click;
+        return MouseMode::Off;
+    }
+    bool mouseReporting() const { return mouseMode() != MouseMode::Off; }
+
+    // Coordinate encoding to use, most modern request winning.
+    MouseCoord mouseCoord() const {
+        if (mouse_sgr_) return MouseCoord::Sgr;
+        if (mouse_sgr_hex_) return MouseCoord::SgrHex;
+        if (mouse_urxvt_) return MouseCoord::Urxvt;
+        return MouseCoord::Classic;
+    }
+
+    // ?2004: the application wants pasted text fenced by ESC[200~ and ESC[201~.
+    bool bracketedPaste() const { return bracketed_paste_; }
 
     // Terminal-to-host replies produced by queries (DA1, DSR 5n/6n).
     // The consumer (widget or test harness) drains this and writes it to the PTY.
@@ -250,6 +273,13 @@ private:
     Attr current_attr_{};
     bool cursor_visible_ = true;
     bool application_cursor_keys_ = false;
+    bool mouse_click_ = false;
+    bool mouse_drag_ = false;
+    bool mouse_any_event_ = false;
+    bool mouse_urxvt_ = false;
+    bool mouse_sgr_ = false;
+    bool mouse_sgr_hex_ = false;
+    bool bracketed_paste_ = false;
     bool autowrap_ = true;
     bool pending_wrap_ = false;
     bool origin_mode_ = false;
@@ -765,6 +795,13 @@ private:
         current_attr_ = Attr{};
         cursor_visible_ = true;
         application_cursor_keys_ = false;
+        mouse_click_ = false;
+        mouse_drag_ = false;
+        mouse_any_event_ = false;
+        mouse_urxvt_ = false;
+        mouse_sgr_ = false;
+        mouse_sgr_hex_ = false;
+        bracketed_paste_ = false;
         autowrap_ = true;
         pending_wrap_ = false;
         origin_mode_ = false;
@@ -882,9 +919,17 @@ private:
                 case 1049:
                     if (set) enterAlternateScreen(); else leaveAlternateScreen();
                     break;
+                case 1000: mouse_click_ = set; break;
+                case 1002: mouse_drag_ = set; break;
+                case 1003: mouse_any_event_ = set; break;
+                case 1006: mouse_sgr_ = set; break;
+                case 1015: mouse_urxvt_ = set; break;
+                case 1016: mouse_sgr_hex_ = set; break;
+                case 2004: bracketed_paste_ = set; break;
                 default:
-                    // ?12, ?128, ?1000..?1006, ?2004, ?2026 etc. are accepted
-                    // and ignored; input-side features arrive with M4/M5 work.
+                    // ?12, ?128, ?2026 and the rest are accepted and ignored;
+                    // features the terminal does not implement must still not
+                    // disturb the application's byte stream.
                     break;
             }
         }

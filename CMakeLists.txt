@@ -57,6 +57,17 @@ add_executable(kai-term-scrollback
     src/terminal/vtparser.cpp
 )
 
+# Mouse encoding, asserted on the exact bytes sent to the PTY.
+add_executable(kai-term-mouse
+    tests/mouse.cpp
+)
+
+# Selection geometry and the text a selection turns into.
+add_executable(kai-term-selection
+    tests/selection.cpp
+    src/terminal/vtparser.cpp
+)
+
 # Offscreen widget exercise: real widget, real shell, no display server.
 add_executable(kai-term-widget-smoke
     tests/widget_smoke.cpp
@@ -74,6 +85,8 @@ add_test(NAME tmux-e2e COMMAND kai-term-tmux-e2e)
 add_test(NAME input COMMAND kai-term-input)
 add_test(NAME input-pty COMMAND kai-term-input-pty)
 add_test(NAME scrollback COMMAND kai-term-scrollback)
+add_test(NAME mouse COMMAND kai-term-mouse)
+add_test(NAME selection COMMAND kai-term-selection)
 add_test(NAME widget-smoke COMMAND kai-term-widget-smoke)
 
 target_compile_definitions(kai-term PRIVATE KAI_TERM_VERSION="0.0.0")
