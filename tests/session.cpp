@@ -1,0 +1,591 @@
+// Headless check of the session daemon: real pty, real socket, no display.
+//
+// The daemon's promises are the ones that are hardest to check by reading: that a
+// shell outlives the window that started it, that a second window sees what is on
+// screen, that a view hanging up does not disturb the program running inside, and
+// that stopping leaves nothing behind. All of those need a process on the other end
+// of a pty and a connection that can be dropped, so this test has both.
+
+#include "../src/ipc/protocol.hpp"
+#include "../src/session/daemon.hpp"
+#include "../src/terminal/screen.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <poll.h>
+#include <string>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <thread>
+#include <unistd.h>
+
+using namespace kai;
+
+namespace {
+
+int checks = 0;
+int failures = 0;
+
+void expect(std::string_view what, bool value) {
+    ++checks;
+    if (value)
+        return;
+    ++failures;
+    std::cerr << "FAIL: " << "expect " << what << "\n";
+}
+
+// Enough of a byte string to read, with the control characters named.
+std::string show(std::string_view bytes) {
+    std::string out;
+    for (const char c : bytes) {
+        if (out.size() > 200) {
+            out += "...";
+            break;
+        }
+        if (c == '\x1b')
+            out += "<ESC>";
+        else if (c == '\a')
+            out += "<BEL>";
+        else if (c == '\n')
+            out += "<LF>";
+        else if (c == '\r')
+            out += "<CR>";
+        else if (static_cast<unsigned char>(c) < 32)
+            out += "^" + std::string(1, static_cast<char>(c + 64));
+        else
+            out += c;
+    }
+    return out;
+}
+
+std::string root;
+
+void cleanup() {
+    ::unlink((root + "/kai-term/daemon.sock").c_str());
+    ::rmdir((root + "/kai-term").c_str());
+    ::rmdir(root.c_str());
+}
+
+// A client that gives up rather than blocking forever. A daemon that never answers
+// has to fail a test, not stall one.
+void giveUpSoon(int fd) {
+    struct timeval tv {0, 200000};
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+struct TestClient {
+    int fd = -1;
+    FrameReader reader;
+
+    ~TestClient() {
+        if (fd >= 0)
+            ::close(fd);
+    }
+
+    bool connect() {
+        fd = connectTo(daemonSocketPath());
+        if (fd < 0)
+            return false;
+        giveUpSoon(fd);
+        return true;
+    }
+
+    bool send(MsgKind kind, const std::string& body = {}) {
+        return writeAll(fd, encodeFrame(kind, body));
+    }
+
+    bool hello(const Fields& fields) { return send(MsgKind::Hello, encodeFields(fields)); }
+
+    // One control reply. Timeouts look like a hangup here, which is the honest
+    // reading: nothing is coming.
+    bool reply(Frame& out) {
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            if (reader.pop(out))
+                return true;
+            if (reader.error())
+                return false;
+            struct pollfd pfd {fd, POLLIN, 0};
+            if (::poll(&pfd, 1, 250) <= 0)
+                continue;
+            char buf[32768];
+            const ssize_t n = readSome(fd, buf, sizeof(buf));
+            if (n < 0)
+                continue; // a read timeout is another chance, not the end
+            if (n == 0)
+                return false;
+            reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+        }
+        return false;
+    }
+
+    // Read output frames until `needle` shows up in the text, or give up. Returns the
+    // bytes seen, whether or not the thing being looked for ever arrived.
+    std::string waitFor(std::string_view needle, int timeout_ms = 6000) {
+        std::string text;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            struct pollfd pfd {fd, POLLIN, 0};
+            if (::poll(&pfd, 1, 100) > 0) {
+                char buf[32768];
+                const ssize_t n = readSome(fd, buf, sizeof(buf));
+                if (n > 0)
+                    reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+            }
+            Frame frame;
+            while (reader.pop(frame)) {
+                if (frame.kind == MsgKind::Data || frame.kind == MsgKind::Snapshot)
+                    text += frame.body;
+            }
+            if (!needle.empty() && text.find(needle) != std::string::npos)
+                return text;
+        }
+        return text;
+    }
+
+    // A snapshot is escape bytes; what a person would see is what a screen model says
+    // they would see.
+    static std::string render(const std::string& bytes, int rows, int cols) {
+        Screen screen(rows, cols);
+        screen.feed(bytes);
+        return screen.text();
+    }
+};
+
+bool createSession(const std::string& name, int rows = 24, int cols = 80,
+                   std::string* error = nullptr) {
+    TestClient client;
+    if (!client.connect())
+        return false;
+    if (!client.hello({{"command", "new"},
+                       {"name", name},
+                       {"rows", std::to_string(rows)},
+                       {"cols", std::to_string(cols)}}))
+        return false;
+    Frame reply;
+    if (!client.reply(reply)) {
+        if (error)
+            *error = "the daemon said nothing";
+        return false;
+    }
+    if (reply.kind != MsgKind::Ack) {
+        if (error)
+            *error = fieldValue(decodeFields(reply.body), "message", "refused");
+        return false;
+    }
+    return true;
+}
+
+std::vector<SessionInfo> listed() {
+    TestClient client;
+    std::vector<SessionInfo> none;
+    if (!client.connect() || !client.hello({{"command", "list"}}))
+        return none;
+    Frame reply;
+    if (!client.reply(reply) || reply.kind != MsgKind::SessionList)
+        return none;
+    for (const Fields& fields : decodeRecords(reply.body))
+        none.push_back(decodeSessionInfo(fields));
+    return none;
+}
+
+// Attach and leave the client connected; the caller decides when it goes away.
+bool attach(TestClient& client, const std::string& name, int rows, int cols,
+            std::string& snapshot, std::string* error = nullptr) {
+    if (!client.connect()) {
+        if (error)
+            *error = "cannot reach the daemon";
+        return false;
+    }
+    if (!client.hello({{"command", "attach"},
+                       {"name", name},
+                       {"rows", std::to_string(rows)},
+                       {"cols", std::to_string(cols)}})) {
+        if (error)
+            *error = "cannot say hello";
+        return false;
+    }
+    Frame welcome;
+    if (!client.reply(welcome)) {
+        if (error)
+            *error = "no welcome";
+        return false;
+    }
+    if (welcome.kind != MsgKind::Welcome) {
+        if (error)
+            *error = fieldValue(decodeFields(welcome.body), "message", "refused");
+        return false;
+    }
+    Frame frame;
+    if (!client.reply(frame) || frame.kind != MsgKind::Snapshot) {
+        if (error)
+            *error = "no snapshot";
+        return false;
+    }
+    snapshot = frame.body;
+    return true;
+}
+
+} // namespace
+
+int main() {
+    root = "/tmp/kai-session-test-" + std::to_string(static_cast<long>(::getpid()));
+    if (::mkdir(root.c_str(), 0700) != 0 && errno != EEXIST) {
+        std::cerr << "cannot create the test directory\n";
+        return 1;
+    }
+    ::setenv("XDG_RUNTIME_DIR", root.c_str(), 1);
+    // A known shell, so what comes back is predictable and the test does not depend
+    // on which shell whoever is running this happens to prefer.
+    ::setenv("KAI_SHELL", "/bin/sh", 1);
+
+    Daemon daemon;
+    {
+        std::string error;
+        expect("the daemon starts (" + error + ")", daemon.start(error));
+        expect("and its socket is where it said it would be",
+               daemon.socketPath() == root + "/kai-term/daemon.sock");
+    }
+    std::thread serving([&daemon] { daemon.run(); });
+
+    {
+        TestClient client;
+        expect("a client can connect", client.connect());
+        expect("and ask whether anyone is home", client.hello({{"command", "ping"}}));
+        Frame reply;
+        expect("someone answers", client.reply(reply));
+        expect("with a welcome", reply.kind == MsgKind::Welcome);
+        expect("that says which protocol",
+               fieldValue(decodeFields(reply.body), "version") == "1");
+    }
+
+    {
+        TestClient client;
+        expect("a hello nobody understands is refused",
+               client.connect() && writeAll(client.fd, encodeFrame(MsgKind::Data, "x")));
+        Frame reply;
+        expect("politely", client.reply(reply) && reply.kind == MsgKind::Error);
+    }
+
+    {
+        std::string error;
+        expect("a session can be started", createSession("work", 24, 80, &error));
+        const auto sessions = listed();
+        expect("and appears in the list", sessions.size() == 1);
+        if (!sessions.empty()) {
+            expect("under the name it was given", sessions[0].name == "work");
+            expect("alive", sessions[0].alive);
+            expect("with a process behind it", sessions[0].pid > 0);
+            expect("at the size it was asked for",
+                   sessions[0].rows == 24 && sessions[0].cols == 80);
+            expect("with nobody looking at it yet", sessions[0].clients == 0);
+            expect("started recently enough to be this run",
+                   sessions[0].started > 1700000000);
+        }
+    }
+
+    {
+        std::string error;
+        expect("a name the daemon already uses for itself is refused",
+               !createSession("daemon", 24, 80, &error));
+        expect("and says why", error.find("daemon") != std::string::npos);
+        error.clear();
+        expect("so is a name that is not a name", !createSession("a/b", 24, 80, &error));
+        expect("and a size that is not a size", !createSession("tiny", 0, 80, &error));
+        expect("with something to say about it", !error.empty());
+    }
+
+    {
+        // The point of the whole exercise: bytes typed into a view reach the shell,
+        // and what the shell prints comes back out of the daemon.
+        TestClient viewer;
+        std::string snapshot;
+        std::string error;
+        expect("a view can attach", attach(viewer, "work", 24, 80, snapshot, &error));
+        expect("and is shown the screen (" + error + ")", !snapshot.empty());
+        expect("typed input is accepted", viewer.send(MsgKind::Data, "echo kai-marker-9182\n"));
+        const std::string text = viewer.waitFor("kai-marker-9182");
+        expect("and echoed back to the view", text.find("kai-marker-9182") != std::string::npos);
+        expect("the view is counted as watching",
+               listed().size() == 1 && listed()[0].clients == 1);
+
+        // A second window joining later has to see what is already on screen, not an
+        // empty one that fills in when the next thing prints.
+        TestClient late;
+        std::string late_snapshot;
+        expect("a second view can attach", attach(late, "work", 24, 80, late_snapshot));
+        const std::string shown = TestClient::render(late_snapshot, 24, 80);
+        expect("and is shown what the first one typed",
+               shown.find("kai-marker-9182") != std::string::npos);
+
+        // Both are looking at one session, so both see what it prints next.
+        expect("input from one view goes to the shell",
+               late.send(MsgKind::Data, "echo shared-output\n"));
+        expect("and the other view sees it",
+               viewer.waitFor("shared-output").find("shared-output") != std::string::npos);
+
+        // Hanging up on one side must not disturb the program on the other.
+        const int dropped = late.fd;
+        late.fd = -1;
+        ::close(dropped);
+        expect("a view can go away", viewer.send(MsgKind::Data, "echo after-a-hangup\n"));
+        expect("without disturbing the shell",
+               viewer.waitFor("after-a-hangup").find("after-a-hangup") != std::string::npos);
+        expect("and the session is still there", listed().size() == 1);
+
+        // The view's size is the session's size, for the shell as well as for us.
+        expect("a view can change size",
+               viewer.send(MsgKind::Resize, encodeFields({{"rows", "10"}, {"cols", "40"}})));
+        bool resized = false;
+        for (int attempt = 0; attempt < 40 && !resized; ++attempt) {
+            const auto sessions = listed();
+            resized = !sessions.empty() && sessions[0].rows == 10 && sessions[0].cols == 40;
+            if (!resized)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        expect("and the session follows", resized);
+
+        TestClient third;
+        std::string third_snapshot;
+        expect("so a new view is shown the screen at its own size",
+               attach(third, "work", 10, 40, third_snapshot));
+        expect("which is the size the session settled on",
+               TestClient::render(third_snapshot, 10, 40).find("after-a-hangup") != std::string::npos);
+
+        // Detaching a view from the outside leaves the shell alone.
+        TestClient boss;
+        expect("a view can be sent away from outside",
+               boss.connect() &&
+                   boss.hello({{"command", "detach"}, {"name", "work"}}));
+        Frame ack;
+        expect("with an acknowledgement", boss.reply(ack) && ack.kind == MsgKind::Ack);
+        bool nobody_watching = false;
+        int seen_clients = -1;
+        for (int attempt = 0; attempt < 40 && !nobody_watching; ++attempt) {
+            const auto sessions = listed();
+            seen_clients = sessions.empty() ? -1 : sessions[0].clients;
+            nobody_watching = !sessions.empty() && sessions[0].clients == 0;
+            if (!nobody_watching)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        expect("and every view looking at it is sent away (still " +
+                   std::to_string(seen_clients) + " watching)",
+               nobody_watching);
+        expect("the session itself is still alive",
+               !listed().empty() && listed()[0].alive);
+
+        // What a shell does while nobody is watching is the reason the daemon exists:
+        // a view that comes back finds the same shell, not a new one.
+        TestClient returned;
+        std::string returned_snapshot;
+        std::string returned_error;
+        expect("and a view coming back finds it there",
+               attach(returned, "work", 24, 80, returned_snapshot, &returned_error));
+        expect("still listening (" + returned_error + ")",
+               returned.send(MsgKind::Data, "echo after-detach\n"));
+        expect("still answering",
+               returned.waitFor("after-detach").find("after-detach") != std::string::npos);
+    }
+
+    {
+        TestClient lost;
+        std::string snapshot;
+        std::string error;
+        expect("attaching to something that is not there says so",
+               !attach(lost, "nowhere", 24, 80, snapshot, &error));
+        expect("and says what is missing", error.find("nowhere") != std::string::npos);
+    }
+
+    {
+        // Exit the shell from inside: every view is told, and the session leaves the
+        // listing rather than lingering as something that cannot be attached to.
+        expect("a shell can be told to leave",
+               [] {
+                   TestClient c;
+                   std::string snap;
+                   if (!attach(c, "work", 24, 80, snap))
+                       return false;
+                   return c.send(MsgKind::Data, "exit\n");
+               }());
+        bool gone = false;
+        for (int attempt = 0; attempt < 100 && !gone; ++attempt) {
+            gone = listed().empty();
+            if (!gone)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        expect("and it goes away on its own", gone);
+    }
+
+    {
+        // The daemon has to answer the questions a program asks — what terminal is
+        // this, where is the cursor — because it is the only thing on the other end of
+        // the pty when nobody is looking. A program that gets no answer waits: fish
+        // spends ten seconds on the device attributes query before announcing that its
+        // terminal is broken, and tmux will not start properly at all.
+        //
+        // Asking an interactive shell to observe the answer does not work: bash reads
+        // ahead, so its line editor takes the reply the moment the question is asked
+        // and beeps at it. So the session runs a program that asks and listens itself.
+        const std::string asker_path = root + "/ask-what-terminal";
+        {
+            std::ofstream script(asker_path);
+            // The tty has to be taken out of canonical mode first: it holds input
+            // back until a newline arrives, and a terminal reply has none, so the
+            // listener would wait for a line that never comes. Out of echo as well, so
+            // that what is read is the reply itself rather than the line discipline's
+            // caret rendering of it. No `timeout` around the read either: it puts the
+            // reader in a process group of its own, and a group that is not the
+            // foreground one is stopped the moment it touches the terminal.
+            script << "#!/bin/sh\n"
+                      "stty -icanon -echo 2>/dev/null\n"
+                      "printf '\\033[5n' > /dev/tty\n"
+                      "sleep 1\n"
+                      "reply=$(dd bs=1 count=4 2>/dev/null)\n"
+                      "stty icanon echo 2>/dev/null\n"
+                      "printf 'REPLY[%s]\\n' \"$reply\"\n"
+                      "sleep 1\n";
+        }
+        ::chmod(asker_path.c_str(), 0755);
+        {
+            TestClient client;
+            bool made = client.connect();
+            static_cast<void>(
+                made && client.hello({{"command", "new"},
+                                      {"name", "asking"},
+                                      {"shell", asker_path},
+                                      {"rows", "10"},
+                                      {"cols", "60"}}));
+            Frame reply_frame;
+            made = made && client.reply(reply_frame) && reply_frame.kind == MsgKind::Ack;
+            expect("a session can run a program instead of a shell", made);
+        }
+        TestClient asker;
+        std::string snapshot;
+        std::string error;
+        expect("with a view attached", attach(asker, "asking", 10, 60, snapshot, &error));
+        const std::string answered = asker.waitFor("REPLY[", 12000);
+        const std::size_t at = answered.find("REPLY[");
+        const bool replied = at != std::string::npos &&
+                             answered.find("\x1b" "[0n", at) != std::string::npos;
+        if (!replied) {
+            std::cerr << "  saw: " << show(answered) << "\n";
+            ++checks;
+            ++failures;
+            std::cerr << "FAIL: the daemon answered the terminal query\n";
+        } else {
+            expect("the daemon answered the terminal query", true);
+        }
+        TestClient cleaner;
+        static_cast<void>(
+            cleaner.connect() && cleaner.hello({{"command", "kill"}, {"name", "asking"}}));
+        for (int attempt = 0; attempt < 100 && !listed().empty(); ++attempt)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        expect("and the session is put away", listed().empty());
+    }
+
+    {
+        // A program that asks for its text to be copied is heard by the daemon, which
+        // has no clipboard of its own and so passes the request to whoever is looking.
+        // Its own session, because the answer to the question above leaves a couple of
+        // bytes in the shell's input, and those would mangle the next command typed
+        // into it — which is worth knowing, and worth not building a test on.
+        expect("a session for a program that wants to copy", createSession("copied", 24, 80));
+        TestClient copier;
+        std::string ignored;
+        bool heard_the_copy = false;
+        if (attach(copier, "copied", 24, 80, ignored)) {
+            expect("the copy request is sent",
+                   copier.send(MsgKind::Data,
+                               "printf '\\033]52;c;aGVsbG8=\\a' > /dev/tty\n"));
+            // The request arrives as a frame of its own, not as bytes to draw: it is
+            // something the terminal is asked to do, not something to show.
+            for (int attempt = 0; attempt < 80 && !heard_the_copy; ++attempt) {
+                struct pollfd pfd {copier.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[16384];
+                    const ssize_t n = readSome(copier.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        copier.reader.append(
+                            std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (copier.reader.pop(frame)) {
+                    if (frame.kind == MsgKind::Clipboard && frame.body == "hello")
+                        heard_the_copy = true;
+                }
+            }
+        }
+        expect("and it reaches the view with the text decoded", heard_the_copy);
+        TestClient tidier;
+        static_cast<void>(
+            tidier.connect() && tidier.hello({{"command", "kill"}, {"name", "copied"}}));
+        for (int attempt = 0; attempt < 100 && !listed().empty(); ++attempt)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    {
+        expect("another session starts", createSession("second", 30, 100));
+        TestClient viewer;
+        std::string snapshot;
+        expect("with a view on it", attach(viewer, "second", 30, 100, snapshot));
+        expect("killing it is acknowledged",
+               [] {
+                   TestClient c;
+                   return c.connect() && c.hello({{"command", "kill"}, {"name", "second"}}) &&
+                          [&c] {
+                              Frame reply;
+                              return c.reply(reply) && reply.kind == MsgKind::Ack;
+                          }();
+               }());
+        Frame exit_frame;
+        expect("the view is told the session ended", viewer.reply(exit_frame));
+        expect("with an exit frame", exit_frame.kind == MsgKind::Exit);
+        expect("carrying how it ended",
+               decodeFields(exit_frame.body).size() == 2);
+        bool gone = false;
+        for (int attempt = 0; attempt < 100 && !gone; ++attempt) {
+            gone = listed().empty();
+            if (!gone)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        expect("and it is no longer listed", gone);
+        expect("killing something already gone is refused",
+               [] {
+                   TestClient c;
+                   return c.connect() && c.hello({{"command", "kill"}, {"name", "second"}}) &&
+                          [&c] {
+                              Frame reply;
+                              return c.reply(reply) && reply.kind == MsgKind::Error;
+                          }();
+               }());
+    }
+
+    {
+        expect("one more session for the way out", createSession("last", 24, 80));
+        TestClient watcher;
+        std::string snapshot;
+        expect("with a view attached", attach(watcher, "last", 24, 80, snapshot));
+        daemon.stop();
+        expect("stopping empties the list", listed().empty());
+    }
+
+    serving.join();
+
+    {
+        struct stat st {};
+        expect("the socket is left no more", ::stat(daemonSocketPath().c_str(), &st) != 0);
+        TestClient late;
+        expect("and nothing answers afterwards", !late.connect());
+    }
+
+    cleanup();
+
+    if (failures == 0) {
+        std::cout << "PASS: " << checks << " session daemon checks passed\n";
+        return 0;
+    }
+    std::cerr << failures << " of " << checks << " session checks failed\n";
+    return 1;
+}

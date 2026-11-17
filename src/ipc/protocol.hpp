@@ -37,6 +37,9 @@ enum class MsgKind : std::uint8_t {
     Error = 13,     // fields: reason
     SessionList = 14, // body: records, one per session
     Ack = 15,         // fields: what
+    // A program inside a session asked for its text to be copied (OSC 52). The daemon
+    // has no clipboard to put it in, so it hands the request to whoever is looking.
+    Clipboard = 16, // body: the text to copy
 };
 
 // A session's whole screen is small; 16 MiB is far above any snapshot or history

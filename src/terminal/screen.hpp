@@ -562,6 +562,35 @@ public:
 
     // Parser state lives in this object so partial escape sequences and
     // incomplete UTF-8 sequences survive across read chunks.
+    // One row as plain text, without attributes. This is what a screen looks like to
+    // something that cannot draw — a test, a log, or a program joining a session
+    // rather than a window showing one. Double-width glyphs contribute once, and the
+    // blanks nobody wrote at the end of a line are dropped.
+    std::string rowText(int row) const {
+        if (row < 0 || row >= static_cast<int>(grid_.size()))
+            return {};
+        std::string out;
+        for (const Cell& cell : grid_[static_cast<std::size_t>(row)]) {
+            if (cell.width == 0 && cell.text.empty())
+                continue; // the second half of a wide glyph
+            out += cell.text.empty() ? " " : cell.text;
+        }
+        while (!out.empty() && out.back() == ' ')
+            out.pop_back();
+        return out;
+    }
+
+    // Every row on screen, top to bottom.
+    std::string text() const {
+        std::string out;
+        for (int row = 0; row < static_cast<int>(grid_.size()); ++row) {
+            if (row)
+                out += '\n';
+            out += rowText(row);
+        }
+        return out;
+    }
+
     void feed(std::string_view bytes);
 
 private:

@@ -19,6 +19,11 @@ add_executable(kai-term
     src/platform/platform.cpp
 )
 
+# The daemon that keeps sessions alive. No Qt: it is a socket, a pty and a screen
+# model, and it has no business needing a display server to start.
+add_executable(kai-daemon src/daemon/main.cpp src/terminal/vtparser.cpp)
+target_link_libraries(kai-daemon PRIVATE Threads::Threads)
+
 target_link_libraries(kai-term PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
 
 add_executable(kai-term-parser
@@ -35,6 +40,8 @@ add_executable(kai-term-tmux-e2e
     tests/tmux_e2e.cpp
     src/terminal/vtparser.cpp
 )
+
+find_package(Threads REQUIRED)
 
 # forkpty() lives in libutil on glibc systems.
 find_library(UTIL_LIBRARY util)
@@ -112,6 +119,12 @@ add_test(NAME sockets COMMAND kai-term-sockets)
 # Screen snapshots: what a window attaching to a running session is shown.
 add_executable(kai-term-snapshot tests/snapshot.cpp src/terminal/vtparser.cpp)
 add_test(NAME snapshot COMMAND kai-term-snapshot)
+
+# The session daemon, with real pty and real sockets and no display. std::thread is
+# what carries a session's output, so the test needs the thread library.
+add_executable(kai-term-session tests/session.cpp src/terminal/vtparser.cpp)
+target_link_libraries(kai-term-session PRIVATE Threads::Threads)
+add_test(NAME session COMMAND kai-term-session)
 
 add_executable(kai-term-mouse-app tests/mouse_app.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-mouse-app PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
