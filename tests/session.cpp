@@ -155,14 +155,15 @@ struct TestClient {
 };
 
 bool createSession(const std::string& name, int rows = 24, int cols = 80,
-                   std::string* error = nullptr) {
+                   bool saved = true, std::string* error = nullptr) {
     TestClient client;
     if (!client.connect())
         return false;
     if (!client.hello({{"command", "new"},
                        {"name", name},
                        {"rows", std::to_string(rows)},
-                       {"cols", std::to_string(cols)}}))
+                       {"cols", std::to_string(cols)},
+                       {"saved", saved ? "1" : "0"}}))
         return false;
     Frame reply;
     if (!client.reply(reply)) {
@@ -271,7 +272,7 @@ int main() {
 
     {
         std::string error;
-        expect("a session can be started", createSession("work", 24, 80, &error));
+        expect("a session can be started", createSession("work", 24, 80, true, &error));
         const auto sessions = listed();
         expect("and appears in the list", sessions.size() == 1);
         if (!sessions.empty()) {
@@ -289,11 +290,11 @@ int main() {
     {
         std::string error;
         expect("a name the daemon already uses for itself is refused",
-               !createSession("daemon", 24, 80, &error));
+               !createSession("daemon", 24, 80, true, &error));
         expect("and says why", error.find("daemon") != std::string::npos);
         error.clear();
-        expect("so is a name that is not a name", !createSession("a/b", 24, 80, &error));
-        expect("and a size that is not a size", !createSession("tiny", 0, 80, &error));
+        expect("so is a name that is not a name", !createSession("a/b", 24, 80, true, &error));
+        expect("and a size that is not a size", !createSession("tiny", 0, 80, true, &error));
         expect("with something to say about it", !error.empty());
     }
 
@@ -564,6 +565,133 @@ int main() {
                               return c.reply(reply) && reply.kind == MsgKind::Error;
                           }();
                }());
+    }
+
+    {
+        // A shell in a window is not a session anybody decided to keep. It runs under
+        // the daemon so that a crash cannot take it, but it stays unsaved until the
+        // person says otherwise, and it dies when the window says it is closing —
+        // unless the window never got the chance to say anything, which is the whole
+        // difference between being closed and being killed.
+        auto findInfo = [](const std::string& name) {
+            SessionInfo missing;
+            missing.alive = false;
+            for (const SessionInfo& info : listed()) {
+                if (info.name == name)
+                    return info;
+            }
+            return missing;
+        };
+        {
+            TestClient client;
+            bool made = client.connect();
+            made = made && client.hello({{"command", "new"},
+                                         {"name", "win"},
+                                         {"saved", "0"},
+                                         {"rows", "10"},
+                                         {"cols", "60"}});
+            Frame ack;
+            made = made && client.reply(ack) && ack.kind == MsgKind::Ack;
+            expect("a window's shell starts out unsaved", made);
+        }
+        expect("and is not one of the saved sessions", !findInfo("win").saved);
+        expect("and is running", findInfo("win").alive);
+        expect("with nothing out front", findInfo("win").foreground.empty());
+
+        expect("the shell takes a command", daemon.type("win", "sleep 30\n"));
+        std::string running = findInfo("win").foreground;
+        for (int attempt = 0; attempt < 60 && running.empty(); ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            running = findInfo("win").foreground;
+        }
+        expect("and the daemon says what is running out front", running == "sleep");
+
+        {
+            TestClient saver;
+            bool kept = saver.connect();
+            kept = kept && saver.hello({{"command", "save"}, {"name", "win"}, {"as", "kept"}});
+            Frame ack;
+            kept = kept && saver.reply(ack) && ack.kind == MsgKind::Ack;
+            expect("saving it keeps it", kept);
+        }
+        expect("under the name it was given", findInfo("kept").saved && findInfo("kept").alive);
+        expect("and not under the one it started with", findInfo("win").name.empty());
+        expect("still with the same thing running", findInfo("kept").foreground == "sleep");
+
+        {
+            // A name in use belongs to a shell somebody is watching, so taking it over
+            // would be losing their session to rename someone else's.
+            expect("another shell starts", createSession("taken"));
+            TestClient grabber;
+            bool refused = grabber.connect();
+            refused = refused && grabber.hello(
+                                      {{"command", "save"}, {"name", "kept"}, {"as", "taken"}});
+            Frame reply_frame;
+            refused = refused && grabber.reply(reply_frame);
+            expect("a name already taken is refused",
+                   refused && reply_frame.kind == MsgKind::Error &&
+                       findInfo("kept").saved && findInfo("taken").saved);
+        }
+
+        {
+            // Closing on purpose. The view says so as it goes, and that is the only
+            // thing that destroys an unsaved session.
+            expect("a third shell starts", createSession("closing", 10, 60, false));
+            TestClient viewer;
+            std::string snapshot;
+            std::string error;
+            expect("with a window looking at it",
+                   attach(viewer, "closing", 10, 60, snapshot, &error));
+            expect("and saying it is being closed",
+                   viewer.send(MsgKind::Detach, encodeFields({{"discard", "1"}})));
+            viewer.send(MsgKind::Exit);
+            for (int attempt = 0; attempt < 100 && !findInfo("closing").name.empty(); ++attempt)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            expect("the shell goes with it", findInfo("closing").name.empty());
+        }
+
+        {
+            // And the case that matters more: nobody said anything. A window that is
+            // killed, crashes or loses its machine leaves the shell where it is, because
+            // silence is not a person throwing work away.
+            expect("a fourth shell starts", createSession("abandoned", 10, 60, false));
+            TestClient viewer;
+            std::string snapshot;
+            std::string error;
+            expect("with a window looking at it",
+                   attach(viewer, "abandoned", 10, 60, snapshot, &error));
+            ::close(viewer.fd);
+            viewer.fd = -1; // gone without a word, the way a crash goes
+            bool still_there = false;
+            for (int attempt = 0; attempt < 100 && !still_there; ++attempt) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                const SessionInfo info = findInfo("abandoned");
+                still_there = !info.name.empty() && info.alive && info.clients == 0;
+            }
+            expect("the shell is left behind rather than lost", still_there);
+            expect("and it is still not saved", !findInfo("abandoned").saved);
+            {
+                TestClient cleaner;
+                static_cast<void>(
+                    cleaner.connect() && cleaner.hello({{"command", "discard"},
+                                                        {"name", "abandoned"}}));
+                Frame ack;
+                static_cast<void>(cleaner.reply(ack));
+            }
+            for (int attempt = 0; attempt < 100 && !findInfo("abandoned").name.empty(); ++attempt)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            expect("and discarding it is what finally ends it",
+                   findInfo("abandoned").name.empty());
+        }
+
+        expect("the saved one outlives all of it", findInfo("kept").saved);
+        expect("and nothing is left unsaved", [&] {
+            for (const SessionInfo& info : listed()) {
+                if (!info.saved)
+                    return false;
+            }
+            return true;
+        }());
     }
 
     {

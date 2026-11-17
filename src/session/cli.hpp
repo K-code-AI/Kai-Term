@@ -137,13 +137,37 @@ inline bool ensureDaemon(std::string& error) {
     return startDaemon(error);
 }
 
+// What a listing should mention. A shell sitting in an open window is somebody's
+// typing, not a session they saved, and a list full of other people's windows is a list
+// nobody can act on. Shells left behind by a window that went away unasked are the
+// exception: they are recoverable, and this is the only place to find out about them.
+inline std::vector<SessionInfo> worthListing(const std::vector<SessionInfo>& sessions) {
+    std::vector<SessionInfo> out;
+    for (const SessionInfo& info : sessions) {
+        if (info.saved || info.clients == 0)
+            out.push_back(info);
+    }
+    return out;
+}
+
+// Whether a shell is one the person decided to keep, one they are looking at, or one a
+// window left behind when it went away without being asked to.
+inline std::string sessionState(const SessionInfo& info) {
+    if (!info.alive)
+        return "exiting";
+    if (info.saved)
+        return "running";
+    return info.clients > 0 ? "in a window" : "left behind";
+}
+
 inline void printSessionTable(const std::vector<SessionInfo>& sessions) {
     if (sessions.empty()) {
-        std::cout << "no sessions\n";
+        std::cout << "no saved sessions\n";
         return;
     }
     std::cout << std::left << std::setw(17) << "NAME" << std::right << std::setw(8) << "PID"
-              << std::setw(9) << "SIZE" << std::setw(7) << "VIEWS" << std::left << "  STARTED"
+              << std::setw(9) << "SIZE" << std::setw(7) << "VIEWS" << std::setw(11) << "RUNNING"
+              << std::left << "  STARTED"
               << "  STATUS\n";
     for (const SessionInfo& info : sessions) {
         const std::time_t when = static_cast<std::time_t>(info.started);
@@ -154,8 +178,9 @@ inline void printSessionTable(const std::vector<SessionInfo>& sessions) {
         std::cout << std::left << std::setw(17) << info.name << std::right << std::setw(8)
                   << (info.pid > 0 ? std::to_string(static_cast<long long>(info.pid)) : "-")
                   << std::setw(9) << (std::to_string(info.rows) + "x" + std::to_string(info.cols))
-                  << std::setw(7) << info.clients << std::left << "  " << stamp << "  "
-                  << (info.alive ? "running" : "exiting") << "\n";
+                  << std::setw(7) << info.clients << std::setw(11)
+                  << (info.foreground.empty() ? "-" : info.foreground) << std::left << "  "
+                  << stamp << "  " << sessionState(info) << "\n";
     }
 }
 
@@ -368,6 +393,7 @@ struct SessionArgs {
     std::string shell;
     std::string cwd;
     std::string text;
+    std::string as; // the name to save a session under
     bool enter = false;
     int rows = 24;
     int cols = 80;
@@ -421,9 +447,10 @@ inline int runSessionCommand(int argc, char** argv) {
 
     auto usage = [] {
         std::cout << "Usage: kai-term session <command> [options]\n"
-                  << "  list                      show running sessions\n"
+                  << "  list                      show saved sessions, and any left behind\n"
                   << "  new [-s NAME] [--shell P] [--cwd D] [--rows N] [--cols N]\n"
                   << "                            start a session the daemon keeps alive\n"
+                  << "  save [-s NAME] [--as NEW] keep a session, and name it\n"
                   << "  attach [-s NAME]          show a session in this terminal\n"
                   << "  send [-s NAME] --text T   type into a session without watching it\n"
                   << "  detach [-s NAME]          send away the views, keep the shell\n"
@@ -483,6 +510,11 @@ inline int runSessionCommand(int argc, char** argv) {
             }
         } else if (flag == "--enter") {
             args.enter = true;
+        } else if (flag == "--as") {
+            if (!takeValue(argc, argv, i, args.as, error)) {
+                std::cerr << "kai-term: " << error << "\n";
+                return 2;
+            }
         } else if (flag == "--cols") {
             if (!takeValue(argc, argv, i, value, error)) {
                 std::cerr << "kai-term: " << error << "\n";
@@ -510,7 +542,11 @@ inline int runSessionCommand(int argc, char** argv) {
             std::cerr << "kai-term: " << error << "\n";
             return 1;
         }
-        printSessionTable(sessions);
+        const std::vector<SessionInfo> listed = worthListing(sessions);
+        printSessionTable(listed);
+        if (listed.size() < sessions.size())
+            std::cout << (sessions.size() - listed.size())
+                      << " shell(s) are open in windows and not saved yet\n";
         return 0;
     }
 
@@ -596,8 +632,11 @@ inline int runSessionCommand(int argc, char** argv) {
     Frame reply;
     // `send` carries the keys it should type; the others have nothing but a name.
     const std::string text = args.enter ? args.text + "\n" : args.text;
-    if (!client.command({{"command", verb}, {"name", args.name}, {"text", text}}, reply,
-                        error)) {
+    if (!client.command({{"command", verb},
+                         {"name", args.name},
+                         {"text", text},
+                         {"as", args.as}},
+                        reply, error)) {
         std::cerr << "kai-term: " << error << "\n";
         return 1;
     }
@@ -606,6 +645,9 @@ inline int runSessionCommand(int argc, char** argv) {
                   << fieldValue(decodeFields(reply.body), "message", "the daemon refused") << "\n";
         return 1;
     }
+    if (verb == "save")
+        std::cout << (args.as.empty() ? "keeping " + args.name
+                                      : "keeping " + args.name + " as " + args.as) << "\n";
     if (verb == "kill")
         std::cout << "ended session " << args.name << "\n";
     if (verb == "detach")

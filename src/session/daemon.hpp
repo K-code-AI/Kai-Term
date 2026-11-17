@@ -39,6 +39,7 @@
 
 #include "../ipc/protocol.hpp"
 #include "../ipc/socket.hpp"
+#include "../process/job.hpp"
 #include "../process/pty.hpp"
 #include "../session/snapshot.hpp"
 #include "../terminal/screen.hpp"
@@ -75,6 +76,9 @@ struct SessionSpec {
     std::string cwd;   // empty means the daemon's own directory
     int rows = 24;
     int cols = 80;
+    // A shell in a window starts unsaved: it is the window's shell, not something the
+    // person has decided to keep. Saving is a thing they ask for.
+    bool saved = true;
 };
 
 struct SessionInfo {
@@ -85,6 +89,8 @@ struct SessionInfo {
     int clients = 0;
     long long started = 0; // seconds since the epoch
     bool alive = true;
+    bool saved = true;
+    std::string foreground; // what is running out front, when it is not just the shell
 };
 
 inline Fields encodeSessionInfo(const SessionInfo& info) {
@@ -96,6 +102,8 @@ inline Fields encodeSessionInfo(const SessionInfo& info) {
         {"clients", std::to_string(info.clients)},
         {"started", std::to_string(info.started)},
         {"alive", info.alive ? "1" : "0"},
+        {"saved", info.saved ? "1" : "0"},
+        {"foreground", info.foreground},
     };
 }
 
@@ -108,6 +116,8 @@ inline SessionInfo decodeSessionInfo(const Fields& fields) {
     info.clients = std::stoi(fieldValue(fields, "clients", "0"));
     info.started = std::stoll(fieldValue(fields, "started", "0"));
     info.alive = fieldValue(fields, "alive", "1") != "0";
+    info.saved = fieldValue(fields, "saved", "1") != "0";
+    info.foreground = fieldValue(fields, "foreground");
     return info;
 }
 
@@ -284,6 +294,7 @@ public:
         record->rows = spec.rows;
         record->cols = spec.cols;
         record->started = static_cast<long long>(std::time(nullptr));
+        record->saved = spec.saved;
 
         std::shared_ptr<Record> previous;
         {
@@ -346,6 +357,61 @@ public:
         return record->pty->write(text);
     }
 
+    // Keep this one. A window's shell is unsaved until a person says otherwise, and
+    // this is the saying; giving it a name at the same time is what makes it
+    // findable afterwards. Renaming a saved session works the same way, and a name
+    // already taken is refused rather than quietly taken over — the other session has
+    // a shell in it that somebody is watching.
+    bool save(const std::string& name, const std::string& wanted, std::string& error) {
+        std::lock_guard<std::mutex> lock(table_mutex_);
+        const auto found = table_.find(name);
+        if (found == table_.end()) {
+            error = "no such session: " + name;
+            return false;
+        }
+        const std::shared_ptr<Record> record = found->second;
+        if (wanted.empty() || wanted == name) {
+            record->saved = true;
+            return true;
+        }
+        if (!sessionNameOk(wanted)) {
+            error = "not a usable session name: " + wanted;
+            return false;
+        }
+        if (wanted == kDaemonSocketName) {
+            error = "that name belongs to the daemon itself";
+            return false;
+        }
+        if (table_.find(wanted) != table_.end()) {
+            error = "a session is already called " + wanted;
+            return false;
+        }
+        table_.erase(found);
+        record->name = wanted;
+        record->saved = true;
+        table_[wanted] = record;
+        return true;
+    }
+
+    // Throw a session away, shell and all, because the person closing the window said
+    // to. This is the only way an unsaved session dies on purpose; losing its last
+    // view without this call means the view did not choose to leave.
+    bool discard(const std::string& name, std::string& error) {
+        std::shared_ptr<Record> record;
+        {
+            std::lock_guard<std::mutex> lock(table_mutex_);
+            const auto found = table_.find(name);
+            if (found == table_.end()) {
+                error = "no such session: " + name;
+                return false;
+            }
+            record = found->second;
+        }
+        record->saved = false;
+        destroy(record);
+        return true;
+    }
+
     // Kick the views without touching the shell.
     bool detachAll(const std::string& name, std::string& error) {
         std::shared_ptr<Record> record;
@@ -372,6 +438,10 @@ public:
 private:
     struct Record {
         std::string name;
+        // Whether a person has asked for this one to be kept. Unsaved sessions are the
+        // shells inside open windows: kept alive by the daemon so a crash cannot take
+        // them, but destroyed when the window says it is closing.
+        std::atomic<bool> saved{true};
         std::unique_ptr<Pty> pty;
         std::unique_ptr<Screen> screen;
         mutable std::mutex screen_mutex;
@@ -402,11 +472,29 @@ private:
         // that could belong to anything by then.
         if (record.pty->alive())
             info.pid = record.pty->child();
+        info.saved = record.saved;
+        // Asked for on every listing, which is how often anyone looks. Asking the
+        // kernel costs a syscall and answers a question no amount of bookkeeping
+        // inside the daemon could: whether something is running out there right now.
+        info.foreground = foregroundJob(record.pty->master(), record.pty->child());
         return info;
     }
 
     // Make the shell go away. The master stays open so the reader can see the end of
     // the stream and close it itself.
+    // Take a session out of the table and stop it. The check that the table still
+    // holds *this* record matters: a session replaced by a newer one of the same name
+    // must not have its replacement removed on its way out.
+    void destroy(const std::shared_ptr<Record>& record) {
+        {
+            std::lock_guard<std::mutex> lock(table_mutex_);
+            const auto found = table_.find(record->name);
+            if (found != table_.end() && found->second == record)
+                table_.erase(found);
+        }
+        halt(*record);
+    }
+
     void halt(Record& record) {
         record.stopping = true;
         if (record.pty)
@@ -559,16 +647,27 @@ private:
         // The descriptor belongs to this thread and to nobody else, so leaving means
         // taking ourselves off the list first: a session that kept writing to a
         // descriptor we have closed would be writing to whatever number we got next.
+        // Whether this view is leaving because a person is closing it. Leaving that
+        // unsaid is the interesting case: a crash, a kill -9, a machine that lost its
+        // temper. None of those is somebody throwing a shell away, so an unsaved
+        // session stays where it is and can be found again.
+        bool closing_on_purpose = false;
         struct Guard {
-            Record& record;
+            Daemon& daemon;
+            const std::shared_ptr<Record>& record;
             int fd;
+            const bool* closing;
             ~Guard() {
-                std::lock_guard<std::mutex> lock(record.clients_mutex);
-                record.clients.erase(
-                    std::remove(record.clients.begin(), record.clients.end(), fd),
-                    record.clients.end());
+                {
+                    std::lock_guard<std::mutex> lock(record->clients_mutex);
+                    record->clients.erase(std::remove(record->clients.begin(),
+                                                      record->clients.end(), fd),
+                                          record->clients.end());
+                }
+                if (*closing && !record->saved)
+                    daemon.destroy(record);
             }
-        } guard{*record, fd};
+        } guard{*this, record, fd, &closing_on_purpose};
 
         Frame frame;
         while (detail::nextFrame(fd, reader, frame)) {
@@ -583,8 +682,14 @@ private:
                     break;
                 }
                 case MsgKind::Detach:
-                case MsgKind::Exit:
+                case MsgKind::Exit: {
+                    // `discard=1` is a window saying it is being closed and this shell
+                    // was not saved. Without it a detach means "stop showing it to me",
+                    // which is the opposite of an instruction to destroy anything.
+                    const Fields leaving = decodeFields(frame.body);
+                    closing_on_purpose = fieldValue(leaving, "discard") == "1";
                     return; // the view asks for nothing more
+                }
                 default:
                     break; // anything else a view sends is its own business
             }
@@ -632,6 +737,7 @@ private:
             spec.cwd = fieldValue(fields, "cwd");
             spec.rows = std::stoi(fieldValue(fields, "rows", "24"));
             spec.cols = std::stoi(fieldValue(fields, "cols", "80"));
+            spec.saved = fieldValue(fields, "saved", "1") != "0";
             std::string error;
             if (!create(spec, error)) {
                 static_cast<void>(
@@ -644,6 +750,29 @@ private:
         if (command == "kill") {
             std::string error;
             if (!kill(name, error)) {
+                static_cast<void>(
+                    detail::sendFrame(fd, MsgKind::Error, encodeFields({{"message", error}})));
+                return;
+            }
+            static_cast<void>(detail::sendFrame(fd, MsgKind::Ack));
+            return;
+        }
+        if (command == "save") {
+            std::string error;
+            const std::string wanted = fieldValue(fields, "as");
+            if (!save(name, wanted, error)) {
+                static_cast<void>(
+                    detail::sendFrame(fd, MsgKind::Error, encodeFields({{"message", error}})));
+                return;
+            }
+            static_cast<void>(detail::sendFrame(
+                fd, MsgKind::Ack,
+                encodeFields({{"name", wanted.empty() ? name : wanted}})));
+            return;
+        }
+        if (command == "discard") {
+            std::string error;
+            if (!discard(name, error)) {
                 static_cast<void>(
                     detail::sendFrame(fd, MsgKind::Error, encodeFields({{"message", error}})));
                 return;
