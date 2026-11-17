@@ -144,26 +144,81 @@ Needed:
 
 ## M3 — Native session infrastructure
 
-Status: **pending**.
+Status: **complete, headless**. Built, tested with no display, and not yet looked at by
+a person: what a window showing a session looks like is still unverified.
 
-Required:
+A session is a pty and a screen model owned by a process of their own, so a window is a
+view of a session rather than the thing keeping it alive.
 
-- **Pane-scoped selection.** When Kai-Term runs its own multiplexer, a selection
-  must be clipped to the pane it started in, so dragging in one pane never picks up
-  text from a neighbouring one. The terminal knows its own pane rectangles, so this
-  is exact rather than a guess. It is deliberately not attempted for applications
-  such as tmux that draw their own splits inside one screen: the terminal cannot
-  know where those panes are without a protocol, and inferring them from
-  box-drawing characters would be wrong often enough to be worse than not trying.
-  Agreed with Kaida on 2026-11-17.
+- Session daemon: `kai-term session serve`, and `kai-daemon` for whoever is watching it
+  in a terminal. One daemon per user, listening on
+  `$XDG_RUNTIME_DIR/kai-term/daemon.sock` (directory 0700, socket 0600, and the peer's
+  uid checked on every connection). Every missing level of that path is created, because
+  pointing `$XDG_RUNTIME_DIR` somewhere of your own is how sessions end up somewhere
+  specific.
+- Unix socket IPC: `src/ipc/protocol.hpp`, a framed codec with escaped fields — length,
+  kind, body — and `src/ipc/socket.hpp` for binding, connecting, stale-socket removal
+  and peer credentials. No JSON, no external dependency; the payload is a handful of
+  `key=value` pairs and records separated by `0x1e`.
+- PTY ownership by the daemon: the daemon's reader thread per session feeds its own
+  `Screen`, answers the queries programs ask (device attributes, cursor position), turns
+  an OSC 52 copy request into a frame for a view to carry, and reaps the shell. A program
+  that gets no answer waits — fish spends ten seconds on the device attributes query
+  before announcing that its terminal is broken.
+- Session create/list/attach/detach: `kai-term session new|list|attach|detach|kill|send`
+  and `kai-term open NAME` for a window. The first `new` starts the daemon. Attaching
+  later is shown what is on the screen now, from a snapshot of the daemon's model rather
+  than a replay of raw bytes, because replaying bytes at a different column count lays
+  them out wrong.
+- Process lifecycle: a view hanging up disturbs nothing; `detach` sends the views away
+  and leaves the shell; `kill` and the shell exiting end it; `shutdown` stops the daemon
+  and every session with it, leaving no socket behind. A descriptor is never closed under
+  a thread blocked reading it, and waking one takes `SHUT_RDWR` — `SHUT_WR` only tells
+  the program on the far end.
+- Backend abstraction: `src/terminal/backend.hpp` is what the widget talks to — a
+  descriptor, bytes in, bytes out, a size — with `PtyBackend` for a shell started here
+  and `SessionBackend` for a session across the socket. Two differences are part of the
+  interface rather than hidden in it: a pty has a child to notice leaving, and a pty is
+  the terminal a program is asking questions of, so a view of a remote session answers
+  nothing.
+- Pane-scoped selection, the requirement carried into this milestone: the widget can be
+  told where its panes are, a drag belongs to the pane its first press landed in, and the
+  middle rows of a drag, the highlight and a three-click line all stop at that pane's
+  edge. No panes means one pane, the screen; a press on a divider selects unclipped
+  rather than not at all. Still deliberately not attempted for applications that draw
+  their own splits inside one screen (tmux), which the terminal cannot know about without
+  a protocol. Agreed with Kaida on 2026-11-17.
+- New tests: `kai-term-ipc` (framing and field escaping), `kai-term-sockets` (paths,
+  binding, stale sockets, peer credentials, directories that have to be created),
+  `kai-term-snapshot` (a screen snapshot fed back into a fresh model reproduces it cell
+  for cell), `kai-term-session` (69 checks over a real pty and a real socket),
+  `kai-term-widget-session` (a window showing a session: what was already printed,
+  typing, size, closing the window, a second window), `kai-term-widget-panes` (real
+  mouse drags across a pane boundary). `ctest` runs all eighteen.
+
+Not yet verified:
+
+- Anything a person has looked at. Every check here is offscreen or headless; what an
+  attached window looks like, and what a session feels like to use, is for a person to
+  say.
+- X11, as before: no X server on this machine.
 
 Needed:
 
-- Session daemon.
-- Unix socket IPC.
-- PTY ownership by daemon.
-- Session create/list/attach/detach.
-- Process lifecycle.
+- A person to run `kai-term session new`, `kai-term open NAME` and `session attach` and
+  say whether it reads well.
+- Scrollback is not transferred on attach, only the visible screen. A session that has
+  been running since before the window existed shows the last screenful and the scroll
+  bar says there is nothing above it.
+- One view's size is the session's size, last writer wins. Two windows of different
+  heights attached to one session will fight, which a multiplexer has to decide about
+  rather than leave to whichever resized last.
+- Writes to views are blocking and serialised, so a client that stops reading can stall
+  a session's output. A person's window is unlikely to do that; a script that attaches
+  and stops reading can.
+- The daemon cannot answer an OSC 52 *read* (a program asking for the clipboard): the
+  daemon has no clipboard, and only a view does. A view answers a copy request from its
+  own clipboard but not a read query.
 
 ## M4 — Native multiplexer
 

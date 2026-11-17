@@ -4,10 +4,13 @@ Kai-Term is a native Linux terminal workspace: a terminal emulator, a dual-pane 
 
 ## Current status
 
-M1 (the native terminal emulator) and M2 (input reliability: text selection,
-clipboard, paste, and mouse reporting) are implemented, tested headlessly and
-offscreen, and have been used at a live Wayland session. Since that milestone
-closed, the parts an audit found thin have been filled in: scrollback reflows when
+M1 (the native terminal emulator), M2 (input reliability: text selection,
+clipboard, paste, and mouse reporting) and M3 (native session infrastructure) are
+implemented and tested. M1 and M2 have been used at a live Wayland session; **M3 has
+not been looked at by a person** — every check in it is headless or offscreen, so what a
+window showing a session looks like, and what it feels like to use, is still somebody
+else's to say. Since the last milestone closed, the parts an audit found thin have been
+filled in: scrollback reflows when
 the window changes width, the view says where it is in the history, a selection
 dragged to an edge scrolls, the shell's process tree is taken down with it, and the
 escape-sequence coverage applications actually send (window titles, OSC 52 clipboard,
@@ -201,12 +204,18 @@ or individually:
 ./build/kai-term-process
 ./build/kai-term-mouse-app
 ./build/kai-term-widget-smoke
+./build/kai-term-ipc
+./build/kai-term-sockets
+./build/kai-term-snapshot
+./build/kai-term-session
+./build/kai-term-widget-session
+./build/kai-term-widget-panes
 ./tests/version.sh ./build/kai-term
 ```
 
 Verified results on this machine:
 
-- `ctest` — `100% tests passed, 0 tests failed out of 12` (42 s).
+- `ctest` — `100% tests passed, 0 tests failed out of 18` (44 s).
 - `kai-term-parser` prints `PASS`.
 - `kai-term-pty` prints `PASS: PTY output contains HELLO and resize 6 40`.
 - `kai-term-tmux-e2e` prints `PASS: tmux E2E matches tmux ground truth at all stages`.
@@ -217,18 +226,30 @@ Verified results on this machine:
 - `kai-term-scrollbar` prints `PASS: 25 scroll indicator geometry checks passed`.
 - `kai-term-process` prints `PASS: 31 process lifecycle checks passed`.
 - `kai-term-mouse` prints `PASS: 40 mouse encodings match the expected PTY bytes`.
-- `kai-term-selection` prints `PASS: 101 selection and text-extraction checks passed`.
+- `kai-term-selection` prints `PASS: 119 selection and text-extraction checks passed`.
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
   inspection performed)`. When btop is not installed it prints that the checks were not
   exercised instead of pretending to pass.
 - `kai-term-widget-smoke` prints `PASS: 100 offscreen widget checks passed (no visual inspection
   performed) [this platform has no separate X11-style selection: only the clipboard copy was
   exercised]`. The bracketed note is the test being honest about the platform it ran on.
+- `kai-term-ipc` prints `PASS: 43 protocol framing and field checks passed`.
+- `kai-term-sockets` prints `PASS: 44 unix socket checks passed`.
+- `kai-term-snapshot` prints `PASS: 64 screen snapshot checks passed`. A snapshot fed
+  into a fresh screen model reproduces it cell for cell, which is the property that makes
+  "attach and be shown the screen" true.
+- `kai-term-session` prints `PASS: 69 session daemon checks passed`, over a real pty and
+  a real socket with no display: a session outlives the view that started it, a second
+  view is shown the screen, two views see the same output, a view hanging up disturbs
+  nothing, terminal queries are answered, and stopping leaves no socket and no shell.
+- `kai-term-widget-session` prints `PASS: 14 window-showing-a-session checks passed`.
+- `kai-term-widget-panes` prints `PASS: 24 pane-scoped selection checks passed`, with
+  real mouse events across a pane boundary.
 - `tests/version.sh` prints `Kai-Term 0.0.0`.
 
-`kai-term-input-pty` needs a working `/bin/sh`, and `kai-term-widget-smoke` needs
-Qt's offscreen platform plugin; both set what they need themselves and open no
-window.
+`kai-term-input-pty` needs a working `/bin/sh`, and the widget tests need Qt's
+offscreen platform plugin; all of them set what they need themselves, open no window, and
+clean up the socket directory they made.
 
 Launching `./build/kai-term` automatically looks for a Wayland display under `$XDG_RUNTIME_DIR` when neither `WAYLAND_DISPLAY` nor a usable `DISPLAY` is set, and selects Qt's Wayland platform plugin. On X11, Qt's X11 backend is used.
 
@@ -247,6 +268,25 @@ KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term
 ```
 
 The shell is chosen from `KAI_SHELL`, then `SHELL`, then `/bin/sh`.
+
+Sessions — shells that stay alive when the window closes:
+
+```sh
+./build/kai-term session new -s work --cwd ~/src   # starts the daemon if it is not running
+./build/kai-term session list
+./build/kai-term open work                         # a window onto it
+./build/kai-term session attach -s work            # or this terminal
+./build/kai-term session send -s work --text 'make' --enter
+./build/kai-term session detach -s work            # send the views away, keep the shell
+./build/kai-term session kill -s work              # end the shell
+./build/kai-term session shutdown                  # stop the daemon and everything
+```
+
+The socket is `$XDG_RUNTIME_DIR/kai-term/daemon.sock`. `kai-daemon` runs the same loop in
+the foreground, which is the way to see why a daemon would not start. What is on the
+screen when attaching comes from the daemon's own model, so a session started this
+morning shows this morning; the scrollback above the visible screen is not transferred
+yet.
 
 ## Configuration
 
@@ -270,7 +310,15 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `src/terminal/vtparser.cpp` — native VT parser.
 - `src/terminal/base64.hpp` — the decoding OSC 52 needs, with no toolkit in it.
 - `src/terminal/terminalwidget.hpp` — Qt terminal widget, including the scrollback view.
+- `src/terminal/backend.hpp` — what the widget talks to: a pty, or a session elsewhere.
 - `src/process/pty.hpp` — PTY and shell lifecycle.
+- `src/ipc/protocol.hpp` — frames, escaped fields, record lists.
+- `src/ipc/socket.hpp` — socket paths, binding, stale sockets, peer credentials.
+- `src/session/snapshot.hpp` — a screen as escape sequences, for a view joining a session.
+- `src/session/daemon.hpp` — the session daemon: pty ownership, views, commands.
+- `src/session/sessionbackend.hpp` — a session across the socket, as a terminal backend.
+- `src/session/cli.hpp` — the `session` verbs.
+- `src/daemon/main.cpp` — `kai-daemon`, the same loop in the foreground.
 - `tests/parser.cpp` — parser test.
 - `tests/pty.cpp` — PTY test.
 - `tests/tmux_e2e.cpp` — tmux ground-truth comparison.
@@ -283,6 +331,12 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `tests/process.cpp` — shell lifecycle against real processes.
 - `tests/mouse_app.cpp` — btop driven with the mouse inside the widget.
 - `tests/widget_smoke.cpp` — offscreen widget test.
+- `tests/ipc.cpp` — protocol framing and field escaping.
+- `tests/sockets.cpp` — Unix sockets, paths, permissions, peer credentials.
+- `tests/snapshot.cpp` — screen snapshots, round-tripped through the model.
+- `tests/session.cpp` — the session daemon over a real pty and socket.
+- `tests/widget_session.cpp` — a window rendering a session owned by the daemon.
+- `tests/widget_panes.cpp` — selection clipped to the pane a drag started in.
 - `tests/version.sh` — version test.
 - `CMakeLists.txt` — build configuration.
 

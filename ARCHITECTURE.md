@@ -44,22 +44,77 @@ Limitations:
 
 ## Session daemon and IPC
 
-Planned socket location:
+One daemon per user, keeping sessions alive whether or not anybody is looking:
 
 ```
 $XDG_RUNTIME_DIR/kai-term/daemon.sock
 ```
 
-Planned protocol:
+The directory is 0700 and the socket 0600, and every connection is checked with
+`SO_PEERCRED` — the socket is a filesystem file, not an abstract one, so `ls` and
+`socat` work on it, which means it cannot trust its name alone. Every missing level of
+the path is created, since pointing `$XDG_RUNTIME_DIR` at a path of your own is how
+sessions end up somewhere specific and a daemon that cannot bind leaves nothing but a
+missing socket as the clue.
 
-- Framed messages with a magic prefix, protocol version, message length, request id, and JSON payload.
-- Protocol version is explicit and checked.
-- Incoming payloads are validated and size-limited.
-- Multiple GUI clients are supported where practical; session ownership remains explicit.
-- Client disconnect is treated as detach, not as a shell kill.
-- Stale sockets are detected by attempting a connection and verifying daemon identity.
+The protocol is frames, not JSON (`src/ipc/protocol.hpp`):
 
-The daemon owns PTY masters and shell process lifetimes. It also stores session metadata, window/pane layout, and terminal dimensions. Metadata persistence is not equivalent to preserving live process memory after a daemon crash.
+```
+<len:4><kind:1><body>
+```
+
+Kinds are `Hello`, `Data`, `Resize`, `Detach`, `Kill`, `List`, `Welcome`, `Snapshot`,
+`Exit`, `Error`, `SessionList`, `Ack`, `Clipboard`. Bodies that carry more than one thing
+are `key=value` pairs with `\\`, `\n`, `\r` and `=` escaped, and lists of records
+separated by `0x1e`. A version number and a request id were planned; neither earned its
+place — a mismatch is an `Error` frame either way, and one daemon per user means requests
+are answered in order on the connection that sent them.
+
+The daemon owns the PTY masters, the shell process lifetimes, and a `Screen` per session.
+Owning the model, rather than only the bytes, is what lets a view that attaches later be
+shown what is on the screen now: the daemon reflows its own model to the new size and
+sends an escape-sequence snapshot. Replaying raw bytes at a different column count lays
+them out wrong, and a session's history is not a recording of a screen.
+
+Because it owns the model, the daemon also answers the questions programs ask the
+terminal — device attributes, cursor position — which it must: nobody answering is not a
+silent failure, since fish waits ten seconds for a device attributes reply and then says
+so out loud, and tmux will not start properly. A program asking for its text to be copied
+(`OSC 52`) gets a `Clipboard` frame instead, because the daemon has no clipboard; a view
+that receives one puts it in the one it has. A program *asking for* the clipboard is not
+answered, for the same reason in reverse.
+
+Teardown rules, both learned the hard way:
+
+- A descriptor is never closed under a thread blocked reading it. The session's reader
+  thread owns the master and closes it last; a client socket belongs to the thread
+  serving it.
+- Waking that thread takes `shutdown(fd, SHUT_RDWR)`. `SHUT_WR` only tells the program on
+  the far end that the session is gone; the thread blocked in `read()` on our side is
+  woken by shutting down our own receive side.
+
+Client disconnect is a detach, never a shell kill. `kill` and `shutdown` are the ways a
+session ends.
+
+## Terminal window and its backends
+
+The widget does not know what it is talking to (`src/terminal/backend.hpp`): a descriptor
+to wait on, bytes in, bytes out, a size, and whether the far end is still there.
+`PtyBackend` is a shell started here; `SessionBackend` is a session across the socket,
+whose frames are turned back into bytes before the widget sees them.
+
+Two differences are in the interface rather than hidden behind it, because both were got
+wrong when they were hidden:
+
+- A pty has a child, and only collecting it says the shell left; a socket has no child
+  here, so its transport says so itself.
+- A pty is the terminal a program is asking questions of. A view of a remote session is
+  not, because the daemon already answered, and a second reply is a second answer for the
+  program to choose the wrong one from.
+
+Panes are the widget's business and its host's knowledge: `setPanes()` says which cells
+belong to which pane, and a drag is clipped to the one it started in. A terminal with one
+shell passes nothing and gets one pane, the screen.
 
 ## Multiplexer subsystem
 
@@ -109,38 +164,28 @@ Do not hardcode compositor-specific behavior. Keyboard, mouse, clipboard, drag-a
 
 ## Module layout
 
-Planned source structure:
-
 ```
 src/
-  app/
-  terminal/
-  process/
-  session/
-  daemon/
-  multiplexer/
-  filesystem/
-  filemanager/
-  editor/
-  platform/
-  config/
+  app/          main.cpp — the window, and the argument handling in front of it
+  daemon/       main.cpp — the same loop as `session serve`, in the foreground
+  ipc/          protocol.hpp (frames, fields, records), socket.hpp (bind, connect, peers)
+  process/      pty.hpp — forkpty, resize, read, reap
+  session/      daemon.hpp (sessions, views, commands), cli.hpp (the `session` verbs),
+                snapshot.hpp (a screen as escape sequences), sessionbackend.hpp
+  terminal/     screen.hpp, vtparser.cpp, terminalwidget.hpp, backend.hpp,
+                selection.hpp, text.hpp, keyencode.hpp, mouseencode.hpp,
+                scrollbar.hpp, base64.hpp
+  platform/     platform.hpp/.cpp — how Qt is told to behave on this machine
+  multiplexer/  filesystem/  filemanager/  editor/  config/   (not started)
 ```
 
-Current implemented modules:
+Everything under `ipc/`, `process/`, `session/` and `terminal/` except the widget is
+Qt-free and header-only, which is what makes the headless tests possible: they use the
+same code the application uses, not a reimplementation of it.
 
-- `src/app/main.cpp`
-- `src/terminal/screen.hpp`
-- `src/terminal/vtparser.cpp`
-- `src/terminal/terminalwidget.hpp`
-- `src/process/pty.hpp`
-- `src/platform/platform.hpp`
-- `src/platform/platform.cpp`
-
-- `src/app/main.cpp`
-- `src/terminal/screen.hpp`
-- `src/terminal/vtparser.cpp`
-- `src/terminal/terminalwidget.hpp`
-- `src/process/pty.hpp`
+Tests are one executable each under `tests/`, named for what they check, and registered
+with `ctest`. Those needing a display use `QT_QPA_PLATFORM=offscreen` and say so; those
+needing a shell use a real pty and `/bin/sh`.
 
 ## Reliability rules
 

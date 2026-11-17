@@ -2,7 +2,24 @@
 
 ## Current milestone
 
-**M3 — Native session infrastructure.** M1 and M2 are closed.
+**M4 — Native multiplexer.** M1, M2 and M3 are closed.
+
+M3 put the pty and the screen model in a process of their own: a session is
+something a window looks at rather than something a window keeps alive. There is a
+daemon (`kai-term session serve`, or `kai-daemon`), a framed protocol over a Unix
+socket, `session new|list|attach|detach|kill|send|shutdown` on the command line,
+`kai-term open NAME` for a window onto a running session, a backend seam so the widget
+cannot tell a local shell from a session across the socket, and pane-scoped selection
+so a drag stops at the edge of the pane it started in.
+
+**M3 has not been looked at by a person.** Every check in it runs headless or offscreen:
+69 daemon checks over a real pty and a real socket, 14 checks of a window rendering a
+session, 24 checks of drags across a pane boundary, plus the protocol, socket and
+snapshot tests. What an attached window looks like, and whether the verbs read well when
+a person is typing them, belongs to whoever runs it next.
+
+M1 and M2 are unchanged in that respect: tested headlessly and offscreen, and used at a
+live Wayland session by a person, but never inspected on X11.
 
 The native terminal emulator and the input work are implemented: mouse text
 selection with copy on demand, middle-click paste with bracketed-paste wrapping,
@@ -10,7 +27,7 @@ mouse reporting for applications, a scrollback view that reflows and shows where
 is, and a shell teardown that takes the whole session with it. The parser, PTY
 handling, keyboard and mouse byte encoding, scrollback model, scroll indicator,
 process lifecycle, selection geometry, text extraction and widget code paths are
-verified by headless tests (`ctest` runs twelve binaries, all passing), and one of
+verified by headless tests (`ctest` runs eighteen binaries, all passing), and one of
 them drives a real application (btop) with the mouse inside the widget. The GUI has
 been exercised with Qt's offscreen platform, and a person has used it at a live
 Wayland session for selection, paste into other applications and general
@@ -122,6 +139,48 @@ Work done after M2 closed, from an audit of what the terminal silently ignored:
   the digit after ESC is itself a hex digit; that trap is written down above, and
   still managed to happen again.
 
+M3 — sessions that outlive their window:
+
+- `src/ipc/protocol.hpp`: frames `<len><kind><body>` and `key=value` fields with
+  `\`, `\n`, `\r` and `=` escaped, records separated by `0x1e`. No JSON and no
+  dependency; a request id and a version field were planned and did not earn their
+  place — one daemon per user means a connection answers its own requests in order.
+- `src/ipc/socket.hpp`: `$XDG_RUNTIME_DIR/kai-term/<name>.sock`, directory 0700, socket
+  0600, `SO_PEERCRED` uid checked on every connection, a stale socket removed only if it
+  is a socket and ours, and a foreign file in the way reported rather than unlinked.
+  Every missing level of the path is created; `XDG_RUNTIME_DIR` pointing somewhere that
+  does not exist yet is how someone puts sessions in a place of their own, and it took a
+  real `kai-term open` to notice the daemon could not bind there.
+- `src/session/snapshot.hpp`: the daemon's `Screen` rendered back out as escape
+  sequences, so a view joining later is shown what is on the screen now. Round-tripped
+  through a fresh model in the test, cell for cell. This is why the daemon owns a model
+  rather than only the bytes: replaying raw output at a different column count lays the
+  screen out wrong.
+- `src/session/daemon.hpp`: sessions, views, and the commands; the reader thread per
+  session feeds the model, **answers the queries programs ask** (fish waits ten seconds
+  for a device attributes reply and then prints a warning about its terminal; tmux will
+  not start properly), turns `OSC 52` into a `Clipboard` frame for a view to carry, and
+  reaps the shell.
+- `src/terminal/backend.hpp` / `src/session/sessionbackend.hpp`: what the widget talks
+  to. Two differences are in the interface instead of hidden behind it, because both were
+  wrong when hidden — a pty has a child to notice leaving (a socket's transport says so
+  itself), and a pty is the terminal a program is asking questions of (a view of a remote
+  session answers nothing, or the program gets two replies).
+- Pane-scoped selection: `PaneRect` in `selection.hpp`, `setPanes()` on the widget, and
+  clipping in three places — the drag's ends, the middle rows of a multi-row drag
+  (`selectionTextInPane`), and the highlight (`selectedAt`). Three clicks take the line of
+  the pane, not of the screen. No panes means one pane, the screen; a press on a divider
+  selects unclipped rather than not at all. Turning the clipping off fails 12 of the 24
+  pane checks, which is how the tests were shown to be watching.
+- Learned about sockets and recorded in the code: waking a thread blocked in `read()` on
+  *our* socket needs `shutdown(fd, SHUT_RDWR)` — `SHUT_WR` only tells the peer; and
+  `send(..., MSG_NOSIGNAL)` fails with `ENOTSOCK` on a pipe, which is why CLI output uses
+  a plain `write` loop and an `attach` with its output redirected stopped printing
+  nothing at all.
+- A background daemon now execs `kai-term session serve`, because a copy of whatever
+  started it shows up in `ps` as `kai-term session new -s work --cwd /tmp` and nobody can
+  tell what is holding their shells.
+
 ## Current implementation
 
 Key files:
@@ -193,9 +252,9 @@ target; Qt's own headers trip one diagnostic that is suppressed where it is set.
 ctest --test-dir build --output-on-failure
 ```
 
-Result: `100% tests passed, 0 tests failed out of 12` (41 s; `widget-smoke` and
-`input-pty` are the slow ones, because both wait on real timeouts, and `process`
-waits on real signals).
+Result: `100% tests passed, 0 tests failed out of 18` (44 s; `widget-smoke` and
+`input-pty` are the slow ones, because both wait on real timeouts, `process` waits on
+real signals, and `session` waits on real shells).
 
 Individual results:
 
@@ -208,9 +267,15 @@ Individual results:
 - `./build/kai-term-scrollbar` → `PASS: 25 scroll indicator geometry checks passed`.
 - `./build/kai-term-process` → `PASS: 31 process lifecycle checks passed`.
 - `./build/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
-- `./build/kai-term-selection` → `PASS: 101 selection and text-extraction checks passed`.
+- `./build/kai-term-selection` → `PASS: 119 selection and text-extraction checks passed`.
 - `./build/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
 - `./build/kai-term-widget-smoke` → `PASS: 100 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/kai-term-ipc` → `PASS: 43 protocol framing and field checks passed`.
+- `./build/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
+- `./build/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.
+- `./build/kai-term-session` → `PASS: 69 session daemon checks passed`.
+- `./build/kai-term-widget-session` → `PASS: 14 window-showing-a-session checks passed`.
+- `./build/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
 - `QT_QPA_PLATFORM=offscreen KAI_SHELL=/bin/true ./build/kai-term` → exits 0.
@@ -232,6 +297,22 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 
 ## Known issues
 
+- **Nothing in M3 has been looked at by a person.** The daemon, the command line and the
+  window showing a session are tested with no display; the appearance and the feel of
+  them are unverified.
+- Attaching transfers the visible screen and not the scrollback above it, and the scroll
+  bar agrees with what was transferred, so a session that has been running since this
+  morning shows the last screenful and says there is nothing above it.
+- One view's size is the session's size and the last writer wins. Two windows of
+  different heights attached to one session will fight over it; a multiplexer has to
+  decide about that rather than leave it to whoever resized last.
+- Writes to views are blocking and serialised under one lock, so a client that stops
+  reading can stall a session's output. A person's window will not do this; a script that
+  attaches and stops reading can.
+- An `OSC 52` *read* — a program asking for the clipboard, over ssh for instance — is not
+  answered by the daemon, which has no clipboard. A view answers a copy request with the
+  clipboard it has, and answers a read query only when the session is a shell it started
+  itself.
 - Nobody has visually inspected the rendered terminal on X11, and this machine
   cannot: no X server, no `Xvfb`, and the live Wayland compositor is not reachable
   from a shell session.
@@ -288,22 +369,33 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 - `src/terminal/base64.hpp` — decoding and encoding for `OSC 52`, with no toolkit in it.
 - `src/terminal/terminalwidget.hpp` — Qt terminal widget and scrollback view.
 - `src/process/pty.hpp` — PTY and shell lifecycle.
+- `src/ipc/protocol.hpp`, `src/ipc/socket.hpp` — frames, fields, and the Unix socket.
+- `src/session/snapshot.hpp`, `daemon.hpp`, `sessionbackend.hpp`, `cli.hpp` — the session daemon, screen snapshots, the remote backend, and the `session` verbs.
+- `src/terminal/backend.hpp` — the seam between the widget and whatever is on the other end.
+- `src/daemon/main.cpp` — `kai-daemon`, the daemon loop in the foreground.
 - `tests/parser.cpp`, `tests/pty.cpp`, `tests/tmux_e2e.cpp`, `tests/input.cpp`,
   `tests/input_pty.cpp`, `tests/scrollback.cpp`, `tests/mouse.cpp`,
   `tests/selection.cpp`, `tests/scrollbar.cpp`, `tests/process.cpp`,
-  `tests/mouse_app.cpp`, `tests/widget_smoke.cpp`, `tests/version.sh` — the test
+  `tests/mouse_app.cpp`, `tests/widget_smoke.cpp`, `tests/ipc.cpp`,
+  `tests/sockets.cpp`, `tests/snapshot.cpp`, `tests/session.cpp`,
+  `tests/widget_session.cpp`, `tests/widget_panes.cpp`, `tests/version.sh` — the test
   binaries behind the results above.
 - `.gitignore` — ignores build artifacts, generated Qt code, editor state and scratch.
 
-## A requirement carried into M3
+## A requirement carried into M4
 
-Selection must be clipped to the pane it started in once Kai-Term has its own
-multiplexer: dragging inside one pane must never select text from a neighbouring
-pane. The terminal will know its own pane rectangles, so this is exact rather than
-guessed. It is deliberately **not** done for applications like tmux that draw their
-own splits inside a single screen — the terminal has no way to know where those
-panes are, and inferring them from box-drawing characters would be wrong often
-enough to be worse than useless. Agreed with Kaida on 2026-11-17.
+Pane-scoped selection is done in the terminal: `TerminalWidget::setPanes()` takes the
+cells each pane owns and a drag stops at the edge of the one it started in, including the
+highlight and a three-click line. What is left for the multiplexer is to **call it** — a
+split that does not describe its panes gets a terminal that selects across them, exactly
+as it did before the feature existed, so the requirement is met only if M4 passes the
+rectangles. The clipping itself is tested (`kai-term-widget-panes`); the wiring is not,
+because there is nothing to wire it to yet.
+
+Still deliberately **not** done for applications like tmux that draw their own splits
+inside a single screen: the terminal has no way to know where those panes are, and
+inferring them from box-drawing characters would be wrong often enough to be worse than
+useless. Agreed with Kaida on 2026-11-17.
 
 ## Next concrete tasks
 
@@ -311,7 +403,10 @@ enough to be worse than useless. Agreed with Kaida on 2026-11-17.
 1. Launch the real GUI in a Wayland and an X11 session and have a person confirm rendering, keyboard feel, scrollback scrolling and resize. Offscreen checks cannot substitute for this, and the X11 half needs a machine with an X server on it.
 2. Decide whether Shift+PageUp and friends stay terminal-owned or become configurable bindings.
 3. Run vim, less, htop and tmux at a real session with the mouse: confirm reports reach them, that Shift still lets you copy, and that middle click pastes between applications. btop is already covered by `kai-term-mouse-app`; the others are not.
-4. Implement M3 session daemon and IPC before multiplexer and file manager integration, and carry the pane-scoped selection requirement into it from the start.
+4. Have a person run the session path and say whether it reads well: `session new`, `session list`, `open NAME`, `session attach` from another terminal, `session send`, close the window, open it again. Nothing in M3 has been seen by eyes.
+5. Decide the two policy questions the daemon leaves open: what happens to a session's size when a second view of a different size attaches, and what a wedged client that stops reading should cost the session.
+6. Transfer scrollback on attach, or say in the UI that the view starts at the bottom of what was kept.
+7. Start M4 (splits, pane focus, pane resize) and call `setPanes()` from it, so the pane-scoped selection is wired rather than merely available.
 5. A CI workflow would catch the class of failure this machine only finds by hand: a build that warns, a test that hangs.
 
 Do not claim the GUI is verified until a person has run it and looked at it.
