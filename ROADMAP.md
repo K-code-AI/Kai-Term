@@ -51,17 +51,20 @@ Not yet verified:
 ## M2 — Terminal reliability
 
 Status: **in progress; selection, clipboard, paste and mouse reporting verified
-headlessly and offscreen; on-screen appearance and desktop clipboard behaviour not
-inspected**.
+headlessly, offscreen, and against a live session; interactive applications other
+than btop have not been driven with the mouse**.
 
 Implemented:
 
 - Mouse text selection: drag, double-click for a word, triple-click for a line,
-  copy on release, and selecting retained lines while scrolled up. Shift takes the
-  mouse back from an application that grabbed it.
-- Clipboard on copy, and middle-click paste. Newlines in a paste become carriage
-  returns, and the payload is fenced with `ESC[200~` / `ESC[201~` when the
-  application asked for bracketed paste.
+  Shift+click to move the end of a selection, and selecting retained lines while
+  scrolled up. Shift takes the mouse back from an application that grabbed it. The
+  highlight follows its text as output arrives or the view scrolls, and is dropped
+  once it leaves the window.
+- Copy on demand with Ctrl+Shift+C, paste with Ctrl+Shift+V or middle click.
+  A finished drag offers PRIMARY on X11 and leaves the clipboard alone. Newlines in
+  a paste become carriage returns, and the payload is fenced with `ESC[200~` /
+  `ESC[201~` when the application asked for bracketed paste.
 - Mouse reporting: click, drag and any-event tracking, wheel reports, modifier
   bits, and classic, urxvt, SGR and hexadecimal SGR coordinates, isolated in
   `src/terminal/mouseencode.hpp` as a pure function.
@@ -70,27 +73,38 @@ Implemented:
   the screen.
 - The mode bits those features read (`?1000`, `?1002`, `?1003`, `?1006`, `?1015`,
   `?1016`, `?2004`) are tracked and cleared on reset.
+- SGR and hexadecimal SGR reports written the way xterm reads them:
+  `CSI < button ; column ; row M`. They were previously written with the
+  coordinates first and without the leading `<`, which made every report
+  unreadable to the application — btop ignored all clicks, wheel turns and
+  selections because of it.
 - New tests: `kai-term-mouse` (exact report bytes), `kai-term-selection` (selection
   geometry and text), a mouse phase in `kai-term-input-pty` (reports replayed
-  through a real PTY), mode-state checks in `kai-term-scrollback`, and selection,
-  paste and reporting checks in `kai-term-widget-smoke`, where the reports are read
-  back from the terminal's own tty with `cat`. `ctest` runs all nine.
+  through a real PTY), mode-state checks in `kai-term-scrollback`, selection, paste
+  and reporting checks in `kai-term-widget-smoke`, where the reports are read back
+  from the terminal's own tty with `cat`, and `kai-term-mouse-app`, which runs btop
+  inside the widget and checks that its own scroll counter moves. `ctest` runs all
+  ten.
+
+Confirmed at a live Wayland session (2026-11-17): the selection reads as a
+selection, selected text pastes into other applications, and general appearance is
+acceptable. That session is also where the btop bug turned up.
 
 Not yet verified:
 
-- What a selection looks like on a real display, and whether the highlight reads as
-  one.
-- PRIMARY selection and middle-click between applications on your X11 or Wayland
-  session. Qt's offscreen platform has a clipboard but no separate selection, so
-  the tests cover our side of the call only.
-- Interactive applications with the mouse grabbed (vim, htop, less, tmux) at a real
-  session.
+- Colours, fonts and spacing on a real display.
+- Interactive applications other than btop with the mouse grabbed (vim, htop, less,
+  tmux).
+- Clipboard and PRIMARY behaviour on X11 specifically; what was confirmed was
+  Wayland.
 
 Needed:
 
 - Unicode and color refinements.
 - Broader escape-sequence coverage.
 - A scrollbar or scroll indicator.
+- Dragging a selection past the top or bottom edge of the window should keep
+  scrolling; right now the drag stops at the edge.
 - Process lifecycle edge cases.
 - X11 and Wayland runtime verification.
 

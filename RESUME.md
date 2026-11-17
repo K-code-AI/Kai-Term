@@ -8,8 +8,9 @@ The native terminal emulator is implemented, and so is the first half of M2: mou
 text selection with copy-on-select, middle-click paste with bracketed-paste
 wrapping, and mouse reporting for applications. The parser, PTY handling, keyboard
 and mouse byte encoding, scrollback model, selection geometry, text extraction and
-widget code paths are verified by headless tests (`ctest` runs nine binaries, all
-passing). The GUI has been exercised with Qt's offscreen platform, and it has
+widget code paths are verified by headless tests (`ctest` runs ten binaries, all
+passing), and one of them drives a real application (btop) with the mouse inside the
+widget. The GUI has been exercised with Qt's offscreen platform, and it has
 **not** been visually inspected on a live Wayland or X11 session. The offscreen
 platform also has no X11-style PRIMARY selection, so clipboard behaviour against a
 real desktop is **not** verified either.
@@ -30,7 +31,10 @@ The old project of the same name was deliberately not reused; this is a fresh tr
 - GPL-3.0-only license, expanded `.gitignore`.
 - Mouse text selection (drag, double-click word, triple-click line), copy on release, selection over retained lines while scrolled up, and Shift to take the mouse back from an application that grabbed it.
 - Middle-click paste, newlines normalised to carriage returns, fenced with `ESC[200~` / `ESC[201~` when the application asked for bracketed paste.
-- Mouse reporting: `?1000` click, `?1002` drag, `?1003` any-event, wheel as buttons 64/65, Shift/Meta/Ctrl bits, and classic, urxvt, SGR and hex-SGR coordinates.
+- Mouse reporting: `?1000` click, `?1002` drag, `?1003` any-event, wheel as buttons 64/65, Shift/Meta/Ctrl bits, and classic, urxvt, SGR and hex-SGR coordinates. The SGR and hex-SGR forms were later fixed: they were written with the coordinates before the button and without the leading `<`, so no application could read them.
+- Copy on demand: Ctrl+Shift+C and Ctrl+Shift+V. Finishing a drag no longer touches the clipboard; it offers PRIMARY on X11 and leaves the highlight for the user to read.
+- A selection follows its text: it moves when output pushes lines or the view scrolls, and is dropped when its lines leave the window. Shift+click moves the end of a selection.
+- `kai-term-mouse-app`: btop run inside the widget offscreen, checked by watching its own scroll counter move.
 - Screen, row and selection text extraction as pure functions.
 - Headless tests: parser, PTY, tmux ground truth, key encoding, key and mouse encoding through a real PTY, scrollback and mode state, mouse encoding, selection and text extraction, offscreen widget smoke.
 - Removed the libvterm dependency from the design and docs.
@@ -46,7 +50,7 @@ Key files:
 - `src/terminal/selection.hpp` — `CellPos`, `Selection{anchor, head}` with the head column exclusive, and `expandToWord()`, which takes a classifier callback so it does not depend on the cell representation.
 - `src/terminal/text.hpp` — `rowText()`, `screenText()`, `selectionText()`, and `selectionTextAt()`, which takes a row callback so the widget can resolve scrolled-back rows through the same code.
 - `src/terminal/vtparser.cpp` — native VT parser. Handles cursor movement, SGR colors/attributes, erase, OSC ignore, DEC save/restore, UTF-8, and scroll.
-- `src/terminal/terminalwidget.hpp` — Qt widget. Reads PTY output on a reader thread and posts output events to the Qt event loop. Keyboard input is encoded by `keyencode.hpp` and written to the PTY master. Holds `scroll_offset_`, the number of lines scrolled back from the live bottom, and the current `Selection`. Mouse press, move and release either build a selection or, when the application asked for reporting, go to `encodeMouse()` and the PTY; `cellSize()` and `cellTopLeft()` expose the grid geometry so a test can aim at a character.
+- `src/terminal/terminalwidget.hpp` — Qt widget, owning the selection, the copy and paste bindings, and the scrollback view. Reads PTY output on a reader thread and posts output events to the Qt event loop. Keyboard input is encoded by `keyencode.hpp` and written to the PTY master. Holds `scroll_offset_`, the number of lines scrolled back from the live bottom, and the current `Selection`. Mouse press, move and release either build a selection or, when the application asked for reporting, go to `encodeMouse()` and the PTY; `cellSize()` and `cellTopLeft()` expose the grid geometry so a test can aim at a character.
 - `src/process/pty.hpp` — `forkpty()` PTY and shell lifecycle. The child branch execs the shell; the parent owns the master descriptor. Resize uses `TIOCSWINSZ`.
 - `src/app/main.cpp` — application entry point and terminal widget setup.
 - `src/platform/platform.hpp` / `platform.cpp` — Qt platform-plugin selection.
@@ -70,8 +74,13 @@ Important implementation notes:
 - A paste turns `\n` into `\r` and collapses `\r\n` into one newline, so a pasted script cannot run commands that were never pressed. Bracketed-paste fencing is applied per paste, based on the mode the application currently has set.
 - The classic three-byte report carries button and both coordinates as single bytes offset by 32, so the largest coordinate it can name is 223; further out the coordinate clamps rather than the event being dropped. The SGR forms have no such limit and are asserted at column 256.
 - A release is button code 3 in the classic and urxvt forms, which have no release marker, and the released button's own code with a lower-case `m` terminator in the SGR forms.
-- New output clears the selection. A highlight that silently drifts onto different characters is worse than one that disappears; keeping a selection pinned to its text is later work.
+- **Fixed:** the SGR and hex-SGR mouse reports were written as `CSI < col ; row ; button M`. xterm's form is `CSI < button ; col ; row M`, and the leading `<` is what distinguishes a mouse report from a colour change. Every report was therefore garbage to the application: btop, which asks for `?1002;1006`, ignored all clicks, wheel turns and selections. `tests/mouse.cpp` and `kai-term-input-pty` both passed the whole time because both were written from the same wrong idea as the encoder — a byte-level test only proves the encoder is self-consistent. `kai-term-mouse-app` is what closes that gap: it runs btop and checks that the application's own state moved. When a protocol has an implementation available, assert against the implementation, not against your reading of it.
+- A selection is kept in display coordinates and slid by however far the text underneath it moved, measured as the change in `viewTop()` (`historySize() - scroll_offset_`) across an output burst or a scroll. One helper, `keepSelectionOnScreen()`, serves both, because output and scrolling are the same thing to a selection. It is dropped when any part of it leaves the window: a highlight pointing at text nobody selected is worse than one that disappears.
+- Ctrl+Shift+C and Ctrl+Shift+V are matched before any other key handling and return early, so Ctrl+Shift+C cannot fall through to `encodeKey()` and send Ctrl+C, which would interrupt whatever is running. The same early handling means a copy does not clear the selection it is about to read.
+- Finishing a drag calls `offerSelection()` (PRIMARY only, X11) rather than `copySelection()` (clipboard and PRIMARY). This is the behaviour a person asked for after using it: auto-copy on release overwrote the clipboard during ordinary reading, and copying is what Ctrl+Shift+C is for.
 - Word characters for double-click are ASCII letters, digits and underscore, matching shell word movement. Punctuation and non-ASCII glyphs select one cell at a time.
+- `tests/mouse_app.cpp` aims clicks by walking cells, not by searching a row's text for a byte offset: btop draws box-drawing characters, so a byte offset is several columns past the character it was meant to hit, and a click that lands in the wrong box looks exactly like the application ignoring the mouse. The same trap applies to finding the scroll counter, which is searched from the bottom of the screen up because `/` also appears in the memory gauges and in the paths in the process list.
+- `pasteText()` on this machine's `/bin/sh` (bash 5.3) does not execute what it pastes, because bash asks for bracketed paste (`?2004`) and the paste is correctly fenced. Tests that need a command to run type it with key events and press Return instead. This looks like a broken paste and is not one.
 - `tests/widget_smoke.cpp` reads back what the widget writes to the PTY by running `printf` to set modes, then `stty raw -echo; timeout 2 cat > file`, delivering the events, and comparing the file with the bytes `encodeMouse()` should have produced. The shell is still reading commands when the modes are set, which is why the setup runs as one command line before `cat` starts.
 - `forkpty()` returns a valid master descriptor in the parent but the child branch must execute before checking `master < 0`; this was fixed earlier.
 - The child shell gets `TERM=xterm-256color` so a `dumb` inherited term does not break shell startup.
@@ -101,7 +110,7 @@ Result: build succeeded, no compiler warnings.
 ctest --test-dir build --output-on-failure
 ```
 
-Result: `100% tests passed, 0 tests failed out of 9` (28.6 s; `widget-smoke` and
+Result: `100% tests passed, 0 tests failed out of 10` (33.9 s; `widget-smoke` and
 `input-pty` are the slow ones now, because both wait on real timeouts).
 
 Individual results:
@@ -114,7 +123,8 @@ Individual results:
 - `./build/kai-term-scrollback` → `PASS: 56 scrollback, cursor-mode and mouse-mode checks passed`.
 - `./build/kai-term-mouse` → `PASS: 36 mouse encodings match the expected PTY bytes`.
 - `./build/kai-term-selection` → `PASS: 101 selection and text-extraction checks passed`.
-- `./build/kai-term-widget-smoke` → `PASS: 40 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
+- `./build/kai-term-widget-smoke` → `PASS: 53 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
 - `QT_QPA_PLATFORM=offscreen KAI_SHELL=/bin/true ./build/kai-term` → exits 0.
@@ -138,9 +148,10 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 
 - Nobody has visually inspected the rendered terminal on a live Wayland or X11 session.
 - No scrollbar widget, no scroll-position indicator, no "N lines above" hint.
-- Selection appearance, PRIMARY selection across applications, and mouse reporting against real interactive applications have not been inspected at a live session; offscreen Qt has a clipboard but no X11-style selection.
-- A selection is dropped when new output arrives, so copying from a continuously updating display (a log tail, `yes`) needs the drag finished during a pause.
-- There is no keyboard copy or paste binding yet (Ctrl+Shift+C and friends); copy happens on release and paste on middle click.
+- What a person has confirmed at a live Wayland session (niri, 2026-11-17): the selection reads as a selection, selected text pastes into other applications, and the general appearance is fine. That session found the btop bug, which is fixed and now covered by `kai-term-mouse-app`.
+- Interactive applications other than btop (vim, less, htop, tmux) have still not been driven with the mouse by anyone, and X11 specifically has not been checked.
+- Dragging a selection past the top or bottom edge stops at the edge; nothing scrolls.
+- A selection is kept in *display* coordinates and shifted to follow its text, so a selection whose lines have been dropped by the 1000-line scrollback cap is cleared rather than copied from memory. Anchoring to absolute buffer lines would remove that limit.
 - History rows keep the width they were written at; reflowing scrollback on resize is not done.
 - Shift+PageUp/Home/End are claimed by the terminal, so they are not available to applications; a configurable binding is needed before this is final.
 - Unicode width handling is basic; combining characters and unusual emoji sequences may need refinement.
@@ -170,16 +181,16 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 - `src/process/pty.hpp` — PTY and shell lifecycle.
 - `tests/parser.cpp`, `tests/pty.cpp`, `tests/tmux_e2e.cpp`, `tests/input.cpp`,
   `tests/input_pty.cpp`, `tests/scrollback.cpp`, `tests/mouse.cpp`,
-  `tests/selection.cpp`, `tests/widget_smoke.cpp`, `tests/version.sh` — the test
-  binaries behind the results above.
+  `tests/selection.cpp`, `tests/mouse_app.cpp`, `tests/widget_smoke.cpp`,
+  `tests/version.sh` — the test binaries behind the results above.
 - `.gitignore` — ignores build artifacts, generated Qt code, editor state and scratch.
 
 ## Next concrete tasks
 
 1. Launch the real GUI in a Wayland and an X11 session and have a person confirm rendering, keyboard feel, scrollback scrolling and resize. Offscreen checks cannot substitute for this.
 2. Add a scrollbar or scroll-position indicator, and decide whether Shift+PageUp and friends stay terminal-owned.
-3. Run vim, less, htop and tmux at a real session with the mouse: confirm reports reach them, that Shift still lets you copy, and that middle click pastes between applications.
-4. Add a keyboard copy binding (Ctrl+Shift+C) and a paste binding, then decide what to do about a selection that survives new output.
+3. Run vim, less, htop and tmux at a real session with the mouse: confirm reports reach them, that Shift still lets you copy, and that middle click pastes between applications. btop is already covered by `kai-term-mouse-app`; the others are not.
+4. Scroll the view when a selection drag reaches the top or bottom edge, the way every other text surface does.
 5. Reflow scrollback rows on resize instead of keeping their original width.
 6. Implement M3 session daemon and IPC before multiplexer and file manager integration.
 

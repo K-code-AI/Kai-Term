@@ -5,8 +5,9 @@ Kai-Term is a native Linux terminal workspace: a terminal emulator, a dual-pane 
 ## Current status
 
 M1 (the native terminal emulator) is implemented. M2 (input reliability: text
-selection, clipboard, paste, and mouse reporting) is implemented and tested
-headlessly; the milestone list is in [ROADMAP.md](ROADMAP.md).
+selection, clipboard, paste, and mouse reporting) is implemented, tested headlessly
+and offscreen, and has been used at a live Wayland session; the milestone list is in
+[ROADMAP.md](ROADMAP.md).
 
 The terminal emulator does **not** depend on `libvterm`; Kai-Term uses its own VT parser and screen model. Rendering uses a monospace font with cell spacing derived from the font advance.
 
@@ -41,10 +42,16 @@ Implemented:
 - Ignores DCS payloads and handles `ESC =` at chunk boundaries without printing stray `[K` text.
 - Shell exit closes the Qt terminal window/app.
 - Mouse text selection: drag to select, double-click for a word, triple-click for
-  a line. Finishing a drag copies the text; no key chord is needed. Selecting
-  while scrolled up copies the retained lines, not the live rows underneath.
-  Holding Shift while clicking takes the mouse back from an application that
-  grabbed it, the xterm convention, which is how you copy out of vim.
+  a line, Shift+click to move the end of a selection without dragging across the
+  whole window. Selecting while scrolled up selects the retained lines, not the
+  live rows underneath. Holding Shift while clicking takes the mouse back from an
+  application that grabbed it, the xterm convention, which is how you copy out of
+  vim.
+- **Ctrl+Shift+C** copies the selection; nothing else does. A finished drag leaves
+  the clipboard alone, so selecting a path does not throw away what you were about
+  to paste. The highlight stays on the text it was made on: it moves with the text
+  when output arrives or when you scroll, and it is dropped once its lines leave
+  the window rather than left pointing at different characters.
 - Middle click pastes. Newlines in pasted text become carriage returns, so pasting
   a script cannot run commands that were never pressed. When the application asks
   for it (`ESC[?2004h`), the paste is wrapped in the bracketed-paste markers
@@ -54,13 +61,20 @@ Implemented:
   bits, and the classic three-byte, urxvt (`ESC[?1015h`), SGR (`ESC[?1006h`) and
   hexadecimal SGR (`ESC[?1016h`) coordinate forms. The encoding is a pure function
   in `src/terminal/mouseencode.hpp`, asserted on exact bytes.
+  `kai-term-mouse-app` also runs a real application (btop) inside the widget and
+  confirms the reports are understood: btop asks for `?1002;1006`, and its own
+  scroll counter moves when the wheel is turned. That test exists because the SGR
+  form was being written as `CSI < col ; row ; button M` instead of xterm's
+  `CSI < button ; col ; row M` — unreadable to anything parsing it, and invisible
+  to byte-level tests written from the same wrong idea.
 - Text extraction is a pure function too (`src/terminal/text.hpp`): the text of a
   row, of the whole screen, or of a selection, with the padding that terminal rows
   carry trimmed off and double-width glyphs counted once.
-- Clipboard support is Qt's: on X11 the selection goes to both the clipboard and
-  PRIMARY, so a middle click in another terminal picks it up; on platforms without
-  a separate selection only the clipboard is set. Which one your desktop offers is
-  not something the headless tests can tell you — see the note above.
+- Clipboard support is Qt's. Ctrl+Shift+C sets both the clipboard and, on X11,
+  PRIMARY; a finished drag offers PRIMARY only, which is what selecting text has
+  always meant there. Middle click reads PRIMARY first and falls back to the
+  clipboard, so a selection in one terminal still pastes into another. On platforms
+  without a separate selection only the clipboard exists.
 - Session daemon, multiplexer, and file manager are not implemented yet.
 
 The widget has been exercised without a display server (`QT_QPA_PLATFORM=offscreen`):
@@ -72,16 +86,19 @@ produced, so the assertion is about what a program inside the terminal receives.
 That proves the code paths run, that scrolling and selecting change what is
 painted, and that the right bytes reach the shell.
 
-Two things it cannot prove, and no test here claims them:
+Two things the tests cannot prove, and no test here claims them:
 
-- It is **not** a visual inspection — nobody has confirmed what the rendered
-  terminal looks like on a live Wayland or X11 session, including whether the
-  selection colours read as a selection.
+- It is **not** a visual inspection of colours, fonts or spacing.
 - Qt's offscreen platform has no real desktop clipboard: it has a clipboard and no
   X11-style PRIMARY selection, so the tests exercise our side of the call only.
-  Whether a middle click in another terminal picks up your selection, and whether
-  vim or htop behave as you expect with mouse reporting on, still needs a person
-  at a real session.
+
+What a person has confirmed at a live Wayland session (niri, 2026-11-17): the
+selection reads as a selection, selected text can be pasted into other
+applications, and the general appearance is acceptable. That session also found
+the btop bug described above — btop ignored every click, wheel turn and selection —
+which the headless suite had missed and which `kai-term-mouse-app` now covers.
+Interactive applications other than btop (vim, less, htop, tmux) have still not
+been driven with the mouse by anyone.
 
 ## Build requirements
 
@@ -113,6 +130,7 @@ This builds:
 - `build/kai-term-scrollback` — scrollback model, cursor-mode and mouse-mode state.
 - `build/kai-term-mouse` — mouse encoding, asserted on exact bytes.
 - `build/kai-term-selection` — selection geometry and the text it produces.
+- `build/kai-term-mouse-app` — a real application (btop) driven with the mouse.
 - `build/kai-term-widget-smoke` — the real widget driven offscreen.
 
 ## Tests
@@ -132,13 +150,14 @@ or individually:
 ./build/kai-term-scrollback
 ./build/kai-term-mouse
 ./build/kai-term-selection
+./build/kai-term-mouse-app
 ./build/kai-term-widget-smoke
 ./tests/version.sh ./build/kai-term
 ```
 
 Verified results on this machine:
 
-- `ctest` — `100% tests passed, 0 tests failed out of 9`.
+- `ctest` — `100% tests passed, 0 tests failed out of 10` (34 s).
 - `kai-term-parser` prints `PASS`.
 - `kai-term-pty` prints `PASS: PTY output contains HELLO and resize 6 40`.
 - `kai-term-tmux-e2e` prints `PASS: tmux E2E matches tmux ground truth at all stages`.
@@ -148,7 +167,10 @@ Verified results on this machine:
 - `kai-term-scrollback` prints `PASS: 56 scrollback, cursor-mode and mouse-mode checks passed`.
 - `kai-term-mouse` prints `PASS: 36 mouse encodings match the expected PTY bytes`.
 - `kai-term-selection` prints `PASS: 101 selection and text-extraction checks passed`.
-- `kai-term-widget-smoke` prints `PASS: 40 offscreen widget checks passed (no visual inspection
+- `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
+  inspection performed)`. When btop is not installed it prints that the checks were not
+  exercised instead of pretending to pass.
+- `kai-term-widget-smoke` prints `PASS: 53 offscreen widget checks passed (no visual inspection
   performed) [this platform has no separate X11-style selection: only the clipboard copy was
   exercised]`. The bracketed note is the test being honest about the platform it ran on.
 - `tests/version.sh` prints `Kai-Term 0.0.0`.
@@ -205,6 +227,7 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `tests/scrollback.cpp` — scrollback model and mode-state test.
 - `tests/mouse.cpp` — mouse encoding byte assertions.
 - `tests/selection.cpp` — selection geometry and text extraction.
+- `tests/mouse_app.cpp` — btop driven with the mouse inside the widget.
 - `tests/widget_smoke.cpp` — offscreen widget test.
 - `tests/version.sh` — version test.
 - `CMakeLists.txt` — build configuration.
