@@ -102,6 +102,16 @@ public:
     int scrollRegionBottom() const { return scroll_bottom_; }
     bool originMode() const { return origin_mode_; }
     bool autoWrap() const { return autowrap_; }
+
+    // DECSCUSR shapes. There is no "blinking" in here because nothing animates:
+    // the blinking variants select the same shape as their steady counterparts,
+    // which is said out loud rather than stored as a flag nothing reads.
+    enum class CursorShape {
+        Underline, // Kai-Term's own default, and DECSCUSR's "user default"
+        Block,
+        Bar
+    };
+    CursorShape cursorShape() const { return cursor_shape_; }
     int cols() const { return cols_; }
     int cursorX() const { return cursor_x_; }
     int cursorY() const { return cursor_y_; }
@@ -602,6 +612,7 @@ private:
     Color saved_bg_{30, 30, 30};
     Attr saved_attr_{};
     bool saved_autowrap_ = true;
+    CursorShape cursor_shape_ = CursorShape::Underline;
     bool autowrap_ = true;
     bool pending_wrap_ = false;
     bool origin_mode_ = false;
@@ -1237,6 +1248,10 @@ private:
         autowrap_ = true;
         pending_wrap_ = false;
         origin_mode_ = false;
+        cursor_shape_ = CursorShape::Underline;
+        default_fg_ = Color{220, 220, 220};
+        default_bg_ = Color{30, 30, 30};
+        resetPalette(std::string_view{}); // every custom palette entry goes back
         g0_charset_ = 0;
         g1_charset_ = 0;
         gl_is_g1_ = false;
@@ -1625,6 +1640,15 @@ private:
     }
 
     void processCsi(const std::string& params, char final) {
+        // Intermediates — the space in DECSCUSR, the `!` in a soft reset — arrive
+        // in the same buffer as the parameters, because the parser collects
+        // everything up to the final byte.
+        std::string intermediate_before_final;
+        for (char c : params) {
+            if (c >= ' ' && c <= '/')
+                intermediate_before_final.push_back(c);
+        }
+
         std::vector<int> p;
         std::size_t i = 0;
         while (i < params.size()) {
@@ -1727,6 +1751,30 @@ private:
                 if (params.empty() || params[0] == '>' || params[0] == '=')
                     restoreCursor();
                 break;
+            case 'q': {
+                // DECSCUSR, `CSI Ps SP q`, picks the cursor shape. The space is an
+                // intermediate and arrives in the same buffer as the parameters, so
+                // the number is read from the front here: the shared parse would
+                // read "5 " as no number at all and give every shape the default.
+                // A `q` with a private marker is the kitty keyboard protocol's push
+                // or release, which this terminal does not implement.
+                if (intermediate_before_final.find(' ') == std::string::npos)
+                    break;
+                int n = 0;
+                for (char c : params) {
+                    if (c < '0' || c > '9')
+                        break;
+                    n = n * 10 + (c - '0');
+                }
+                switch (n) {
+                    case 1: case 2: cursor_shape_ = CursorShape::Block; break;
+                    case 3: case 4: cursor_shape_ = CursorShape::Underline; break;
+                    case 5: case 6: cursor_shape_ = CursorShape::Bar; break;
+                    case 0: case 9: cursor_shape_ = CursorShape::Underline; break; // user default
+                    default: break; // 7 and up name nothing; leave the shape alone
+                }
+                break;
+            }
             case 't': {
                 // XTWINOPS. tmux emits CSI 22;0;0t on entering the alternate
                 // screen and CSI 18 t to ask how large the window is, and this
@@ -1813,6 +1861,7 @@ private:
                     origin_mode_ = false;
                     cursor_visible_ = true;
                     pending_wrap_ = false;
+                    cursor_shape_ = CursorShape::Underline;
                 }
                 break;
             default:

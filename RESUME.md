@@ -77,6 +77,15 @@ Work done after M2 closed, from an audit of what the terminal silently ignored:
   keeping the old margins, which seemed the better behaviour, left a window that
   grew from 24 rows to 50 unable to scroll at all, because rows 25 to 49 were
   outside the region, and the widget test's `seq 1 60` produced no history.
+- DECSCUSR (`ESC[<n> q`) selects the cursor shape — block, underline or bar — and
+  the widget draws all three. Kai-Term's default stays the underline it has always
+  drawn, so an application that never asks sees no change. Getting a fair offscreen
+  comparison took some thought: the sequence has to be printed by a program inside
+  the terminal (bytes typed at a prompt are eaten by the line editor and never reach
+  the terminal's own parser), and each command costs a line of screen, so the
+  assertion compares the cell the cursor stands on rather than the whole window. A
+  full and a soft reset hand the shape back, and `ESC c` now also returns the colour
+  defaults and any custom palette entries.
 - `-Wall -Wextra` on for the whole build, compiling clean. What it found the same
   day: a `string_view` over a temporary `std::string` in the SGR parser — invisible
   at `-O1`, wrong at `-O3` — and an initialiser list whose order was not the
@@ -172,7 +181,7 @@ Individual results:
 - `./build/kai-term-mouse` → `PASS: 36 mouse encodings match the expected PTY bytes`.
 - `./build/kai-term-selection` → `PASS: 101 selection and text-extraction checks passed`.
 - `./build/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
-- `./build/kai-term-widget-smoke` → `PASS: 86 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/kai-term-widget-smoke` → `PASS: 91 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
 - `QT_QPA_PLATFORM=offscreen KAI_SHELL=/bin/true ./build/kai-term` → exits 0.
@@ -208,8 +217,10 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 - Cells store a resolved RGB colour, not a palette index, so `OSC 4` and `OSC 10/11`
   recolour what is written from then on and leave what is already on screen alone.
 - `OSC 8` hyperlinks are parsed and discarded: the text renders and cannot be followed.
-- Accepted and ignored, because there is nothing to draw them with yet: DECSCUSR
-  (`ESC[<n> q`) cursor shapes, SGR 53 overline, `?2026` synchronized output.
+- Accepted and ignored, because there is nothing to draw them with yet: SGR 53
+  overline and `?2026` synchronized output. Cursor blink is the same category:
+  DECSCUSR's blinking variants select their steady shape, and SGR 5 and 6 set a flag
+  nothing animates.
 - `?1005` UTF-8 mouse coordinates are unhandled. Applications ask for SGR (`?1006`),
   and `?1016` covers coordinates past 223.
 - A one-sided scroll region (`ESC[3r`), a bottom bound past the last row and an

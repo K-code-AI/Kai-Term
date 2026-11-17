@@ -47,7 +47,9 @@ Implemented:
 - Escape-sequence coverage beyond the basics: OSC 0/1/2 titles with the `ESC[22 t`
   and `ESC[23 t` stack, OSC 7 working directory, OSC 52 clipboard set and query,
   OSC 10/11 and OSC 4/104 colours, XTWINOPS size and title queries, the kitty
-  keyboard query answered, SGR sub-parameters in both spellings.
+  keyboard query answered, SGR sub-parameters in both spellings, and DECSCUSR
+  (`ESC[<n> q`) cursor shapes — block, underline, vertical bar — all three drawn and
+  asserted offscreen by comparing the picture of the cell the cursor stands on.
 - Headless parser, PTY, tmux ground-truth, input, PTY-input, scrollback, scroll
   indicator, process lifecycle and offscreen widget tests.
 
@@ -65,7 +67,7 @@ Known limits, deliberately left:
   affects what is drawn afterwards and not what is already on screen.
 - OSC 8 hyperlinks are consumed, not stored: the text renders and cannot be
   followed.
-- DECSCUSR (`ESC[<n> q`) is accepted and ignored; there is one cursor shape to draw.
+- Cursor blink is not animated: DECSCUSR's blinking variants select their steady shape, and SGR 5 and 6 set a flag nothing reads yet.
 - `?2026` synchronized output is accepted and ignored, so a program that relies on
   it for tear-free updates gets the ordinary paint cadence.
 
@@ -125,8 +127,8 @@ Needed:
 
 - X11 runtime verification, which needs a machine with an X server on it.
 - Interactive applications driven with the mouse by a person: vim, less, htop, tmux.
-- SGR 53 (overline) and DECSCUSR cursor shapes, both accepted-and-ignored today
-  because there is nothing to draw them with yet.
+- SGR 53 (overline), accepted and ignored because there is nothing to draw it with.
+- Cursor blink: a timer for SGR 5/6 and for DECSCUSR's blinking variants.
 - `?1005` UTF-8 mouse coordinates, unhandled; every application worth supporting
   asks for SGR (`?1006`) instead, and `?1016` covers the wide-window case.
 - `?2026` synchronized output, if tearing ever turns out to matter at a real frame

@@ -711,6 +711,50 @@ int main() {
         ok &= lok;
     }
 
+    // DECSCUSR: `CSI Ps SP q` picks the cursor shape.
+    {
+        bool lok = true;
+        using Shape = kai::Screen::CursorShape;
+        struct Case {
+            const char* seq;
+            Shape want;
+        };
+        const Case cases[] = {
+            {"\x1b[1 q", Shape::Block},      {"\x1b[2 q", Shape::Block},
+            {"\x1b[3 q", Shape::Underline},  {"\x1b[4 q", Shape::Underline},
+            {"\x1b[5 q", Shape::Bar},        {"\x1b[6 q", Shape::Bar},
+            {"\x1b[0 q", Shape::Underline},  {"\x1b[9 q", Shape::Underline},
+            {"\x1b[ q", Shape::Underline},
+            {"\x1b[7 q", Shape::Bar}, // names nothing, so the shape stays as it was
+        };
+        for (const Case& c : cases) {
+            kai::Screen s(4, 20);
+            s.feed("\x1b[5 q"); // start somewhere other than the answer
+            s.feed(c.seq);
+            if (s.cursorShape() != c.want) {
+                std::printf("DECSCUSR %s gave shape %d, wanted %d\n", c.seq,
+                            static_cast<int>(s.cursorShape()), static_cast<int>(c.want));
+                lok = false;
+            }
+        }
+        {
+            // Without the space it is not DECSCUSR, and a `q` that means something
+            // else must not be made into a cursor request.
+            kai::Screen s(4, 20);
+            s.feed("\x1b[5q");
+            lok &= (s.cursorShape() == Shape::Underline);
+        }
+        {
+            kai::Screen s(4, 20);
+            s.feed("\x1b[6 q\x1b" "c"); // RIS hands the shape back
+            lok &= (s.cursorShape() == Shape::Underline);
+            s.feed("\x1b[5 q\x1b[!p"); // so does a soft reset
+            lok &= (s.cursorShape() == Shape::Underline);
+        }
+        if (!lok) fail("DECSCUSR cursor shape");
+        ok &= lok;
+    }
+
     if (ok) {
         std::cout << "PASS\n";
         return 0;

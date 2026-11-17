@@ -628,14 +628,40 @@ public:
         }
 
         // Visible terminal cursor; tmux hides it during redraws via ESC[?25l.
-        // It belongs to the live screen, so it is not drawn over history.
+        // It belongs to the live screen, so it is not drawn over history. Its
+        // shape is the application's to choose (DECSCUSR); the default is the
+        // underline this terminal has always drawn.
         if (scroll_offset_ == 0 && screen_.cursorVisible()) {
             const int cx = std::clamp(screen_.cursorX(), 0, cols_ - 1);
             const int cy = std::clamp(screen_.cursorY(), 0, rows_ - 1);
-            p.fillRect(QRectF(padding_ + cx * cw,
-                        padding_ + cy * ch + ch - 2.0,
-                        cw, 2.0),
-                       QColor(220, 220, 220, 210));
+            const Cell& under = screen_.at(cy, cx);
+            const double x = padding_ + cx * cw;
+            const double y = padding_ + cy * ch;
+            const double span = cw * std::max(1, under.width);
+            p.setPen(Qt::NoPen);
+            switch (screen_.cursorShape()) {
+                case Screen::CursorShape::Block:
+                    // A block covers the glyph it is on, which is only readable if
+                    // that glyph is drawn again on top in the colour it is now
+                    // sitting on. Skip the second pass and the character under the
+                    // cursor simply disappears — a block cursor that eats text.
+                    p.setBrush(QColor(220, 220, 220));
+                    p.drawRect(QRectF(x, y, span, ch));
+                    if (!under.text.empty()) {
+                        p.setPen(QColor(under.bg.r, under.bg.g, under.bg.b));
+                        p.setBrush(Qt::NoBrush);
+                        p.drawText(QPointF(x, y + fm.ascent()), QString::fromStdString(under.text));
+                    }
+                    break;
+                case Screen::CursorShape::Bar:
+                    p.setBrush(QColor(220, 220, 220, 210));
+                    p.drawRect(QRectF(x, y, std::min(2.0, cw), ch));
+                    break;
+                case Screen::CursorShape::Underline:
+                    p.setBrush(QColor(220, 220, 220, 210));
+                    p.drawRect(QRectF(x, y + ch - 2.0, span, 2.0));
+                    break;
+            }
         }
 
         // The scroll indicator is painted last, over the grid, so it never takes

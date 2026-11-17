@@ -53,6 +53,7 @@ Implemented:
 - Scroll regions (`ESC[...r]`) and scroll-content-up/down (`ESC[...S]` / `ESC[...T]`) are supported for tmux-style layouts, including a region given on one side only (`ESC[3r`) and a bottom bound past the last row. Lines SU pushes off the top of a whole screen go into the scrollback, as a newline's would.
 - OSC sequences that applications send and expect an answer from: window and icon title (`OSC 0/1/2`, with `OSC 23;1` and the `ESC[22 t` / `ESC[23 t` title stack), the working directory (`OSC 7`, percent-decoded), the clipboard (`OSC 52`, both set and query — a program inside the terminal can copy text out, and can read the clipboard when it asks), the default foreground and background (`OSC 10/11`) and palette entries (`OSC 4`, reset by `OSC 104`).
 - XTWINOPS (`ESC[...t`) answers the questions programs block waiting on: text area in pixels and in characters, cell size in pixels, and the window title. The kitty keyboard query (`ESC[?u`) is answered with "no", which is what lets a program finish starting up.
+- DECSCUSR (`ESC[<n> q`) sets the cursor shape: block, underline or vertical bar. Kai-Term's own default stays the underline it has always drawn, so nothing changes for an application that never asks; the blinking variants select their steady shape, since nothing here animates yet. A full reset (`ESC c`) hands the shape back along with the colour defaults and any palette entries an application changed.
 - Colour specifications in both spellings: `38;5;196` and `38:5:196`, `38;2;r;g;b` and `38:2::r:g:b`. An index outside the palette leaves the colour alone rather than inventing one.
 - Primary Device Attribute queries (`ESC[c]` and `ESC[0c]`) are answered.
 - Answers fish’s Primary Device Attribute query (`ESC[0c`) so fish startup does not print the 10-second warning.
@@ -193,7 +194,7 @@ or individually:
 
 Verified results on this machine:
 
-- `ctest` — `100% tests passed, 0 tests failed out of 12` (41 s).
+- `ctest` — `100% tests passed, 0 tests failed out of 12` (42 s).
 - `kai-term-parser` prints `PASS`.
 - `kai-term-pty` prints `PASS: PTY output contains HELLO and resize 6 40`.
 - `kai-term-tmux-e2e` prints `PASS: tmux E2E matches tmux ground truth at all stages`.
@@ -208,7 +209,7 @@ Verified results on this machine:
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
   inspection performed)`. When btop is not installed it prints that the checks were not
   exercised instead of pretending to pass.
-- `kai-term-widget-smoke` prints `PASS: 86 offscreen widget checks passed (no visual inspection
+- `kai-term-widget-smoke` prints `PASS: 91 offscreen widget checks passed (no visual inspection
   performed) [this platform has no separate X11-style selection: only the clipboard copy was
   exercised]`. The bracketed note is the test being honest about the platform it ran on.
 - `tests/version.sh` prints `Kai-Term 0.0.0`.

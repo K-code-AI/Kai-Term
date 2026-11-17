@@ -795,6 +795,46 @@ int main(int argc, char** argv) {
     expect("an application can give the title back", waitFor(
         [&] { return w.windowTitle().isEmpty(); }, 4000));
 
+    // DECSCUSR: the application picks the cursor shape, and a different shape has
+    // to be a different picture. The sequence has to come from a program inside
+    // the terminal — bytes typed at the prompt are swallowed by the line editor and
+    // never reach this terminal's parser — so each shape is set with printf. That
+    // costs a line of screen each time, which is why the comparison is made over
+    // the cell the cursor stands on rather than the whole window: that cell is
+    // empty background in both pictures, so whatever differs is the marker.
+    {
+        auto cursorCell = [&](const QImage& image) {
+            const QPointF top = w.cellTopLeft(w.screen().cursorY(), w.screen().cursorX());
+            const QSizeF cell = w.cellSize();
+            const QRect area(QPoint(int(top.x()) - 1, int(top.y()) - 1),
+                             QSize(int(cell.width()) + 2, int(cell.height()) + 2));
+            return image.copy(area.intersected(image.rect()));
+        };
+
+        sendText(&w, "printf '\\033[6 q'"); // a steady bar
+        sendKey(&w, Qt::Key_Return);
+        const bool bar_seen =
+            waitFor([&] { return w.screen().cursorShape() == kai::Screen::CursorShape::Bar; }, 2000);
+        expect("DECSCUSR selects the bar cursor", bar_seen);
+        const QImage bar_cell = cursorCell(grabImage(&w));
+
+        sendText(&w, "printf '\\033[2 q'"); // a steady block
+        sendKey(&w, Qt::Key_Return);
+        const bool block_seen =
+            waitFor([&] { return w.screen().cursorShape() == kai::Screen::CursorShape::Block; }, 2000);
+        expect("DECSCUSR selects the block cursor", block_seen);
+        const QImage block_cell = cursorCell(grabImage(&w));
+        expect("a different shape is a different picture", differingPixels(bar_cell, block_cell) > 0);
+
+        sendText(&w, "printf '\\033[ q'"); // no parameter: the terminal's own shape
+        sendKey(&w, Qt::Key_Return);
+        const bool default_seen = waitFor(
+            [&] { return w.screen().cursorShape() == kai::Screen::CursorShape::Underline; }, 2000);
+        expect("DECSCUSR with no parameter means the terminal's own shape", default_seen);
+        expect("the default shape is drawn differently from the block",
+               differingPixels(block_cell, cursorCell(grabImage(&w))) > 0);
+    }
+
     w.shutdown();
 
     if (failures == 0) {
