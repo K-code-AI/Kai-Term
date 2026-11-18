@@ -95,6 +95,16 @@ void sendKey(kai::TerminalWidget* w, int key, Qt::KeyboardModifiers mods = Qt::N
     QCoreApplication::sendEvent(w, &ev);
 }
 
+// Type a line and press Enter. Pasting a line is not the same as running it: with
+// bracketed paste on, which bash and fish both turn on, a shell takes a pasted newline
+// as text inside the paste and leaves the command sitting at the prompt. That is the
+// right behaviour, and it means a test that pastes a command and then looks for its
+// output would be finding the command line instead.
+void runLine(kai::TerminalWidget* w, const std::string& command) {
+    w->pasteText(command);
+    sendKey(w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+}
+
 
 } // namespace
 
@@ -127,7 +137,7 @@ int main(int argc, char** argv) {
     // when the window appears. A blank window that fills in on the next output would
     // be the obvious way to get this wrong, and would look like a crashed session.
     expect("the session takes a line to print",
-           daemon.type("shown", "echo ALREADY-ON-SCREEN\n"));
+           daemon.type("shown", "M=ALREADY; echo ${M}-ON-SCREEN\n"));
     pump(700);
 
     kai::TerminalWidget window(24, 80, std::make_unique<SessionBackend>("shown", 24, 80));
@@ -138,21 +148,22 @@ int main(int argc, char** argv) {
 
     // Typing goes out over the socket, into the shell, and what the shell says comes
     // back the same way. Both halves have to work for the text to land here.
-    window.pasteText("echo FROM-THE-WINDOW\n");
+    runLine(&window, "M=FROM; echo ${M}-THE-WINDOW");
     expect("typing reaches the session and comes back",
            waitFor([&window] { return onScreen(window).find("FROM-THE-WINDOW") != std::string::npos; }));
 
     {
-        // Keys, not just paste: a Return has to reach the shell as a line ending.
-        window.pasteText("echo KEY-");
+        // Keys, not just paste. The pasted text has no newline in it and bracketed
+        // paste is on, so it can only be the Return that runs the command — which is
+        // what makes the second check about the key rather than about the paste.
+        window.pasteText("M=KEY; echo ${M}-PRESSED");
+        expect("a pasted line waits at the prompt",
+               waitFor([&window] {
+                   return onScreen(window).find("KEY-PRESSED") == std::string::npos;
+               }, 700));
         sendKey(&window, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
         expect("a key press reaches the session too",
-               waitFor([&window] {
-                   const std::string text = onScreen(window);
-                   return text.find("echo KEY-\r\n") != std::string::npos ||
-                          text.find("echo KEY-\n") != std::string::npos ||
-                          text.find("KEY-\r") != std::string::npos;
-               }));
+               waitFor([&window] { return onScreen(window).find("KEY-PRESSED") != std::string::npos; }));
     }
 
     {
@@ -187,15 +198,42 @@ int main(int argc, char** argv) {
         expect("closing the window leaves nobody watching", one_viewer);
         expect("and leaves the session running",
                !daemon.list().empty() && daemon.list()[0].alive);
-        expect("which still takes typing", daemon.type("shown", "echo AFTER-THE-WINDOW\n"));
-        kai::TerminalWidget again(24, 80, std::make_unique<SessionBackend>("shown", 24, 80));
-        again.show();
-        expect("and a new window finds the same session with the same screen",
-               waitFor([&again] {
-                   const std::string text = onScreen(again);
-                   return text.find("AFTER-THE-WINDOW") != std::string::npos &&
-                          text.find("ALREADY-ON-SCREEN") != std::string::npos;
+        expect("which still takes typing",
+               daemon.type("shown", "M=AFTER; echo ${M}-THE-WINDOW\n"));
+        // Wait for the shell to have *run* it before a window joins. Typing at a shell
+        // only queues it: the terminal echoes what was typed the moment the bytes
+        // arrive, and the output appears when the shell is scheduled and does the work.
+        // On a machine doing six of these at once that is not instant, and a window
+        // joining in between would be shown a screen without the line and blamed for
+        // it — which is how this check failed now and then while passing on its own.
+        expect("and the shell ran it while nobody was looking",
+               waitFor([&daemon] {
+                   return writtenInto("shown").find("AFTER-THE-WINDOW") != std::string::npos;
                }));
+        // Joined at the size the session has, not at a size picked here. Attaching at
+        // a different one reflows the screen, and a line the reflow pushes off the top
+        // does not come across: a snapshot carries the screen that is showing, not the
+        // scrollback behind it, which is a known open question rather than a surprise.
+        int rows_now = 24;
+        int cols_now = 80;
+        for (const SessionInfo& info : daemon.list()) {
+            if (info.name == "shown") {
+                rows_now = info.rows;
+                cols_now = info.cols;
+            }
+        }
+        kai::TerminalWidget again(rows_now, cols_now,
+                                  std::make_unique<SessionBackend>("shown", rows_now, cols_now));
+        again.show();
+        const bool found_both = waitFor([&again] {
+            const std::string text = onScreen(again);
+            return text.find("AFTER-THE-WINDOW") != std::string::npos &&
+                   text.find("ALREADY-ON-SCREEN") != std::string::npos;
+        });
+        if (!found_both)
+            std::cerr << "[debug] the new window was given:\n" << onScreen(again)
+                      << "[end]\n";
+        expect("and a new window finds the same session with the same screen", found_both);
         again.shutdown();
     }
 
@@ -220,7 +258,7 @@ int main(int argc, char** argv) {
         kai::TerminalWidget window(24, 80, std::make_unique<SessionBackend>("first", 24, 80));
         window.resize(800, 500);
         window.show();
-        window.pasteText("echo FIRST-SHELL\n");
+        runLine(&window, "M=FIRST; echo ${M}-SHELL");
         expect("the window shows the shell it started with",
                waitFor([&window] { return onScreen(window).find("FIRST-SHELL") != std::string::npos; }));
 
@@ -231,7 +269,7 @@ int main(int argc, char** argv) {
         expect("a kept session exists to be restored", daemon.create(second_spec, error));
         pump(400);
         expect("and it has something on its screen already",
-               daemon.type("second", "echo SECOND-SHELL\n"));
+               daemon.type("second", "M=SECOND; echo ${M}-SHELL\n"));
         pump(500);
 
         window.showSession(std::make_unique<SessionBackend>("second", 24, 80), false);
@@ -244,7 +282,7 @@ int main(int argc, char** argv) {
                    static bool typed = false;
                    if (!typed) {
                        typed = true;
-                       window.pasteText("echo AFTER-THE-SWITCH\n");
+                       runLine(&window, "M=AFTER; echo ${M}-THE-SWITCH");
                    }
                    return onScreen(window).find("AFTER-THE-SWITCH") != std::string::npos;
                }));
@@ -324,7 +362,7 @@ int main(int argc, char** argv) {
         // Sent on, Ctrl+Shift+D would be an end-of-file at the prompt and the shell
         // would be gone, so the shell being alive afterwards is the proof it never
         // arrived.
-        window.pasteText("echo AFTER-THE-BINDS\n");
+        runLine(&window, "M=AFTER; echo ${M}-THE-BINDS");
         expect("neither keybind reaches the shell",
                waitFor([&window] {
                    return onScreen(window).find("AFTER-THE-BINDS") != std::string::npos;

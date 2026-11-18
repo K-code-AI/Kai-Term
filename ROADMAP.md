@@ -193,10 +193,10 @@ view of a session rather than the thing keeping it alive.
 - New tests: `kai-term-ipc` (framing and field escaping), `kai-term-sockets` (paths,
   binding, stale sockets, peer credentials, directories that have to be created),
   `kai-term-snapshot` (a screen snapshot fed back into a fresh model reproduces it cell
-  for cell), `kai-term-session` (69 checks over a real pty and a real socket),
+  for cell), `kai-term-session` (96 checks over a real pty and a real socket),
   `kai-term-widget-session` (a window showing a session: what was already printed,
-  typing, size, closing the window, a second window), `kai-term-widget-panes` (real
-  mouse drags across a pane boundary). `ctest` runs all eighteen.
+  typing, size, closing the window, a second window, being pointed at another shell),
+  `kai-term-widget-panes` (real mouse drags across a pane boundary).
 
 Not yet verified:
 
@@ -224,14 +224,32 @@ Needed:
 
 ## M4 — Native multiplexer
 
-Status: **pending**.
+Status: **in progress, headless**. No part of it has been looked at by a person.
+
+Done:
+
+- Every window's shell runs under the session daemon, which is started for the window if
+  nothing is running. Nothing has to be launched before the terminal works; a window that
+  cannot reach a daemon says so once and runs a shell of its own.
+- **Ctrl+Shift+D** keeps the shell and starts a fresh one in the same window. The window
+  stays, because what ended was the shell.
+- **Ctrl+Shift+A** lists the kept sessions with what is happening in each and brings the
+  one you click back into this window.
+- Closing a window with something running asks — Yes, No, or Detach session before
+  closing terminal — and names the program, from the process group the terminal owns.
+  Nothing is asked about a shell at a prompt, or about a session that was kept, because
+  closing a window does not stop either.
+- Kept and unkept sessions are different things, and losing a window by accident does not
+  destroy an unkept one. See ARCHITECTURE.md.
+- A window can be pointed at another shell while it stays open, which is what restoring
+  means; pane clipping from M3 is in place and waiting for a host that draws splits.
 
 Needed:
 
-- Horizontal and vertical splits.
+- Horizontal and vertical splits, with `setPanes()` called with the cells each pane owns.
 - Pane selection and resizing.
 - Multiple windows and tabs.
-- Session switching.
+- A scrollback that comes across with a session when a second view joins it.
 
 ## M5 — File manager
 

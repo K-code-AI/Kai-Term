@@ -6,10 +6,13 @@ Kai-Term is a native Linux terminal workspace: a terminal emulator, a dual-pane 
 
 M1 (the native terminal emulator), M2 (input reliability: text selection,
 clipboard, paste, and mouse reporting) and M3 (native session infrastructure) are
-implemented and tested. M1 and M2 have been used at a live Wayland session; **M3 has
-not been looked at by a person** — every check in it is headless or offscreen, so what a
-window showing a session looks like, and what it feels like to use, is still somebody
-else's to say. Since the last milestone closed, the parts an audit found thin have been
+implemented and tested, and M4 (the native multiplexer) has its first pieces: every
+window's shell is held by the session daemon, **Ctrl+Shift+D** keeps one and starts a
+fresh shell in the same window, **Ctrl+Shift+A** brings a kept one back, and closing a
+window with something running asks rather than ends. M1 and M2 have been used at a live
+Wayland session; **none of M3 or M4 has been looked at by a person** — every check in
+them is headless or offscreen, so what a window showing a session looks like, and what
+it feels like to use, is still somebody else's to say. Since the last milestone closed, the parts an audit found thin have been
 filled in: scrollback reflows when
 the window changes width, the view says where it is in the history, a selection
 dragged to an edge scrolls, the shell's process tree is taken down with it, and the
@@ -167,21 +170,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-This builds:
+This builds one program, `build/kai-term`, and twenty test binaries under
+`build/tests/`. One program matters: the daemon is `kai-term session serve`, not a second
+executable to install, version and get out of step with the terminal it serves. The tests
+are kept out of the way because someone who has just built the terminal should not have to
+work out which of twenty-one files is the terminal.
 
-- `build/kai-term` — the application.
-- `build/kai-term-parser` — headless VT parser test.
-- `build/kai-term-pty` — headless PTY test.
-- `build/kai-term-tmux-e2e` — parser comparison against real tmux output.
-- `build/kai-term-input` — key encoding, asserted on exact bytes.
-- `build/kai-term-input-pty` — the same sequences replayed through a real PTY.
-- `build/kai-term-scrollback` — scrollback model, cursor-mode and mouse-mode state.
-- `build/kai-term-mouse` — mouse encoding, asserted on exact bytes.
-- `build/kai-term-selection` — selection geometry and the text it produces.
-- `build/kai-term-scrollbar` — the scroll-position indicator and the view bounds it reads.
-- `build/kai-term-process` — shell lifecycle: exit status, signals, leftover jobs, an unusable shell.
-- `build/kai-term-mouse-app` — a real application (btop) driven with the mouse.
-- `build/kai-term-widget-smoke` — the real widget driven offscreen.
+The tests are listed under [Tests](#tests); `cmake --build build` builds all of them, and
+`cmake --build build --target kai-term` builds only the application.
 
 ## Tests
 
@@ -210,12 +206,14 @@ or individually:
 ./build/tests/kai-term-session
 ./build/tests/kai-term-widget-session
 ./build/tests/kai-term-widget-panes
+./build/tests/kai-term-app-window
+./build/tests/kai-term-close-prompt
 ./tests/version.sh ./build/kai-term
 ```
 
 Verified results on this machine:
 
-- `ctest` — `100% tests passed, 0 tests failed out of 18` (44 s).
+- `ctest` — `100% tests passed, 0 tests failed out of 20` (51 s).
 - `kai-term-parser` prints `PASS`.
 - `kai-term-pty` prints `PASS: PTY output contains HELLO and resize 6 40`.
 - `kai-term-tmux-e2e` prints `PASS: tmux E2E matches tmux ground truth at all stages`.
@@ -238,11 +236,23 @@ Verified results on this machine:
 - `kai-term-snapshot` prints `PASS: 64 screen snapshot checks passed`. A snapshot fed
   into a fresh screen model reproduces it cell for cell, which is the property that makes
   "attach and be shown the screen" true.
-- `kai-term-session` prints `PASS: 69 session daemon checks passed`, over a real pty and
+- `kai-term-session` prints `PASS: 96 session daemon checks passed`, over a real pty and
   a real socket with no display: a session outlives the view that started it, a second
   view is shown the screen, two views see the same output, a view hanging up disturbs
-  nothing, terminal queries are answered, and stopping leaves no socket and no shell.
-- `kai-term-widget-session` prints `PASS: 14 window-showing-a-session checks passed`.
+  nothing, terminal queries are answered, an unsaved session survives a window that
+  vanished without saying anything and dies when one says it is closing, a kept session
+  is kept under a name and a taken name is refused, what is running out front is named,
+  and stopping leaves no socket and no shell.
+- `kai-term-widget-session` prints `PASS: 36 window-showing-a-session checks passed`,
+  including a window switched from one shell to another: the screen it shows is the one
+  it is looking at, typing after the switch reaches the new shell and not the old one, a
+  kept session outlives the window moving on and an unsaved one does not.
+- `kai-term-app-window` prints `PASS: 22 application window checks passed`: a window
+  gets a shell held by the daemon without asking for one, Ctrl+Shift+D keeps it and
+  starts a fresh one in the same window, a kept session comes back into the window that
+  asks for it, and the program the close prompt would name is the one that is running.
+- `kai-term-close-prompt` prints `PASS: 14 close prompt checks passed` — when closing
+  asks at all, and whether the words name the thing being lost.
 - `kai-term-widget-panes` prints `PASS: 24 pane-scoped selection checks passed`, with
   real mouse events across a pane boundary.
 - `tests/version.sh` prints `Kai-Term 0.0.0`.
@@ -290,6 +300,33 @@ screen when attaching comes from the daemon's own model, so a session started th
 morning shows this morning; the scrollback above the visible screen is not transferred
 yet.
 
+### From inside a window
+
+An ordinary window needs nothing starting first: it asks the daemon for its shell, and
+the daemon is started if it is not there. If it cannot be started the window says so
+once in the corner and runs a shell of its own, which works the same except that
+nothing can be kept.
+
+- **Ctrl+Shift+D** keeps the shell this window is showing and starts a fresh one in the
+  same window. The window stays, because what ended was the shell, not the window. The
+  kept session gets a name (`s1`, `s2`, …) and the corner says which.
+- **Ctrl+Shift+A** opens a menu of the kept sessions with what is happening in each —
+  `s1   sleep`, `s2   at a prompt` — and clicking one brings it back into this window.
+  The session already being shown is not in the list.
+- Closing a window with something running asks **"Quit while `make` is running?"** with
+  **Yes**, **No** and **Detach session before closing terminal**. A shell sitting at a
+  prompt is not asked about, and neither is a kept session, because closing a window
+  does not stop a session that was kept.
+
+A window's own shell is a session like any other, but unsaved: it is not listed as one
+of yours, it does not stop the window closing, and closing the window on purpose ends
+it. Losing that window *without* meaning to — a crash, a `kill -9` — leaves the shell
+behind, listed by `session list` as **left behind**, so the work is still there.
+
+Nothing here has been looked at by a person: the keybinds, the menu and the close
+prompt are tested offscreen, which checks what they decide and what they would show, not
+what they look like.
+
 ## Configuration
 
 Configuration handling is not implemented yet. TOML configuration is planned.
@@ -303,6 +340,8 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `LICENSE` — GPL-3.0 license text.
 - `RESUME.md` — handoff state.
 - `src/app/main.cpp` — application entry point.
+- `src/app/appwindow.hpp` — the window a person runs: the two keybinds, the menu, the close prompt.
+- `src/app/closeprompt.hpp` — when closing has to ask, and what it says (Qt-free).
 - `src/platform/platform.hpp` / `platform.cpp` — Qt platform-plugin selection.
 - `src/terminal/screen.hpp` — native screen model.
 - `src/terminal/keyencode.hpp` — Qt key event to PTY bytes, as a pure function.
@@ -314,6 +353,7 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `src/terminal/terminalwidget.hpp` — Qt terminal widget, including the scrollback view.
 - `src/terminal/backend.hpp` — what the widget talks to: a pty, or a session elsewhere.
 - `src/process/pty.hpp` — PTY and shell lifecycle.
+- `src/process/job.hpp` — what is running in the foreground of a terminal.
 - `src/ipc/protocol.hpp` — frames, escaped fields, record lists.
 - `src/ipc/socket.hpp` — socket paths, binding, stale sockets, peer credentials.
 - `src/session/snapshot.hpp` — a screen as escape sequences, for a view joining a session.
@@ -337,6 +377,8 @@ Configuration handling is not implemented yet. TOML configuration is planned.
 - `tests/snapshot.cpp` — screen snapshots, round-tripped through the model.
 - `tests/session.cpp` — the session daemon over a real pty and socket.
 - `tests/widget_session.cpp` — a window rendering a session owned by the daemon.
+- `tests/app_window.cpp` — keeping a session, restoring one, and what closing would ask about.
+- `tests/close_prompt.cpp` — when a close asks, and whether the words name the right thing.
 - `tests/widget_panes.cpp` — selection clipped to the pane a drag started in.
 - `tests/version.sh` — version test.
 - `CMakeLists.txt` — build configuration.

@@ -129,6 +129,17 @@ public:
         });
     }
 
+    // Say that this window is being closed and what it is showing was not kept, so
+    // that the teardown in the destructor ends the session rather than only leaving it.
+    // Nothing else calls this. A window merely going away is not somebody throwing
+    // work away, and a terminal that assumed it was would be losing builds.
+    void discardOnClose() { closing_on_close_ = true; }
+
+    // What is running out front in this window, when it is not just the shell. Empty
+    // for a session owned by the daemon, which is the one place that can answer that
+    // about a shell it owns; whoever is asking asks the daemon instead.
+    std::string foregroundProgram() const { return backend_->foregroundJobName(); }
+
     void shutdown() {
         running_ = false;
         // The child goes first, and the reader is joined before the master is
@@ -136,7 +147,7 @@ public:
         // that number free to be handed to somebody else's open() while the read
         // is still in flight, so teardown waits for the reader to notice the end
         // of the stream on its own.
-        backend_->stopProcess();
+        backend_->stopProcess(closing_on_close_);
         if (reader_.joinable())
             reader_.join();
         backend_->release();
@@ -933,6 +944,7 @@ private:
     std::atomic<int> generation_{0};
     std::string status_;
     QTimer* status_timer_ = nullptr;
+    bool closing_on_close_ = false;
     double padding_ = 10.0;
 
     // Rows moved by one wheel notch, and how far the view is scrolled back from

@@ -13,11 +13,19 @@ socket, `session new|list|attach|detach|kill|send|shutdown` on the command line,
 cannot tell a local shell from a session across the socket, and pane-scoped selection
 so a drag stops at the edge of the pane it started in.
 
-**M3 has not been looked at by a person.** Every check in it runs headless or offscreen:
-69 daemon checks over a real pty and a real socket, 14 checks of a window rendering a
-session, 24 checks of drags across a pane boundary, plus the protocol, socket and
-snapshot tests. What an attached window looks like, and whether the verbs read well when
-a person is typing them, belongs to whoever runs it next.
+M4 has its first pieces in: a window's shell is held by the daemon (started for the
+window, not before it), Ctrl+Shift+D keeps that shell and starts a fresh one in the same
+window, Ctrl+Shift+A brings a kept one back with a mouse-usable menu, and closing a
+window with something running asks instead of ending it. A window can be pointed at
+another shell while it stays open, which is what restoring means.
+
+**None of M3 or M4 has been looked at by a person.** Every check in them runs headless or
+offscreen: 96 daemon checks over a real pty and a real socket, 36 checks of a window
+rendering a session and switching between two, 22 checks of the application window's
+keybinds and menu contents, 14 of when a close asks at all, 24 checks of drags across a
+pane boundary, plus the protocol, socket and snapshot tests. What an attached window
+looks like, what the menu looks like and what the close prompt reads like when you are
+holding a build you did not want to lose belongs to whoever runs it next.
 
 M1 and M2 are unchanged in that respect: tested headlessly and offscreen, and used at a
 live Wayland session by a person, but never inspected on X11.
@@ -28,7 +36,7 @@ mouse reporting for applications, a scrollback view that reflows and shows where
 is, and a shell teardown that takes the whole session with it. The parser, PTY
 handling, keyboard and mouse byte encoding, scrollback model, scroll indicator,
 process lifecycle, selection geometry, text extraction and widget code paths are
-verified by headless tests (`ctest` runs eighteen binaries, all passing), and one of
+verified by headless tests (`ctest` runs twenty binaries, all passing), and one of
 them drives a real application (btop) with the mouse inside the widget. The GUI has
 been exercised with Qt's offscreen platform, and a person has used it at a live
 Wayland session for selection, paste into other applications and general
@@ -182,6 +190,38 @@ M3 — sessions that outlive their window:
   started it shows up in `ps` as `kai-term session new -s work --cwd /tmp` and nobody can
   tell what is holding their shells.
 
+Work done since, which is the start of M4 — the workflow a person described rather than
+the one a multiplexer manual describes:
+
+- `kai-daemon` is gone. One program is built; the daemon is `kai-term session serve`, and
+  a window asks for a daemon rather than requiring one. Twenty test binaries moved to
+  `build/tests/` so the build directory holds the terminal and nothing else.
+- A session records whether it has been kept. A window's shell is unkept and named `w1`,
+  `w2` …; `session list` does not show those, but does show one that was left behind when
+  a window died without saying so, next to a column naming what is running out front.
+- `Detach` with `discard=1` ends an unkept session; silence does not. That is the whole
+  difference between closing a terminal and losing one, and it is a message field rather
+  than a new command so a view that does not know about it still detaches safely.
+- `save` promotes a session, optionally renaming it, and refuses a name in use.
+- `src/process/job.hpp`: the foreground process group of a terminal, read from `/proc`,
+  empty when it is the shell. This is what a close prompt names.
+- `TerminalWidget::showSession()` points an open window at another shell: the reader is
+  joined before the backend it reads from dies, the far end is told whether this window is
+  closing or only looking elsewhere, the model is emptied, and reader events carry the
+  number of the shell that produced them so a late byte from the old one cannot be painted
+  on the new screen.
+- `src/app/appwindow.hpp`: Ctrl+Shift+D keeps and starts fresh, Ctrl+Shift+A offers the
+  kept ones, closing with something running asks. `src/app/closeprompt.hpp` holds the
+  decision with no Qt in it, so the asking is testable and only the dialog has to be
+  looked at.
+- An `OSC 52` read (`… ; ?`, which is what vim and scp send — an empty payload alone was
+  treated as the query, so the commonest form of it emptied the clipboard instead) is
+  forwarded to views with `query=1`, and a view's answer goes back down as a `Data` frame.
+- Three checks in the widget tests were found to be passing without testing anything: they
+  pasted a command and looked for its output, and a shell with bracketed paste on — bash
+  and fish both — leaves a pasted command sitting at the prompt. They press Return now and
+  look for what the command *prints*, which is not in what was typed.
+
 ## Current implementation
 
 Key files:
@@ -194,7 +234,21 @@ Key files:
 - `src/terminal/vtparser.cpp` — native VT parser. Handles cursor movement, SGR colors/attributes, erase, OSC ignore, DEC save/restore, UTF-8, and scroll.
 - `src/terminal/terminalwidget.hpp` — Qt widget, owning the selection, the copy and paste bindings, and the scrollback view. Reads PTY output on a reader thread and posts output events to the Qt event loop. Keyboard input is encoded by `keyencode.hpp` and written to the PTY master. Holds `scroll_offset_`, the number of lines scrolled back from the live bottom, and the current `Selection`. Mouse press, move and release either build a selection or, when the application asked for reporting, go to `encodeMouse()` and the PTY; `cellSize()` and `cellTopLeft()` expose the grid geometry so a test can aim at a character.
 - `src/process/pty.hpp` — `forkpty()` PTY and shell lifecycle. The child branch execs the shell; the parent owns the master descriptor. Resize uses `TIOCSWINSZ`.
-- `src/app/main.cpp` — application entry point and terminal widget setup.
+- `src/app/main.cpp` — application entry point: arguments, then one window.
+- `src/app/appwindow.hpp` — the window a person runs. Owns the session name, Ctrl+Shift+D
+  (keep this shell, start a fresh one here), Ctrl+Shift+A (a menu of kept sessions that
+  restores the one clicked) and the close prompt. The widget stays ignorant of sessions.
+- `src/app/closeprompt.hpp` — `closeQuestion()` / `closeDetail()` / `closeOfferDetach()`:
+  when closing has to ask, and what it says. No Qt, so the decision is tested and only the
+  dialog is left for a person to look at.
+- `src/process/job.hpp` — `foregroundJob(master, shell)`: the command name of the process
+  group the terminal says owns the foreground, empty when that group is the shell itself.
+- `src/session/daemon.hpp` — sessions, views, commands, and the difference between a kept
+  session and a window's shell: `save`, `discard`, and a `Guard` that ends an unkept
+  session when the view that leaves said it was closing.
+- `src/session/cli.hpp` — the `session` verbs, and the small set of operations a window
+  uses (`startWindowSession`, `saveSession`, `savedSessions`). One client implementation
+  for both, so the command line and the window cannot drift apart.
 - `src/platform/platform.hpp` / `platform.cpp` — Qt platform-plugin selection.
 
 Important implementation notes:
@@ -253,9 +307,13 @@ target; Qt's own headers trip one diagnostic that is suppressed where it is set.
 ctest --test-dir build --output-on-failure
 ```
 
-Result: `100% tests passed, 0 tests failed out of 18` (44 s; `widget-smoke` and
+Result: `100% tests passed, 0 tests failed out of 20` (51 s; `widget-smoke` and
 `input-pty` are the slow ones, because both wait on real timeouts, `process` waits on
-real signals, and `session` waits on real shells).
+real signals, and `session`, `widget-session` and `app-window` wait on real shells).
+
+The test binaries live in `build/tests/`; `build/` itself holds `kai-term` and nothing
+else, because a person who has just built the terminal should not have to work out which
+of twenty programs is the terminal.
 
 Individual results:
 
@@ -274,9 +332,11 @@ Individual results:
 - `./build/tests/kai-term-ipc` → `PASS: 43 protocol framing and field checks passed`.
 - `./build/tests/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
 - `./build/tests/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.
-- `./build/tests/kai-term-session` → `PASS: 69 session daemon checks passed`.
-- `./build/tests/kai-term-widget-session` → `PASS: 14 window-showing-a-session checks passed`.
+- `./build/tests/kai-term-session` → `PASS: 96 session daemon checks passed`.
+- `./build/tests/kai-term-widget-session` → `PASS: 36 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
+- `./build/tests/kai-term-app-window` → `PASS: 22 application window checks passed`.
+- `./build/tests/kai-term-close-prompt` → `PASS: 14 close prompt checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
 - `QT_QPA_PLATFORM=offscreen KAI_SHELL=/bin/true ./build/kai-term` → exits 0.
@@ -286,6 +346,23 @@ command reaches the shell and its output is rendered, `seq 1 60` creates
 scrollback, one wheel notch moves the offset three rows, painting differs while
 scrolled back and returns to identical pixels at the bottom, Shift+PageUp /
 Shift+Home / Shift+End move the offset as intended, and typing resets it.
+
+One trap worth recording, because it made three checks pass that proved nothing. A test
+that pastes `echo MARKER\n` into the widget and then looks for `MARKER` on the screen is
+looking at the *command line*, not at the command's output: bash and fish turn on
+bracketed paste, and a shell with it on takes a pasted newline as text inside the paste
+and leaves the command sitting at the prompt. That is correct terminal behaviour, and it
+means a paste is not a run. The widget tests now press Return themselves and look for
+something the command line does not contain — `M=FIRST; echo ${M}-WINDOW` prints
+`FIRST-WINDOW`, which cannot be found in what was typed.
+
+The related one, which showed up as a check that failed only when the machine was busy:
+`type()` on a session queues bytes, and the terminal echoes them the instant they arrive.
+The command's *output* appears when the shell is scheduled and does the work. So a test
+that types a line and then immediately looks at the screen can see the command line and
+not the result, and a window joining a session at that moment is legitimately shown a
+screen without it. Six copies of the widget test at once made it fail about a third of the
+time. Tests now wait for the output before concluding anything about who is shown what.
 
 It also demonstrates the input work: a click selects nothing, a five-cell drag
 selects five characters and copies them, a double click takes the word, a triple
@@ -298,9 +375,14 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 
 ## Known issues
 
-- **Nothing in M3 has been looked at by a person.** The daemon, the command line and the
-  window showing a session are tested with no display; the appearance and the feel of
-  them are unverified.
+- **Nothing in M3 or M4 has been looked at by a person.** The daemon, the command line,
+  the window showing a session, the session menu and the close prompt are tested with no
+  display. What the menu looks like, where the status line sits, whether three buttons
+  read well when you have a build running, and what Ctrl+Shift+D feels like the third
+  time are all unverified.
+- The session menu is a `QMenu` built when Ctrl+Shift+A is pressed, so it is correct at
+  the moment it opens and wrong afterwards; nothing updates a menu that is already on
+  the screen. Nobody has tried holding it open while a session ends.
 - Attaching transfers the visible screen and not the scrollback above it, and the scroll
   bar agrees with what was transferred, so a session that has been running since this
   morning shows the last screenful and says there is nothing above it.
@@ -310,10 +392,15 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 - Writes to views are blocking and serialised under one lock, so a client that stops
   reading can stall a session's output. A person's window will not do this; a script that
   attaches and stops reading can.
-- An `OSC 52` *read* — a program asking for the clipboard, over ssh for instance — is not
-  answered by the daemon, which has no clipboard. A view answers a copy request with the
-  clipboard it has, and answers a read query only when the session is a shell it started
-  itself.
+- An `OSC 52` read is answered by the view and sent back down the byte stream, so it
+  works for a session the daemon owns as well as a shell started here. Nobody has tried
+  it against a real `scp` or vim over ssh; what is tested is the daemon forwarding both
+  directions.
+- Two views of one session both answer a clipboard read, so the program gets two replies
+  and keeps the first. Same class as the size question below: nothing decides which view
+  speaks for a session. The reply also arrives back as a clipboard *write* for every view,
+  which is the same text and so harmless, but it is the model treating the answer as
+  though a program had offered it.
 - Nobody has visually inspected the rendered terminal on X11, and this machine
   cannot: no X server, no `Xvfb`, and the live Wayland compositor is not reachable
   from a shell session.
@@ -399,14 +486,26 @@ useless. Agreed with Kaida on 2026-11-17.
 
 ## Next concrete tasks
 
-1. Launch the real GUI in a Wayland and an X11 session and have a person confirm rendering, keyboard feel, scrollback scrolling and resize. Offscreen checks cannot substitute for this.
-1. Launch the real GUI in a Wayland and an X11 session and have a person confirm rendering, keyboard feel, scrollback scrolling and resize. Offscreen checks cannot substitute for this, and the X11 half needs a machine with an X server on it.
-2. Decide whether Shift+PageUp and friends stay terminal-owned or become configurable bindings.
-3. Run vim, less, htop and tmux at a real session with the mouse: confirm reports reach them, that Shift still lets you copy, and that middle click pastes between applications. btop is already covered by `kai-term-mouse-app`; the others are not.
-4. Have a person run the session path and say whether it reads well: `session new`, `session list`, `open NAME`, `session attach` from another terminal, `session send`, close the window, open it again. Nothing in M3 has been seen by eyes.
-5. Decide the two policy questions the daemon leaves open: what happens to a session's size when a second view of a different size attaches, and what a wedged client that stops reading should cost the session.
-6. Transfer scrollback on attach, or say in the UI that the view starts at the bottom of what was kept.
-7. Start M4 (splits, pane focus, pane resize) and call `setPanes()` from it, so the pane-scoped selection is wired rather than merely available.
-5. A CI workflow would catch the class of failure this machine only finds by hand: a build that warns, a test that hangs.
+1. Launch the real GUI in a Wayland and an X11 session and have a person confirm
+   rendering, keyboard feel, scrollback scrolling and resize. Offscreen checks cannot
+   substitute for this, and the X11 half needs a machine with an X server on it.
+2. Have a person run the whole M4 workflow and say whether it reads well: open a window,
+   start something long, Ctrl+Shift+D, close the window, reopen, Ctrl+Shift+A, click it
+   back. What to ask about most: whether the menu's names mean anything, whether the
+   status line is noticed, and whether the close prompt's three buttons say what they do.
+3. Decide whether Shift+PageUp and friends stay terminal-owned or become configurable
+   bindings, and whether Ctrl+Shift+D/A are the right keys once a config file exists.
+4. Run vim, less, htop and tmux at a real session with the mouse: confirm reports reach
+   them, that Shift still lets you copy, and that middle click pastes between
+   applications. btop is already covered by `kai-term-mouse-app`; the others are not.
+5. Decide the two policy questions the daemon leaves open: what happens to a session's
+   size when a second view of a different size attaches, and what a wedged client that
+   stops reading should cost the session.
+6. Transfer scrollback on attach, or say in the UI that the view starts at the bottom of
+   what was kept.
+7. Splits, pane focus and pane resize, calling `setPanes()` with the cells each pane owns
+   so the pane-scoped selection is wired rather than merely available.
+8. A CI workflow would catch the class of failure this machine only finds by hand: a
+   build that warns, a test that hangs.
 
 Do not claim the GUI is verified until a person has run it and looked at it.

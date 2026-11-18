@@ -136,6 +136,19 @@ if(UTIL_LIBRARY)
 endif()
 add_test(NAME widget-session COMMAND kai-term-widget-session)
 
+add_executable(kai-term-app-window
+    tests/app_window.cpp
+    src/terminal/vtparser.cpp
+)
+target_link_libraries(kai-term-app-window PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core Threads::Threads)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-app-window PRIVATE ${UTIL_LIBRARY})
+endif()
+add_test(NAME app-window COMMAND kai-term-app-window)
+
+add_executable(kai-term-close-prompt tests/close_prompt.cpp)
+add_test(NAME close-prompt COMMAND kai-term-close-prompt)
+
 # Pane-scoped selection: real mouse drags across a boundary the widget has been told
 # about, with the offscreen platform.
 add_executable(kai-term-widget-panes
@@ -174,6 +187,8 @@ set(KAI_TEST_TARGETS
     kai-term-snapshot
     kai-term-session
     kai-term-widget-session
+    kai-term-app-window
+    kai-term-close-prompt
     kai-term-widget-panes
     kai-term-mouse-app)
 foreach(kai_test ${KAI_TEST_TARGETS})

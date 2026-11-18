@@ -79,10 +79,14 @@ them out wrong, and a session's history is not a recording of a screen.
 Because it owns the model, the daemon also answers the questions programs ask the
 terminal — device attributes, cursor position — which it must: nobody answering is not a
 silent failure, since fish waits ten seconds for a device attributes reply and then says
-so out loud, and tmux will not start properly. A program asking for its text to be copied
-(`OSC 52`) gets a `Clipboard` frame instead, because the daemon has no clipboard; a view
-that receives one puts it in the one it has. A program *asking for* the clipboard is not
-answered, for the same reason in reverse.
+so out loud, and tmux will not start properly. The questions about the clipboard are the
+ones it cannot answer, because a clipboard belongs to the machine with the window: a
+program offering text (`OSC 52 ; … ; <base64>`) becomes a `Clipboard` frame for the views
+to store, and a program *asking* for it (`OSC 52 ; … ; ?`, which is what vim and scp
+actually send) becomes the same frame with `query=1`, which a view answers out of its own
+clipboard. The answer goes back as a `Data` frame, because that is the way down to the
+shell. Both directions matter: a view that cannot tell a read from a write answers a
+request to read by emptying the clipboard.
 
 Teardown rules, both learned the hard way:
 
@@ -93,8 +97,29 @@ Teardown rules, both learned the hard way:
   the far end that the session is gone; the thread blocked in `read()` on our side is
   woken by shutting down our own receive side.
 
-Client disconnect is a detach, never a shell kill. `kill` and `shutdown` are the ways a
-session ends.
+### Kept and unkept
+
+A session records whether a person has asked for it to be kept. A window's shell starts
+unkept and named from a range nothing else uses (`w1`, `w2`), and the daemon is started
+for it if nothing is running — needing a daemon started first would mean a terminal that
+does not work until you have read about it.
+
+What ends an unkept session is being told, not being left:
+
+- A view that leaves while saying it is being closed (`Detach` with `discard=1`) ends it.
+- A view that leaves without saying so — a crash, a `kill -9`, a machine that lost its
+  temper — leaves it running, with no views, listed as left behind.
+- `save` promotes one to kept, optionally renaming it; a name already in use is refused,
+  because that name belongs to a shell somebody is watching. `discard` and `kill` end one.
+
+A listing says which is which, and names what is running out front — the process group
+the terminal reports owning, read from `/proc`, empty when the group is the shell itself.
+That is what lets a window ask "Quit while `make` is running?" instead of guessing from
+how long since you last typed, and it is asked of the daemon rather than of the window,
+because the shell is not the window's child.
+
+`session list` shows kept sessions and the left-behind ones, and not the shells other
+windows are looking at: those are somebody's typing, not a session you saved.
 
 ## Terminal window and its backends
 
@@ -115,6 +140,21 @@ wrong when they were hidden:
 Panes are the widget's business and its host's knowledge: `setPanes()` says which cells
 belong to which pane, and a drag is clipped to the one it started in. A terminal with one
 shell passes nothing and gets one pane, the screen.
+
+A window can be pointed at another shell while it is open — restoring a kept session is
+that and nothing more. `showSession()` joins the reader before the backend it reads from
+is destroyed, tells the far end whether this window is closing or merely looking
+elsewhere (which is what decides whether an unkept session outlives it), and empties the
+model, because a window still showing the previous shell would be showing a session that
+is not there. Events from the reader carry the number of the shell that produced them, so
+bytes from the one behind cannot be painted onto the screen of the one in front; an event
+queue does not empty itself just because the writer stopped.
+
+The widget knows two key combinations belong to whoever owns it and never reach the
+shell, and otherwise has no idea what a session is. `src/app/appwindow.hpp` is where
+sessions, menus and the close prompt live, and the prompt's *decision* is in
+`src/app/closeprompt.hpp` with no Qt in it: what to ask is worth testing, what the dialog
+looks like has to be looked at.
 
 ## Multiplexer subsystem
 
@@ -166,12 +206,13 @@ Do not hardcode compositor-specific behavior. Keyboard, mouse, clipboard, drag-a
 
 ```
 src/
-  app/          main.cpp — the window, and the argument handling in front of it
-  daemon/       main.cpp — the same loop as `session serve`, in the foreground
+  app/          main.cpp (arguments, then one window), appwindow.hpp (the keybinds, the
+                menu, the close prompt), closeprompt.hpp (when closing asks — no Qt)
   ipc/          protocol.hpp (frames, fields, records), socket.hpp (bind, connect, peers)
-  process/      pty.hpp — forkpty, resize, read, reap
-  session/      daemon.hpp (sessions, views, commands), cli.hpp (the `session` verbs),
-                snapshot.hpp (a screen as escape sequences), sessionbackend.hpp
+  process/      pty.hpp (forkpty, resize, read, reap), job.hpp (what is running out front)
+  session/      daemon.hpp (sessions, views, commands), cli.hpp (the `session` verbs and
+                the operations a window uses), snapshot.hpp (a screen as escape
+                sequences), sessionbackend.hpp
   terminal/     screen.hpp, vtparser.cpp, terminalwidget.hpp, backend.hpp,
                 selection.hpp, text.hpp, keyencode.hpp, mouseencode.hpp,
                 scrollbar.hpp, base64.hpp
