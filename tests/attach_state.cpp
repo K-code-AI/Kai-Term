@@ -306,6 +306,35 @@ int main(int argc, char** argv) {
                && grown.find("THE-FIRST-LINE\\nTHE-FIRST-LINE") == std::string::npos);
     grow.shutdown();
 
+    // A scroll region is a request about scrolling, and it also clamps every cursor
+    // address the terminal is given. A snapshot that replays a session's region before its
+    // glyphs therefore paints the whole screen into the handful of rows the region allows,
+    // each row on top of the last, and the person looking at the window sees one character
+    // in the corner. Programs leave regions behind when they exit, so the region a snapshot
+    // replays need not have anything to do with what is on the screen.
+    SessionSpec region_spec;
+    region_spec.name = "region";
+    region_spec.saved = true;
+    region_spec.rows = 24;
+    region_spec.cols = 80;
+    expect("a session starts for the region to be set in", daemon.create(region_spec, error));
+    expect("and it narrows its scroll region and then prints a screen full",
+           daemon.type("region",
+                       "printf '\\033[3;4r'; printf 'THE-TOP-LINE\\n'; printf 'second\\n'; "
+                       "printf 'third\\n'"));
+    pump(700);
+
+    kai::TerminalWidget clamped(24, 80, std::make_unique<SessionBackend>("region", 24, 80));
+    clamped.resize(800, 500);
+    clamped.show();
+    pump(900);
+    const std::string seen = onScreen(clamped);
+    expect("and a view of it shows the first line and not one character in the corner",
+           seen.find("THE-TOP-LINE") != std::string::npos);
+    expect("and the lines below it are there too",
+           seen.find("second") != std::string::npos && seen.find("third") != std::string::npos);
+    clamped.shutdown();
+
     second.shutdown();
     daemon.stop();
     serving.join();

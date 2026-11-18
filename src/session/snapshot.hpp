@@ -99,9 +99,17 @@ inline std::string modePrelude(const Screen& screen) {
     // Entering the alternate screen erases it, so this comes before anything is drawn
     // and the glyphs land where the application is actually drawing them.
     out += screen.inAlternateScreen() ? "\x1b[?1049h" : "\x1b[?1049l";
-    if (screen.scrollRegionTop() != 0 || screen.scrollRegionBottom() != screen.rows() - 1)
-        out += "\x1b[" + std::to_string(screen.scrollRegionTop() + 1) + ";" +
-               std::to_string(screen.scrollRegionBottom() + 1) + "r";
+    // The region is *cleared* here and said for real afterwards, which is the opposite of
+    // what this function used to do — and the bug that came from doing it the other way is
+    // exactly the size of the region. Replaying a session's region before the glyphs means
+    // every cursor address that follows is clamped inside it: a screen's worth of lines
+    // lands on the handful of rows the region allows, each overwriting the last, and what
+    // a person sees is a window with one character in the corner. A program that leaves a
+    // region behind when it exits — vim, less, anything cut short — leaves that behind in
+    // the daemon's model, so the region a snapshot replays need not have anything to do
+    // with what is on the screen. Origin mode is cleared for the same reason: it makes
+    // cursor addressing relative to the region, and the glyphs are written absolutely.
+    out += "\x1b[r\x1b[?6l";
     return out;
 }
 
@@ -114,6 +122,12 @@ inline std::string modePostscript(const Screen& screen) {
     // been used by another session a moment before, and "leave it as you found it" is not
     // something a snapshot can rely on.
     set(1, screen.applicationCursorKeys());
+    // The region and origin come back last, once nothing is left to paint: the
+    // application is entitled to the screen it asked for, just not to it while the
+    // picture of the screen is being drawn.
+    if (screen.scrollRegionTop() != 0 || screen.scrollRegionBottom() != screen.rows() - 1)
+        out += "\x1b[" + std::to_string(screen.scrollRegionTop() + 1) + ";" +
+               std::to_string(screen.scrollRegionBottom() + 1) + "r";
     set(6, screen.originMode());
     set(7, screen.autoWrap());
     set(2004, screen.bracketedPaste());
