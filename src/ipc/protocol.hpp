@@ -22,6 +22,19 @@ namespace kai {
 // Framing is a big-endian 32-bit length, then a one-byte kind, then the body. The
 // length covers the kind byte and the body, so a reader knows whether it has a
 // whole message before it looks at the kind.
+//
+// Raise this when a client and a daemon could disagree about what a message *means*:
+// a field that changed sense, or a command a new client sends that an old daemon has
+// never heard of. The number goes into the daemon's socket name, which is what keeps
+// the two from meeting at all — see daemonSocketName().
+//
+// Version 1 was everything up to and including sessions that are kept. Version 2
+// added the difference between a session that was kept and a window's shell, which a
+// client says with `saved` when creating one and with `discard` when leaving one, and
+// the `save` and `discard` commands. An old daemon has no `save`, so the first thing
+// a person did with the new keybind was read "unknown command: save" — a terminal
+// that looks broken for a reason nobody can see, which is the reason for the number.
+inline constexpr const char* kProtocolVersion = "2";
 enum class MsgKind : std::uint8_t {
     // client -> daemon
     Hello = 1,  // fields: name, rows, cols, shell, cwd

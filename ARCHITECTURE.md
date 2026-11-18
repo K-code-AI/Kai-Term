@@ -35,12 +35,24 @@ The PTY is held in `Pty`, not inside the widget rendering code. M3 moves PTY own
 - Output is read from the PTY master on a reader thread and posted to the Qt widget through `QCoreApplication::postEvent`.
 - Keyboard input is sent to the PTY master from Qt `keyPressEvent`.
 
-Limitations:
+Two rules about the view are worth stating because they are the ones a well-meaning
+change breaks:
 
-- Scrollback is retained in memory but has no scrollback UI yet.
-- Keyboard behavior was not runtime-verified without launching the GUI.
-- Clipboard and mouse reporting are not implemented yet.
-- Unicode width handling is basic and may need refinement for combining characters and unusual emoji sequences.
+- **The view's scroll capacity is one number**, `scrollRange()` in the widget, and the
+  indicator, the wheel, Shift+PageUp, the thumb drag and the edge-scroll timer all ask it
+  rather than the model. It is zero while an application holds the alternate screen.
+  A program that asked for the whole window (vim, less, btop, tmux) is drawing a grid with
+  nothing above it and keeps its own idea of its history; the rows the model is holding
+  belong to the shell underneath, so offering them would show a full-screen program a
+  screenful of somebody else's text with a bar inviting the person to go and look. The
+  model already discards alternate-screen rows instead of retaining them, so the shell's
+  history comes back intact when the program gives the screen up.
+- **A cell stores what it looks like, not a palette index.** `OSC 4` and `OSC 10/11`
+  recolour what is written from then on and leave what is already on screen alone, which
+  is what a program expects when it changes the background and repaints nothing.
+
+Still open: Unicode width handling is basic and may need refinement for combining
+characters and unusual emoji sequences, and `OSC 8` hyperlinks are parsed and discarded.
 
 ## Session daemon and IPC
 
@@ -96,6 +108,22 @@ Teardown rules, both learned the hard way:
 - Waking that thread takes `shutdown(fd, SHUT_RDWR)`. `SHUT_WR` only tells the program on
   the far end that the session is gone; the thread blocked in `read()` on our side is
   woken by shutting down our own receive side.
+
+### The protocol has a number, and the socket is named after it
+
+`kProtocolVersion` goes into every hello, and the daemon's socket is
+`daemon-v<N>.sock`. A client and a daemon that disagree about what a message means are
+then never in a conversation at all, which is the only reliable way to handle it: an old
+daemon asked to `save` answers `unknown command`, and — worse, because it looks like
+success — it lists sessions without saying whether they were kept, so a new client hides
+the shells it is being told about and a menu comes up empty. Both read as a terminal that
+does not work, for a reason nobody can see.
+
+A daemon already running is never stopped by this. It holds shells somebody started, and a
+terminal that killed other people's sessions to tidy up after an upgrade would be worse
+than the confusion it fixed. What it does instead is say once, in the window and in
+`session list`, that an older daemon is running, which protocol it speaks, which process
+it is, and that its shells cannot be reached from this build.
 
 ### Kept and unkept
 

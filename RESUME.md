@@ -20,7 +20,7 @@ window with something running asks instead of ending it. A window can be pointed
 another shell while it stays open, which is what restoring means.
 
 **None of M3 or M4 has been looked at by a person.** Every check in them runs headless or
-offscreen: 96 daemon checks over a real pty and a real socket, 36 checks of a window
+offscreen: 109 daemon checks over a real pty and a real socket, 36 checks of a window
 rendering a session and switching between two, 22 checks of the application window's
 keybinds and menu contents, 14 of when a close asks at all, 24 checks of drags across a
 pane boundary, plus the protocol, socket and snapshot tests. What an attached window
@@ -217,6 +217,26 @@ the one a multiplexer manual describes:
 - An `OSC 52` read (`… ; ?`, which is what vim and scp send — an empty payload alone was
   treated as the query, so the commonest form of it emptied the clipboard instead) is
   forwarded to views with `query=1`, and a view's answer goes back down as a `Data` frame.
+- The protocol between a window and the daemon has a number, `kProtocolVersion`, and the
+  daemon's socket is named after it (`daemon-v2.sock`), so a daemon left running by an
+  older build is not the one a new build talks to. This was found by it actually
+  happening: a daemon from before the kept-sessions work was still running here, and the
+  new keybind said `unknown command: save` — while `session list`, reading a reply with no
+  `saved` in it, hid every shell that daemon was holding. Both look like a broken terminal.
+  An old daemon is now noticed by pinging the other `daemon*.sock` files in the runtime
+  directory and reported once — protocol, pid, and that its shells cannot be reached — in
+  the window's corner, in `session list` and when a daemon starts. It is never stopped by
+  itself: those shells belong to whoever started them. A client that says a different
+  version is refused by name, with the same instruction. Checked live against the real
+  stale daemon on this machine, and in the test with a socket pretending to be one.
+- A program that takes the whole screen (vim, less, btop, tmux) now gets the whole screen:
+  the view's scroll capacity is one function, `scrollRange()`, and it is zero on the
+  alternate screen, so the wheel, Shift+PageUp, the thumb drag and edge auto-scroll all do
+  nothing and no scroll bar is drawn over the program. Before this the indicator was
+  drawn from the hidden shell's history and Shift+PageUp scrolled a full-screen
+  application's viewer through text it had never shown. The history itself was always
+  safe — the model discards alternate-screen rows — and comes back with the shell.
+
 - Three checks in the widget tests were found to be passing without testing anything: they
   pasted a command and looked for its output, and a shell with bracketed paste on — bash
   and fish both — leaves a pasted command sitting at the prompt. They press Return now and
@@ -328,11 +348,11 @@ Individual results:
 - `./build/tests/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `./build/tests/kai-term-selection` → `PASS: 119 selection and text-extraction checks passed`.
 - `./build/tests/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
-- `./build/tests/kai-term-widget-smoke` → `PASS: 100 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/tests/kai-term-widget-smoke` → `PASS: 112 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
 - `./build/tests/kai-term-ipc` → `PASS: 43 protocol framing and field checks passed`.
 - `./build/tests/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
 - `./build/tests/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.
-- `./build/tests/kai-term-session` → `PASS: 96 session daemon checks passed`.
+- `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
 - `./build/tests/kai-term-widget-session` → `PASS: 36 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
 - `./build/tests/kai-term-app-window` → `PASS: 22 application window checks passed`.

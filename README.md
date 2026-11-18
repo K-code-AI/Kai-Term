@@ -298,7 +298,14 @@ Sessions — shells that stay alive when the window closes:
 ./build/kai-term session shutdown                  # stop the daemon and everything
 ```
 
-The socket is `$XDG_RUNTIME_DIR/kai-term/daemon.sock`, and `kai-term session serve` runs
+The socket is `$XDG_RUNTIME_DIR/kai-term/daemon-v2.sock` — the number is the protocol it
+speaks, so a daemon left running by an older build is not the one a new build talks to.
+That matters because the ways an old daemon gets it wrong are invisible: it has no `save`,
+so the keybind that keeps a shell would say `unknown command`, and it says nothing about
+whether a session was kept, so a listing would hide shells and a menu come up empty. A new
+build starts its own daemon and says, once, that an older one is still running with shells
+it cannot reach and which process to stop; it never stops that daemon by itself, because a
+daemon holding somebody's shells is not ours to tidy away. `kai-term session serve` runs
 the daemon in the foreground instead of the background — that is the way to see why a
 daemon would not start. `kai-term` is the only program built; the daemon is the same
 binary started a different way. What is on the

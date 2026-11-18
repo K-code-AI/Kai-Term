@@ -22,6 +22,7 @@
 // descriptor itself.
 
 #include <algorithm>
+#include <dirent.h>
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -50,11 +51,27 @@ inline constexpr int kDaemonBacklog = 16;
 inline constexpr int kDaemonPollMs = 100;
 inline constexpr int kDaemonStopWaitMs = 5000;
 
-// Reserved because the daemon's own socket lives beside the sessions'. A session
-// called "daemon" would be a socket the daemon has already taken.
-inline constexpr const char* kDaemonSocketName = "daemon";
+// The daemon's socket is named after the protocol, not just after the daemon.
+//
+// A daemon left running by an older build answers our commands in the older way, and
+// the ways it gets it wrong are the invisible kind: it has no `save`, so the keybind
+// that keeps a shell says "unknown command", and it says nothing about whether a
+// session was kept, so a listing hides the shells it is holding and a menu comes up
+// empty. Both look like a terminal that does not work rather than a program talking to
+// something older than itself. Naming the socket after the version means they cannot
+// meet: a new build finds no daemon on its own socket and starts one, and the older
+// one is reported instead of argued with — see foreignDaemonNotice().
+inline std::string daemonSocketName() {
+    return std::string("daemon-v") + kProtocolVersion;
+}
 
-inline std::string daemonSocketPath() { return sessionSocketPath(kDaemonSocketName); }
+inline std::string daemonSocketPath() { return sessionSocketPath(daemonSocketName()); }
+
+// Names no session may take. "daemon" is in the list as well as the name in use, so a
+// session can never sit on a socket a future or previous build would call its own.
+inline bool nameReserved(std::string_view name) {
+    return name == "daemon" || name.rfind("daemon-v", 0) == 0;
+}
 
 // Quote one word for the shell. A path with a quote in it is rare and a path with a
 // space in it is Tuesday, and getting this wrong means a directory name can run a
@@ -271,7 +288,7 @@ public:
             error = "not a usable session name: " + spec.name;
             return false;
         }
-        if (spec.name == kDaemonSocketName) {
+        if (nameReserved(spec.name)) {
             error = "that name belongs to the daemon itself";
             return false;
         }
@@ -378,7 +395,7 @@ public:
             error = "not a usable session name: " + wanted;
             return false;
         }
-        if (wanted == kDaemonSocketName) {
+        if (nameReserved(wanted)) {
             error = "that name belongs to the daemon itself";
             return false;
         }
@@ -724,9 +741,26 @@ private:
         const std::string command = fieldValue(fields, "command", "list");
         const std::string name = fieldValue(fields, "name");
 
+        // Answer `ping` before the version check, because `ping` is how something
+        // finds out whether it is talking to the right daemon at all.
         if (command == "ping") {
             static_cast<void>(detail::sendFrame(
-                fd, MsgKind::Welcome, encodeFields({{"version", "1"}, {"pid", std::to_string(::getpid())}})));
+                fd, MsgKind::Welcome,
+                encodeFields({{"version", kProtocolVersion},
+                              {"pid", std::to_string(::getpid())}})));
+            return;
+        }
+
+        const std::string client_version = fieldValue(fields, "version");
+        if (client_version != kProtocolVersion) {
+            static_cast<void>(detail::sendFrame(
+                fd, MsgKind::Error,
+                encodeFields({{"message",
+                               "protocol mismatch: this daemon speaks " +
+                                   std::string(kProtocolVersion) + ", the client said " +
+                                   (client_version.empty() ? "nothing" : client_version) +
+                                   ". A daemon from another build of Kai-Term is holding "
+                                   "these shells; `kai-term session shutdown` stops it."}})));
             return;
         }
         if (command == "list") {
@@ -839,8 +873,11 @@ class DaemonClient {
 public:
     ~DaemonClient() { close(); }
 
-    bool connect(std::string& error) {
-        const std::string path = daemonSocketPath();
+    bool connect(std::string& error) { return connectToPath(daemonSocketPath(), error); }
+
+    // As `connect`, to a socket by name rather than to ours. Used to ask whatever
+    // else is in the runtime directory what it speaks.
+    bool connectToPath(const std::string& path, std::string& error) {
         if (path.empty()) {
             error = "nowhere to look for the daemon";
             return false;
@@ -866,7 +903,11 @@ public:
     // Say what we want and wait for the caller to read the answer. The first reply to
     // an attach is the welcome, and a helper that ate it would leave the caller
     // reading a screen as if it were a greeting.
-    bool request(const Fields& fields) {
+    bool request(Fields fields) {
+        // Every hello says what the client speaks, so a daemon can refuse a
+        // conversation it would otherwise take part in and get wrong.
+        if (fieldValue(fields, "version").empty())
+            fields.emplace_back("version", kProtocolVersion);
         return detail::sendFrame(fd_, MsgKind::Hello, encodeFields(fields));
     }
 
@@ -955,5 +996,67 @@ private:
     FrameReader reader_;
     Frame frame_;
 };
+
+// Another build's daemon, if one is running beside ours.
+//
+// The daemon's socket is named for the protocol, which is what stops a new build from
+// sending `save` to a daemon that has never heard of it. The cost of that is that the
+// older daemon's shells are now invisible: still running, still holding a terminal and
+// their memory, and not listed by anything this build can run. That is worth saying
+// once, out loud, at the one moment we are in a position to notice.
+//
+// Something already running is never touched here. A daemon holding shells belongs to
+// whoever started them, and a terminal that killed other people's sessions to tidy up
+// after an upgrade would be a worse surprise than a line of text.
+inline std::string foreignDaemonNotice() {
+    const std::string ours = daemonSocketPath();
+    const std::string::size_type slash = ours.find_last_of('/');
+    if (slash == std::string::npos)
+        return {};
+    const std::string dir = ours.substr(0, slash);
+
+    std::string first;
+    int others = 0;
+    DIR* handle = ::opendir(dir.c_str());
+    if (handle == nullptr)
+        return {};
+    while (dirent* entry = ::readdir(handle)) {
+        const std::string name = entry->d_name;
+        if (name.rfind("daemon", 0) != 0 || name.size() <= 5 ||
+            name.compare(name.size() - 5, 5, ".sock") != 0 || dir + "/" + name == ours)
+            continue;
+        DaemonClient other;
+        std::string error;
+        if (!other.connectToPath(dir + "/" + name, error))
+            continue; // a file left behind by a daemon that has gone
+        Frame reply;
+        if (!other.command({{"command", "ping"}}, reply, error) ||
+            reply.kind != MsgKind::Welcome)
+            continue;
+        const Fields fields = decodeFields(reply.body);
+        const std::string version = fieldValue(fields, "version");
+        if (version == kProtocolVersion)
+            continue; // ours, under a name this build no longer uses
+        ++others;
+        if (!first.empty())
+            continue;
+        const std::string pid = fieldValue(fields, "pid");
+        first = "a session daemon from another build of Kai-Term is running on " + dir +
+                "/" + name + " (protocol " +
+                (version.empty() ? std::string("1 or older") : version) +
+                "; this build is " + kProtocolVersion + ")";
+        if (!pid.empty())
+            first += ", pid " + pid;
+        first += ". Its shells are still running but this build cannot reach them; stop "
+                 "it with kill " +
+                 (pid.empty() ? std::string("<its pid>") : pid) + ".";
+    }
+    ::closedir(handle);
+    if (first.empty())
+        return {};
+    if (others > 1)
+        first += " (and " + std::to_string(others - 1) + " more like it)";
+    return first;
+}
 
 } // namespace kai

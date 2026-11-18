@@ -97,7 +97,14 @@ struct TestClient {
         return writeAll(fd, encodeFrame(kind, body));
     }
 
-    bool hello(const Fields& fields) { return send(MsgKind::Hello, encodeFields(fields)); }
+    // A client says what protocol it speaks, so that a daemon can refuse a
+    // conversation it would take part in and get wrong. `say_version` is false only for
+    // the check about what happens when something does not.
+    bool hello(Fields fields, bool say_version = true) {
+        if (say_version && fieldValue(fields, "version").empty())
+            fields.emplace_back("version", kProtocolVersion);
+        return send(MsgKind::Hello, encodeFields(fields));
+    }
 
     // One control reply. Timeouts look like a hangup here, which is the honest
     // reading: nothing is coming.
@@ -247,7 +254,14 @@ int main() {
         std::string error;
         expect("the daemon starts (" + error + ")", daemon.start(error));
         expect("and its socket is where it said it would be",
-               daemon.socketPath() == root + "/kai-term/daemon.sock");
+               daemon.socketPath() == root + "/kai-term/daemon-v2.sock");
+        // The name carries the protocol number, which is the whole of how a daemon from
+        // an older build stops being mistaken for ours: it is not sitting on the socket
+        // this build looks at, so a new build starts its own instead of sending it a
+        // `save` it has never heard of.
+        expect("and the socket is named for the protocol it speaks",
+               daemon.socketPath().find("v" + std::string(kProtocolVersion)) !=
+                   std::string::npos);
     }
     std::thread serving([&daemon] { daemon.run(); });
 
@@ -259,7 +273,7 @@ int main() {
         expect("someone answers", client.reply(reply));
         expect("with a welcome", reply.kind == MsgKind::Welcome);
         expect("that says which protocol",
-               fieldValue(decodeFields(reply.body), "version") == "1");
+               fieldValue(decodeFields(reply.body), "version") == kProtocolVersion);
     }
 
     {
@@ -268,6 +282,80 @@ int main() {
                client.connect() && writeAll(client.fd, encodeFrame(MsgKind::Data, "x")));
         Frame reply;
         expect("politely", client.reply(reply) && reply.kind == MsgKind::Error);
+    }
+
+    {
+        // A daemon from another build, still running beside this one.
+        //
+        // The socket is named for the protocol, so it is not the socket this build
+        // talks to — that is what keeps a `save` from being sent to a daemon that has
+        // never heard of it. What is left is to say that it is there: its shells are
+        // still running, and nothing this build can list is going to show them.
+        expect("nothing else is running", foreignDaemonNotice().empty());
+
+        std::string bind_error;
+        const int older = bindListen(sessionSocketPath("daemon-v1"), 4, bind_error);
+        expect("an older daemon's socket appears beside ours", older >= 0);
+        std::thread older_daemon([&older] {
+            const int fd = ::accept(older, nullptr, nullptr);
+            if (fd < 0)
+                return;
+            FrameReader reader;
+            Frame hello;
+            for (int attempt = 0; attempt < 20 && !reader.pop(hello); ++attempt) {
+                struct pollfd pfd {fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 250) <= 0)
+                    continue;
+                char buf[4096];
+                const ssize_t n = readSome(fd, buf, sizeof(buf));
+                if (n > 0)
+                    reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+            }
+            static_cast<void>(writeAll(fd, encodeFrame(MsgKind::Welcome, encodeFields({
+                                                                    {"version", "1"},
+                                                                    {"pid", "4242"}}))));
+            ::close(fd);
+        });
+
+        const std::string notice = foreignDaemonNotice();
+        expect("this build notices the other daemon",
+               notice.find("another build") != std::string::npos);
+        expect("says which protocol it speaks", notice.find("protocol 1") != std::string::npos);
+        expect("and which process is holding the shells",
+               notice.find("4242") != std::string::npos);
+        expect("without mistaking it for this build's own",
+               notice.find("daemon-v" + std::string(kProtocolVersion)) == std::string::npos);
+        older_daemon.join();
+        ::close(older);
+    }
+
+    {
+        // A client built against another protocol is refused by name, and told what to
+        // do about it. Letting it through is the worse option: an old client would
+        // accept answers it reads differently and report success about things that did
+        // not happen, which is a much harder thing to debug than a refusal.
+        for (const char* said : {"1", ""}) {
+            TestClient client;
+            bool ok = client.connect();
+            if (ok) {
+                Fields fields{{"command", "list"}};
+                if (*said != '\0')
+                    fields.emplace_back("version", said);
+                ok = client.send(MsgKind::Hello, encodeFields(fields));
+            }
+            Frame reply;
+            const bool refused = ok && client.reply(reply) && reply.kind == MsgKind::Error;
+            expect(refused ? "a client from another protocol is refused"
+                           : "and so is one that says nothing",
+                   refused);
+            if (refused) {
+                const std::string message = fieldValue(decodeFields(reply.body), "message");
+                expect("and told it was the protocol",
+                       message.find("protocol mismatch") != std::string::npos);
+                expect("and what to do about it",
+                       message.find("session shutdown") != std::string::npos);
+            }
+        }
     }
 
     {

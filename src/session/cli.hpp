@@ -513,6 +513,16 @@ inline std::string startWindowSession(int rows, int cols, std::string& error) {
     return name;
 }
 
+// Says, once, if a daemon from another build is holding shells this one cannot see.
+// Silence is the wrong default: whoever is reading this output is looking for their
+// sessions, and "nothing is running" is only half the truth when something older is
+// running under a name this build does not look at.
+inline void mentionForeignDaemon() {
+    const std::string beside = foreignDaemonNotice();
+    if (!beside.empty())
+        std::cout << "note: " << beside << "\n";
+}
+
 // `kai-term session ...`. Returns an exit code, or -1 when the first word was not
 // "session" and the caller should carry on starting a window.
 inline int runSessionCommand(int argc, char** argv) {
@@ -547,8 +557,11 @@ inline int runSessionCommand(int argc, char** argv) {
         // will not start, and a debugging session where you cannot tell whether it
         // bound anything is a waste of a debugging session.
         std::cout << "listening on " << daemonSocketPath() << "\n"
-                  << "Ctrl-C, or `kai-term session shutdown`, to stop\n"
-                  << std::flush;
+                  << "Ctrl-C, or `kai-term session shutdown`, to stop\n";
+        // Said before the loop rather than after it, because after it there is nobody
+        // left to tell.
+        mentionForeignDaemon();
+        std::cout << std::flush;
         const int status = serveDaemonForeground(error);
         if (!error.empty())
             std::cerr << "kai-term: " << error << "\n";
@@ -611,6 +624,7 @@ inline int runSessionCommand(int argc, char** argv) {
         std::string connect_error;
         if (!client.connect(connect_error)) {
             std::cout << "no sessions (nothing is running yet)\n";
+            mentionForeignDaemon();
             return 0;
         }
         const std::vector<SessionInfo> sessions = listSessions(error);
@@ -623,6 +637,9 @@ inline int runSessionCommand(int argc, char** argv) {
         if (listed.size() < sessions.size())
             std::cout << (sessions.size() - listed.size())
                       << " shell(s) are open in windows and not saved yet\n";
+        // Someone looking at this listing is looking for their shells. If a daemon from
+        // before the upgrade is holding some of them, this is the place to say so.
+        mentionForeignDaemon();
         return 0;
     }
 
@@ -636,6 +653,7 @@ inline int runSessionCommand(int argc, char** argv) {
             return 1;
         }
         std::cout << "started a daemon at " << daemonSocketPath() << "\n";
+        mentionForeignDaemon();
         return 0;
     }
 

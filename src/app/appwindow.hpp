@@ -49,7 +49,13 @@ inline WindowStart startWindowBackend(int rows, int cols) {
     const std::string name = startWindowSession(rows, cols, error);
     if (!name.empty()) {
         try {
-            return {std::make_unique<SessionBackend>(name, rows, cols), name, {}, rows, cols};
+            // A daemon from another build is not on our socket, so it cannot answer a
+            // command we have and an older one does not — which is the point. It is
+            // still holding the shells it started, and nothing we can list will show
+            // them, so the window says so once instead of leaving them to be found in
+            // `ps` next week.
+            return {std::make_unique<SessionBackend>(name, rows, cols), name,
+                    foreignDaemonNotice(), rows, cols};
         } catch (const std::exception& e) {
             error = e.what();
         }
