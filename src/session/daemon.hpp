@@ -532,7 +532,13 @@ private:
                 // text where the program asked for it to go.
                 broadcast(*record, MsgKind::Clipboard,
                           encodeFields({{"text", request.text},
-                                        {"primary", request.primary ? "1" : "0"}}));
+                                        {"primary", request.primary ? "1" : "0"},
+                                        // A program asking for the clipboard's contents
+                                        // is the opposite of one offering them, and a
+                                        // view that could not tell the two apart would
+                                        // answer a request to read by emptying the
+                                        // person's clipboard.
+                                        {"query", request.query ? "1" : "0"}}));
             }
             broadcast(*record, MsgKind::Data, std::string(chunk));
         }

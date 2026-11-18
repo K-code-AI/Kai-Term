@@ -126,6 +126,7 @@ private:
                 Screen::ClipboardRequest request;
                 request.text = fieldValue(fields, "text");
                 request.primary = fieldValue(fields, "primary") == "1";
+                request.query = fieldValue(fields, "query") == "1";
                 copies_.push_back(request);
                 break;
             }

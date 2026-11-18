@@ -523,6 +523,8 @@ int main() {
             }
         }
         expect("and it reaches the view with the text decoded", heard_the_copy);
+
+
         TestClient tidier;
         static_cast<void>(
             tidier.connect() && tidier.hello({{"command", "kill"}, {"name", "copied"}}));
@@ -530,6 +532,88 @@ int main() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
+    {
+        // The other direction: a program asking for what is in the clipboard, which is
+        // how `scp host:file` and friends paste over a link. The daemon cannot answer
+        // this one — the clipboard is on the machine with the window — so the request
+        // has to reach a view, and whatever the view sends back has to reach the
+        // program. Both halves are checked here, with this client being the view.
+        //
+        // The reply is read by count rather than until it ends, because non-canonical
+        // reads return whatever is there and `dd` would sit waiting for bytes nobody is
+        // going to send. Twenty is exactly what the reply below is: ESC, `]52;c;`,
+        // twelve bytes of base64 for "clipped", and a BEL.
+        const std::string asker_path = root + "/ask-clipboard";
+        {
+            std::ofstream script(asker_path);
+            script << "#!/bin/sh\n"
+                   << "stty -icanon -echo\n"
+                   << "printf '\\033]52;c;?\\a' > /dev/tty\n"
+                   << "reply=$(dd bs=1 count=20 2>/dev/null)\n"
+                   << "stty icanon echo\n"
+                   << "printf 'PASTE[%s]\\n' \"$reply\" | cat -v\n";
+        }
+        ::chmod(asker_path.c_str(), 0755);
+
+        TestClient maker;
+        bool made = maker.connect();
+        made = made && maker.hello({{"command", "new"},
+                                    {"name", "pasting"},
+                                    {"shell", asker_path},
+                                    {"rows", "10"},
+                                    {"cols", "60"}});
+        Frame ack;
+        made = made && maker.reply(ack) && ack.kind == MsgKind::Ack;
+        expect("a session starts that wants to paste", made);
+
+        TestClient viewer;
+        std::string ignored;
+        bool heard_the_request = false;
+        bool answered = false;
+        std::string seen;
+        // `cat -v` in the program keeps the reply printable; shown raw it would be
+        // another escape sequence for the screen model to obey rather than to show.
+        const std::string answer_on_screen = "^[]52;c;Y2xpcHBlZA==^G";
+        if (made && attach(viewer, "pasting", 10, 60, ignored)) {
+            // Keep reading after the answer has gone back out: the point of the check
+            // is what the program does with it, and that arrives afterwards.
+            for (int attempt = 0;
+                 attempt < 120 && seen.find(answer_on_screen) == std::string::npos;
+                 ++attempt) {
+                struct pollfd pfd {viewer.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[16384];
+                    const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (viewer.reader.pop(frame)) {
+                    if (frame.kind == MsgKind::Clipboard) {
+                        const Fields fields = decodeFields(frame.body);
+                        if (fieldValue(fields, "query") == "1") {
+                            heard_the_request = true;
+                            // What a window would send: the clipboard's contents, in
+                            // the bytes the terminal was asked for them in.
+                            answered = viewer.send(MsgKind::Data,
+                                                   "\x1b" "]52;c;Y2xpcHBlZA==" "\x07");
+                        }
+                    } else if (frame.kind == MsgKind::Data || frame.kind == MsgKind::Snapshot) {
+                        seen += frame.body;
+                    }
+                }
+            }
+        }
+        expect("the read request reaches the view as a read", heard_the_request);
+        expect("the view answers it", answered);
+        expect("and the answer reaches the program that asked",
+               seen.find(answer_on_screen) != std::string::npos);
+        TestClient tidier;
+        static_cast<void>(
+            tidier.connect() && tidier.hello({{"command", "kill"}, {"name", "pasting"}}));
+        for (int attempt = 0; attempt < 100 && !listed().empty(); ++attempt)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
     {
         expect("another session starts", createSession("second", 30, 100));
         TestClient viewer;

@@ -336,13 +336,21 @@ public:
             for (const auto& request : requests) {
                 const QClipboard::Mode mode =
                     request.primary ? QClipboard::Selection : QClipboard::Clipboard;
-                if (request.query && !backend_->answersQueries())
-                    continue; // the far side owns the answer to that
                 if (request.query) {
-                    // The application is asking to paste, over a link such as
-                    // ssh, where its own clipboard is not reachable.
-                    screen_.answerClipboardQuery(
-                        QGuiApplication::clipboard()->text(mode).toStdString());
+                    // The application is asking to paste, over a link such as ssh
+                    // where its own clipboard is not reachable. A session owned by the
+                    // daemon is the same case with the link moved: the contents are
+                    // here, in this window's clipboard, and the way back to the program
+                    // is the byte stream it came up on. The answer has to be given
+                    // either way — a view that ignored a read request would leave the
+                    // program waiting, and one that mistook it for a write would empty
+                    // the clipboard it was asked to read.
+                    const std::string contents =
+                        QGuiApplication::clipboard()->text(mode).toStdString();
+                    if (backend_->answersQueries())
+                        screen_.answerClipboardQuery(contents);
+                    else
+                        static_cast<void>(backend_->write(clipboardQueryReply(contents)));
                     continue;
                 }
                 // This is the application asking for its contents to be copied,

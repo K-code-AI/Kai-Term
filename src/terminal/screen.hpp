@@ -84,6 +84,14 @@ struct Row {
     auto end() const { return cells.end(); }
 };
 
+// The answer to an OSC 52 read request. Said on its own because the reply has to reach
+// the program by whichever way the terminal reached the person: a shell running here
+// takes it from the model's response queue, and a session owned by the daemon takes it
+// back down the byte stream it came up on.
+inline std::string clipboardQueryReply(std::string_view text) {
+    return "\x1b]52;c;" + base64Encode(text) + "\x07";
+}
+
 class Screen {
 public:
     explicit Screen(int initial_rows = 24, int initial_cols = 80)
@@ -205,7 +213,7 @@ public:
     // Answers an OSC 52 read request. The reply leaves by the same channel as
     // every other terminal-to-host response.
     void answerClipboardQuery(std::string_view text) {
-        response_out_ += "\x1b]52;c;" + base64Encode(text) + "\x07";
+        response_out_ += clipboardQueryReply(text);
     }
 
     const std::string& windowTitle() const { return title_; }
@@ -1527,7 +1535,10 @@ private:
     // OSC 52 ; <targets> ; <base64>. The target letters name which of the
     // clipboard, the selection and the eight cut buffers to write. This terminal
     // has the first two; a letter it has never heard of still means "copy", and
-    // no payload at all means the application wants to read instead.
+    // a payload of nothing, or of a single `?`, means the application wants to read
+    // instead of write. The `?` is what vim and scp actually send; treating only the
+    // empty form as a read would turn the commonest request of the two into a copy of
+    // nothing, which empties the clipboard it was asked to read.
     void oscClipboard(std::string_view data) {
         const std::size_t semi = data.find(';');
         const std::string_view targets =
@@ -1548,7 +1559,7 @@ private:
 
         ClipboardRequest request;
         request.primary = primary && !clipboard;
-        if (payload.empty()) {
+        if (payload.empty() || payload == "?") {
             request.query = true;
         } else {
             request.text = base64Decode(payload);
