@@ -226,3 +226,11 @@ endforeach()
 add_test(NAME widget-smoke COMMAND kai-term-widget-smoke)
 
 target_compile_definitions(kai-term PRIVATE KAI_TERM_VERSION="0.0.0")
+
+# A window photographed instead of shown. Not a check: it writes pictures, for when the
+# question is what a window would draw rather than what it knows.
+add_executable(kai-term-grabview tests/tools/grabview.cpp src/terminal/vtparser.cpp)
+target_link_libraries(kai-term-grabview PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core Threads::Threads)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-grabview PRIVATE ${UTIL_LIBRARY})
+endif()

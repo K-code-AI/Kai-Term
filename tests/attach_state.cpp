@@ -127,6 +127,16 @@ int main(int argc, char** argv) {
             return QObject::eventFilter(watched, ev);
         }
     } counter;
+
+    // The same counting for the window that gets a session swapped into it.
+    struct SwapCounter : QObject {
+        int paints = 0;
+        bool eventFilter(QObject* watched, QEvent* ev) override {
+            if (ev->type() == QEvent::Paint)
+                ++paints;
+            return QObject::eventFilter(watched, ev);
+        }
+    };
     second.installEventFilter(&counter);
 
     second.resize(800, 500);
@@ -236,6 +246,29 @@ int main(int argc, char** argv) {
     expect("and the window is drawn again when the session has something new to show",
            quiet_painter.paints > paints_before);
     silent.shutdown();
+
+    // The way the program actually restores a session. Everything above hands a session
+    // to a brand-new window, which is what a tab would do; what Ctrl+Shift+A really does
+    // is swap a session into a window that is already on screen, through showSession.
+    // That path has never been checked, and it is where Kaida's black screen lives: a
+    // window which is already mapped gets no show and no resize, so nothing happens
+    // around the swap except the swap itself.
+    kai::TerminalWidget swap(24, 80);
+    swap.resize(800, 500);
+    swap.show();
+    pump(600);  // A window of its own, drawn, with a shell sitting in it.
+
+    SwapCounter swapped;
+    swap.installEventFilter(&swapped);
+    swap.showSession(std::make_unique<SessionBackend>("quiet", 24, 80), true);
+    pump(1200);
+
+    // Nobody types. The window is simply told to show a session that already has lines on
+    // its screen, and what has to be true afterwards is that it is showing them.
+    expect("a window switched to a session shows that session's screen without a keypress",
+           onScreen(swap).find("NOTHING-MORE-AFTER-THIS") != std::string::npos);
+    expect("and it was asked to draw what arrived", swapped.paints > 0);
+    swap.shutdown();
 
     second.shutdown();
     daemon.stop();
