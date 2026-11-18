@@ -92,14 +92,25 @@ public:
         reader_ = std::thread([this, backend, generation] {
             char buf[4096];
             while (running_ && shell_alive_) {
-                // Wait on the descriptor rather than blocking in read(): a stray
-                // job that inherited the terminal can keep the stream open after
-                // the shell itself is gone, and the window has to close on the
-                // shell leaving, not on whoever else lets go.
-                struct pollfd watched {backend->descriptor(), POLLIN, 0};
-                const int ready = ::poll(&watched, 1, 200);
-                if (ready < 0 && errno == EINTR)
-                    continue;
+                // Bytes the backend is already holding are not waiting on the
+                // descriptor to become readable, so they are taken without asking.
+                // A session restored into a window arrives in the handshake that
+                // opens the connection and then sits in the backend's own buffer:
+                // waiting on the socket anyway left that window blank until something
+                // made the shell talk, and the whole screen appeared on the first
+                // keypress. It looked like a painting problem and was a reading one.
+                if (!backend->hasBuffered()) {
+                    // Wait on the descriptor rather than blocking in read(): a stray
+                    // job that inherited the terminal can keep the stream open after
+                    // the shell itself is gone, and the window has to close on the
+                    // shell leaving, not on whoever else lets go.
+                    struct pollfd watched {backend->descriptor(), POLLIN, 0};
+                    const int ready = ::poll(&watched, 1, 200);
+                    if (ready < 0 && errno == EINTR)
+                        continue;
+                    if (ready == 0)
+                        continue;
+                }
                 if (backend->collectsChild() && backend->collect()) {
                     // The shell is gone. Anything it printed on the way out has
                     // already been read and queued as an event, so there is
@@ -108,8 +119,6 @@ public:
                     QCoreApplication::postEvent(this, new TerminalExitEvent(generation));
                     break;
                 }
-                if (ready == 0)
-                    continue;
                 ssize_t n = backend->read(buf, sizeof(buf));
                 if (n <= 0) {
                     // The shell closed the terminal. Collect it here so the exit

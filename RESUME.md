@@ -202,6 +202,17 @@ Fixes found by a person running it (niri, 2026-11-17):
   through: the test that covered it made the call itself, and passed while the window
   never did. Turning the fix off fails two checks, verified.
 
+- Restoring a session showed an empty window until a key was pressed, and then the
+  whole screen appeared at once. The session's screen arrives with the handshake that
+  opens the connection, and a screen bigger than one read (4 KB) is left in the
+  backend's buffer while the reader waits for the socket to become readable — which
+  nothing is going to do, because the session has already said everything it means to.
+  The first 4 KB of a restored screen is usually its clearing sequence, so what was on
+  screen was a blank, and the first keystroke made the shell answer, which woke the
+  wait and let the rest of it out. A backend that is holding bytes is now read instead
+  of waited on. The check fills a 60x200 session, prints distinct text and joins it
+  without typing anything: with the fix off, both its checks fail.
+
 Work done since, which is the start of M4 — the workflow a person described rather than
 the one a multiplexer manual describes:
 

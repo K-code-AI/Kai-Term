@@ -48,6 +48,13 @@ public:
     virtual void resize(int rows, int cols) = 0;
     virtual bool alive() const = 0;
 
+    // Whether `read` would give bytes right now, without anything arriving on the
+    // descriptor. A session's first screen comes with the handshake that opens the
+    // connection and is held here afterwards, so there is nothing left for a wait on
+    // the socket to notice - and a reader that waited anyway would sit out the whole
+    // screen until something else made the far end talk.
+    virtual bool hasBuffered() const { return false; }
+
     // A local shell is a child, and only collecting it says whether it left. A remote
     // session has no child here, so its transport says so itself and these stay off.
     virtual bool collectsChild() const { return false; }

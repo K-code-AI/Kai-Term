@@ -50,6 +50,10 @@ public:
     // Blocks until there is something to show, which is what the widget's reader
     // thread expects of a terminal. A frame that is not output — a copy request, say —
     // is not the end of the session, and returning nothing here would be read as one.
+    // The attach handshake leaves the session's current screen here, and no further
+    // frame has to arrive for it to be wanted.
+    bool hasBuffered() const override { return !pending_.empty(); }
+
     ssize_t read(char* buf, std::size_t n) override {
         for (;;) {
             if (!pending_.empty()) {

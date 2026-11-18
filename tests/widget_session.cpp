@@ -243,6 +243,51 @@ int main(int argc, char** argv) {
     expect("with nothing left running", waitFor([&daemon] { return daemon.list().empty(); }));
 
     {
+    {
+        // The join a person actually does: a session that has been sitting with a screen
+        // full of something, shown in a window at the size the session already is, with
+        // nothing typed afterwards. The session has no reason to say anything more, so a
+        // reader that waits for the socket to become readable waits forever and the window
+        // is blank until a key makes the shell talk. Every other check here types
+        // something, which is what made them pass over this.
+        SessionSpec sitting;
+        sitting.name = "sitting";
+        sitting.rows = 60;
+        sitting.cols = 200;
+        expect("a session is started to be looked at later", daemon.create(sitting, error));
+        pump(300);
+        // Enough of it to be bigger than one read from the backend, because that is
+        // the case that goes wrong: a screen that arrives in one piece is fine, and a
+        // screen that arrives in pieces has the rest of it sitting in the backend's
+        // buffer with nothing left to wait for.
+        // Distinct text, so that nothing about how a screen is summarised can make it
+        // smaller than the screen it describes.
+        expect("it fills its screen and then has nothing more to say",
+               daemon.type("sitting", "for i in $(seq 1 60); do echo \"row $i $(date +%N) "
+                           "$(tr -dc a-z0-9 < /dev/urandom | head -c 150)\"; done; "
+                           "M=SITTING; echo ${M}-SCREEN\n"));
+        pump(2500);
+
+        kai::TerminalWidget joins(60, 200);
+        joins.resize(1600, 1200);
+        joins.show();
+        pump(200);
+        joins.showSession(std::make_unique<SessionBackend>("sitting", 60, 200), true);
+        expect("a window joining it shows the screen it already had",
+               waitFor([&joins] {
+                   return onScreen(joins).find("SITTING-SCREEN") != std::string::npos;
+               }));
+        // The bottom of it, not just the top: the last bytes of a screen that came in
+        // pieces are the ones a reader that waits on the socket never takes.
+        expect("including the last line of it",
+               waitFor([&joins] {
+                   return onScreen(joins).find("SITTING-SCREEN") != std::string::npos &&
+                          onScreen(joins).find("row 59 ") != std::string::npos;
+               }));
+        joins.shutdown();
+        pump(200);
+    }
+
         // One window, two shells. A kept session gets restored into the window that is
         // already open, so the window has to stop looking at one shell and start
         // looking at another — without dying, without showing the wrong screen, and
