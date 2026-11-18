@@ -168,17 +168,25 @@ inline void printSessionTable(const std::vector<SessionInfo>& sessions) {
         std::cout << "no saved sessions\n";
         return;
     }
-    std::cout << std::left << std::setw(17) << "NAME" << std::right << std::setw(8) << "PID"
+    // Id order rather than name order. Names sort w1, w10, w11, w2, which is alphabetical
+    // and no use at all as a history; an id is handed out in the order the shells started,
+    // so reading the list from the top is reading the afternoon in order.
+    std::vector<SessionInfo> rows = sessions;
+    std::sort(rows.begin(), rows.end(),
+              [](const SessionInfo& a, const SessionInfo& b) { return a.id < b.id; });
+    std::cout << std::right << std::setw(4) << "ID" << std::left << std::setw(17) << "NAME"
+              << std::right << std::setw(8) << "PID"
               << std::setw(9) << "SIZE" << std::setw(7) << "VIEWS" << std::setw(11) << "RUNNING"
               << std::left << "  STARTED"
               << "  STATUS\n";
-    for (const SessionInfo& info : sessions) {
+    for (const SessionInfo& info : rows) {
         const std::time_t when = static_cast<std::time_t>(info.started);
         std::tm local {};
         ::localtime_r(&when, &local);
         char stamp[32] = {0};
         std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &local);
-        std::cout << std::left << std::setw(17) << info.name << std::right << std::setw(8)
+        std::cout << std::right << std::setw(4) << info.id << std::left << std::setw(17)
+                  << info.name << std::right << std::setw(8)
                   << (info.pid > 0 ? std::to_string(static_cast<long long>(info.pid)) : "-")
                   << std::setw(9) << (std::to_string(info.rows) + "x" + std::to_string(info.cols))
                   << std::setw(7) << info.clients << std::setw(11)

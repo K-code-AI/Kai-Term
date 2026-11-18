@@ -28,13 +28,20 @@ namespace kai {
 // never heard of. The number goes into the daemon's socket name, which is what keeps
 // the two from meeting at all — see daemonSocketName().
 //
-// Version 1 was everything up to and including sessions that are kept. Version 2
+// Version 1 was everything up to and including sessions that are kept. Version 2 added
 // added the difference between a session that was kept and a window's shell, which a
 // client says with `saved` when creating one and with `discard` when leaving one, and
 // the `save` and `discard` commands. An old daemon has no `save`, so the first thing
 // a person did with the new keybind was read "unknown command: save" — a terminal
 // that looks broken for a reason nobody can see, which is the reason for the number.
-inline constexpr const char* kProtocolVersion = "2";
+//
+// Version 3 changed what looking at a session means. Attaching takes it out of the kept
+// pile — a keep is spent by being come back to, not accumulated by having once happened
+// — and a view leaving without saying "discard" is what keeps it. An old daemon would go
+// on holding sessions that a new client believes it has taken back, which is the "it
+// saved itself and then closed without asking" report, so the meaning changed and the
+// number had to.
+inline constexpr const char* kProtocolVersion = "3";
 enum class MsgKind : std::uint8_t {
     // client -> daemon
     Hello = 1,  // fields: name, rows, cols, shell, cwd

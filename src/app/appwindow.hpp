@@ -11,6 +11,7 @@
 #include "closeprompt.hpp"
 #include "../session/cli.hpp"
 #include "../session/sessionbackend.hpp"
+#include "sessionmenu.hpp"
 #include "../terminal/terminalwidget.hpp"
 
 #include <QCloseEvent>
@@ -82,7 +83,9 @@ public:
     explicit AppWindow(const std::string& name)
         : TerminalWidget(24, 80, std::make_unique<SessionBackend>(name, 24, 80)),
           session_(name),
-          session_kept_(true) {
+          // Showing a session is not keeping it. It arrived kept or unkept; either way
+          // this window is now responsible for it, and only a save from here keeps it.
+          session_kept_(false) {
         bindKeybinds();
     }
 
@@ -161,18 +164,23 @@ public:
             on_session_changed();
     }
 
-    // The sessions a menu would offer: the kept ones, minus the one being shown, which
-    // is not a thing worth restoring into the window that is already showing it.
-    // Separate from the menu itself so that what the menu would say can be checked
-    // without a person clicking it.
-    std::vector<std::string> keptSessionNames() const {
-        std::vector<std::string> names;
+    // Where this window could go instead of staying here. That is everything the daemon
+    // would put in a listing — kept, or left behind when a window went away without being
+    // asked to — minus the one being shown, which is not somewhere else.
+    //
+    // The left-behind ones belong here. A shell with no window and a program in it is
+    // precisely what the menu is for, and `session list` had been saying so all along;
+    // offering only the saved ones was half a rule, the same half as a keep that never
+    // expires. Separate from the menu itself so what it would say can be checked without
+    // a person clicking it.
+    std::vector<SessionInfo> restorableSessions() const {
+        std::vector<SessionInfo> out;
         std::string error;
-        for (const SessionInfo& info : savedSessions(error)) {
+        for (const SessionInfo& info : worthListing(listSessions(error))) {
             if (info.name != session_)
-                names.push_back(info.name);
+                out.push_back(info);
         }
-        return names;
+        return out;
     }
 
     // Ctrl+Shift+A: the kept sessions, in a menu you can point at and click.
@@ -182,14 +190,14 @@ public:
     // opens or a session is killed somewhere else.
     void showSessionMenu() {
         QMenu menu(this);
-        const std::vector<std::string> names = keptSessionNames();
-        if (names.empty()) {
-            QAction* nothing = menu.addAction("nothing kept yet — Ctrl+Shift+S keeps this shell");
+        const std::vector<SessionInfo> choices = restorableSessions();
+        if (choices.empty()) {
+            QAction* nothing = menu.addAction("nothing to go back to — Ctrl+Shift+S keeps this shell");
             nothing->setEnabled(false);
         }
-        for (const std::string& name : names) {
-            QAction* entry = menu.addAction(QString::fromStdString(menuLabel(name)));
-            entry->setData(QString::fromStdString(name));
+        for (const SessionInfo& info : choices) {
+            QAction* entry = menu.addAction(QString::fromStdString(sessionMenuLabel(info)));
+            entry->setData(QString::fromStdString(info.name));
         }
         // Centred on the window rather than under the pointer. The menu is called by a
         // key, and a key has no position; where the pointer happened to stop is a poor
@@ -214,8 +222,13 @@ public:
         // ends it, and if it was kept the daemon keeps it whatever this says.
         showSession(std::move(restored), true);
         session_ = name;
-        session_kept_ = true;
-        setStatusText("session '" + name + "' restored");
+        // Not kept. The daemon says the same thing the moment this view arrives, and
+        // saying it here too is what makes the window's own question honest: closing
+        // this window will end that shell unless the person says otherwise, so the
+        // status line points at the key that would stop it.
+        session_kept_ = false;
+        setStatusText("session '" + name + "' restored, and no longer kept"
+                      " — Ctrl+Shift+S keeps it");
         if (on_session_changed)
             on_session_changed();
     }
@@ -367,19 +380,7 @@ private:
 
     // A menu entry says the name, and what is happening in it: a list of names is a
     // list of guesses about which one had the build running.
-    static std::string menuLabel(const std::string& name) {
-        std::string error;
-        for (const SessionInfo& info : listSessions(error)) {
-            if (info.name != name)
-                continue;
-            if (!info.alive)
-                return name + "   leaving";
-            if (!info.foreground.empty())
-                return name + "   " + info.foreground;
-            return name + "   at a prompt";
-        }
-        return name;
-    }
+
 
     std::string nextKeptName() const {
         std::string error;

@@ -350,18 +350,20 @@ int main(int argc, char** argv) {
         third_spec.cols = 80;
         expect("a third shell starts", daemon.create(third_spec, error));
         pump(300);
-        // Moving on from a session the person kept is not a way of destroying it. They
-        // asked for that one to be kept, and a window that goes to look at something
-        // else has no authority over that decision.
+        // "second" was kept, and then this window looked at it — which is what the keep
+        // was for — so by the time the window moves on there is nothing holding that
+        // shell open any more. Keeping is not a property a session accumulates by having
+        // been saved at some point in its past.
         window.showSession(std::make_unique<SessionBackend>("third", 24, 80), true);
         expect("the window is not left without a shell",
                waitFor([&daemon] {
                    return sees(daemon, "third",
                                [](const SessionInfo& info) { return info.clients == 1; });
                }));
-        expect("and the kept session outlives the window moving on",
-               sees(daemon, "second",
-                    [](const SessionInfo& info) { return info.alive && info.saved; }));
+        expect("the session that had been looked at ends when the window moves on",
+               waitFor([&daemon] {
+                   return !sees(daemon, "second", [](const SessionInfo&) { return true; });
+               }));
 
         SessionSpec fourth_spec;
         fourth_spec.name = "fourth";
@@ -370,16 +372,34 @@ int main(int argc, char** argv) {
         fourth_spec.cols = 80;
         expect("a fourth shell starts", daemon.create(fourth_spec, error));
         pump(300);
-        // The unsaved one is the other story: the window said it was done with it.
+        // The protection still exists — it just has to be asked for while somebody is
+        // looking. This is Ctrl+Shift+S from inside the window, said to the daemon
+        // directly, and moving on after it must not destroy anything.
+        expect("keeping the session this window is in", daemon.save("third", std::string(), error));
         window.showSession(std::make_unique<SessionBackend>("fourth", 24, 80), true);
-        expect("switching away on purpose ends an unsaved shell",
+        expect("a session kept while it was being shown outlives the window moving on",
                waitFor([&daemon] {
-                   return !sees(daemon, "third", [](const SessionInfo&) { return true; });
+                   return sees(daemon, "third",
+                               [](const SessionInfo& info) { return info.alive && info.saved; });
+               }));
+
+        SessionSpec fifth_spec;
+        fifth_spec.name = "fifth";
+        fifth_spec.saved = false;
+        fifth_spec.rows = 24;
+        fifth_spec.cols = 80;
+        expect("a fifth shell starts", daemon.create(fifth_spec, error));
+        pump(300);
+        // And the unkept one is the other story: the window said it was done with it.
+        window.showSession(std::make_unique<SessionBackend>("fifth", 24, 80), true);
+        expect("switching away on purpose ends an unkept shell",
+               waitFor([&daemon] {
+                   return !sees(daemon, "fourth", [](const SessionInfo&) { return true; });
                }));
         window.shutdown();
         expect("closing the window leaves the shell it was showing alone",
                waitFor([&daemon] {
-                   return sees(daemon, "fourth", [](const SessionInfo& info) {
+                   return sees(daemon, "fifth", [](const SessionInfo& info) {
                        return info.alive && info.clients == 0;
                    });
                }));

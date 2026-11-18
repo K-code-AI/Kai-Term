@@ -200,12 +200,23 @@ int main(int argc, char** argv) {
         expect("the window says what it did",
                waitFor([&window] { return window.statusText().find("kept") != std::string::npos; }));
         expect("and the menu would now have something to offer",
-               waitFor([&window] { return window.keptSessionNames().size() == 1; }));
-        const std::string kept = window.keptSessionNames().front();
+               waitFor([&window] { return window.restorableSessions().size() == 1; }));
+        const std::string kept = window.restorableSessions().front().name;
 
         expect("kept under a name a person would choose to type", kept.rfind("s", 0) == 0);
         expect("still holding what was on it",
                waitFor([&kept] { return writtenInto(kept).find("FIRST-WINDOW") != std::string::npos; }));
+        // That was a view, even a short one that only wanted to know what the screen
+        // said, and a view spends the keep. Nothing was lost by looking; the session is
+        // simply an ordinary one again until somebody says keep, which is the whole rule
+        // and the reason it is checked here rather than three lines away.
+        expect("looking at it spent the keep",
+               waitFor([&daemon, &kept] {
+                   return sees(daemon, kept, [](const SessionInfo& info) {
+                       return info.alive && !info.saved;
+                   });
+               }));
+        expect("and saying keep again holds it", daemon.save(kept, std::string(), error));
         // Fresh, which is said about the screen rather than the name: renaming the kept
         // session frees its old name, and a new shell taking it is the daemon reusing
         // what is no longer in use.
@@ -234,7 +245,17 @@ int main(int argc, char** argv) {
                    return window.sessionName() == kept &&
                           onScreen(window).find("FIRST-WINDOW") != std::string::npos;
                }));
-        expect("and it is a kept session now", window.sessionKept());
+        // The report this whole block is about. Bringing a kept session back into a
+        // window is somebody looking at it, which is the entire reason it was kept, so
+        // the keep is used up there and then: the window does not inherit it and the
+        // daemon does not still hold it. Keeping it again is an act, not a memory.
+        expect("and looking at it took the keep back", !window.sessionKept());
+        expect("the daemon agrees that nobody has asked to keep it",
+               waitFor([&daemon, &kept] {
+                   return sees(daemon, kept, [](const SessionInfo& info) {
+                       return info.alive && info.clients == 1 && !info.saved;
+                   });
+               }));
 
         // Kaida's case exactly: a session brought back into a window, something running
         // in it, the window closed. The session being kept says what happens to the
@@ -256,9 +277,11 @@ int main(int argc, char** argv) {
                    return !sees(daemon, first_session, [](const SessionInfo&) { return true; });
                }));
 
-        // A kept session with nothing running is a different matter: there is nothing
-        // out there to lose, so the window goes without a word and the session stays
-        // where it is for the next window to pick up. Through the close rather than by
+        // Nothing is running, so nothing is asked. What happens next is the half Kaida
+        // was objecting to: this session was saved once, and used to stay saved for the
+        // rest of its life however many windows looked at it, so closing went quiet and
+        // the shell went on running on a decision nobody made in that moment. Looking at
+        // it spent the keep, so now the close ends it. Through the close rather than by
         // calling the teardown by hand: what the window decides is the thing under test,
         // and a test that made the call itself would pass even when the window never did.
         expect("nothing is running when the quiet close is checked",
@@ -267,16 +290,14 @@ int main(int argc, char** argv) {
         QCoreApplication::sendEvent(&window, &keep_close);
         expect("the window lets itself close", keep_close.isAccepted());
         window.shutdown();
-        expect("closing the window leaves the kept session running",
+        expect("and closing it ends the session that was only ever saved before",
                waitFor([&daemon, &kept] {
-                   return sees(daemon, kept, [](const SessionInfo& info) {
-                       return info.alive && info.saved && info.clients == 0;
-                   });
+                   return !sees(daemon, kept, [](const SessionInfo&) { return true; });
                }));
         // The menu leaves out the session being shown, so once it is back there is
         // nothing left to offer: the point of the list is the ones you are not in.
         expect("and the menu stops offering the one you are in",
-               window.keptSessionNames().empty());
+               window.restorableSessions().empty());
         static_cast<void>(daemon.kill(kept, error));
     }
 
@@ -347,7 +368,7 @@ int main(int argc, char** argv) {
             plain.show();
             static_cast<void>(waitFor([&plain] { return !plain.sessionName().empty(); }));
             expect("a plain window has a shell", !plain.sessionName().empty());
-            expect("and nothing kept", plain.keptSessionNames().empty());
+            expect("and nothing to go back to", plain.restorableSessions().empty());
             expect("with nobody else looking at it",
                    waitFor([&daemon, &plain] {
                        return sees(daemon, plain.sessionName(),
@@ -388,6 +409,41 @@ int main(int argc, char** argv) {
         quiet.discardOnClose();
         quiet.shutdown();
         pump(200);
+    }
+
+    {
+        // The menu and the listing used to disagree. `session list` showed the shells a
+        // window had left behind; Ctrl+Shift+A offered only the ones somebody had saved.
+        // The one you were hunting for was the one the menu could not see, which is the
+        // same half a rule as a keep that never expires: two places answering one
+        // question differently. They read from the same list now.
+        SessionSpec orphan;
+        orphan.name = "orphan";
+        orphan.saved = false;
+        orphan.rows = 24;
+        orphan.cols = 80;
+        std::string orphan_error;
+        expect("a shell is left behind with nobody looking at it",
+               daemon.create(orphan, orphan_error));
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        const std::vector<SessionInfo> choices = window.restorableSessions();
+        const SessionInfo* found = nullptr;
+        for (const SessionInfo& info : choices) {
+            if (info.name == "orphan")
+                found = &info;
+        }
+        expect("the menu offers the shell nobody saved", found != nullptr);
+        if (found != nullptr) {
+            const std::string label = sessionMenuLabel(*found);
+            expect("and says what it is: " + label, label.find("left behind") != std::string::npos);
+            expect("with the number a person would type: " + label,
+                   label.rfind(std::to_string(found->id) + "  ", 0) == 0);
+        }
+        // The window you are in is not somewhere else, whatever else is true of it.
+        expect("and the menu leaves out the session this window is showing",
+               window.sessionName() != "orphan");
+        window.shutdown();
+        static_cast<void>(daemon.kill("orphan", orphan_error));
     }
 
     daemon.stop();

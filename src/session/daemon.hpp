@@ -99,6 +99,11 @@ struct SessionSpec {
 };
 
 struct SessionInfo {
+    // Handed out by the daemon in the order shells started, from 0, never reused while
+    // that daemon lives. A name is something a person chose and can be typed; an id is
+    // what `session list` puts first and what a person types back when there is no name
+    // worth reading, which is most of the time.
+    int id = -1;
     std::string name;
     pid_t pid = 0;
     int rows = 0;
@@ -112,6 +117,7 @@ struct SessionInfo {
 
 inline Fields encodeSessionInfo(const SessionInfo& info) {
     return {
+        {"id", std::to_string(info.id)},
         {"name", info.name},
         {"pid", std::to_string(static_cast<long long>(info.pid))},
         {"rows", std::to_string(info.rows)},
@@ -126,6 +132,7 @@ inline Fields encodeSessionInfo(const SessionInfo& info) {
 
 inline SessionInfo decodeSessionInfo(const Fields& fields) {
     SessionInfo info;
+    info.id = std::stoi(fieldValue(fields, "id", "-1"));
     info.name = fieldValue(fields, "name");
     info.pid = static_cast<pid_t>(std::stoll(fieldValue(fields, "pid", "0")));
     info.rows = std::stoi(fieldValue(fields, "rows", "0"));
@@ -305,6 +312,7 @@ public:
         }
 
         auto record = std::make_shared<Record>();
+        record->id = next_id_++;
         record->name = spec.name;
         record->pty = std::move(pty);
         record->screen = std::make_unique<Screen>(spec.rows, spec.cols);
@@ -349,12 +357,11 @@ public:
         std::shared_ptr<Record> record;
         {
             std::lock_guard<std::mutex> lock(table_mutex_);
-            const auto found = table_.find(name);
-            if (found == table_.end()) {
+            record = resolveLocked(name);
+            if (!record) {
                 error = "no such session: " + name;
                 return false;
             }
-            record = found->second;
         }
         halt(*record);
         return true;
@@ -365,9 +372,7 @@ public:
         std::shared_ptr<Record> record;
         {
             std::lock_guard<std::mutex> lock(table_mutex_);
-            const auto found = table_.find(name);
-            if (found != table_.end())
-                record = found->second;
+            record = resolveLocked(name);
         }
         if (!record || record->dead)
             return false;
@@ -381,12 +386,13 @@ public:
     // a shell in it that somebody is watching.
     bool save(const std::string& name, const std::string& wanted, std::string& error) {
         std::lock_guard<std::mutex> lock(table_mutex_);
-        const auto found = table_.find(name);
-        if (found == table_.end()) {
+        // Resolved rather than looked up, because the handle may be an id — and this
+        // function holds the table lock from its first line, so resolving is all it may do.
+        const std::shared_ptr<Record> record = resolveLocked(name);
+        if (!record) {
             error = "no such session: " + name;
             return false;
         }
-        const std::shared_ptr<Record> record = found->second;
         if (wanted.empty() || wanted == name) {
             record->saved = true;
             return true;
@@ -403,7 +409,7 @@ public:
             error = "a session is already called " + wanted;
             return false;
         }
-        table_.erase(found);
+        table_.erase(record->name);  // the handle may have been an id, not this name
         record->name = wanted;
         record->saved = true;
         table_[wanted] = record;
@@ -417,12 +423,11 @@ public:
         std::shared_ptr<Record> record;
         {
             std::lock_guard<std::mutex> lock(table_mutex_);
-            const auto found = table_.find(name);
-            if (found == table_.end()) {
+            record = resolveLocked(name);
+            if (!record) {
                 error = "no such session: " + name;
                 return false;
             }
-            record = found->second;
         }
         record->saved = false;
         destroy(record);
@@ -434,12 +439,11 @@ public:
         std::shared_ptr<Record> record;
         {
             std::lock_guard<std::mutex> lock(table_mutex_);
-            const auto found = table_.find(name);
-            if (found == table_.end()) {
+            record = resolveLocked(name);
+            if (!record) {
                 error = "no such session: " + name;
                 return false;
             }
-            record = found->second;
         }
         std::lock_guard<std::mutex> lock(record->clients_mutex);
         // SHUT_RDWR, not SHUT_WR. Half of it has to be read-only on our side, because
@@ -454,6 +458,8 @@ public:
 
 private:
     struct Record {
+        // Set once, when the shell is made, and read-only after that.
+        int id = -1;
         std::string name;
         // Whether a person has asked for this one to be kept. Unsaved sessions are the
         // shells inside open windows: kept alive by the daemon so a crash cannot take
@@ -473,6 +479,26 @@ private:
         long long started = 0;
     };
 
+    // What a handle names. A run of digits is an id, because that is what the first
+    // column of a listing says and it would be strange to print a thing people cannot
+    // use. A name always wins: somebody may have called a session "7" on purpose, and
+    // taking a chosen name away is not how numbers get introduced.
+    //
+    // Called with the table lock held, which is also what makes reading `id` safe.
+    std::shared_ptr<Record> resolveLocked(const std::string& handle) const {
+        const auto found = table_.find(handle);
+        if (found != table_.end())
+            return found->second;
+        if (handle.empty() || handle.size() > 9 ||
+            handle.find_first_not_of("0123456789") != std::string::npos)
+            return nullptr;
+        const int wanted = std::stoi(handle);
+        for (const auto& entry : table_)
+            if (entry.second->id == wanted)
+                return entry.second;
+        return nullptr;
+    }
+
     SessionInfo describe(const Record& record) const {
         SessionInfo info;
         info.name = record.name;
@@ -489,6 +515,7 @@ private:
         // that could belong to anything by then.
         if (record.pty->alive())
             info.pid = record.pty->child();
+        info.id = record.id;
         info.saved = record.saved;
         // Asked for on every listing, which is how often anyone looks. Asking the
         // kernel costs a syscall and answers a question no amount of bookkeeping
@@ -630,13 +657,12 @@ private:
         std::shared_ptr<Record> record;
         {
             std::lock_guard<std::mutex> lock(table_mutex_);
-            const auto found = table_.find(name);
-            if (found == table_.end()) {
+            record = resolveLocked(name);
+            if (!record) {
                 static_cast<void>(detail::sendFrame(
                     fd, MsgKind::Error, encodeFields({{"message", "no such session: " + name}})));
                 return;
             }
-            record = found->second;
         }
         const int rows = std::stoi(fieldValue(hello, "rows", "0"));
         const int cols = std::stoi(fieldValue(hello, "cols", "0"));
@@ -655,6 +681,13 @@ private:
         // what keeps the two in order: a shell that printed between them would
         // otherwise have its output arrive before the screen it is appended to, and a
         // view would be drawn a line from a moment it has not been shown yet.
+        // Somebody is looking at it now, which is what a keep was holding the session
+        // for. Taking it back into a window therefore uses the keep up: from here the
+        // shell is an ordinary one, and only another save — the keybind, or the Detach
+        // button on the way out — keeps it alive. It used to stay saved through this,
+        // so a session Kaida had saved once went on saving itself every time it was
+        // looked at, and closed without a question.
+        record->saved = false;
         {
             std::lock_guard<std::mutex> lock(record->clients_mutex);
             record->clients.push_back(fd);
@@ -711,6 +744,13 @@ private:
                     // which is the opposite of an instruction to destroy anything.
                     const Fields leaving = decodeFields(frame.body);
                     closing_on_purpose = fieldValue(leaving, "discard") == "1";
+                    // The other word in the same frame. A view that leaves without
+                    // saying "throw it away" is saying the opposite: keep this. That is
+                    // the Detach button, and it has to be a save rather than a shell
+                    // that is merely unloved and listed, because otherwise "detach" and
+                    // "crashed" look identical to everything that comes after.
+                    if (!closing_on_purpose)
+                        record->saved = true;
                     return; // the view asks for nothing more
                 }
                 default:
@@ -860,6 +900,9 @@ private:
     std::string path_;
     int listener_ = -1;
     std::atomic<bool> stopping_{false};
+    // From 0, and never given out twice. A restarted daemon starts over, which is fine:
+    // the shells it had are gone with it, so there is nothing for an old number to mean.
+    std::atomic<int> next_id_{0};
     mutable std::mutex table_mutex_;
     std::map<std::string, std::shared_ptr<Record>> table_;
     std::mutex workers_mutex_;

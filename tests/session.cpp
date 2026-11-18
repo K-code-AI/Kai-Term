@@ -238,6 +238,14 @@ bool attach(TestClient& client, const std::string& name, int rows, int cols,
 
 } // namespace
 
+// Whether the listing has a session under this exact name.
+bool listed_have(const std::string& name) {
+    for (const SessionInfo& info : listed())
+        if (info.name == name)
+            return true;
+    return false;
+}
+
 int main() {
     root = "/tmp/kai-session-test-" + std::to_string(static_cast<long>(::getpid()));
     if (::mkdir(root.c_str(), 0700) != 0 && errno != EEXIST) {
@@ -254,7 +262,8 @@ int main() {
         std::string error;
         expect("the daemon starts (" + error + ")", daemon.start(error));
         expect("and its socket is where it said it would be",
-               daemon.socketPath() == root + "/kai-term/daemon-v2.sock");
+               daemon.socketPath() ==
+               root + "/kai-term/daemon-v" + std::string(kProtocolVersion) + ".sock");
         // The name carries the protocol number, which is the whole of how a daemon from
         // an older build stops being mistaken for ours: it is not sitting on the socket
         // this build looks at, so a new build starts its own instead of sending it a
@@ -361,6 +370,8 @@ int main() {
     {
         std::string error;
         expect("a session can be started", createSession("work", 24, 80, true, &error));
+        expect("and it is number 0, the first one this daemon handed out",
+               listed().size() == 1 && listed()[0].id == 0);
         const auto sessions = listed();
         expect("and appears in the list", sessions.size() == 1);
         if (!sessions.empty()) {
@@ -864,6 +875,69 @@ int main() {
             }
             return true;
         }());
+    }
+
+    {
+        // Ids. A listing that sorts w1, w10, w11 is alphabetical and no use as a
+        // history, and a shell nobody named still has to be pointable at.
+        std::string error;
+        const std::vector<SessionInfo> before = listed();
+        int previous_top = -1;
+        for (const SessionInfo& info : before)
+            if (info.id > previous_top)
+                previous_top = info.id;
+        expect("a session to number", createSession("numbered", 24, 80));
+        const std::vector<SessionInfo> all = listed();
+        int top = previous_top;
+        std::string top_name;
+        for (const SessionInfo& info : all) {
+            if (info.id > top) {
+                top = info.id;
+                top_name = info.name;
+            }
+        }
+        expect("the newest shell carries the highest number", top_name == "numbered");
+        expect("a fresh number is above every one already given out, because none are "
+               "reused",
+               top > previous_top);
+
+        // Two properties a person can actually rely on when reading the list: no two
+        // shells answer to the same number, and the numbers run in the order the shells
+        // started, so the list reads as an afternoon rather than as a dictionary. Shells
+        // that have gone are not in the listing, which is why the check is about order
+        // and not about the numbers being next to each other.
+        bool distinct = true;
+        bool in_start_order = true;
+        for (const SessionInfo& a : all) {
+            for (const SessionInfo& b : all) {
+                if (a.name == b.name)
+                    continue;
+                if (a.id == b.id)
+                    distinct = false;
+                if (a.started < b.started && a.id >= b.id)
+                    in_start_order = false;
+            }
+        }
+        expect("no two shells share a number", distinct);
+        expect("and the numbers run in the order the shells started", in_start_order);
+
+        expect("a number is a handle: it types into that shell",
+               daemon.type(std::to_string(top), "echo BY-ID\n"));
+        expect("and a number that was never handed out is not a handle",
+               !daemon.type(std::to_string(top + 500), "echo NOPE\n"));
+
+        // The precedence, said plainly: a name wins. Somebody may have typed `new -n 7`
+        // on purpose, and handing out numbers is no reason to take away what they chose.
+        // Naming a new shell after a number already in use is the only way to find out
+        // which of the two the daemon answers to.
+        expect("a session named after another one's number",
+               createSession(std::to_string(top), 24, 80));
+        expect("killing that number kills the one that was named",
+               daemon.kill(std::to_string(top), error));
+        expect("the named one is gone", !listed_have(std::to_string(top)));
+        expect("and the shell that was number " + std::to_string(top) + " is still here",
+               listed_have(top_name));
+        expect("nothing else went with it", listed().size() == all.size());
     }
 
     {
