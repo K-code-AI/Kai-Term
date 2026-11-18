@@ -20,6 +20,8 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QResizeEvent>
+#include <QShowEvent>
+#include <QTimerEvent>
 #include <QColor>
 #include <QRectF>
 #include <QPen>
@@ -196,6 +198,15 @@ public:
         backend_->resize(rows_, cols_);
         startReader();
         update();
+        // Asked for again and again for a moment, because the one update() above is worth
+        // nothing if it lands before the window has been handed a surface: a compositor
+        // that is still decorating a fresh window swallows the repaint, and the screen the
+        // session sent a moment later has nothing to be drawn into. The person sees a blank
+        // window that fills in the instant a key is pressed — the keystroke is not what
+        // fetches the content, it is only the next thing that asks for a paint. This asks
+        // on its own until one has actually happened.
+        if (repaint_timer_ == 0)
+            repaint_timer_ = startTimer(kRepaintPollMs);
     }
 
     // What the window's own keybinds mean, set by whoever owns the window. The widget
@@ -418,7 +429,17 @@ public:
             // and dies cannot freeze the screen, because the next chunk repaints
             // once the interval has passed whether the mode is off or not.
             const qint64 now_ms = repaintClockElapsed();
-            if (repaintAllowed(screen_.synchronizedOutput(), now_ms - last_repaint_ms_)) {
+            // The falling edge is never throttled. A block that ends less than an interval
+            // after the repaint taken at its start used to be dropped — and the comment
+            // here promised for years that the finished frame is painted at the end of the
+            // block, which is the very frame the throttle was throwing away. A session's
+            // screen arrives as one such block: painted empty at the start, filled in
+            // inside the interval, and never asked to be drawn again. The person sees a
+            // blank window until a keystroke asks on the screen's behalf.
+            const bool block_ended = synced_block_open && !screen_.synchronizedOutput();
+            synced_block_open = screen_.synchronizedOutput();
+            if (block_ended
+                || repaintAllowed(screen_.synchronizedOutput(), now_ms - last_repaint_ms_)) {
                 last_repaint_ms_ = now_ms;
                 update();
             }
@@ -738,6 +759,41 @@ public:
                               static_cast<int>(cellHeight() + 0.5));
     }
 
+    // A window being shown is a window about to be handed a surface by something that has
+    // not finished its own work yet. From this moment a paint is wanted until one lands.
+    void showEvent(QShowEvent* e) override {
+        QWidget::showEvent(e);
+        shown_paint_count_ = paint_count_;
+        if (repaint_timer_ == 0)
+            repaint_timer_ = startTimer(kRepaintPollMs);
+        repaint_deadline_.invalidate();
+    }
+
+    // The asking for a paint, for as long as one has not happened. It stops by itself once
+    // the window has drawn, so a window that was shown normally is not left redrawing
+    // itself for no reason, and a window that was shown into a surface that was not there
+    // yet keeps asking until something appears. It gives up after a while too: a window
+    // nobody ever looks at is not worth asking forever.
+    void timerEvent(QTimerEvent* e) override {
+        if (e->timerId() != repaint_timer_) {
+            QWidget::timerEvent(e);
+            return;
+        }
+        if (paint_count_ > shown_paint_count_) {
+            killTimer(repaint_timer_);
+            repaint_timer_ = 0;
+            return;
+        }
+        if (!repaint_deadline_.isValid())
+            repaint_deadline_.start();
+        if (repaint_deadline_.elapsed() > kRepaintAskMs) {
+            killTimer(repaint_timer_);
+            repaint_timer_ = 0;
+            return;
+        }
+        update();
+    }
+
     void resizeEvent(QResizeEvent*) override {
         QFontMetricsF fm(font_);
         double cw = fm.horizontalAdvance(QChar('M'));
@@ -766,6 +822,7 @@ public:
     }
 
     void paintEvent(QPaintEvent*) override {
+        ++paint_count_;
         QPainter p(this);
         const Color background = screen_.defaultBackground();
         p.fillRect(0, 0, width(), height(), QColor(background.r, background.g, background.b));
@@ -953,6 +1010,16 @@ private:
     }
 
     std::unique_ptr<TerminalBackend> backend_;
+    // How many paints this window has ever been asked to do, and how many it had done the
+    // last time it was shown. A window asked to draw before it has a surface does the work
+    // and nothing comes of it; these two say whether anything has been drawn since.
+    qint64 paint_count_ = 0;
+    qint64 shown_paint_count_ = 0;
+    int repaint_timer_ = 0;
+    bool synced_block_open = false;
+    QElapsedTimer repaint_deadline_;
+    static constexpr int kRepaintPollMs = 120;
+    static constexpr int kRepaintAskMs = 3000;
     Screen screen_;
     QFont font_;
     // Declared in the order the constructor initialises them: members are built

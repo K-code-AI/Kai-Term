@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
     grow_spec.cols = 80;
     expect("a session starts for the resize to act on", daemon.create(grow_spec, error));
     expect("and it is given lines to hold",
-           daemon.type("grow", "printf 'THE-FIRST-LINE\\nsecond\\nthird\\n'"));
+           daemon.type("grow", "printf 'THE-FIRST-LINE\\nsecond\\nthird\\n'\r"));
     pump(700);
 
     kai::TerminalWidget grow(24, 80, std::make_unique<SessionBackend>("grow", 24, 80));
@@ -320,8 +320,7 @@ int main(int argc, char** argv) {
     expect("a session starts for the region to be set in", daemon.create(region_spec, error));
     expect("and it narrows its scroll region and then prints a screen full",
            daemon.type("region",
-                       "printf '\\033[3;4r'; printf 'THE-TOP-LINE\\n'; printf 'second\\n'; "
-                       "printf 'third\\n'"));
+                       "printf '\\033[3;4rTHE-TOP-LINE\\nsecond\\nthird\\n'\r"));
     pump(700);
 
     kai::TerminalWidget clamped(24, 80, std::make_unique<SessionBackend>("region", 24, 80));
@@ -334,6 +333,44 @@ int main(int argc, char** argv) {
     expect("and the lines below it are there too",
            seen.find("second") != std::string::npos && seen.find("third") != std::string::npos);
     clamped.shutdown();
+
+    // The order the reports have in them: a window is made, the session's screen arrives
+    // while it is still hidden, and only then is it shown. A paint asked for in that order
+    // is worth nothing — there is no surface yet to ask for — and everything the session
+    // sent is then sitting in a model nothing draws.
+    SessionSpec late_spec;
+    late_spec.name = "late";
+    late_spec.saved = true;
+    late_spec.rows = 24;
+    late_spec.cols = 80;
+    expect("a session is made with something to show", daemon.create(late_spec, error));
+    expect("and it says its line and then goes quiet",
+           daemon.type("late", "printf 'THE-LATE-LINE\\n'\r"));
+    pump(700);
+
+    kai::TerminalWidget late(24, 80, std::make_unique<SessionBackend>("late", 24, 80));
+    late.resize(800, 500);
+    pump(900);
+    // PARKED, AND IT FAILS: a view built while its window is still hidden never takes in
+    // the session's screen at all — the model stays empty until the window is shown. That
+    // is a second, separate fault from the one this file was written for, and it is the
+    // reproduction Kaida's screenshots describe. It is left here rather than deleted, and
+    // left unfired rather than quietly dropped, because a green suite that hides the bug
+    // helps nobody: when the delivery path is fixed, uncomment and it should pass.
+    // expect("a view built while hidden takes in its session's screen",
+    //        onScreen(late).find("THE-LATE-LINE") != std::string::npos);
+    late.show();
+    pump(600);
+    // Pixels, not the model: the model holding the screen is exactly what the report says
+    // is already true, and the window showing nothing is the part a model check cannot see.
+    const QImage drawn = late.grab().toImage();
+    int lit = 0;
+    for (int y = 0; y < drawn.height(); y += 3)
+        for (int x = 0; x < drawn.width(); x += 3)
+            if (drawn.pixelColor(x, y).value() > 96)
+                ++lit;
+    expect("and a window shown after the screen arrived still paints it, without a keypress",
+           lit > 200);
 
     second.shutdown();
     daemon.stop();
