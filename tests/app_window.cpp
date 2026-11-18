@@ -9,6 +9,7 @@
 // they would show and what they would be about, not what they look like.
 
 #include "../src/app/appwindow.hpp"
+#include "../src/app/closeprompt.hpp"
 #include "../src/session/daemon.hpp"
 
 #include <QApplication>
@@ -162,7 +163,7 @@ int main(int argc, char** argv) {
            waitFor([&window] { return window.runningProgram() == "sleep"; }));
 
     {
-        // Ctrl+Shift+D: keep this shell, start a fresh one here. The window stays,
+        // Ctrl+Shift+S: keep this shell, start a fresh one here. The window stays,
         // because what ended was the shell, not the window.
         window.saveCurrentSession();
         expect("the window says what it did",
@@ -228,6 +229,34 @@ int main(int argc, char** argv) {
         expect("and the menu stops offering the one you are in",
                window.keptSessionNames().empty());
         static_cast<void>(daemon.kill(kept, error));
+    }
+
+    {
+        // What the close prompt is built from, asked the way the window asks it. The
+        // prompt has never been seen by a person at a real desktop, and the reason it
+        // goes missing could be either half: the window not knowing what is running, or
+        // the desktop not asking the window to close at all. This rules the first half
+        // in or out.
+        kai::AppWindow busy(kai::startWindowBackend(24, 80));
+        busy.show();
+        static_cast<void>(waitFor([&busy] { return !busy.sessionName().empty(); }));
+        expect("a window with a program running knows what it is",
+               waitFor([&busy] {
+                   busy.pasteText("sleep 120");
+                   static_cast<void>(QApplication::sendEvent(
+                       &busy, new QKeyEvent(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier)));
+                   pump(40);
+                   return busy.runningProgram() == "sleep";
+               }));
+        expect("and that is worth asking about", !closeQuestion(busy.runningProgram(), false).empty());
+        // Said out loud, because the shell in it is running something: this window is
+        // being closed by a person, which is the word that ends a shell nobody kept.
+        // Left unsaid, the session would be left behind and the next check would find
+        // it there and call it a bug in something else.
+        busy.discardOnClose();
+        busy.shutdown();
+        expect("and closing it takes the session with it",
+               waitFor([&daemon] { return daemon.list().empty(); }));
     }
 
     {
