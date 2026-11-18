@@ -7,11 +7,12 @@ Kai-Term is a native Linux terminal workspace: a terminal emulator, a dual-pane 
 M1 (the native terminal emulator), M2 (input reliability: text selection,
 clipboard, paste, and mouse reporting) and M3 (native session infrastructure) are
 implemented and tested, and M4 (the native multiplexer) has its first pieces: every
-window's shell is held by the session daemon, **Ctrl+Shift+D** keeps one and starts a
+window's shell is held by the session daemon, **Ctrl+Shift+S** keeps one and starts a
 fresh shell in the same window, **Ctrl+Shift+A** brings a kept one back, and closing a
 window with something running asks rather than ends. M1 and M2 have been used at a live
-Wayland session. Of M3 and M4, one thing has been used at a live Wayland session —
-Ctrl+Shift+D, on niri, by Kaida — and it works. Everything else in them is still checked
+Wayland session. Of M3 and M4, the keep-this-shell keybind has been used at a live
+Wayland session — on niri, by Kaida — and it works. Everything else in them is still
+checked
 headless or offscreen only, so what the session menu looks like, what the close prompt
 reads like when you have a build running, and what it feels like to attach to a session
 from another terminal are still somebody else's to say. Since the last milestone closed, the parts an audit found thin have been
@@ -251,12 +252,12 @@ Verified results on this machine:
   vanished without saying anything and dies when one says it is closing, a kept session
   is kept under a name and a taken name is refused, what is running out front is named,
   and stopping leaves no socket and no shell.
-- `kai-term-widget-session` prints `PASS: 36 window-showing-a-session checks passed`,
+- `kai-term-widget-session` prints `PASS: 41 window-showing-a-session checks passed`,
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 26 application window checks passed`: a window
-  gets a shell held by the daemon without asking for one, Ctrl+Shift+D keeps it and
+- `kai-term-app-window` prints `PASS: 29 application window checks passed`: a window
+  gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running.
 - `kai-term-close-prompt` prints `PASS: 14 close prompt checks passed` — when closing
@@ -322,12 +323,22 @@ the daemon is started if it is not there. If it cannot be started the window say
 once in the corner and runs a shell of its own, which works the same except that
 nothing can be kept.
 
-- **Ctrl+Shift+D** keeps the shell this window is showing and starts a fresh one in the
+- **Ctrl+Shift+S** keeps the shell this window is showing and starts a fresh one in the
   same window. The window stays, because what ended was the shell, not the window. The
   kept session gets a name (`s1`, `s2`, …) and the corner says which.
 - **Ctrl+Shift+A** opens a menu of the kept sessions with what is happening in each —
   `s1   sleep`, `s2   at a prompt` — and clicking one brings it back into this window.
   The session already being shown is not in the list.
+
+- Plain **Ctrl+S** is left alone and goes to the shell, where it stops and starts
+  output the way it always has. That is why the key above has Shift in it: a terminal
+  cannot tell Ctrl+S from Ctrl+Shift+S — a control letter arrives as one byte and Shift
+  is not in it — so claiming the letter would take it away from every program in the
+  window. Qt can tell them apart, which is why the window can have the letter at all.
+
+Keys held free for what is coming, so that a later feature does not quietly take one
+that has become somebody else's: **Ctrl+Shift+F** for a file manager, **Ctrl+Shift+N**
+for a new tab, **Ctrl+Shift+H** to switch between side-by-side panes and a tab view.
 - Closing a window with something running asks **"Quit while `make` is running?"** with
   **Yes**, **No** and **Detach session before closing terminal**. A shell sitting at a
   prompt is not asked about, and neither is a kept session, because closing a window

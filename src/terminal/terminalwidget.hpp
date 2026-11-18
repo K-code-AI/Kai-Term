@@ -200,7 +200,7 @@ public:
 
     // What the window's own keybinds mean, set by whoever owns the window. The widget
     // does not know what a session is, does not draw a menu and has never heard of the
-    // daemon; it knows Ctrl+Shift+D was pressed and that somebody asked to be told.
+    // daemon; it knows Ctrl+Shift+S was pressed and that somebody asked to be told.
     std::function<void()> on_save_session;
     std::function<void()> on_session_menu;
 
@@ -465,12 +465,19 @@ public:
                 pasteFromClipboard();
                 return;
             }
-            // Ctrl+Shift+D keeps the shell this window is showing and starts a fresh
+            // Ctrl+Shift+S keeps the shell this window is showing and starts a fresh
             // one in its place; Ctrl+Shift+A asks for the list of kept sessions. Both
-            // belong to the window and never reach the shell: sent on, Ctrl+Shift+D
-            // would be an end-of-file at the prompt and Ctrl+Shift+A a control
-            // character, both of which do the opposite of what was asked.
-            if (key == Qt::Key_D && on_save_session) {
+            // belong to the window and never reach the shell: sent on, Ctrl+Shift+A
+            // would be a control character at the prompt and Ctrl+Shift+S at least a
+            // pause in flow control, both the opposite of what was asked.
+            //
+            // Here Qt can tell Ctrl+Shift+S from Ctrl+S, so plain Ctrl+S is left alone
+            // and goes to the shell, where it means what it always meant. A plain
+            // terminal cannot tell the two apart at all — a control letter arrives as
+            // one byte and Shift is not in it — which is why the attached view speaks of
+            // Ctrl+S and this window speaks of Ctrl+Shift+S. The letter is the same on
+            // purpose: it is the one that means keep, in both places.
+            if (key == Qt::Key_S && on_save_session) {
                 on_save_session();
                 return;
             }

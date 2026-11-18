@@ -231,7 +231,7 @@ Done:
 - Every window's shell runs under the session daemon, which is started for the window if
   nothing is running. Nothing has to be launched before the terminal works; a window that
   cannot reach a daemon says so once and runs a shell of its own.
-- **Ctrl+Shift+D** keeps the shell and starts a fresh one in the same window. The window
+- **Ctrl+Shift+S** keeps the shell and starts a fresh one in the same window. The window
   stays, because what ended was the shell.
 - **Ctrl+Shift+A** lists the kept sessions with what is happening in each and brings the
   one you click back into this window.
@@ -265,6 +265,10 @@ kai-term kill ID              end a session that was kept
 kai-term start | shutdown | serve      automatic now; kept for debugging and labelled so
 ```
 
+Keys reserved while this is being built, so that a later feature does not quietly take
+one that has become somebody else's: **Ctrl+Shift+F** file manager, **Ctrl+Shift+N**
+new tab, **Ctrl+Shift+H** switch between side-by-side panes and a tab view.
+
 The rules behind it:
 
 - **A number is the handle.** The daemon assigns it, `list` shows it first, and it is what
@@ -287,12 +291,14 @@ The rules behind it:
   `--cols`, `--text`. Nothing is kept "for compatibility" — nothing is released, and a
   word that means two things is what we are undoing.
 
-One thing that was asked for cannot be had: **Ctrl+Shift+S is not distinguishable from
-Ctrl+S inside a terminal.** A letter with Ctrl produces one byte and Shift is not in it —
-which is also why Ctrl+Shift+D cannot be the leave key in an attached view, since that is
-Ctrl+D, the shell's own end-of-file. Qt can tell them apart, so the window keeps
-Ctrl+Shift+D; the attached view will say `Ctrl+S to leave`, which is the byte that
-actually arrives and is free to take.
+One thing that was asked for cannot be had: **a terminal cannot tell Ctrl+Shift+S from
+Ctrl+S.** A letter with Ctrl produces one byte and Shift is not in it — which is also why
+Ctrl+Shift+D could never be the leave key in an attached view, since what arrives there is
+Ctrl+D, the shell's own end-of-file. So the letter is the same on both sides and the
+Shift is only where it can be seen: the window uses Ctrl+Shift+S, because Qt really does
+receive the two separately, and the attached view says `Ctrl+S to leave`, which is the
+byte that actually arrives. Ctrl+Shift+D is retired rather than kept as an alias, and
+plain Ctrl+S still reaches the shell from the window, where it means stop and start.
 
 Needed:
 

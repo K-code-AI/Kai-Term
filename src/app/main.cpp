@@ -15,7 +15,7 @@ static void print_help()
     std::cout << "Kai-Term " << KAI_TERM_VERSION << "\n"
               << "Usage: kai-term [--version] [--help] [open <session>] [session <command>]\n"
               << "A native terminal emulator and PTY-backed shell.\n"
-              << "Ctrl+Shift+D keeps this shell and starts a fresh one, Ctrl+Shift+A\n"
+              << "Ctrl+Shift+S keeps this shell and starts a fresh one, Ctrl+Shift+A\n"
               << "brings back one that was kept. Run `kai-term session --help` for the\n"
               << "same from a terminal, and `kai-term open NAME` for a window onto a\n"
               << "session that is already running.\n"

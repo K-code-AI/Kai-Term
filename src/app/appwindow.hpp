@@ -14,7 +14,6 @@
 #include "../terminal/terminalwidget.hpp"
 
 #include <QCloseEvent>
-#include <QCursor>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
@@ -108,7 +107,7 @@ public:
     // can set it again.
     std::function<void()> on_session_changed;
 
-    // Ctrl+Shift+D: keep this shell, and start a fresh one in the same window.
+    // Ctrl+Shift+S: keep this shell, and start a fresh one in the same window.
     //
     // The window does not close. The thing a person is doing when they press this is
     // not "I have finished with this window" but "I have finished with this shell", and
@@ -183,14 +182,18 @@ public:
         QMenu menu(this);
         const std::vector<std::string> names = keptSessionNames();
         if (names.empty()) {
-            QAction* nothing = menu.addAction("nothing kept yet — Ctrl+Shift+D keeps this shell");
+            QAction* nothing = menu.addAction("nothing kept yet — Ctrl+Shift+S keeps this shell");
             nothing->setEnabled(false);
         }
         for (const std::string& name : names) {
             QAction* entry = menu.addAction(QString::fromStdString(menuLabel(name)));
             entry->setData(QString::fromStdString(name));
         }
-        QAction* chosen = menu.exec(QCursor::pos());
+        // Centred on the window rather than under the pointer. The menu is called by a
+        // key, and a key has no position; where the pointer happened to stop is a poor
+        // place to be asked — over the line you were reading, or jammed against the edge
+        // of the screen you left it on. Qt keeps the menu inside the screen from here.
+        QAction* chosen = menu.exec(mapToGlobal(QPoint(width() / 2, height() / 2)));
         if (chosen == nullptr || chosen->data().isNull())
             return; // the disabled line, or a menu dismissed without choosing
         restoreSession(chosen->data().toString().toStdString());

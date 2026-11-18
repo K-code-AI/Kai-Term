@@ -14,13 +14,14 @@ cannot tell a local shell from a session across the socket, and pane-scoped sele
 so a drag stops at the edge of the pane it started in.
 
 M4 has its first pieces in: a window's shell is held by the daemon (started for the
-window, not before it), Ctrl+Shift+D keeps that shell and starts a fresh one in the same
+window, not before it), Ctrl+Shift+S keeps that shell and starts a fresh one in the same
 window, Ctrl+Shift+A brings a kept one back with a mouse-usable menu, and closing a
 window with something running asks instead of ending it. A window can be pointed at
 another shell while it stays open, which is what restoring means.
 
-**One thing in M4 has been used at a live Wayland session: Ctrl+Shift+D, on niri, by
-Kaida, who reports it works.** Everything else in M3 and M4 is checked headless or
+**The keep-this-shell keybind in M4 has been used at a live Wayland session, on niri,
+by Kaida, who reports it works.** (It was Ctrl+Shift+D when that was said; it is
+Ctrl+Shift+S now, by request, and the D is retired.) Everything else in M3 and M4 is checked headless or
 offscreen only: 109 daemon checks over a real pty and a real socket, 36 checks of a window
 rendering a session and switching between two, 22 checks of the application window's
 keybinds and menu contents, 14 of when a close asks at all, 24 checks of drags across a
@@ -233,7 +234,7 @@ the one a multiplexer manual describes:
   closing or only looking elsewhere, the model is emptied, and reader events carry the
   number of the shell that produced them so a late byte from the old one cannot be painted
   on the new screen.
-- `src/app/appwindow.hpp`: Ctrl+Shift+D keeps and starts fresh, Ctrl+Shift+A offers the
+- `src/app/appwindow.hpp`: Ctrl+Shift+S keeps and starts fresh, Ctrl+Shift+A offers the
   kept ones, closing with something running asks. `src/app/closeprompt.hpp` holds the
   decision with no Qt in it, so the asking is testable and only the dialog has to be
   looked at.
@@ -278,7 +279,7 @@ Key files:
 - `src/terminal/terminalwidget.hpp` — Qt widget, owning the selection, the copy and paste bindings, and the scrollback view. Reads PTY output on a reader thread and posts output events to the Qt event loop. Keyboard input is encoded by `keyencode.hpp` and written to the PTY master. Holds `scroll_offset_`, the number of lines scrolled back from the live bottom, and the current `Selection`. Mouse press, move and release either build a selection or, when the application asked for reporting, go to `encodeMouse()` and the PTY; `cellSize()` and `cellTopLeft()` expose the grid geometry so a test can aim at a character.
 - `src/process/pty.hpp` — `forkpty()` PTY and shell lifecycle. The child branch execs the shell; the parent owns the master descriptor. Resize uses `TIOCSWINSZ`.
 - `src/app/main.cpp` — application entry point: arguments, then one window.
-- `src/app/appwindow.hpp` — the window a person runs. Owns the session name, Ctrl+Shift+D
+- `src/app/appwindow.hpp` — the window a person runs. Owns the session name, Ctrl+Shift+S
   (keep this shell, start a fresh one here), Ctrl+Shift+A (a menu of kept sessions that
   restores the one clicked) and the close prompt. The widget stays ignorant of sessions.
 - `src/app/closeprompt.hpp` — `closeQuestion()` / `closeDetail()` / `closeOfferDetach()`:
@@ -376,9 +377,9 @@ Individual results:
 - `./build/tests/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
 - `./build/tests/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.
 - `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
-- `./build/tests/kai-term-widget-session` → `PASS: 36 window-showing-a-session checks passed`.
+- `./build/tests/kai-term-widget-session` → `PASS: 41 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
-- `./build/tests/kai-term-app-window` → `PASS: 26 application window checks passed`.
+- `./build/tests/kai-term-app-window` → `PASS: 29 application window checks passed`.
 - `./build/tests/kai-term-close-prompt` → `PASS: 14 close prompt checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
@@ -418,11 +419,11 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 
 ## Known issues
 
-- **Almost nothing in M3 or M4 has been looked at by a person.** Ctrl+Shift+D has been
-  used at a live Wayland session (niri) and works. The daemon, the command line, the
+- **Almost nothing in M3 or M4 has been looked at by a person.** The keep-this-shell
+  keybind has been used at a live Wayland session (niri) and works. The daemon, the command line, the
   window showing a session, the session menu and the close prompt are still tested with no
   display. What the menu looks like, where the status line sits, whether three buttons
-  read well when you have a build running, and what Ctrl+Shift+D feels like the third
+  read well when you have a build running, and what Ctrl+Shift+S feels like the third
   time are all unverified.
 - The session menu is a `QMenu` built when Ctrl+Shift+A is pressed, so it is correct at
   the moment it opens and wrong afterwards; nothing updates a menu that is already on
@@ -534,11 +535,11 @@ useless. Agreed with Kaida on 2026-11-17.
    rendering, keyboard feel, scrollback scrolling and resize. Offscreen checks cannot
    substitute for this, and the X11 half needs a machine with an X server on it.
 2. Have a person run the whole M4 workflow and say whether it reads well: open a window,
-   start something long, Ctrl+Shift+D, close the window, reopen, Ctrl+Shift+A, click it
+   start something long, Ctrl+Shift+S, close the window, reopen, Ctrl+Shift+A, click it
    back. What to ask about most: whether the menu's names mean anything, whether the
    status line is noticed, and whether the close prompt's three buttons say what they do.
 3. Decide whether Shift+PageUp and friends stay terminal-owned or become configurable
-   bindings, and whether Ctrl+Shift+D/A are the right keys once a config file exists.
+   bindings, and whether Ctrl+Shift+S/A are the right keys once a config file exists.
 4. Run vim, less, htop and tmux at a real session with the mouse: confirm reports reach
    them, that Shift still lets you copy, and that middle click pastes between
    applications. btop is already covered by `kai-term-mouse-app`; the others are not.

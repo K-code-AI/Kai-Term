@@ -400,18 +400,26 @@ int main(int argc, char** argv) {
         int menu_calls = 0;
         window.on_save_session = [&saved_calls] { ++saved_calls; };
         window.on_session_menu = [&menu_calls] { ++menu_calls; };
-        sendKey(&window, Qt::Key_D, Qt::ControlModifier | Qt::ShiftModifier);
+        sendKey(&window, Qt::Key_S, Qt::ControlModifier | Qt::ShiftModifier);
         sendKey(&window, Qt::Key_A, Qt::ControlModifier | Qt::ShiftModifier);
-        expect("Ctrl+Shift+D belongs to the window", saved_calls == 1);
+        expect("Ctrl+Shift+S belongs to the window", saved_calls == 1);
         expect("and Ctrl+Shift+A asks for the list of sessions", menu_calls == 1);
-        // Sent on, Ctrl+Shift+D would be an end-of-file at the prompt and the shell
-        // would be gone, so the shell being alive afterwards is the proof it never
-        // arrived.
+        // Sent on, Ctrl+Shift+S would be a flow-control stop at the prompt and the
+        // shell would not run the line below, so the line appearing on screen is the
+        // proof the key never arrived.
+        //
         runLine(&window, "M=AFTER; echo ${M}-THE-BINDS");
         expect("neither keybind reaches the shell",
                waitFor([&window] {
                    return onScreen(window).find("AFTER-THE-BINDS") != std::string::npos;
                }));
+        // Plain Ctrl+S is the other half of the same rule, and the reason the window's
+        // own key has Shift in it: it is a byte programs use, here the one that stops
+        // output and starts it again. It reaches the shell, which is both what is
+        // wanted and what the window must not do — and it has to be checked last,
+        // because a shell with its output stopped stops answering checks.
+        sendKey(&window, Qt::Key_S, Qt::ControlModifier);
+        expect("and plain Ctrl+S is left for the shell", saved_calls == 1);
         window.setStatusText("session 'work' saved");
         expect("the window can say a line for itself",
                window.statusText() == "session 'work' saved");
