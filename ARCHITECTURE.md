@@ -88,6 +88,22 @@ shown what is on the screen now: the daemon reflows its own model to the new siz
 sends an escape-sequence snapshot. Replaying raw bytes at a different column count lays
 them out wrong, and a session's history is not a recording of a screen.
 
+A snapshot carries the **modes as well as the grid**, and that distinction was worth a
+sitting of bug reports. The glyphs alone arrive as a picture of a terminal rather than
+one: the mouse stays with the window's selection instead of the application that asked
+for it, a program on the alternate screen leaves lines it never drew visible around its
+frame, arrow keys go out as plain CSI to an application reading SS3, and a paste arrives
+unquoted to an application that asked for it quoted. So the snapshot says which of
+1049/1000/1002/1003/1005/1006/1015/1016/?1/?6/?7/2004 the session is in, plus the scroll
+region. The order is not free: origin mode changes what a cursor address *means*, so the
+alternate screen and the region go before the glyphs and the rest go after them.
+
+What a snapshot does not carry is the buffer the application is not on. A view that
+arrives while a program holds the alternate screen has no primary-screen history of that
+session to return to when the program quits; it lands on what was there when it joined.
+Said here because it is the sort of thing that reads as a bug in a year, and it is in the
+roadmap rather than in the code as a surprise.
+
 Because it owns the model, the daemon also answers the questions programs ask the
 terminal — device attributes, cursor position — which it must: nobody answering is not a
 silent failure, since fish waits ten seconds for a device attributes reply and then says

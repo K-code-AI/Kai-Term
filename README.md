@@ -264,6 +264,11 @@ Verified results on this machine:
   and, offscreen, that closing such a window really does put the question up, that the
   question is dismissed as a "no" leaves the window standing, and that `KAI_CONFIRM_QUIT`
   reaches the window that reads it.
+- `kai-term-attach-state` prints `PASS: 15 attach state checks passed` — what a second
+  view of a session arrives knowing. The glyphs were never the problem on their own: a
+  snapshot without the modes is a picture of a terminal, and the window behaves as though
+  nothing inside it ever asked for the mouse, the alternate screen, the arrow-key form or
+  a quoted paste.
 - `kai-term-close-prompt` prints `PASS: 24 close prompt checks passed` — when closing
   asks at all under each policy, and whether the words say what is actually being lost.
 - `wayland-close` runs the real binary under sway with no display at all and asks the

@@ -136,6 +136,20 @@ if(UTIL_LIBRARY)
 endif()
 add_test(NAME widget-session COMMAND kai-term-widget-session)
 
+# What a second view of a session arrives knowing — the modes the program asked for, not
+# only the glyphs on the grid. Each of these was found by Kaida from btop in a
+# re-attached session: a snapshot that replays only text is a picture of a terminal
+# rather than one.
+add_executable(kai-term-attach-state
+    tests/attach_state.cpp
+    src/terminal/vtparser.cpp
+)
+target_link_libraries(kai-term-attach-state PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core Threads::Threads)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-attach-state PRIVATE ${UTIL_LIBRARY})
+endif()
+add_test(NAME attach-state COMMAND kai-term-attach-state)
+
 add_executable(kai-term-app-window
     tests/app_window.cpp
     src/terminal/vtparser.cpp
@@ -200,6 +214,7 @@ set(KAI_TEST_TARGETS
     kai-term-snapshot
     kai-term-session
     kai-term-widget-session
+    kai-term-attach-state
     kai-term-app-window
     kai-term-close-prompt
     kai-term-widget-panes

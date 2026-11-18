@@ -172,6 +172,18 @@ view of a session rather than the thing keeping it alive.
   later is shown what is on the screen now, from a snapshot of the daemon's model rather
   than a replay of raw bytes, because replaying bytes at a different column count lays
   them out wrong.
+- A snapshot carries the grid and the modes, and not the other screen buffer: attach to a
+  session while `btop` holds the alternate screen, quit `btop`, and the view lands on what
+  was on its primary screen when it joined rather than on the session's. The fix is a
+  second painted buffer in the snapshot — paint the primary, enter the alternate, paint
+  that — and it has to decide what to do about the primary screen's scrollback at the same
+  time, which is the part that costs something.
+- Kaida also reported a re-attached session "frozen until a key is pressed". A program
+  that prints on its own keeps printing into a newly attached view in the checks, so the
+  freeze is not general, and the two reports that *were* reproducible — no mouse, the
+  frame of a full-screen program sitting inside the previous screen — are both now carried
+  by the snapshot. Re-asked of a person: whether btop still looks frozen in a window that
+  re-attached it, with this in. Nobody has looked yet, so it stays open.
 - Process lifecycle: a view hanging up disturbs nothing; `detach` sends the views away
   and leaves the shell; `kill` and the shell exiting end it; `shutdown` stops the daemon
   and every session with it, leaving no socket behind. A descriptor is never closed under

@@ -78,6 +78,83 @@ inline bool sameRendition(const Cell& a, const Cell& b) {
     return a.attr == b.attr && a.fg == b.fg && a.bg == b.bg;
 }
 
+// The modes the application asked for, replayed around the glyphs.
+//
+// A snapshot of the grid alone arrives as a picture of a terminal rather than one. The
+// mouse stays with the window's own text selection instead of the application that asked
+// for it; a program on the alternate screen leaves the lines it never drew still visible
+// around its frame; arrow keys go out as plain CSI to an application reading SS3; a paste
+// arrives unquoted to an application that asked for it quoted. All four were reported by
+// Kaida from btop in a re-attached session, within one sitting, and all four are this
+// omission: the modes were never sent, so the new view behaved like a terminal nobody had
+// asked anything of.
+//
+// Split in two because some of them change what the coordinates *mean*. Origin mode makes
+// cursor addressing relative to the scroll region, and the glyphs are painted with
+// absolute addresses; wrap off would make a full row behave differently as it is written.
+// So the alternate screen and the region go first, and the rest go after the last glyph
+// has been placed, which is where an application would have set them anyway.
+inline std::string modePrelude(const Screen& screen) {
+    std::string out;
+    // Entering the alternate screen erases it, so this comes before anything is drawn
+    // and the glyphs land where the application is actually drawing them.
+    out += screen.inAlternateScreen() ? "\x1b[?1049h" : "\x1b[?1049l";
+    if (screen.scrollRegionTop() != 0 || screen.scrollRegionBottom() != screen.rows() - 1)
+        out += "\x1b[" + std::to_string(screen.scrollRegionTop() + 1) + ";" +
+               std::to_string(screen.scrollRegionBottom() + 1) + "r";
+    return out;
+}
+
+inline std::string modePostscript(const Screen& screen) {
+    std::string out;
+    auto set = [&out](int mode, bool on) {
+        out += "\x1b[?" + std::to_string(mode) + (on ? "h" : "l");
+    };
+    // Said both ways even where on is the default, because the view being told may have
+    // been used by another session a moment before, and "leave it as you found it" is not
+    // something a snapshot can rely on.
+    set(1, screen.applicationCursorKeys());
+    set(6, screen.originMode());
+    set(7, screen.autoWrap());
+    set(2004, screen.bracketedPaste());
+    switch (screen.mouseMode()) {
+        case MouseMode::Off:
+            break;
+        case MouseMode::Click:
+            set(1000, true);
+            break;
+        case MouseMode::Drag:
+            set(1000, true);
+            set(1002, true);
+            break;
+        case MouseMode::Any:
+            set(1000, true);
+            set(1002, true);
+            set(1003, true);
+            break;
+    }
+    // The coordinate encoding, named by the number that selected it: 1005 utf-8, 1006
+    // SGR, 1015 urxvt, 1016 SGR hex. An application that asked for one and got another
+    // reads every click as a different cell.
+    switch (screen.mouseCoord()) {
+        case MouseCoord::Classic:
+            break;
+        case MouseCoord::Utf8:
+            set(1005, true);
+            break;
+        case MouseCoord::Sgr:
+            set(1006, true);
+            break;
+        case MouseCoord::Urxvt:
+            set(1015, true);
+            break;
+        case MouseCoord::SgrHex:
+            set(1016, true);
+            break;
+    }
+    return out;
+}
+
 inline std::string screenSnapshot(const Screen& screen) {
     const Color default_fg = screen.defaultForeground();
     const Color default_bg = screen.defaultBackground();
@@ -85,6 +162,7 @@ inline std::string screenSnapshot(const Screen& screen) {
     std::string out;
     out += "\x1b" "[?25l"; // the cursor goes last, so it never flickers mid-paint
     out += "\x1b[0m";
+    out += modePrelude(screen);
     out += "\x1b[H\x1b[2J";
 
     // Colours the application asked for. Cells store resolved RGB, so the text would
@@ -154,6 +232,7 @@ inline std::string screenSnapshot(const Screen& screen) {
     }
     if (screen.cursorVisible())
         out += "\x1b" "[?25h";
+    out += modePostscript(screen);
     return out;
 }
 
