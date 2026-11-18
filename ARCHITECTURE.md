@@ -95,8 +95,14 @@ for it, a program on the alternate screen leaves lines it never drew visible aro
 frame, arrow keys go out as plain CSI to an application reading SS3, and a paste arrives
 unquoted to an application that asked for it quoted. So the snapshot says which of
 1049/1000/1002/1003/1005/1006/1015/1016/?1/?6/?7/2004 the session is in, plus the scroll
-region. The order is not free: origin mode changes what a cursor address *means*, so the
-alternate screen and the region go before the glyphs and the rest go after them.
+region. The order is not free, and getting it wrong is a bug of its own. Origin mode
+changes what a cursor address *means*, and a scroll region is the box every cursor address
+is clamped inside — so both are **cleared** before the glyphs and restored after the last
+one is placed. Replay a session's region beforehand and every address in the snapshot is
+squeezed into it: a screen's worth of lines lands on a few rows, each overwriting the last,
+and the window shows one character in the corner. A region outlives the program that set
+it — vim, less, anything interrupted leaves one behind — so the region in the model need
+not describe the screen being shown at all.
 
 What a snapshot does not carry is the buffer the application is not on. A view that
 arrives while a program holds the alternate screen has no primary-screen history of that
