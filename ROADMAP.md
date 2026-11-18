@@ -237,8 +237,10 @@ Done:
   one you click back into this window.
 - Closing a window with something running asks — Yes, No, or Detach session before
   closing terminal — and names the program, from the process group the terminal owns.
-  Nothing is asked about a shell at a prompt, or about a session that was kept, because
-  closing a window does not stop either.
+  Nothing is asked about a shell at a prompt. A kept session with something running is
+  asked about like any other; what being kept changes is the wording and whether Detach is
+  offered, not whether the window asks. Kaida found the old rule by closing two of those
+  without being asked, which is the sort of thing a rule should not survive.
 - How often that happens is a setting, `KAI_CONFIRM_QUIT=never|running|always`, under the
   same three words Old-Term's `confirm_quit` takes. It is read from the environment
   because there is no config file yet; when there is one, that is where it goes.

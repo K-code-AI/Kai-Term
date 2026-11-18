@@ -257,7 +257,7 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 38 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 43 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
@@ -351,12 +351,18 @@ that has become somebody else's: **Ctrl+Shift+F** for a file manager, **Ctrl+Shi
 for a new tab, **Ctrl+Shift+H** to switch between side-by-side panes and a tab view.
 - Closing a window with something running asks **"Quit while `make` is running?"** with
   **Yes**, **No** and **Detach session before closing terminal**. A shell sitting at a
-  prompt is not asked about, and neither is a kept session, because closing a window
-  does not stop a session that was kept.
+  prompt is not asked about, because there is nothing out there to lose.
 
-- **`KAI_CONFIRM_QUIT`** says how often to ask: `running` (the default) asks only when
-  something is running and closing the window is what stops it, `always` asks at every
-  close, and `never` lets the window go down without a word. The three words are the
+- A session that was kept is asked about too, when something is running in it. Keeping a
+  session says what happens to the *shell*; it is not permission for the window to drop
+  whatever is running inside it on the way out. The second line says which of the two it
+  is — for a kept one, that the work goes on running either way and closing takes only the
+  window — and Detach is left off, because on a kept session it would be a second way to
+  press the first button.
+
+- **`KAI_CONFIRM_QUIT`** says how often to ask: `running` (the default) asks whenever
+  something is running in the window, `always` asks at every close, and `never` lets the
+  window go down without a word. The three words are the
   ones Old-Term's `confirm_quit` takes, so somebody who knows one knows the other; they
   are read from the environment until there is a config file to keep them in.
 

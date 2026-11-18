@@ -221,14 +221,14 @@ public:
     }
 
 protected:
-    // Closing the window. Asked about only when something is running and closing is
-    // what stops it — see closeprompt.hpp for when that is.
+    // Closing the window. Asked about whenever something is running, kept session or
+    // not — see closeprompt.hpp for what each answer costs.
     void closeEvent(QCloseEvent* ev) override {
         const ConfirmPolicy policy = closePolicy();
         // Never means never, so it does not go and ask the daemon what is running just to
         // conclude that it will not say so.
         const std::string running = policy == ConfirmPolicy::Never ? std::string() : runningProgram();
-        const std::string question = closeQuestion(running, session_kept_, policy);
+        const std::string question = closeQuestion(running, policy);
         if (tracingClose()) {
             traceClose("session '" + session_ + "' kept=" + (session_kept_ ? "yes" : "no") +
                        ", policy=" + policyWord(policy) + ", running='" + running + "', " +

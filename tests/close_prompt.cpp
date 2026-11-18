@@ -31,19 +31,22 @@ int main() {
     {
         // Nothing running is not worth interrupting anybody for, kept session or not.
         expect("a shell sitting at a prompt is nothing to ask about",
-               closeQuestion("", false).empty());
-        expect("neither is a kept session with something running",
-               closeQuestion("make", true).empty());
+               closeQuestion("").empty());
+        // The case Kaida hit twice: a session brought back into a window, something
+        // running in it, the window closed. Keeping a session is not permission to
+        // throw away what is running in it.
+        expect("but a kept session with something running is asked about too",
+               !closeQuestion("make").empty());
         expect("something running in a shell nobody kept is worth asking about",
-               !closeQuestion("make", false).empty());
+               !closeQuestion("make").empty());
     }
     {
-        const std::string question = closeQuestion("sleep", false);
+        const std::string question = closeQuestion("sleep");
         expect("the question says what is running", question.find("sleep") != std::string::npos);
         expect("it asks about quitting, not about the session",
                question.rfind("Quit while ", 0) == 0);
         expect("and it is a question", question.back() == '?');
-        expect("an empty program name never produces one", closeQuestion("", false).empty());
+        expect("an empty program name never produces one", closeQuestion("").empty());
     }
     {
         // The second line is where the two ways of quitting differ, so it has to say
@@ -84,21 +87,21 @@ int main() {
         // `never` is somebody who has a window manager they trust: the window goes down
         // without a word, whatever is happening inside it.
         expect("never asks about a shell sitting at a prompt",
-               closeQuestion("", false, ConfirmPolicy::Never).empty());
+               closeQuestion("", ConfirmPolicy::Never).empty());
         expect("and never asks about a build in progress either",
-               closeQuestion("make", false, ConfirmPolicy::Never).empty());
+               closeQuestion("make", ConfirmPolicy::Never).empty());
 
         // `always` asks at every close, including the ones where nothing is running, so
         // its question has to stay true in that case: name no program rather than a
         // program that is not there.
-        const std::string idle = closeQuestion("", false, ConfirmPolicy::Always);
+        const std::string idle = closeQuestion("", ConfirmPolicy::Always);
         expect("always asks even about a shell at a prompt", !idle.empty());
         expect("and asks without naming a program that is not running",
                idle.find("while") == std::string::npos && idle.back() == '?');
         expect("always asks about a kept session too",
-               !closeQuestion("", true, ConfirmPolicy::Always).empty());
+               !closeQuestion("", ConfirmPolicy::Always).empty());
         expect("and still says what is running when something is",
-               closeQuestion("make", true, ConfirmPolicy::Always).find("make") !=
+               closeQuestion("make", ConfirmPolicy::Always).find("make") !=
                    std::string::npos);
     }
 

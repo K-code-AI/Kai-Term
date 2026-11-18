@@ -44,7 +44,15 @@ enum class CloseAnswer {
 // or not a window is looking at it, so closing one of those is not a decision about
 // the program at all — it is an ordinary window closing, and asking about it would
 // teach the person that windows and sessions are the same thing.
-inline std::string closeQuestion(const std::string& running_program, bool session_kept,
+// Whether closing asks is decided by one thing: is there a program running.
+//
+// It used to also ask whether the session was kept, on the grounds that closing the
+// window of a kept session loses nothing. Kaida closed two of those in a row and reported
+// the second as a bug, and they are right: keeping a session says what happens to the
+// shell, not that the window may throw away whatever is running inside it on the way out.
+// Being kept changes what the second line says — see `closeDetail` — and whether Detach is
+// offered, which would be a second way to press the same button. It does not buy silence.
+inline std::string closeQuestion(const std::string& running_program,
                                  ConfirmPolicy policy = ConfirmPolicy::Running) {
     if (policy == ConfirmPolicy::Never)
         return {};
@@ -55,7 +63,7 @@ inline std::string closeQuestion(const std::string& running_program, bool sessio
         return running_program.empty() ? "Quit Kai-Term?"
                                        : "Quit while " + running_program + " is running?";
     }
-    if (running_program.empty() || session_kept)
+    if (running_program.empty())
         return {};
     return "Quit while " + running_program + " is running?";
 }

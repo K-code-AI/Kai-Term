@@ -235,16 +235,34 @@ int main(int argc, char** argv) {
                           onScreen(window).find("FIRST-WINDOW") != std::string::npos;
                }));
         expect("and it is a kept session now", window.sessionKept());
+
+        // Kaida's case exactly: a session brought back into a window, something running
+        // in it, the window closed. The session being kept says what happens to the
+        // shell; it does not say the window may drop whatever is running in it, so this
+        // asks. It used to close silently, which is how the report came in.
+        runLine(&window, "sleep 6");
+        expect("with something running in the session that came back",
+               waitFor([&window] { return window.runningProgram() == "sleep"; }));
+        const std::string asked = closeAndCatchQuestion(window);
+        expect("closing over a kept session asks all the same: " + asked,
+               asked == "Quit while sleep is running?");
+        expect("and the window is still here, having been answered no", window.isVisible());
+        // Let the sleep finish before the next close, which is about a window with
+        // nothing in it and would otherwise find itself asking a question.
+        expect("and the question can be answered no and the program left running",
+               waitFor([&window] { return window.runningProgram().empty(); }, 9000));
         expect("the shell it was replaced by goes with the window that left it",
                waitFor([&daemon, &window, &first_session] {
                    return !sees(daemon, first_session, [](const SessionInfo&) { return true; });
                }));
 
-        // Closing a window that is showing a kept session loses nothing, so the
-        // session stays where it is and the next window can pick it up. Through the
-        // close rather than by calling the teardown by hand: what the window decides is
-        // the thing under test, and a test that made the call itself would pass even
-        // when the window never did.
+        // A kept session with nothing running is a different matter: there is nothing
+        // out there to lose, so the window goes without a word and the session stays
+        // where it is for the next window to pick up. Through the close rather than by
+        // calling the teardown by hand: what the window decides is the thing under test,
+        // and a test that made the call itself would pass even when the window never did.
+        expect("nothing is running when the quiet close is checked",
+               window.runningProgram().empty());
         QCloseEvent keep_close;
         QCoreApplication::sendEvent(&window, &keep_close);
         expect("the window lets itself close", keep_close.isAccepted());
@@ -279,7 +297,7 @@ int main(int argc, char** argv) {
                    pump(40);
                    return busy.runningProgram() == "sleep";
                }));
-        expect("and that is worth asking about", !closeQuestion(busy.runningProgram(), false).empty());
+        expect("and that is worth asking about", !closeQuestion(busy.runningProgram()).empty());
 
         // The dialog itself, offscreen. The window is closed the way a desktop closes
         // one, and while the window is waiting for an answer another timer looks for the

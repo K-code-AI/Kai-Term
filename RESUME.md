@@ -381,7 +381,7 @@ Individual results:
 - `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
 - `./build/tests/kai-term-widget-session` → `PASS: 41 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
-- `./build/tests/kai-term-app-window` → `PASS: 38 application window checks passed`.
+- `./build/tests/kai-term-app-window` → `PASS: 43 application window checks passed`.
 - `./build/tests/kai-term-close-prompt` → `PASS: 24 close prompt checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
@@ -445,13 +445,18 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
   those silent closes, several with `btop` still in the foreground. A close that is never
   handled does not destroy anything, which is the correct rule and a visible mess.
 
-- **Almost nothing in M3 or M4 has been looked at by a person.** The keep-this-shell
-  keybind has been used at a live Wayland session (niri) and works. The close prompt has now
-  been *provoked* at a real Wayland compositor — the window stops and holds the question
-  instead of exiting, checked against the real binary under sway — but nobody has looked at
-  the dialog: not its words, not its three buttons, not whether it appears where it can be
-  read. The daemon, the command line, the window showing a session and the session menu are
-  still tested with no display. What the menu looks like, where the status line sits, whether three buttons
+- **The close prompt has been seen by a person now.** Kaida ran btop on niri, closed the
+  window, and read the question — the first dialog in this project that a human being has
+  looked at. The same try found the next bug and it was a real one: re-attaching to the
+  session and closing again went silently, because the window counted a kept session as
+  nothing-to-lose. Kaida's rule, which is the one implemented: attaching to a session does
+  not make it kept, and closing a window with something running always asks. Being kept
+  changes the second line and the buttons, not whether it asks.
+- **Almost everything else in M3 and M4 has still not been looked at by a person.** The
+  keep-this-shell keybind has been used at a live Wayland session (niri) and works. What the
+  question's three buttons feel like under a hand, where the status line sits, what the
+  session menu looks like with four sessions in it and the daemon a bit slow — unverified.
+  The daemon, the command line and the window showing a session are tested with no display. What the menu looks like, where the status line sits, whether three buttons
   read well when you have a build running, and what Ctrl+Shift+S feels like the third
   time are all unverified.
 - The session menu is a `QMenu` built when Ctrl+Shift+A is pressed, so it is correct at
