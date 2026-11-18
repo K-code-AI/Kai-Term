@@ -14,7 +14,9 @@
 #include "../src/terminal/terminalwidget.hpp"
 
 #include <QApplication>
+#include <QEvent>
 #include <QMouseEvent>
+#include <QObject>
 #include <chrono>
 #include <functional>
 #include <iostream>
@@ -112,19 +114,45 @@ int main(int argc, char** argv) {
 
     // Somebody else opens the same session in a new window.
     kai::TerminalWidget second(24, 80, std::make_unique<SessionBackend>("live", 24, 80));
+
+    // Paint events, counted. Everything else in this file reads the model, and a window
+    // can be entirely right inside while showing a blank rectangle: Kaida's screenshot of
+    // a re-attached session was empty until a key was pressed, and every check here was
+    // passing at the time. A model nobody paints is not a terminal.
+    struct PaintCounter : QObject {
+        int paints = 0;
+        bool eventFilter(QObject* watched, QEvent* ev) override {
+            if (ev->type() == QEvent::Paint)
+                ++paints;
+            return QObject::eventFilter(watched, ev);
+        }
+    } counter;
+    second.installEventFilter(&counter);
+
     second.resize(800, 500);
     second.show();
     pump(800);
 
     expect("the new view shows what was already on the screen",
            onScreen(second).find("TICK") != std::string::npos);
+    const int paints_after_attach = counter.paints;
+    expect("and something asked for it to be drawn, without anything being typed",
+           paints_after_attach > 0);
 
     // The report: "when we restore a session it's still frozen until a key is pressed".
     // Nothing is typed here, and nothing else is done to the window; the only thing that
     // happens is time passing, which is the thing the session was printing into.
     const std::string settled = onScreen(second);
+    const int paints_before_updates = counter.paints;
     expect("and it keeps updating with nobody touching it",
            waitFor([&second, &settled] { return onScreen(second) != settled; }, 4000));
+    // The program prints five times a second, so a second and a half of nothing but the
+    // event loop is several more chunks. Without this the check raced the next chunk and
+    // passed or failed on luck, which is not a thing a check should do.
+    pump(1500);
+    expect("and each of those updates asks for the window to be drawn again (" +
+               std::to_string(counter.paints - paints_before_updates) + " paints in 1.5s)",
+           counter.paints > paints_before_updates);
 
     expect("the program still has the mouse in the new view", second.screen().mouseReporting());
     expect("in the same coordinates as before", second.screen().mouseCoord() == MouseCoord::Sgr);
@@ -169,6 +197,45 @@ int main(int argc, char** argv) {
            daemon.type("live", "printf '\\033[?1049l'\n"));
     expect("and the new view comes back with it",
            waitFor([&second] { return !second.screen().inAlternateScreen(); }, 4000));
+
+    // A session that says one thing and then says nothing more, which is the state of a
+    // terminal somebody is looking at. Everything above runs against a program printing
+    // twice a second, and that is exactly why none of it caught Kaida's screenshot: with
+    // output arriving all the time, whatever is waiting to be read gets carried in on the
+    // next chunk and the window looks fine. A session at a prompt produces nothing, so
+    // the snapshot has to arrive on its own — otherwise the window opens on an empty
+    // rectangle until a keypress gives the shell a reason to talk.
+    SessionSpec quiet_spec;
+    quiet_spec.name = "quiet";
+    quiet_spec.saved = true;
+    quiet_spec.rows = 24;
+    quiet_spec.cols = 80;
+    expect("a second session starts", daemon.create(quiet_spec, error));
+    expect("and it prints one thing and stops",
+           daemon.type("quiet", "echo NOTHING-MORE-AFTER-THIS\n"));
+    pump(600);
+
+    kai::TerminalWidget silent(24, 80, std::make_unique<SessionBackend>("quiet", 24, 80));
+    PaintCounter quiet_painter;
+    silent.installEventFilter(&quiet_painter);
+    silent.resize(800, 500);
+    silent.show();
+    pump(900);
+    // The screen a view arrives with is the one the session was looking at. What is on it
+    // is whatever the session had printed, so the check is that the view is not blank —
+    // Kaida's screenshot was a window with nothing in it at all, in a session that had
+    // been used, and that is the thing this refuses to accept.
+    expect("a view of a silent session arrives with something on its screen",
+           onScreen(silent).find("NOTHING-MORE-AFTER-THIS") != std::string::npos);
+    // And it goes on drawing without anybody at the keys: the shell is asked to speak, and
+    // the only thing the window does in between is sit there with its event loop running.
+    const int paints_before = quiet_painter.paints;
+    expect("the silent session will still answer",
+           daemon.type("quiet", "echo SPEAK-WHEN-SPOKEN-TO\n"));
+    pump(1200);
+    expect("and the window is drawn again when the session has something new to show",
+           quiet_painter.paints > paints_before);
+    silent.shutdown();
 
     second.shutdown();
     daemon.stop();
