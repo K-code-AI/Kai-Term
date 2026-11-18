@@ -18,6 +18,8 @@
 #include <QMessageBox>
 #include <QPushButton>
 
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -224,6 +226,9 @@ protected:
     void closeEvent(QCloseEvent* ev) override {
         const std::string running = runningProgram();
         const std::string question = closeQuestion(running, session_kept_);
+        traceClose("session '" + session_ + "' kept=" + (session_kept_ ? "yes" : "no") +
+                   ", running='" + running + "', " +
+                   (question.empty() ? "nothing to ask" : "would ask: " + question));
         if (question.empty()) {
             // Nothing to ask about is not the same as nothing happening. A shell nobody
             // kept is ended by a window being closed on purpose — which is the whole
@@ -263,6 +268,22 @@ protected:
     }
 
 private:
+    // One line on stderr about what a close decided, when KAI_DEBUG_CLOSE is set.
+    //
+    // It exists because "the window closed without asking" has three answers from here —
+    // nothing was running, the session was kept so nothing was being lost, or the
+    // desktop's close never reached this window at all — and a person describing the
+    // window cannot tell them apart either. What the line says, or the line not appearing
+    // at all, is the difference. Quiet by default: a terminal writing over its own shell
+    // while a person is typing into it would be a worse complaint than the one being
+    // chased.
+    void traceClose(const std::string& what) const {
+        if (std::getenv("KAI_DEBUG_CLOSE") == nullptr)
+            return;
+        std::fprintf(stderr, "kai-term: close: %s\n", what.c_str());
+        std::fflush(stderr);
+    }
+
     // Say that this window is going away on purpose, so that a shell nobody kept goes
     // with it. A kept session ignores the word, and a window that vanishes without it —
     // a crash, a kill -9 — never says it, which is what keeps that shell reachable.

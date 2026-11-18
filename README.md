@@ -340,6 +340,11 @@ Keys held free for what is coming, so that a later feature does not quietly take
 that has become somebody else's: **Ctrl+Shift+F** for a file manager, **Ctrl+Shift+N**
 for a new tab, **Ctrl+Shift+H** to switch between side-by-side panes and a tab view.
 - Closing a window with something running asks **"Quit while `make` is running?"** with
+- If a window closes without asking when you expected it to, run it as
+  `KAI_DEBUG_CLOSE=1 ./build/kai-term` and close it with something running. One line goes
+  to stderr saying what the window thought was running, whether the session was kept, and
+  whether that was worth asking about. No line at all means the desktop's close never
+  reached the window, which is a different problem from a window that decided not to ask.
   **Yes**, **No** and **Detach session before closing terminal**. A shell sitting at a
   prompt is not asked about, and neither is a kept session, because closing a window
   does not stop a session that was kept.

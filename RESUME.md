@@ -419,6 +419,18 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 
 ## Known issues
 
+- **The close prompt has not been seen by a person, and Kaida reports it does not appear
+  on niri** (`Mod+Q repeat=false { close-window; }`) with something running. What is
+  settled: the window does know what is running in its own session — a check puts `sleep`
+  in the foreground and asks the window, the same call the close makes, and it answers
+  `sleep`, and `closeQuestion` says that is worth asking about. So the remaining answers
+  are that niri's close never reaches the window, that the session was kept (a kept
+  session loses nothing when its window goes, so by design nothing is asked), that
+  nothing was running, or a build from before the prompt existed. `KAI_DEBUG_CLOSE=1` now
+  prints one line per close saying the session, whether it was kept, what was running and
+  whether that merited asking; no line at all is the compositor's answer. Nobody has run
+  that yet.
+
 - **Almost nothing in M3 or M4 has been looked at by a person.** The keep-this-shell
   keybind has been used at a live Wayland session (niri) and works. The daemon, the command line, the
   window showing a session, the session menu and the close prompt are still tested with no
