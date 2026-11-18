@@ -10,9 +10,11 @@ implemented and tested, and M4 (the native multiplexer) has its first pieces: ev
 window's shell is held by the session daemon, **Ctrl+Shift+D** keeps one and starts a
 fresh shell in the same window, **Ctrl+Shift+A** brings a kept one back, and closing a
 window with something running asks rather than ends. M1 and M2 have been used at a live
-Wayland session; **none of M3 or M4 has been looked at by a person** — every check in
-them is headless or offscreen, so what a window showing a session looks like, and what
-it feels like to use, is still somebody else's to say. Since the last milestone closed, the parts an audit found thin have been
+Wayland session. Of M3 and M4, one thing has been used at a live Wayland session —
+Ctrl+Shift+D, on niri, by Kaida — and it works. Everything else in them is still checked
+headless or offscreen only, so what the session menu looks like, what the close prompt
+reads like when you have a build running, and what it feels like to attach to a session
+from another terminal are still somebody else's to say. Since the last milestone closed, the parts an audit found thin have been
 filled in: scrollback reflows when
 the window changes width, the view says where it is in the history, a selection
 dragged to an edge scrolls, the shell's process tree is taken down with it, and the
@@ -253,7 +255,7 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 22 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 26 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+D keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running.

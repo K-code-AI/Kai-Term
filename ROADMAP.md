@@ -244,12 +244,63 @@ Done:
 - A window can be pointed at another shell while it stays open, which is what restoring
   means; pane clipping from M3 is in place and waiting for a host that draws splits.
 
+### The command surface, agreed with Kaida on 2026-11-17
+
+The `session` word goes away, sessions get numbers, and the words come straight after
+`kai-term`. Agreed verb by verb rather than in one sweep, because the long form
+(`kai-term session attach -s work`) is what made the whole thing feel like work.
+
+```
+kai-term                      a new window, as before
+kai-term list                 kept sessions, and any shell a window lost; marks the one
+                              you are standing in
+kai-term new [NAME]           create a session, print its id, leave you where you were
+kai-term attach [ID]          show a session in this terminal, with a status line on top
+kai-term attach -n NAME       the same, by name — names may be sentences, quoted
+kai-term attach ID --window   a Kai-Term window onto it instead
+kai-term detach               leave the session you are in; takes no argument
+kai-term send ID TEXT [--enter]
+kai-term save [ID] [NAME]     keep a session, optionally naming it; no id = this one
+kai-term kill ID              end a session that was kept
+kai-term start | shutdown | serve      automatic now; kept for debugging and labelled so
+```
+
+The rules behind it:
+
+- **A number is the handle.** The daemon assigns it, `list` shows it first, and it is what
+  `attach` takes without a flag. `-n` / `--name` is how a name is used instead; there is
+  no guessing from the shape of a word, and no `-s`.
+- Numbers are not reused while anything is running. When the last session goes, counting
+  starts again at 0. Nothing is written to disk, so ids belong to the daemon's life.
+- The session a command is run from is known to itself (`KAI_SESSION` in its environment),
+  which is what lets `detach` and `save` be argument-free and lets `list` mark where
+  you are.
+- **Attaching shows a status line above the session's screen** — which session, what is
+  running in it, how to leave — because attaching into a session from inside one is
+  otherwise invisible, and people lose afternoons in nested terminals that way.
+- A shell a window is holding, unkept, is nobody's session: it is not listed and cannot be
+  attached to. Once its window is gone it is a session in every sense — listed,
+  attachable — because at that point it is the only copy of the work there is.
+- `new` takes its shell and directory from the environment. Config file, when there is
+  one, is where a difference from the system default belongs; not a flag on every verb.
+- Gone: `session <verb>`, `open NAME`, `-s`, `--as`, `--shell`, `--cwd`, `--rows`,
+  `--cols`, `--text`. Nothing is kept "for compatibility" — nothing is released, and a
+  word that means two things is what we are undoing.
+
+One thing that was asked for cannot be had: **Ctrl+Shift+S is not distinguishable from
+Ctrl+S inside a terminal.** A letter with Ctrl produces one byte and Shift is not in it —
+which is also why Ctrl+Shift+D cannot be the leave key in an attached view, since that is
+Ctrl+D, the shell's own end-of-file. Qt can tell them apart, so the window keeps
+Ctrl+Shift+D; the attached view will say `Ctrl+S to leave`, which is the byte that
+actually arrives and is free to take.
+
 Needed:
 
 - Horizontal and vertical splits, with `setPanes()` called with the cells each pane owns.
 - Pane selection and resizing.
 - Multiple windows and tabs.
 - A scrollback that comes across with a session when a second view joins it.
+- The command surface above: ids, the flattened verbs, the attached view's status line.
 
 ## M5 — File manager
 

@@ -222,6 +222,13 @@ protected:
         const std::string running = runningProgram();
         const std::string question = closeQuestion(running, session_kept_);
         if (question.empty()) {
+            // Nothing to ask about is not the same as nothing happening. A shell nobody
+            // kept is ended by a window being closed on purpose — which is the whole
+            // difference between closing a terminal and losing one — and saying so only
+            // in the branch where a dialog appeared meant a quiet close left the shell
+            // running with no window on it, so every window you closed politely turned
+            // into a session you never asked to keep.
+            endUnkeptShell();
             TerminalWidget::closeEvent(ev);
             return;
         }
@@ -246,13 +253,21 @@ protected:
             return;
         }
         if (answer == CloseAnswer::CloseAnyway)
-            discardOnClose(); // the shutdown in the destructor ends the session too
+            endUnkeptShell(); // the shutdown in the destructor ends the session too
         // Detach needs nothing here: leaving a session without saying it is being
         // discarded is exactly what keeping it means.
         TerminalWidget::closeEvent(ev);
     }
 
 private:
+    // Say that this window is going away on purpose, so that a shell nobody kept goes
+    // with it. A kept session ignores the word, and a window that vanishes without it —
+    // a crash, a kill -9 — never says it, which is what keeps that shell reachable.
+    void endUnkeptShell() {
+        if (!sessionKept())
+            discardOnClose();
+    }
+
     static CloseAnswer answerOf(const QAbstractButton* clicked, const QAbstractButton* yes,
                                 const QAbstractButton* no, const QAbstractButton* detach) {
         if (clicked == nullptr || clicked == no)

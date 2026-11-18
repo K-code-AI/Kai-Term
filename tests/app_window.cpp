@@ -12,6 +12,7 @@
 #include "../src/session/daemon.hpp"
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QKeyEvent>
 #include <chrono>
 #include <cstring>
@@ -208,8 +209,13 @@ int main(int argc, char** argv) {
                }));
 
         // Closing a window that is showing a kept session loses nothing, so the
-        // session stays where it is and the next window can pick it up.
-        window.discardOnClose();
+        // session stays where it is and the next window can pick it up. Through the
+        // close rather than by calling the teardown by hand: what the window decides is
+        // the thing under test, and a test that made the call itself would pass even
+        // when the window never did.
+        QCloseEvent keep_close;
+        QCoreApplication::sendEvent(&window, &keep_close);
+        expect("the window lets itself close", keep_close.isAccepted());
         window.shutdown();
         expect("closing the window leaves the kept session running",
                waitFor([&daemon, &kept] {
@@ -225,15 +231,33 @@ int main(int argc, char** argv) {
     }
 
     {
-        // A window whose shell was never kept has nothing to come back to, and says so
-        // rather than keeping a promise it cannot keep.
-        kai::AppWindow plain(kai::startWindowBackend(24, 80));
-        plain.show();
-        expect("a plain window has a shell", waitFor([&plain] { return !plain.sessionName().empty(); }));
-        expect("and nothing kept", plain.keptSessionNames().empty());
-        plain.discardOnClose();
-        plain.shutdown();
-        expect("closing it ends the shell it was holding",
+        // A window whose shell was never kept, closed with nothing running — the quiet
+        // path, where there is nothing worth asking about. Quiet is not the same as
+        // harmless: this close still ends a shell nobody asked to keep. It did not use
+        // to, and every window closed this way left a session behind that then looked,
+        // in `session list`, like one that had been kept.
+        const std::string plain_name = [&] {
+            kai::AppWindow plain(kai::startWindowBackend(24, 80));
+            plain.show();
+            static_cast<void>(waitFor([&plain] { return !plain.sessionName().empty(); }));
+            expect("a plain window has a shell", !plain.sessionName().empty());
+            expect("and nothing kept", plain.keptSessionNames().empty());
+            expect("with nobody else looking at it",
+                   waitFor([&daemon, &plain] {
+                       return sees(daemon, plain.sessionName(),
+                                   [](const SessionInfo& info) { return info.clients == 1; });
+                   }));
+            const std::string name = plain.sessionName();
+            QCloseEvent close;
+            QCoreApplication::sendEvent(&plain, &close);
+            expect("and it lets itself be closed", close.isAccepted());
+            return name;
+        }(); // the window goes out of scope here, which is the teardown a person causes
+        expect("closing it ends the shell nobody kept",
+               waitFor([&daemon, &plain_name] {
+                   return !sees(daemon, plain_name, [](const SessionInfo&) { return true; });
+               }));
+        expect("and nothing at all is left running",
                waitFor([&daemon] { return daemon.list().empty(); }));
     }
 

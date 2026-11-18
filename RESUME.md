@@ -19,8 +19,9 @@ window, Ctrl+Shift+A brings a kept one back with a mouse-usable menu, and closin
 window with something running asks instead of ending it. A window can be pointed at
 another shell while it stays open, which is what restoring means.
 
-**None of M3 or M4 has been looked at by a person.** Every check in them runs headless or
-offscreen: 109 daemon checks over a real pty and a real socket, 36 checks of a window
+**One thing in M4 has been used at a live Wayland session: Ctrl+Shift+D, on niri, by
+Kaida, who reports it works.** Everything else in M3 and M4 is checked headless or
+offscreen only: 109 daemon checks over a real pty and a real socket, 36 checks of a window
 rendering a session and switching between two, 22 checks of the application window's
 keybinds and menu contents, 14 of when a close asks at all, 24 checks of drags across a
 pane boundary, plus the protocol, socket and snapshot tests. What an attached window
@@ -190,6 +191,17 @@ M3 — sessions that outlive their window:
   started it shows up in `ps` as `kai-term session new -s work --cwd /tmp` and nobody can
   tell what is holding their shells.
 
+Fixes found by a person running it (niri, 2026-11-17):
+
+- Closing a window with the compositor's own key closed the window and **left the shell
+  running**, so the next `session list` showed a session nobody had kept. The word that
+  ends an unkept shell was only said in the branch where the close prompt appeared, and a
+  window closed with nothing running never gets there — the quiet path is the common one.
+  An on-purpose close now ends an unkept shell whatever else it does. The checks go
+  through `closeEvent` rather than calling the teardown by hand, which is what let this
+  through: the test that covered it made the call itself, and passed while the window
+  never did. Turning the fix off fails two checks, verified.
+
 Work done since, which is the start of M4 — the workflow a person described rather than
 the one a multiplexer manual describes:
 
@@ -355,7 +367,7 @@ Individual results:
 - `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
 - `./build/tests/kai-term-widget-session` → `PASS: 36 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
-- `./build/tests/kai-term-app-window` → `PASS: 22 application window checks passed`.
+- `./build/tests/kai-term-app-window` → `PASS: 26 application window checks passed`.
 - `./build/tests/kai-term-close-prompt` → `PASS: 14 close prompt checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
@@ -395,8 +407,9 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 
 ## Known issues
 
-- **Nothing in M3 or M4 has been looked at by a person.** The daemon, the command line,
-  the window showing a session, the session menu and the close prompt are tested with no
+- **Almost nothing in M3 or M4 has been looked at by a person.** Ctrl+Shift+D has been
+  used at a live Wayland session (niri) and works. The daemon, the command line, the
+  window showing a session, the session menu and the close prompt are still tested with no
   display. What the menu looks like, where the status line sits, whether three buttons
   read well when you have a build running, and what Ctrl+Shift+D feels like the third
   time are all unverified.
@@ -523,7 +536,12 @@ useless. Agreed with Kaida on 2026-11-17.
    stops reading should cost the session.
 6. Transfer scrollback on attach, or say in the UI that the view starts at the bottom of
    what was kept.
-7. Splits, pane focus and pane resize, calling `setPanes()` with the cells each pane owns
+7. The command surface agreed with Kaida on 2026-11-17, written out in ROADMAP.md:
+   session ids as the default handle, `kai-term list` / `attach 3` / `detach` / `save`
+   with no `session` word, `KAI_SESSION` so a command knows where it is running, and a
+   status line in the attached view. The `session` verb and `open` go away rather than
+   staying as aliases.
+8. Splits, pane focus and pane resize, calling `setPanes()` with the cells each pane owns
    so the pane-scoped selection is wired rather than merely available.
 8. A CI workflow would catch the class of failure this machine only finds by hand: a
    build that warns, a test that hangs.
