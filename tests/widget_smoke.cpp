@@ -350,6 +350,46 @@ int main(int argc, char** argv) {
     sendText(&w, "x");
     expectEq("typing returns the view to the live bottom", w.scrollOffset(), 0);
 
+    // ---- A program that took the whole screen ------------------------------
+    // btop, tmux and vim draw the entire window themselves and keep their own
+    // idea of what is above the top row. The scrollback this terminal holds
+    // belongs to the shell underneath, so offering it while one of them has the
+    // screen would be showing a full-screen program a screenful of somebody
+    // else's text, with a bar inviting the person to go and look.
+    // Whatever the section above left on the command line would end up in front
+    // of this command, and a command with a stray character in front of it does
+    // not run; it only looks like the terminal ignored the sequence.
+    sendKey(&w, Qt::Key_U, Qt::ControlModifier);
+    pump(150);
+    sendText(&w, "printf '\\033[?1049h' > /dev/tty");
+    sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    expect("the program took the alternate screen",
+           waitFor([&] { return w.screen().inAlternateScreen(); }, 3000));
+    expectEq("the view sits where the program is drawing", w.scrollOffset(), 0);
+    expectEq("there is nothing for this view to scroll", w.scrollRange(), 0);
+    expect("and no scroll bar is offered over it", !w.scrollIndicator().visible);
+    sendWheel(&w, 120);
+    expectEq("the wheel does not reveal the hidden shell", w.scrollOffset(), 0);
+    sendKey(&w, Qt::Key_PageUp, Qt::ShiftModifier);
+    expectEq("nor does Shift+PageUp", w.scrollOffset(), 0);
+    sendKey(&w, Qt::Key_Home, Qt::ShiftModifier);
+    expectEq("nor Shift+Home", w.scrollOffset(), 0);
+
+    // Leaving gives the shell's screen and its history back, which is the other
+    // half of the rule: the scrollback was kept all along, it was only not what
+    // was on the screen.
+    sendText(&w, "printf '\\033[?1049l' > /dev/tty");
+    sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
+    expect("the program gave the screen back",
+           waitFor([&] { return !w.screen().inAlternateScreen(); }, 3000));
+    expect("the shell's scrollback is where it was",
+           waitFor([&] { return w.scrollRange() > 0; }, 2000));
+    expect("the scroll bar is offered again", w.scrollIndicator().visible);
+    sendKey(&w, Qt::Key_PageUp, Qt::ShiftModifier);
+    expect("and scrolling works again", w.scrollOffset() > 0);
+    sendKey(&w, Qt::Key_End, Qt::ShiftModifier);
+    expectEq("back to the bottom to leave the view where it was found", w.scrollOffset(), 0);
+
     // ---- Selecting text with the mouse -------------------------------------
     // Output has to be finished before a drag starts: new output clears a
     // selection so it cannot end up pointing at different text than it covered.

@@ -225,10 +225,18 @@ public:
     // Where the scroll indicator sits right now, in this widget's pixels. Aimed
     // at by the mouse handlers and by anything that needs to click on it.
     ScrollBar scrollIndicator() const {
-        return scrollBarGeometry(QSize(width(), height()), screen_.historySize(), rows_,
+        return scrollBarGeometry(QSize(width(), height()), scrollRange(), rows_,
                                  scroll_offset_);
     }
-    // How far the view could scroll back right now.
+    // How far the view could scroll back right now, which is the only number the view
+    // should ever clamp itself against. An application that asked for the whole screen
+    // (vim, less, btop, tmux) is drawing into a grid with no history above it, and the
+    // history it cannot see belongs to the shell it is covering: offering it as
+    // scrollback would show a full-screen program's viewer a screenful of somebody
+    // else's text, and offer a scroll bar for a buffer that is not the one on screen.
+    // So the answer is zero, and everything here — the indicator, the wheel,
+    // Shift+PageUp, dragging the thumb, dragging to an edge — asks this rather than the
+    // model, which is why it is one function and not a check in each place.
     int scrollRange() const { return screen_.inAlternateScreen() ? 0 : screen_.historySize(); }
 
     // Say where the panes are, so a drag stays inside the one it started in. An empty
@@ -470,9 +478,9 @@ public:
             else if (key == Qt::Key_PageDown)
                 scrollBy(-std::max(1, rows_ - 1));
             else if (key == Qt::Key_Home)
-                scrollBy(screen_.historySize());
+                scrollBy(scrollRange());
             else
-                scrollBy(-screen_.historySize());
+                scrollBy(-scrollRange());
             return;
         }
 
@@ -593,7 +601,7 @@ public:
     void updateEdgeScroll(const CellPos& pos) {
         edge_col_ = pos.col;
         int direction = 0;
-        if (pos.row <= 0 && scroll_offset_ < screen_.historySize())
+        if (pos.row <= 0 && scroll_offset_ < scrollRange())
             direction = 1; // held at the top: bring older lines in
         else if (pos.row >= rows_ - 1 && scroll_offset_ > 0)
             direction = -1; // held at the bottom: bring newer lines back
@@ -912,7 +920,7 @@ private:
     void scrollBarDragTo(const QPointF& where) {
         scroll_bar_ = scrollIndicator();
         const int top = where.toPoint().y() - scrollbar_grab_;
-        const int offset = scrollOffsetForThumbY(top, scroll_bar_, screen_.historySize(), rows_);
+        const int offset = scrollOffsetForThumbY(top, scroll_bar_, scrollRange(), rows_);
         scrollBy(offset - scroll_offset_);
         // The thumb follows the pointer even at either end of the scrollback,
         // where the offset itself cannot move.
@@ -1041,7 +1049,10 @@ private:
     }
 
     void clampScroll() {
-        scroll_offset_ = std::clamp(scroll_offset_, 0, screen_.historySize());
+        // Against what this view may scroll, not against what the model is holding: a
+        // full-screen application's rows are not in this view's reach, and the offset
+        // has to come back to zero when one takes the screen over.
+        scroll_offset_ = std::clamp(scroll_offset_, 0, scrollRange());
     }
 
     // Hold a scrolled-back view on the same lines while new output pushes

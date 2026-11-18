@@ -38,6 +38,12 @@ Implemented:
   indicator along the right edge shows how much history there is and where this
   window sits in it; at the bottom it is gone, because "following the shell" is
   worth more screen than it is worth a bar.
+- A program that takes the whole screen (vim, less, btop, tmux) gets the whole screen.
+  While one is drawn there is no scrollback to offer and no scroll bar: the history it
+  would show belongs to the shell underneath, and the program has its own idea of what is
+  above its top row. The wheel, Shift+PageUp, dragging the thumb and dragging a selection
+  to an edge all do nothing, and giving the screen back brings the shell's history with it
+  — it was kept all along, it was only not what was showing.
 - Scrollback **reflows**. Retained lines are stored as logical lines, so changing
   the window width re-wraps them instead of leaving a ragged column of text that
   stops where the old width did. The cursor keeps its place in the window, and the
@@ -228,7 +234,7 @@ Verified results on this machine:
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
   inspection performed)`. When btop is not installed it prints that the checks were not
   exercised instead of pretending to pass.
-- `kai-term-widget-smoke` prints `PASS: 100 offscreen widget checks passed (no visual inspection
+- `kai-term-widget-smoke` prints `PASS: 112 offscreen widget checks passed (no visual inspection
   performed) [this platform has no separate X11-style selection: only the clipboard copy was
   exercised]`. The bracketed note is the test being honest about the platform it ran on.
 - `kai-term-ipc` prints `PASS: 43 protocol framing and field checks passed`.
@@ -236,7 +242,7 @@ Verified results on this machine:
 - `kai-term-snapshot` prints `PASS: 64 screen snapshot checks passed`. A snapshot fed
   into a fresh screen model reproduces it cell for cell, which is the property that makes
   "attach and be shown the screen" true.
-- `kai-term-session` prints `PASS: 96 session daemon checks passed`, over a real pty and
+- `kai-term-session` prints `PASS: 109 session daemon checks passed`, over a real pty and
   a real socket with no display: a session outlives the view that started it, a second
   view is shown the screen, two views see the same output, a view hanging up disturbs
   nothing, terminal queries are answered, an unsaved session survives a window that
