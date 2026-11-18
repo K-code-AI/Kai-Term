@@ -48,21 +48,58 @@ int main() {
     {
         // The second line is where the two ways of quitting differ, so it has to say
         // which is which and what the kept one is called.
-        const std::string with_session = closeDetail("w3");
+        const std::string with_session = closeDetail("w3", false);
         expect("a window holding a session names it", with_session.find("w3") != std::string::npos);
         expect("and says detaching keeps it running",
                with_session.find("Detach keeps it running") != std::string::npos);
-        const std::string plain = closeDetail("");
+        const std::string plain = closeDetail("", false);
         expect("a window with a shell of its own says what ending it loses",
                plain.find("ends the shell") != std::string::npos);
         expect("and does not mention a session it does not have",
                plain.find("Detach") == std::string::npos);
+        const std::string kept = closeDetail("w3", true);
+        expect("a kept session is told the truth about itself: the work goes on either way",
+               kept.find("goes on running") != std::string::npos);
+        expect("so the line never promises to end a shell it is not going to end",
+               kept.find("ends the shell") == std::string::npos);
     }
     {
         expect("detaching is offered when there is a session to detach",
-               closeOfferDetach("w3"));
-        expect("and not when the window owns its shell", !closeOfferDetach(""));
-        expect("nor when there is no name to come back to", !closeOfferDetach(""));
+               closeOfferDetach("w3", false));
+        expect("and not when the window owns its shell", !closeOfferDetach("", false));
+        expect("nor when the session is kept already, which would be the same button twice",
+               !closeOfferDetach("w3", true));
+    }
+    {
+        // How often closing interrupts is a person's call. The words are the ones
+        // Old-Term's `confirm_quit` takes, so somebody who knows one knows the other.
+        expect("anything unrecognised means running, which asks when there is something to lose",
+               confirmPolicy("") == ConfirmPolicy::Running &&
+                   confirmPolicy("sometimes") == ConfirmPolicy::Running);
+        expect("and the three words mean the three settings",
+               confirmPolicy("never") == ConfirmPolicy::Never &&
+                   confirmPolicy("always") == ConfirmPolicy::Always &&
+                   confirmPolicy("running") == ConfirmPolicy::Running);
+
+        // `never` is somebody who has a window manager they trust: the window goes down
+        // without a word, whatever is happening inside it.
+        expect("never asks about a shell sitting at a prompt",
+               closeQuestion("", false, ConfirmPolicy::Never).empty());
+        expect("and never asks about a build in progress either",
+               closeQuestion("make", false, ConfirmPolicy::Never).empty());
+
+        // `always` asks at every close, including the ones where nothing is running, so
+        // its question has to stay true in that case: name no program rather than a
+        // program that is not there.
+        const std::string idle = closeQuestion("", false, ConfirmPolicy::Always);
+        expect("always asks even about a shell at a prompt", !idle.empty());
+        expect("and asks without naming a program that is not running",
+               idle.find("while") == std::string::npos && idle.back() == '?');
+        expect("always asks about a kept session too",
+               !closeQuestion("", true, ConfirmPolicy::Always).empty());
+        expect("and still says what is running when something is",
+               closeQuestion("make", true, ConfirmPolicy::Always).find("make") !=
+                   std::string::npos);
     }
 
     if (failures == 0) {

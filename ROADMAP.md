@@ -239,6 +239,9 @@ Done:
   closing terminal — and names the program, from the process group the terminal owns.
   Nothing is asked about a shell at a prompt, or about a session that was kept, because
   closing a window does not stop either.
+- How often that happens is a setting, `KAI_CONFIRM_QUIT=never|running|always`, under the
+  same three words Old-Term's `confirm_quit` takes. It is read from the environment
+  because there is no config file yet; when there is one, that is where it goes.
 - Kept and unkept sessions are different things, and losing a window by accident does not
   destroy an unkept one. See ARCHITECTURE.md.
 - A window can be pointed at another shell while it stays open, which is what restoring
@@ -307,6 +310,14 @@ Needed:
 - Multiple windows and tabs.
 - A scrollback that comes across with a session when a second view joins it.
 - The command surface above: ids, the flattened verbs, the attached view's status line.
+- One question for the whole window, not one per shell: Old-Term counts every session in
+  the window that has something in its foreground group and names each of them, so a
+  window with four panes asks once about all four. That wants the tabs and splits above
+  to exist first — today a window holds exactly one shell, and asking about all of them
+  and asking about this one are the same question.
+- A config file, so that `confirm_quit` and the rest have somewhere to live that is not
+  the environment. Old-Term reads `config.c`'s key=value file; matching its words is
+  already half the work.
 
 ## M5 — File manager
 

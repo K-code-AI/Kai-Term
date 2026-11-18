@@ -231,7 +231,8 @@ Verified results on this machine:
   (35 key sequences and 12 mouse reports, classic and extended forms).
 - `kai-term-scrollback` prints `PASS: 86 scrollback, cursor-mode and mouse-mode checks passed`.
 - `kai-term-scrollbar` prints `PASS: 25 scroll indicator geometry checks passed`.
-- `kai-term-process` prints `PASS: 31 process lifecycle checks passed`.
+- `kai-term-process` prints `PASS: 37 process lifecycle checks passed`, including that
+  a command name which cannot be drawn is never drawn.
 - `kai-term-mouse` prints `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `kai-term-selection` prints `PASS: 119 selection and text-extraction checks passed`.
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
@@ -256,12 +257,15 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 32 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 38 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
-  asks for it, and the program the close prompt would name is the one that is running.
-- `kai-term-close-prompt` prints `PASS: 14 close prompt checks passed` — when closing
-  asks at all, and whether the words name the thing being lost.
+  asks for it, and the program the close prompt would name is the one that is running —
+  and, offscreen, that closing such a window really does put the question up, that the
+  question is dismissed as a "no" leaves the window standing, and that `KAI_CONFIRM_QUIT`
+  reaches the window that reads it.
+- `kai-term-close-prompt` prints `PASS: 24 close prompt checks passed` — when closing
+  asks at all under each policy, and whether the words say what is actually being lost.
 - `kai-term-widget-panes` prints `PASS: 24 pane-scoped selection checks passed`, with
   real mouse events across a pane boundary.
 - `tests/version.sh` prints `Kai-Term 0.0.0`.
@@ -340,14 +344,26 @@ Keys held free for what is coming, so that a later feature does not quietly take
 that has become somebody else's: **Ctrl+Shift+F** for a file manager, **Ctrl+Shift+N**
 for a new tab, **Ctrl+Shift+H** to switch between side-by-side panes and a tab view.
 - Closing a window with something running asks **"Quit while `make` is running?"** with
-- If a window closes without asking when you expected it to, run it as
-  `KAI_DEBUG_CLOSE=1 ./build/kai-term` and close it with something running. One line goes
-  to stderr saying what the window thought was running, whether the session was kept, and
-  whether that was worth asking about. No line at all means the desktop's close never
-  reached the window, which is a different problem from a window that decided not to ask.
   **Yes**, **No** and **Detach session before closing terminal**. A shell sitting at a
   prompt is not asked about, and neither is a kept session, because closing a window
   does not stop a session that was kept.
+
+- **`KAI_CONFIRM_QUIT`** says how often to ask: `running` (the default) asks only when
+  something is running and closing the window is what stops it, `always` asks at every
+  close, and `never` lets the window go down without a word. The three words are the
+  ones Old-Term's `confirm_quit` takes, so somebody who knows one knows the other; they
+  are read from the environment until there is a config file to keep them in.
+
+- If a window closes without asking when you expected it to, run it as
+  `KAI_DEBUG_CLOSE=1 ./build/kai-term` and close it with something running. It writes to
+  stderr and to `${XDG_RUNTIME_DIR:-/tmp}/kai-term-close.log` what the window thought was
+  running, whether the session was kept, which policy was in force, and whether that
+  merited asking — then, on a second line, what the daemon had to say about every shell
+  it holds. The file is there because the window being asked about is usually the one
+  that was started from the terminal the line would have gone to. `kept=yes` means it was
+  right to say nothing; `running=''` while something plainly is means the window and the
+  daemon are not describing the same shell, and the second line says which; no line at
+  all means the desktop's close never reached the window.
 
 A window's own shell is a session like any other, but unsaved: it is not listed as one
 of yours, it does not stop the window closing, and closing the window on purpose ends

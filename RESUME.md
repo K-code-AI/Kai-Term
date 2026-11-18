@@ -282,7 +282,9 @@ Key files:
 - `src/app/appwindow.hpp` — the window a person runs. Owns the session name, Ctrl+Shift+S
   (keep this shell, start a fresh one here), Ctrl+Shift+A (a menu of kept sessions that
   restores the one clicked) and the close prompt. The widget stays ignorant of sessions.
-- `src/app/closeprompt.hpp` — `closeQuestion()` / `closeDetail()` / `closeOfferDetach()`:
+- `src/app/closeprompt.hpp` — `ConfirmPolicy` (`never` / `running` / `always`, the words
+  Old-Term's `confirm_quit` takes) and `closeQuestion()` / `closeDetail()` /
+  `closeOfferDetach()`:
   when closing has to ask, and what it says. No Qt, so the decision is tested and only the
   dialog is left for a person to look at.
 - `src/process/job.hpp` — `foregroundJob(master, shell)`: the command name of the process
@@ -368,7 +370,7 @@ Individual results:
 - `./build/tests/kai-term-input-pty` → `PASS: 47 input sequences round-tripped through a real PTY unchanged` (35 keys, 12 mouse reports in classic, urxvt, SGR and hex-SGR forms).
 - `./build/tests/kai-term-scrollback` → `PASS: 86 scrollback, cursor-mode and mouse-mode checks passed`.
 - `./build/tests/kai-term-scrollbar` → `PASS: 25 scroll indicator geometry checks passed`.
-- `./build/tests/kai-term-process` → `PASS: 31 process lifecycle checks passed`.
+- `./build/tests/kai-term-process` → `PASS: 37 process lifecycle checks passed`.
 - `./build/tests/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `./build/tests/kai-term-selection` → `PASS: 119 selection and text-extraction checks passed`.
 - `./build/tests/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
@@ -379,8 +381,8 @@ Individual results:
 - `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
 - `./build/tests/kai-term-widget-session` → `PASS: 41 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
-- `./build/tests/kai-term-app-window` → `PASS: 32 application window checks passed`.
-- `./build/tests/kai-term-close-prompt` → `PASS: 14 close prompt checks passed`.
+- `./build/tests/kai-term-app-window` → `PASS: 38 application window checks passed`.
+- `./build/tests/kai-term-close-prompt` → `PASS: 24 close prompt checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
 - `QT_QPA_PLATFORM=offscreen KAI_SHELL=/bin/true ./build/kai-term` → exits 0.
@@ -419,17 +421,21 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 
 ## Known issues
 
-- **The close prompt has not been seen by a person, and Kaida reports it does not appear
-  on niri** (`Mod+Q repeat=false { close-window; }`) with something running. What is
-  settled: the window does know what is running in its own session — a check puts `sleep`
-  in the foreground and asks the window, the same call the close makes, and it answers
-  `sleep`, and `closeQuestion` says that is worth asking about. So the remaining answers
-  are that niri's close never reaches the window, that the session was kept (a kept
-  session loses nothing when its window goes, so by design nothing is asked), that
-  nothing was running, or a build from before the prompt existed. `KAI_DEBUG_CLOSE=1` now
-  prints one line per close saying the session, whether it was kept, what was running and
-  whether that merited asking; no line at all is the compositor's answer. Nobody has run
-  that yet.
+- **The close prompt has still not been seen by a person, and Kaida reports it does not
+  appear on niri** (`Mod+Q repeat=false { close-window; }`) with something running. Two
+  more things are settled since that was first written. The window really does put the
+  question up: a check closes a window with `sleep` out front the way a desktop closes one
+  and finds the `QMessageBox` among the process's windows, dismisses it as a "no", and the
+  window is still standing afterwards. And the close *is* reaching Kaida at that desktop —
+  Kaida closed a window with something running and `session list` afterwards showed
+  nothing left behind, which only happens when the window said `discard=1`, which only a
+  handled close says. A crash or an undelivered close leaves the session listed.
+  So it is one of two things: the session was kept (by design nothing is asked, because
+  nothing is lost), or the daemon saw no foreground program. `KAI_DEBUG_CLOSE=1` says
+  which, in two lines — what the window saw, then what the daemon had for every shell it
+  holds — written to `${XDG_RUNTIME_DIR:-/tmp}/kai-term-close.log` so they outlive the
+  window they describe, and `KAI_CONFIRM_QUIT=always` asks whatever the answer is. Nobody
+  has read that file yet.
 
 - **Almost nothing in M3 or M4 has been looked at by a person.** The keep-this-shell
   keybind has been used at a live Wayland session (niri) and works. The daemon, the command line, the

@@ -224,11 +224,19 @@ protected:
     // Closing the window. Asked about only when something is running and closing is
     // what stops it — see closeprompt.hpp for when that is.
     void closeEvent(QCloseEvent* ev) override {
-        const std::string running = runningProgram();
-        const std::string question = closeQuestion(running, session_kept_);
-        traceClose("session '" + session_ + "' kept=" + (session_kept_ ? "yes" : "no") +
-                   ", running='" + running + "', " +
-                   (question.empty() ? "nothing to ask" : "would ask: " + question));
+        const ConfirmPolicy policy = closePolicy();
+        // Never means never, so it does not go and ask the daemon what is running just to
+        // conclude that it will not say so.
+        const std::string running = policy == ConfirmPolicy::Never ? std::string() : runningProgram();
+        const std::string question = closeQuestion(running, session_kept_, policy);
+        if (tracingClose()) {
+            traceClose("session '" + session_ + "' kept=" + (session_kept_ ? "yes" : "no") +
+                       ", policy=" + policyWord(policy) + ", running='" + running + "', " +
+                       (question.empty() ? "nothing to ask" : "would ask: " + question));
+            // Only asked for when it is being traced: this is another round trip to the
+            // daemon, in the middle of a close, for the sake of a line nobody normally reads.
+            traceClose("the daemon has: " + closeListing());
+        }
         if (question.empty()) {
             // Nothing to ask about is not the same as nothing happening. A shell nobody
             // kept is ended by a window being closed on purpose — which is the whole
@@ -245,11 +253,11 @@ protected:
         box.setIcon(QMessageBox::Warning);
         box.setWindowTitle("Kai-Term");
         box.setText(QString::fromStdString(question));
-        box.setInformativeText(QString::fromStdString(closeDetail(session_)));
+        box.setInformativeText(QString::fromStdString(closeDetail(session_, session_kept_)));
         QPushButton* yes = box.addButton(QMessageBox::Yes);
         QPushButton* no = box.addButton(QMessageBox::No);
         QPushButton* detach = nullptr;
-        if (closeOfferDetach(session_))
+        if (closeOfferDetach(session_, session_kept_))
             detach = box.addButton("Detach session before closing terminal",
                                    QMessageBox::AcceptRole);
         no->setDefault(true);
@@ -277,11 +285,65 @@ private:
     // at all, is the difference. Quiet by default: a terminal writing over its own shell
     // while a person is typing into it would be a worse complaint than the one being
     // chased.
+    static bool tracingClose() { return std::getenv("KAI_DEBUG_CLOSE") != nullptr; }
+
+    // How often closing interrupts. The environment for now, because there is no config
+    // file yet; the words are the ones Old-Term's `confirm_quit` takes, so a person who
+    // knows one knows the other, and when there is a config file the value moves there
+    // without changing what anybody writes.
+    static ConfirmPolicy closePolicy() {
+        const char* setting = std::getenv("KAI_CONFIRM_QUIT");
+        return confirmPolicy(setting != nullptr ? setting : "");
+    }
+
+    static std::string policyWord(ConfirmPolicy policy) {
+        switch (policy) {
+            case ConfirmPolicy::Never:
+                return "never";
+            case ConfirmPolicy::Always:
+                return "always";
+            case ConfirmPolicy::Running:
+                break;
+        }
+        return "running";
+    }
+
     void traceClose(const std::string& what) const {
-        if (std::getenv("KAI_DEBUG_CLOSE") == nullptr)
+        if (!tracingClose())
             return;
         std::fprintf(stderr, "kai-term: close: %s\n", what.c_str());
         std::fflush(stderr);
+        // And into a file, because the window being asked about is usually the one that
+        // was started from the terminal the line would have gone to: asked to look at
+        // what a closed window printed is a request that cannot be carried out.
+        const char* runtime = std::getenv("XDG_RUNTIME_DIR");
+        const std::string path =
+            std::string(runtime != nullptr && runtime[0] != '\0' ? runtime : "/tmp") +
+            "/kai-term-close.log";
+        if (FILE* log = std::fopen(path.c_str(), "a")) {
+            std::fprintf(log, "close: %s\n", what.c_str());
+            std::fclose(log);
+        }
+    }
+
+    // What the daemon had to say about the shells it holds, at the moment of the close.
+    // Whether the shell being shown was in that answer at all is the difference between
+    // "nothing is running out front" and "the window was not looking at the same shell
+    // the daemon was describing", and those two look identical from a window that says
+    // nothing either way.
+    std::string closeListing() const {
+        std::string error;
+        std::string out;
+        for (const SessionInfo& info : listSessions(error)) {
+            out += info.name + "(fg=" + (info.foreground.empty() ? "-" : info.foreground) +
+                   ",clients=" + std::to_string(info.clients) +
+                   ",saved=" + (info.saved ? "y" : "n") + ",alive=" + (info.alive ? "y" : "n") + ") ";
+        }
+        if (!error.empty())
+            return "the daemon said: " + error;
+        if (out.empty())
+            return "nothing at all";
+        return out;
     }
 
     // Say that this window is going away on purpose, so that a shell nobody kept goes

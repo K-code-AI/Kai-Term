@@ -3,6 +3,7 @@
 // gone, and whether closing the window takes the jobs it started with it. None
 // of this needs Qt, and none of it can be seen from the widget tests.
 
+#include "../src/process/job.hpp"
 #include "../src/process/pty.hpp"
 
 #include <poll.h>
@@ -217,6 +218,19 @@ int main() {
         expect("it explains itself on the terminal", out.find("cannot run") != std::string::npos);
         expect("and exits", waitExit(pty, 2000));
         expectNum("with the conventional status for that", pty.exitCode(), 127);
+    }
+
+    // ---- A command name that is safe to show ---------------------------------
+    {
+        step("a command name");
+        expect("an ordinary one goes through as it is", kai::printableCommand("htop") == "htop");
+        expect("including a name in another alphabet",
+               kai::printableCommand("éditeur") == "éditeur");
+        expect("a name carrying an escape sequence is not shown at all",
+               kai::printableCommand("top\033[2J").empty());
+        expect("nor one carrying a carriage return", kai::printableCommand("top\r").empty());
+        expect("nor one carrying a delete", kai::printableCommand("to\177p").empty());
+        expect("and no name is still no name", kai::printableCommand("").empty());
     }
 
     if (failures == 0) {

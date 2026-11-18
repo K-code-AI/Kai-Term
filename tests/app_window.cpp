@@ -20,6 +20,7 @@
 #include <QWidget>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <sys/stat.h>
@@ -113,6 +114,33 @@ std::string writtenInto(const std::string& name) {
     Screen view(24, 80);
     view.feed(raw);
     return view.text();
+}
+
+// Close a window the way a desktop closes one — an ordinary close, not a call into the
+// teardown underneath it — and take the question it puts up, if it puts one up. The answer
+// handed back is "no", which leaves the window standing so a caller can close it again
+// under different weather. Nothing here is seen by an eye: what is being checked is
+// whether the window asks at all, which is the thing reported missing at a real desktop.
+std::string closeAndCatchQuestion(QWidget& window) {
+    std::string asked;
+    bool answered = false;
+    QTimer looking;
+    QObject::connect(&looking, &QTimer::timeout, [&] {
+        for (QWidget* top : QApplication::topLevelWidgets()) {
+            auto* box = qobject_cast<QMessageBox*>(top);
+            if (box == nullptr || !box->isVisible())
+                continue;
+            asked = box->text().toStdString();
+            box->done(0); // no button was pressed, which is the window being told to stay
+            answered = true;
+            looking.stop();
+            return;
+        }
+    });
+    looking.start(50);
+    QMetaObject::invokeMethod(&window, [&window] { window.close(); }, Qt::QueuedConnection);
+    pump(2000);
+    return answered ? asked : std::string();
 }
 
 } // namespace
@@ -258,30 +286,28 @@ int main(int argc, char** argv) {
         // question among the windows this process owns. Nothing here is seen by an eye:
         // what is being checked is whether the window asks at all, which is the thing
         // reported missing at a real desktop.
-        std::string asked;
-        bool answered_no = false;
-        QTimer looking;
-        QObject::connect(&looking, &QTimer::timeout, [&] {
-            for (QWidget* top : QApplication::topLevelWidgets()) {
-                auto* box = qobject_cast<QMessageBox*>(top);
-                if (box == nullptr || !box->isVisible())
-                    continue;
-                asked = box->text().toStdString();
-                box->done(0); // no answer is "no", which is what closing one means
-                answered_no = true;
-                looking.stop();
-                return;
-            }
-        });
-        looking.start(50);
-        QMetaObject::invokeMethod(&busy, [&busy] { busy.close(); }, Qt::QueuedConnection);
-        pump(2000);
+        // The word the window says about its own close, asked for and looked for in the
+        // file rather than on a terminal: the window being asked about is normally the
+        // one that was started from the terminal the line would have gone to, so a
+        // diagnostic that can only be read by somebody watching the window being closed
+        // is a diagnostic nobody can use.
+        ::setenv("KAI_DEBUG_CLOSE", "1", 1);
+        const std::string asked = closeAndCatchQuestion(busy);
         expect("a window with something running asks before it goes",
                asked.find("sleep") != std::string::npos);
-        expect("the question says what it is worth: "+asked,
+        expect("the question says what it is worth: " + asked,
                asked.find("Quit while") != std::string::npos);
-        expect("and the window is still here, having been answered no",
-               answered_no && busy.isVisible());
+        expect("and the window is still here, having been answered no", busy.isVisible());
+        {
+            std::ifstream log(root + "/kai-term-close.log");
+            const std::string written = std::string((std::istreambuf_iterator<char>(log)),
+                                                    std::istreambuf_iterator<char>());
+            expect("and the close said what it saw, where it could be read afterwards",
+                   written.find("would ask: Quit while sleep is running?") != std::string::npos);
+            expect("and said what the daemon had for it, including what was running",
+                   written.find("fg=sleep") != std::string::npos);
+        }
+        ::unsetenv("KAI_DEBUG_CLOSE");
         // Said out loud, because the shell in it is running something: this window is
         // being closed by a person, which is the word that ends a shell nobody kept.
         // Left unsaid, the session would be left behind and the next check would find
@@ -321,6 +347,29 @@ int main(int argc, char** argv) {
                }));
         expect("and nothing at all is left running",
                waitFor([&daemon] { return daemon.list().empty(); }));
+    }
+
+    {
+        // `KAI_CONFIRM_QUIT=always` reaching the window, rather than only being written
+        // down. A shell at a prompt has nothing to lose and is closed without a word, so
+        // it is the cleanest proof there is: the same window, asked again with nothing
+        // changed but the setting, opens its mouth.
+        kai::AppWindow quiet(kai::startWindowBackend(24, 80));
+        quiet.show();
+        static_cast<void>(waitFor([&quiet] { return !quiet.sessionName().empty(); }));
+        QCloseEvent at_rest;
+        QCoreApplication::sendEvent(&quiet, &at_rest);
+        expect("a shell at a prompt goes down without a word by default", at_rest.isAccepted());
+        ::setenv("KAI_CONFIRM_QUIT", "always", 1);
+        const std::string asked = closeAndCatchQuestion(quiet);
+        expect("and is asked about once the setting says always: " + asked, !asked.empty());
+        expect("the question stays true with nothing running: " + asked,
+               asked.find("while") == std::string::npos && asked.back() == '?');
+        expect("and the window is still here, having been answered no", quiet.isVisible());
+        ::unsetenv("KAI_CONFIRM_QUIT");
+        quiet.discardOnClose();
+        quiet.shutdown();
+        pump(200);
     }
 
     daemon.stop();
