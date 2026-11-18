@@ -149,6 +149,19 @@ add_test(NAME app-window COMMAND kai-term-app-window)
 add_executable(kai-term-close-prompt tests/close_prompt.cpp)
 add_test(NAME close-prompt COMMAND kai-term-close-prompt)
 
+# Closing the real binary under a real compositor. The close prompt was once "verified" by
+# calling the window's close from a test, while the terminal sat inside a QMainWindow and
+# never received a close from anything. This asks sway, with no display, to close the
+# window the way a desktop does, and only runs where sway exists.
+find_program(SWAY_EXECUTABLE sway)
+if(SWAY_EXECUTABLE)
+    add_test(NAME wayland-close
+             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/wayland_close.sh)
+    set_tests_properties(wayland-close PROPERTIES
+        ENVIRONMENT "KAI_TERM=$<TARGET_FILE:kai-term>"
+        TIMEOUT 180)
+endif()
+
 # Pane-scoped selection: real mouse drags across a boundary the widget has been told
 # about, with the offscreen platform.
 add_executable(kai-term-widget-panes

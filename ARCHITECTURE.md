@@ -165,6 +165,14 @@ wrong when they were hidden:
   not, because the daemon already answered, and a second reply is a second answer for the
   program to choose the wrong one from.
 
+The terminal widget **is the window**, and that is a rule rather than a detail. A close is
+delivered to the top-level widget and to nothing below it, so a `closeEvent` written on a
+widget that merely sits inside a `QMainWindow` is code that never runs: the terminal spent
+a while wrapped as a central widget, and every window closed without the prompt its own
+`closeEvent` was written to put up. A test that calls `close()` on the widget passes the
+whole time. What catches it is `tests/wayland_close.sh`, which asks a compositor to close
+the real binary.
+
 Panes are the widget's business and its host's knowledge: `setPanes()` says which cells
 belong to which pane, and a drag is clipped to the one it started in. A terminal with one
 shell passes nothing and gets one pane, the screen.

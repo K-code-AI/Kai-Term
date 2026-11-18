@@ -421,26 +421,37 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
 
 ## Known issues
 
-- **The close prompt has still not been seen by a person, and Kaida reports it does not
-  appear on niri** (`Mod+Q repeat=false { close-window; }`) with something running. Two
-  more things are settled since that was first written. The window really does put the
-  question up: a check closes a window with `sleep` out front the way a desktop closes one
-  and finds the `QMessageBox` among the process's windows, dismisses it as a "no", and the
-  window is still standing afterwards. And the close *is* reaching Kaida at that desktop —
-  Kaida closed a window with something running and `session list` afterwards showed
-  nothing left behind, which only happens when the window said `discard=1`, which only a
-  handled close says. A crash or an undelivered close leaves the session listed.
-  So it is one of two things: the session was kept (by design nothing is asked, because
-  nothing is lost), or the daemon saw no foreground program. `KAI_DEBUG_CLOSE=1` says
-  which, in two lines — what the window saw, then what the daemon had for every shell it
-  holds — written to `${XDG_RUNTIME_DIR:-/tmp}/kai-term-close.log` so they outlive the
-  window they describe, and `KAI_CONFIRM_QUIT=always` asks whatever the answer is. Nobody
-  has read that file yet.
+- **The close prompt never appeared at a real desktop, and here is why** — fixed, and the
+  reason is worth keeping in the file. `main.cpp` built the window as a `QMainWindow` with
+  the terminal inside it as the central widget. A close is delivered to the top-level
+  widget and to nothing below it, so `AppWindow::closeEvent` — the code that asks before
+  throwing a running program away — was never called by anything, on any platform. The
+  window closed, `app.exec()` returned, `term->shutdown()` ran, and the unkept shell went
+  with it, which is why `session list` showed nothing afterwards.
+  Two of my own readings were wrong along the way and are recorded so they are not
+  repeated. "The shell died, therefore a close was handled and said `discard=1`" was bad
+  reasoning: `shutdown()` says the same word, and it was the one speaking. And the
+  offscreen check that "closing the window asks" called `close()` on the terminal widget
+  directly, which is not how anything closes a window — it passed the whole time the bug
+  was there. What found it was running the real binary under a real compositor (sway with
+  no display, asked to close the window the way a desktop does) and seeing the process exit
+  with status 0 and no trace line at all, next to a plain Qt window that did get the close.
+  Fixed by making the terminal the window. `tests/wayland_close.sh` closes the real binary
+  under sway and fails when the wrapper goes back; it runs its own runtime directory, so it
+  starts its own daemon and touches neither the developer's daemon nor their sway config —
+  which matters, because sway reading a developer's config starts whatever they have it
+  start, and one of these runs began downloading Minecraft.
+  Also found in the daemon's listing while debugging: eleven sessions left behind from
+  those silent closes, several with `btop` still in the foreground. A close that is never
+  handled does not destroy anything, which is the correct rule and a visible mess.
 
 - **Almost nothing in M3 or M4 has been looked at by a person.** The keep-this-shell
-  keybind has been used at a live Wayland session (niri) and works. The daemon, the command line, the
-  window showing a session, the session menu and the close prompt are still tested with no
-  display. What the menu looks like, where the status line sits, whether three buttons
+  keybind has been used at a live Wayland session (niri) and works. The close prompt has now
+  been *provoked* at a real Wayland compositor — the window stops and holds the question
+  instead of exiting, checked against the real binary under sway — but nobody has looked at
+  the dialog: not its words, not its three buttons, not whether it appears where it can be
+  read. The daemon, the command line, the window showing a session and the session menu are
+  still tested with no display. What the menu looks like, where the status line sits, whether three buttons
   read well when you have a build running, and what Ctrl+Shift+S feels like the third
   time are all unverified.
 - The session menu is a `QMenu` built when Ctrl+Shift+A is pressed, so it is correct at

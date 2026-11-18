@@ -266,6 +266,12 @@ Verified results on this machine:
   reaches the window that reads it.
 - `kai-term-close-prompt` prints `PASS: 24 close prompt checks passed` — when closing
   asks at all under each policy, and whether the words say what is actually being lost.
+- `wayland-close` runs the real binary under sway with no display at all and asks the
+  compositor to close the window, which is the `xdg_toplevel.close` a desktop keybinding
+  sends. It checks that the window stops and asks rather than exiting, and that a window
+  with nothing in it still closes without a word. It is registered only where sway is
+  installed, and it brings its own runtime directory: its own daemon, its own compositor
+  config, and nothing left in either.
 - `kai-term-widget-panes` prints `PASS: 24 pane-scoped selection checks passed`, with
   real mouse events across a pane boundary.
 - `tests/version.sh` prints `Kai-Term 0.0.0`.

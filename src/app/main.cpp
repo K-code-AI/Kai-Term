@@ -5,8 +5,8 @@
 #include "appwindow.hpp"
 
 #include <QApplication>
-#include <QMainWindow>
 #include <iostream>
+#include <memory>
 #include <string_view>
 #include <cstdlib>
 
@@ -62,7 +62,6 @@ int main(int argc, char **argv)
     try {
         kai::prepareQtPlatform();
         QApplication app(argc, argv);
-        QMainWindow frame;
 
         // The window does not know where its bytes come from; the backend decides
         // that. An ordinary window gets a shell held by the session daemon, started
@@ -70,21 +69,28 @@ int main(int argc, char **argv)
         // can do rather than a thing that needs planning ahead. Starting a window onto
         // a named session that is not running throws rather than opening an empty
         // frame, because an empty window looks like a working terminal and is not one.
-        auto* term = attach_to.empty() ? new kai::AppWindow(kai::startWindowBackend(24, 80))
-                                       : new kai::AppWindow(std::string(attach_to));
-        auto title = [term] {
+        //
+        // This object IS the window, and that is not a style choice: a close is sent to
+        // the top-level widget and to nothing below it. Wrapped inside a QMainWindow as
+        // its central widget, the terminal's own `closeEvent` — the one that asks before
+        // throwing a running program away — was never called by anything, and every
+        // window closed silently whatever was happening inside it.
+        std::unique_ptr<kai::AppWindow> term =
+            attach_to.empty()
+                ? std::make_unique<kai::AppWindow>(kai::startWindowBackend(24, 80))
+                : std::make_unique<kai::AppWindow>(std::string(attach_to));
+        auto title = [term = term.get()] {
             return term->sessionName().empty()
                        ? std::string("Kai-Term")
                        : "Kai-Term - " + term->sessionName();
         };
-        frame.setWindowTitle(QString::fromStdString(title()));
-        term->on_session_changed = [&frame, title] {
-            frame.setWindowTitle(QString::fromStdString(title()));
+        term->setWindowTitle(QString::fromStdString(title()));
+        term->on_session_changed = [term = term.get(), title] {
+            term->setWindowTitle(QString::fromStdString(title()));
         };
         term->setFocus();
-        frame.setCentralWidget(term);
-        frame.resize(1000, 700);
-        frame.show();
+        term->resize(1000, 700);
+        term->show();
 
         app.exec();
         term->shutdown();
