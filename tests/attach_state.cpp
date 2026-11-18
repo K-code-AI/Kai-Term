@@ -270,6 +270,42 @@ int main(int argc, char** argv) {
     expect("and it was asked to draw what arrived", swapped.paints > 0);
     swap.shutdown();
 
+    // A screen is a thing of a size. A view that changes size holds a screen painted for
+    // the size it used to be, and until now the snapshot was something the attach
+    // handshake did once — so the contents of a screen and the size of a window depended
+    // on each other exactly once, at the worst moment: while a window was being made
+    // bigger by a compositor that had not finished decorating it.
+    SessionSpec grow_spec;
+    grow_spec.name = "grow";
+    grow_spec.saved = true;
+    grow_spec.rows = 24;
+    grow_spec.cols = 80;
+    expect("a session starts for the resize to act on", daemon.create(grow_spec, error));
+    expect("and it is given lines to hold",
+           daemon.type("grow", "printf 'THE-FIRST-LINE\\nsecond\\nthird\\n'"));
+    pump(700);
+
+    kai::TerminalWidget grow(24, 80, std::make_unique<SessionBackend>("grow", 24, 80));
+    grow.resize(800, 500);
+    grow.show();
+    pump(900);
+    expect("a view of it arrives with its lines",
+           onScreen(grow).find("THE-FIRST-LINE") != std::string::npos);
+    const int rows_before = grow.rows();
+
+    // The window is made bigger, which is what a compositor does to a fresh one and what
+    // no check had ever done to a view of a session.
+    grow.resize(1400, 900);
+    pump(900);
+    const std::string grown = onScreen(grow);
+    expect("and the view really did change size", grow.rows() > rows_before);
+    expect("and a view that changed size still shows what was on the screen",
+           grown.find("THE-FIRST-LINE") != std::string::npos);
+    expect("with the lines not painted twice over",
+           grown.find("THE-FIRST-LINETHIS") == std::string::npos
+               && grown.find("THE-FIRST-LINE\\nTHE-FIRST-LINE") == std::string::npos);
+    grow.shutdown();
+
     second.shutdown();
     daemon.stop();
     serving.join();

@@ -643,6 +643,10 @@ private:
             return;
         if (rows == record.rows && cols == record.cols)
             return;
+        // A screen is a thing of a size, so a resize throws away what every view of it
+        // was shown, and only the daemon can say what the same screen looks like at the
+        // new size.
+        std::string snapshot;
         record.rows = rows;
         record.cols = cols;
         // The pty first: a program inside asks the terminal for its size, so the
@@ -651,6 +655,17 @@ private:
         record.pty->resize(rows, cols);
         std::lock_guard<std::mutex> lock(record.screen_mutex);
         record.screen->resize(rows, cols);
+        snapshot = screenSnapshot(*record.screen);
+        if (snapshot.empty())
+            return;
+        // Every view gets it, the one that asked included. A view that grew keeps a
+        // screen painted for the size it was, and until now nothing ever corrected
+        // that — the snapshot was a thing the attach handshake did once, which made the
+        // size of a window and the contents of a screen depend on each other for the
+        // first and only time.
+        std::lock_guard<std::mutex> clients_lock(record.clients_mutex);
+        for (const int client : record.clients)
+            static_cast<void>(detail::sendFrame(client, MsgKind::Snapshot, snapshot));
     }
 
     void attach(int fd, FrameReader& reader, const Fields& hello, const std::string& name) {
