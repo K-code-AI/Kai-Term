@@ -15,6 +15,9 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QKeyEvent>
+#include <QMessageBox>
+#include <QTimer>
+#include <QWidget>
 #include <chrono>
 #include <cstring>
 #include <functional>
@@ -249,6 +252,36 @@ int main(int argc, char** argv) {
                    return busy.runningProgram() == "sleep";
                }));
         expect("and that is worth asking about", !closeQuestion(busy.runningProgram(), false).empty());
+
+        // The dialog itself, offscreen. The window is closed the way a desktop closes
+        // one, and while the window is waiting for an answer another timer looks for the
+        // question among the windows this process owns. Nothing here is seen by an eye:
+        // what is being checked is whether the window asks at all, which is the thing
+        // reported missing at a real desktop.
+        std::string asked;
+        bool answered_no = false;
+        QTimer looking;
+        QObject::connect(&looking, &QTimer::timeout, [&] {
+            for (QWidget* top : QApplication::topLevelWidgets()) {
+                auto* box = qobject_cast<QMessageBox*>(top);
+                if (box == nullptr || !box->isVisible())
+                    continue;
+                asked = box->text().toStdString();
+                box->done(0); // no answer is "no", which is what closing one means
+                answered_no = true;
+                looking.stop();
+                return;
+            }
+        });
+        looking.start(50);
+        QMetaObject::invokeMethod(&busy, [&busy] { busy.close(); }, Qt::QueuedConnection);
+        pump(2000);
+        expect("a window with something running asks before it goes",
+               asked.find("sleep") != std::string::npos);
+        expect("the question says what it is worth: "+asked,
+               asked.find("Quit while") != std::string::npos);
+        expect("and the window is still here, having been answered no",
+               answered_no && busy.isVisible());
         // Said out loud, because the shell in it is running something: this window is
         // being closed by a person, which is the word that ends a shell nobody kept.
         // Left unsaid, the session would be left behind and the next check would find
