@@ -264,9 +264,9 @@ Done:
   Save Session is offered, not whether the window asks. Kaida found the old rule by
   closing two of those without being asked, which is the sort of thing a rule should
   not survive.
-- How often that happens is a setting, `KAI_CONFIRM_QUIT=never|running|always`, under the
-  same three words Old-Term's `confirm_quit` takes. It is read from the environment
-  because there is no config file yet; when there is one, that is where it goes.
+- How often that happens is a setting, `confirm_quit = never|running|always`, under the
+  same three words Old-Term's `confirm_quit` takes. It lives in the config file
+  (built 2026-11-19, below), and `KAI_CONFIRM_QUIT` overrides it there.
 - Kept and unkept sessions are different things, and losing a window by accident does not
   destroy an unkept one. See ARCHITECTURE.md.
 - A window can be pointed at another shell while it stays open, which is what restoring
@@ -347,19 +347,24 @@ Needed:
   window with four panes asks once about all four. That wants the tabs and splits above
   to exist first — today a window holds exactly one shell, and asking about all of them
   and asking about this one are the same question.
-- A config file, so that `confirm_quit` and the rest have somewhere to live that is not
-  the environment. Old-Term reads `config.c`'s key=value file; matching its words is
-  already half the work.
-- **Themable, and configured inside the terminal itself** — agreed with Kaida on
-  2026-11-19. The colours a terminal draws with are somebody's taste, not a build
-  decision: the palette, the accent the dialogs' focused button wears (fixed blue
-  today), the cell spacing. And the way to choose them should be the terminal's own:
-  a small TUI, drawn by the widget the way the dialogs are, that edits the settings
-  **with a live preview** — a patch of real grid, cursor, selection and a dialog or
-  two, repainted as each choice moves — so the question "what does this look like with
-  a build running" is answered before anything is saved, not after. It wants the config
-  file above to exist first, because a preview that cannot be persisted is a toy;
-  together they are one piece of work.
+- **A config file, built 2026-11-19** (`src/config/config.hpp`, tested headless in
+  `tests/config.cpp` and wired in `tests/app_window.cpp`). key=value in
+  `~/.config/kai-term/config`, comments allowed, unknown keys announced with their line
+  rather than skipped, environment beats file. It carries `confirm_quit` and the first
+  colours — foreground, background, cursor, selection, accent — which is the base the
+  item below builds on; each later setting joins it when the surface that needs it
+  exists.
+- **The theme picker: a TUI inside the terminal, with a live preview** — agreed with
+  Kaida on 2026-11-19, and half-founded: the config file above is built and already
+  carries the first five colours (foreground, background, cursor, selection and the
+  accent the dialogs' focused button wears, once fixed blue), which reach the widget
+  as a theme that can be reapplied to a live window. What is left is the choosing:
+  a small TUI, drawn by the widget the way the dialogs are, editing those settings
+  **with a live preview** — the window's own grid, cursor and selection, plus a sample
+  dialog, repainted as each choice moves — writing back to the config file on leaving.
+  The palette and cell spacing join its fields as those surfaces grow settings. The
+  preview is the window itself, which is the argument for drawing the picker in the
+  window's own overlay rather than shipping a separate program.
 
 ## M5 — File manager
 

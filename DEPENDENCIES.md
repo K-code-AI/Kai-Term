@@ -18,7 +18,7 @@
 
 ## Pending decisions
 
-- **TOML parser**: not selected. A small, maintained parser is preferable to a large desktop stack.
+- **TOML parser**: not needed. The config file is key=value with `#` comments, parsed by `src/config/config.hpp` — small enough to read, and it matches the words Old-Term's config already uses, which a table format would not.
 - **Testing**: GitHub Actions workflow is planned, not yet committed.
 - **Editor**: no library selected.
 - **Clipboard**: Qt platform integration is planned; it must be tested against a foreign clipboard client before being claimed.

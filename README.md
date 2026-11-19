@@ -136,7 +136,9 @@ Implemented:
   HUP and TERM is killed outright after a short grace period. The exit status and
   signal are reported, and a shell named by `KAI_SHELL` that cannot be run says so
   in the window instead of silently falling back to `/bin/sh`.
-- Session daemon, multiplexer, and file manager are not implemented yet.
+- The session daemon is in: shells outlive the window that started them, and every
+  verb above talks to it. Splitting one window into panes, and the file manager,
+  are not implemented yet.
 
 Two limits worth knowing before they surprise you. Cells store a resolved colour,
 not a palette index, so an OSC 4 or OSC 10 change recolours text as it is written
@@ -397,11 +399,11 @@ for a new tab, **Ctrl+Shift+H** to switch between side-by-side panes and a tab v
   Session** is on offer at all — on a kept session it would be a second way to press
   the first button.
 
-- **`KAI_CONFIRM_QUIT`** says how often to ask: `running` (the default) asks whenever
+- **`confirm_quit`** says how often to ask: `running` (the default) asks whenever
   something is running in the window, `always` asks at every close, and `never` lets the
   window go down without a word. The three words are the
-  ones Old-Term's `confirm_quit` takes, so somebody who knows one knows the other; they
-  are read from the environment until there is a config file to keep them in.
+  ones Old-Term's `confirm_quit` takes, so somebody who knows one knows the other; the
+  setting lives in the config file below, and `KAI_CONFIRM_QUIT` overrides it there.
 
 - If a window closes without asking when you expected it to, run it as
   `KAI_DEBUG_CLOSE=1 ./build/kai-term` and close it with something running. It writes to
@@ -427,7 +429,32 @@ decides and what it would show, not what it looks like to a person mid-build.
 
 ## Configuration
 
-Configuration handling is not implemented yet. TOML configuration is planned.
+The file is `~/.config/kai-term/config` (`$XDG_CONFIG_HOME` first if it is set, and
+`KAI_TERM_CONFIG=<file>` points at a different file entirely). It is plain `key = value`
+— the shape Old-Term's config has always had — with `#` comments, one setting per line,
+and whitespace around the `=` free. A setting nobody recognizes is not skipped in
+silence: startup says which line of which file said what, and carries on with the rest.
+
+```
+# ~/.config/kai-term/config
+confirm_quit = running          # never | running | always
+foreground   = #dcdcdc          # the ink of unstyled text
+background   = #1e1e1e          # the blank screen
+cursor       = #dcdcdc
+selection    = #3e60a8          # the highlight under a dragged selection
+accent       = #6ea0ff          # what a dialog puts on the answer its focus is on
+```
+
+Colours are `#rrggbb` (the `#` is optional); names are refused, because a wrongly
+guessed `tomato` is worse than a line that says what it wanted. The environment beats
+the file — `KAI_CONFIRM_QUIT=never ./kai-term` is the setting you are holding in your
+hand right now, and a decision you made months ago should not outrank it.
+
+A theme colours the screen a window *starts*: cells already on screen keep the colours
+they were written with, exactly like an escape-sequence recolour, and a window attached
+to a running session leaves that session's own colours standing — it came to show them,
+not to correct them. More settings will join these as the surfaces that need them are
+built; the plan for choosing them without a text editor is on the M4 list.
 
 ## Layout
 

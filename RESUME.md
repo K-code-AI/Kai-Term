@@ -22,7 +22,11 @@ command line was flattened to what Kaida agreed verb by verb: the words come str
 after `kai-term`, a number from the listing is the handle, and a shell started by the
 daemon carries its number in `KAI_SESSION`, which is what lets `save` and `detach` be
 argument-free inside a session and lets `list` star the session you are standing in. A window can be pointed at
-another shell while it stays open, which is what restoring means.
+another shell while it stays open, which is what restoring means. There is a config file now —
+key=value in `~/.config/kai-term/config`, environment beating it, unknown keys announced
+with their line — carrying `confirm_quit` and the first colours, which reach the window as a
+theme: a window's own colours are its own, and a window attached to a running session shows
+that session's colours rather than correcting them.
 
 **The keep-this-shell keybind and the close question in M4 have been used at a live
 Wayland session, on niri, by Kaida, who reports they work.** (The keybind was
@@ -525,8 +529,11 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
   *outside* the margins.
 - Shift+PageUp/Home/End are claimed by the terminal, so they are not available to applications; a configurable binding is needed before this is final.
 - Unicode width handling is basic; combining characters and unusual emoji sequences may need refinement.
-- No session daemon, IPC, multiplexer, or file manager exists yet.
-- No TOML configuration parser is selected.
+- One window holds one shell: no splits into panes inside a window yet, and no file
+  manager. The daemon, IPC, sessions and attach are built.
+- The config file carries `confirm_quit` and five colours; the 256-colour palette and
+  cell spacing are not settings yet, and there is no picker inside the terminal for
+  them — see ROADMAP M4.
 - No GitHub Actions workflow has been committed.
 - Writing to the PTY master after the shell exits still succeeds on Linux: the pair
   stays wired while the master is open, and only a read reports the end of the

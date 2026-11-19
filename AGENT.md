@@ -98,6 +98,22 @@ the daemon fresh after a rebuild.
   quietly become a switch that loses the work the button was pressed to keep.
   Nothing is asked when nothing is running, and nothing is asked about a session
   that is already kept — its work goes on either way.
+- 2026-11-19: there is a config file. `src/config/config.hpp`, key=value like
+  Old-Term's, no Qt, tested headless: `~/.config/kai-term/config` (`KAI_TERM_CONFIG`
+  to point elsewhere), `#` comments, colours `#rrggbb` and nothing as colourful as a
+  name. An unknown key names itself with its line and the rest of the file still
+  applies — a setting skipped in silence is an afternoon of wondering — and the
+  environment beats the file everywhere, because the environment is what you are
+  holding right now. It carries `confirm_quit` and the first five colours, which reach
+  the window as a `Theme`; the rule underneath them is the recolour rule again: a theme
+  decides the next screen, cells keep what they were written with, and a window
+  attached to a session takes the window chrome but never the session's own colours —
+  those crossed a process boundary to be here. One bug found by the test that was
+  written for it: stripping `#` comments before parsing ate every colour value, since
+  both begin with `#`; a value that starts with one is a colour, and says so now.
+  TOML, which a doc once promised, is off the pending list — key=value matched the
+  words people already type, and a parser you can read in one sitting is worth a
+  dependency you do not have.
 - 2026-11-19: the attached view got its way out. Ctrl+S on its own sends `Detach`
   (no discard, so the daemon keeps the shell) and returns the terminal with status 0;
   before the session's screen takes over, a one-line notice names the session and the
@@ -154,11 +170,15 @@ the daemon fresh after a rebuild.
   real one means the view keeps a Screen model and repaints it a row down, the way the
   Qt widget does. That is a renderer for the CLI, a milestone of its own, and the
   tmux_e2e test is proof of how much care terminal repainting wants; do not fake it.
-- **Themable, configured inside the terminal with a live preview** — agreed with Kaida
-  on 2026-11-19. A small TUI drawn by the widget the way the dialogs are, editing
-  palette, accent (the dialogs' focused button is fixed blue today) and spacing, with a
-  patch of real grid, cursor, selection and a sample dialog repainted as each choice
-  moves. Wants the config file first, so a preview can be persisted; see ROADMAP M4.
+- **The theme picker: a TUI inside the terminal with a live preview** — agreed with Kaida
+  on 2026-11-19. The ground is ready: the config file exists, and `foreground`,
+  `background`, `cursor`, `selection` and `accent` already reach the widget through
+  `applyTheme()`, so a picker is a surface that edits those five keys and re-applies on
+  every keystroke — the live preview is the window itself, which is exactly why the
+  overlay approach works. What remains is the picker's own walk (one key per row, the
+  colour field editing hex digits, write-back to the file), plus the settings it will
+  grow when the surfaces that need them exist: the 256-colour palette and cell spacing.
+  See ROADMAP M4.
 - Visually verify the two dialogs on a live Wayland/X11 session: the question over a
   real build, and the session list with four or five sessions in it.
 - Visually verify the attached window and its coloured scrollback on a live Wayland/X11 session.
@@ -169,6 +189,7 @@ the daemon fresh after a rebuild.
 
 - `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow.
 - `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, and the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`).
+- `src/config/config.hpp` — the key=value config file: its path rules, colours, complaints (no Qt).
 - `src/session/sessionbackend.hpp` — a window's view of a daemon-owned session.
 - `src/session/snapshot.hpp` — bytes that rebuild a screen and its history.
 - `src/session/daemon.hpp` — session daemon, PTY ownership, attach/resize/snapshot handling.

@@ -235,6 +235,23 @@ is what a row of the list says, and the close prompt's *decision* is in
 `src/app/closeprompt.hpp` with no Qt in it: what to ask is worth testing, what the dialog
 looks like has to be looked at.
 
+Settings live in a key=value file — `~/.config/kai-term/config`, `KAI_TERM_CONFIG` to
+point elsewhere — because the words a person has typed in a dozen other dotfiles beat
+a table syntax they will look up. Parsing is `src/config/config.hpp`, no Qt, tested
+headless: comments and whitespace free, colours `#rrggbb` and nothing as colourful as a
+name. Two rules underneath it. An unknown key is announced with its file and line and
+the rest of the file still applies — a setting skipped in silence is an afternoon of
+wondering, and losing your colours to a typo'd key on another line is a worse afternoon
+than being told twice. And the environment beats the file everywhere they overlap:
+the environment is what you are holding in your hand right now.
+
+The file's colours reach the widget as a `Theme` (foreground, background, cursor,
+selection, accent — the window's own chrome) with the same authority rule an
+escape-sequence recolour follows: a theme decides the *next* screen, cells already
+written keep what they were written with, and a window attached to a running session
+takes the chrome but never the session's own colours — those crossed a process
+boundary to be here.
+
 ## Multiplexer subsystem
 
 The multiplexer is a layout tree owned by session metadata:
@@ -286,11 +303,13 @@ Do not hardcode compositor-specific behavior. Keyboard, mouse, clipboard, drag-a
 ```
 src/
   app/          main.cpp (arguments, then one window), appwindow.hpp (the keybinds, the
-                session list, the close and switch questions), closeprompt.hpp (when
-                closing asks — no Qt), sessionmenu.hpp (what a list row says — no Qt)
+                session list, the close and switch questions, the config file's arrival),
+                closeprompt.hpp (when closing asks — no Qt), sessionmenu.hpp (what a
+                list row says — no Qt)
+  config/       config.hpp (the key=value file, its colours, its complaints — no Qt)
   ipc/          protocol.hpp (frames, fields, records), socket.hpp (bind, connect, peers)
   process/      pty.hpp (forkpty, resize, read, reap), job.hpp (what is running out front)
-  session/      daemon.hpp (sessions, views, commands), cli.hpp (the `session` verbs and
+  session/      daemon.hpp (sessions, views, commands), cli.hpp (the command surface and
                 the operations a window uses), snapshot.hpp (a screen as escape
                 sequences), sessionbackend.hpp
   terminal/     screen.hpp, vtparser.cpp, terminalwidget.hpp, backend.hpp,
