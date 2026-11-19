@@ -139,6 +139,15 @@ the daemon fresh after a rebuild.
 
 ## Key Decisions
 
+- Documentation keeps up with the code in the same session that changed the code.
+  Counts, paths, keybinds and claims about what has been verified by a person are
+  statements the docs make on the code's behalf, and a stale statement is worse than no
+  statement because somebody will trust it. When something changes, grep the docs for
+  it before calling the change finished — the 2026-11-19 audit is what catching up
+  looks like, and it is not a job anyone should have to do twice.
+- The repository keeps up as well: when the tests pass, the work is committed in
+  logical commits that say why, and pushed, before a session ends. Uncommitted work is
+  risk carried by the next power cut.
 - The terminal's dialogs are drawn by the terminal, not by the desktop. A native dialog
   brings its own theme, font and button order and reminds everybody the terminal is a
   rectangle the window manager decorates; an overlay drawn in the grid's own font reads

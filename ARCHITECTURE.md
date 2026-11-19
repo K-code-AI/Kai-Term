@@ -315,3 +315,13 @@ needing a shell use a real pty and `/bin/sh`.
 - Daemon crash loses live PTY processes; metadata persistence is not process persistence.
 - Signals, controlling-terminal behavior, and descriptor lifetimes must be tested.
 - No subsystem may be described as complete until it is implemented and verified.
+- Documentation is part of the deliverable, not a receipt left after it. A change that
+  alters what the program does — a keybind, a dialog, a socket path, the number of
+  checks a test passes, whether something has been verified by a person on a live
+  display — is not finished until every document that describes it says so, in the same
+  session that changed it. Stale documentation is worse than none, because it is
+  believed.
+- The repository is part of the deliverable too. When a task's tests pass, its work is
+  committed — in logical commits whose messages explain why — and pushed to the remote,
+  as the closing step of the task. A session that ends with uncommitted work has handed
+  its risk to whoever loses power first.
