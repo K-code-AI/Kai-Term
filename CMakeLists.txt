@@ -124,6 +124,13 @@ add_executable(kai-term-session tests/session.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-session PRIVATE Threads::Threads)
 add_test(NAME session COMMAND kai-term-session)
 
+# The words a person types, run through the real binary in a private runtime
+# directory, so the command surface is checked against the program rather than
+# against a re-reading of it.
+add_executable(kai-term-cli-surface tests/cli_surface.cpp)
+target_compile_definitions(kai-term-cli-surface PRIVATE KAI_TERM_BIN="$<TARGET_FILE:kai-term>")
+add_test(NAME cli-surface COMMAND kai-term-cli-surface)
+
 # A window rendering a session owned by the daemon: the backend seam, exercised with a
 # real pty, a real socket and the offscreen platform.
 add_executable(kai-term-widget-session
@@ -213,6 +220,7 @@ set(KAI_TEST_TARGETS
     kai-term-sockets
     kai-term-snapshot
     kai-term-session
+    kai-term-cli-surface
     kai-term-widget-session
     kai-term-attach-state
     kai-term-app-window

@@ -1,7 +1,8 @@
 #pragma once
 
-// The client's side of the daemon: `kai-term session ...` in a terminal, and the same
-// operations for a window that needs a shell to show.
+// The client's side of the daemon: `kai-term list`, `kai-term attach 2`, the other
+// words that come straight after the program, and the same operations for a window
+// that needs a shell to show.
 //
 // Kept Qt-free on purpose. The daemon does not need any of it, and a test that wants to
 // know whether the command line works should not have to start a display to find out.
@@ -38,7 +39,7 @@ namespace kai {
 
 // The shell starts where a person expects a shell to start: the user's home,
 // not whatever directory happened to launch the window. A session created by
-// `session new` or by a window's Ctrl+Shift+S follows the same rule, and an
+// `kai-term new` or by a window's Ctrl+Shift+S follows the same rule, and an
 // explicit `--cwd` still wins.
 inline std::string homeDirectory() {
     const struct passwd* pw = getpwuid(getuid());
@@ -133,13 +134,15 @@ inline bool startDaemon(std::string& error) {
             if (devnull > STDERR_FILENO)
                 ::close(devnull);
         }
-        // Become a `session serve` process rather than staying a copy of the command
+        // Become a `serve` process rather than staying a copy of the command
         // that happened to start us. A background process that shows up in `ps` as
-        // `kai-term session new -s work --cwd /tmp` cannot be found when someone
-        // wants to know what is holding their shells, and cannot be reached by
-        // anything that looks at a process list.
-        char* const serve[] = {const_cast<char*>("kai-term"), const_cast<char*>("session"),
-                               const_cast<char*>("serve"), nullptr};
+        // `kai-term new work` cannot be found when someone wants to know what is
+        // holding their shells, and cannot be reached by anything that looks at a
+        // process list. The session number goes too: a daemon must not inherit
+        // somebody's session and hand it to every shell it later starts.
+        ::unsetenv("KAI_SESSION");
+        char* const serve[] = {const_cast<char*>("kai-term"), const_cast<char*>("serve"),
+                               nullptr};
         ::execv("/proc/self/exe", serve);
         _exit(127);
     }
@@ -155,7 +158,7 @@ inline bool startDaemon(std::string& error) {
             // It gave up instead of answering, and its reason went to /dev/null along
             // with the rest of its output. That trade is right for a background
             // process; it just means the way to see the reason has to be said.
-            error = "the daemon could not start; run `kai-term session serve` to see why";
+            error = "the daemon could not start; run `kai-term serve` to see why";
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -194,7 +197,14 @@ inline std::string sessionState(const SessionInfo& info) {
     return info.clients > 0 ? "in a window" : "left behind";
 }
 
-inline void printSessionTable(const std::vector<SessionInfo>& sessions) {
+// Which session this process is standing in, as the daemon wrote it into the
+// shell's environment; empty when the shell is not one of ours.
+inline std::string currentSessionHandle() {
+    const char* id = std::getenv("KAI_SESSION");
+    return id && *id ? std::string(id) : std::string();
+}
+
+inline void printSessionTable(const std::vector<SessionInfo>& sessions, int here = -1) {
     if (sessions.empty()) {
         std::cout << "no saved sessions\n";
         return;
@@ -205,7 +215,7 @@ inline void printSessionTable(const std::vector<SessionInfo>& sessions) {
     std::vector<SessionInfo> rows = sessions;
     std::sort(rows.begin(), rows.end(),
               [](const SessionInfo& a, const SessionInfo& b) { return a.id < b.id; });
-    std::cout << std::right << std::setw(4) << "ID" << std::left << std::setw(17) << "NAME"
+    std::cout << std::right << std::setw(5) << "ID" << std::left << std::setw(17) << "NAME"
               << std::right << std::setw(8) << "PID"
               << std::setw(9) << "SIZE" << std::setw(7) << "VIEWS" << std::setw(11) << "RUNNING"
               << std::left << "  STARTED"
@@ -216,7 +226,12 @@ inline void printSessionTable(const std::vector<SessionInfo>& sessions) {
         ::localtime_r(&when, &local);
         char stamp[32] = {0};
         std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &local);
-        std::cout << std::right << std::setw(4) << info.id << std::left << std::setw(17)
+        // The row for the session you are standing in carries a star, the way a
+        // shell marks its own jobs: `save` and `detach` mean this session when you
+        // type them here, and the listing should agree with what they will do.
+        const std::string id_cell = info.id == here ? "*" + std::to_string(info.id)
+                                                    : std::to_string(info.id);
+        std::cout << std::right << std::setw(5) << id_cell << std::left << std::setw(17)
                   << info.name << std::right << std::setw(8)
                   << (info.pid > 0 ? std::to_string(static_cast<long long>(info.pid)) : "-")
                   << std::setw(9) << (std::to_string(info.rows) + "x" + std::to_string(info.cols))
@@ -274,8 +289,8 @@ inline void daemonStopSignal(int) {
 }
 
 // Sit in the accept loop until asked to leave, then take the sessions with us. Used
-// by `session serve` in the foreground and by the background daemon a window or
-// `session new` starts.
+// by `serve` in the foreground and by the background daemon a window or
+// `new` starts.
 inline int serveDaemonForeground(std::string& error) {
     Daemon daemon;
     if (!daemon.start(error)) {
@@ -430,26 +445,6 @@ inline int attachSession(const std::string& name, std::string& error) {
     return status;
 }
 
-struct SessionArgs {
-    std::string name;
-    std::string shell;
-    std::string cwd;
-    std::string text;
-    std::string as; // the name to save a session under
-    bool enter = false;
-    int rows = 24;
-    int cols = 80;
-};
-
-inline bool takeValue(int argc, char** argv, int& i, std::string& out, std::string& error) {
-    if (i + 1 >= argc) {
-        error = std::string(argv[i]) + " needs a value";
-        return false;
-    }
-    out = argv[++i];
-    return true;
-}
-
 inline std::vector<SessionInfo> listSessions(std::string& error) {
     DaemonClient client;
     std::vector<SessionInfo> none;
@@ -467,7 +462,7 @@ inline std::vector<SessionInfo> listSessions(std::string& error) {
     return none;
 }
 
-// A name nobody is using, so `session new` without one still does the obvious thing.
+// A name nobody is using, so `kai-term new` without one still does the obvious thing.
 // Windows and typed commands pick from different ranges so that a window's shell is
 // recognisable as one, and cannot be handed the name a person meant for a session.
 inline std::string freeName(const std::vector<SessionInfo>& sessions,
@@ -479,6 +474,26 @@ inline std::string freeName(const std::vector<SessionInfo>& sessions,
         if (!taken)
             return candidate;
     }
+    return {};
+}
+
+// Turn what a person typed — a number from a listing, or a name — into the name
+// a window needs. The daemon resolves both on the wire; a window attaches by
+// name because the name is what its title bar says and what survives looking the
+// session up again later. Name wins over number, the same way the daemon's own
+// lookup lets a session called "7" keep meaning itself.
+inline std::string resolveHandle(const std::string& handle, std::string& error) {
+    const std::vector<SessionInfo> sessions = listSessions(error);
+    if (!error.empty())
+        return {};
+    for (const SessionInfo& info : sessions)
+        if (info.name == handle)
+            return info.name;
+    if (!handle.empty() && handle.find_first_not_of("0123456789") == std::string::npos)
+        for (const SessionInfo& info : sessions)
+            if (info.id == std::atoi(handle.c_str()))
+                return info.name;
+    error = "no such session: " + handle;
     return {};
 }
 
@@ -563,35 +578,50 @@ inline void mentionForeignDaemon() {
         std::cout << "note: " << beside << "\n";
 }
 
-// `kai-term session ...`. Returns an exit code, or -1 when the first word was not
-// "session" and the caller should carry on starting a window.
+// `kai-term <verb> ...`, for the words that mean sessions. Returns an exit code;
+// main calls this only for those words and starts a window for everything else.
+//
+// The verbs come straight after the program, a number from a listing is the handle,
+// and the flags that survive are the ones that change what a verb does rather than
+// restate what a positional word already said (`--window`, `--enter`, `-n` for the
+// names that are sentences). A shell started by the daemon carries its number in
+// KAI_SESSION, which is what lets `save` and `detach` be argument-free and lets
+// `list` mark where you are standing.
 inline int runSessionCommand(int argc, char** argv) {
-    const std::string verb = argc > 2 ? argv[2] : "--help";
-    SessionArgs args;
-    terminalSize(args.rows, args.cols);
+    const std::string verb = argc > 1 ? argv[1] : "--help";
     std::string error;
 
     auto usage = [] {
-        std::cout << "Usage: kai-term session <command> [options]\n"
-                  << "  list                      show saved sessions, and any left behind\n"
-                  << "  new [-s NAME] [--shell P] [--cwd D] [--rows N] [--cols N]\n"
-                  << "                            start a session the daemon keeps alive\n"
-                  << "  save [-s NAME] [--as NEW] keep a session, and name it\n"
-                  << "  attach [-s NAME]          show a session in this terminal\n"
-                  << "  send [-s NAME] --text T   type into a session without watching it\n"
-                  << "  detach [-s NAME]          send away the views, keep the shell\n"
-                  << "  kill [-s NAME]            end a session\n"
-                  << "  start                     start the daemon, if it is not running\n"
-                  << "  shutdown                  end every session and stop the daemon\n";
+        std::cout << "Usage: kai-term <command> [arguments]\n"
+                  << "  list                    the shells the daemon keeps; * marks yours\n"
+                  << "  new [NAME]              start one, print its id, leave you where you were\n"
+                  << "  attach ID | -n NAME     show one in this terminal; --window opens a window\n"
+                  << "  detach                  leave the session you are standing in\n"
+                  << "  save [ID] [NAME]        keep a session; inside one, no arguments needed\n"
+                  << "  send ID TEXT [--enter]  type into a session without watching it\n"
+                  << "  kill ID                 end a session\n"
+                  << "  start | shutdown | serve       the daemon itself\n";
         return 0;
     };
 
+    // Words this surface used to answer to. Nothing is kept for compatibility —
+    // but a word typed out of habit should say what replaced it rather than
+    // open a window or fail like a typo.
+    if (verb == "session") {
+        std::cerr << "kai-term: `session` is retired; the words come straight after "
+                     "`kai-term` — `kai-term list`, `kai-term new`, `kai-term attach 0`.\n";
+        return 2;
+    }
+    if (verb == "open") {
+        std::cerr << "kai-term: `open NAME` is retired; `kai-term attach <id> --window` "
+                     "opens a window onto a session.\n";
+        return 2;
+    }
     if (verb == "--help" || verb == "-h" || verb == "help")
         return usage();
 
-    // The daemon's own foreground life, which is what `session start` forks into and
-    // what a foreground `session serve` runs. No name, no options: it owns
-    // everything or nothing.
+    // The daemon's own foreground life. No name, no options: it owns everything
+    // or nothing.
     if (verb == "serve") {
         // Named before anything else, because the life starting here is the long
         // one, and a process that spends it answering as "exe" is a process nobody
@@ -601,7 +631,7 @@ inline int runSessionCommand(int argc, char** argv) {
         // will not start, and a debugging session where you cannot tell whether it
         // bound anything is a waste of a debugging session.
         std::cout << "listening on " << daemonSocketPath() << "\n"
-                  << "Ctrl-C, or `kai-term session shutdown`, to stop\n";
+                  << "Ctrl-C, or `kai-term shutdown`, to stop\n";
         // Said before the loop rather than after it, because after it there is nobody
         // left to tell.
         mentionForeignDaemon();
@@ -612,58 +642,58 @@ inline int runSessionCommand(int argc, char** argv) {
         return status;
     }
 
-    for (int i = 3; i < argc; ++i) {
-        const std::string flag = argv[i];
-        std::string value;
-        if (flag == "-s" || flag == "--name") {
-            if (!takeValue(argc, argv, i, args.name, error)) {
-                std::cerr << "kai-term: " << error << "\n";
+    // One pass, because every verb reads the same shape: flags that change the
+    // verb, and positional words that mean a session and then whatever else the
+    // verb takes. A word that starts with a dash and is not a flag is an error
+    // rather than a mystery: `kai-term atach 2` should not become a session
+    // named atach.
+    std::vector<std::string> positional;
+    std::string named;
+    bool use_window = false;
+    bool enter = false;
+    for (int i = 2; i < argc; ++i) {
+        const std::string word = argv[i];
+        if (word == "-n" || word == "--name") {
+            if (i + 1 >= argc) {
+                std::cerr << "kai-term: " << word << " needs a value\n";
                 return 2;
             }
-        } else if (flag == "--shell") {
-            if (!takeValue(argc, argv, i, args.shell, error)) {
-                std::cerr << "kai-term: " << error << "\n";
-                return 2;
-            }
-        } else if (flag == "--cwd") {
-            if (!takeValue(argc, argv, i, args.cwd, error)) {
-                std::cerr << "kai-term: " << error << "\n";
-                return 2;
-            }
-        } else if (flag == "--rows") {
-            if (!takeValue(argc, argv, i, value, error)) {
-                std::cerr << "kai-term: " << error << "\n";
-                return 2;
-            }
-            args.rows = std::atoi(value.c_str());
-        } else if (flag == "--text") {
-            if (!takeValue(argc, argv, i, args.text, error)) {
-                std::cerr << "kai-term: " << error << "\n";
-                return 2;
-            }
-        } else if (flag == "--enter") {
-            args.enter = true;
-        } else if (flag == "--as") {
-            if (!takeValue(argc, argv, i, args.as, error)) {
-                std::cerr << "kai-term: " << error << "\n";
-                return 2;
-            }
-        } else if (flag == "--cols") {
-            if (!takeValue(argc, argv, i, value, error)) {
-                std::cerr << "kai-term: " << error << "\n";
-                return 2;
-            }
-            args.cols = std::atoi(value.c_str());
-        } else {
-            std::cerr << "kai-term: unknown option " << flag << "\n";
+            named = argv[++i];
+        } else if (word == "--window") {
+            use_window = true;
+        } else if (word == "--enter") {
+            enter = true;
+        } else if (word.size() > 1 && word[0] == '-') {
+            std::cerr << "kai-term: unknown option " << word << "\n";
             return 2;
+        } else {
+            positional.push_back(word);
         }
     }
 
+    // One request to a live daemon, for the verbs that are nothing else.
+    auto oneCommand = [&error](const Fields& command, Frame& reply) {
+        DaemonClient client;
+        if (!client.connect(error))
+            return false;
+        return client.command(command, reply, error);
+    };
+    auto refused = [&error](const Frame& reply) {
+        if (reply.kind == MsgKind::Ack)
+            return false;
+        error = fieldValue(decodeFields(reply.body), "message", "the daemon refused");
+        return true;
+    };
+    auto fail = [&error] {
+        std::cerr << "kai-term: " << (error.empty() ? "the daemon would not answer" : error)
+                  << "\n";
+        return 1;
+    };
+
     if (verb == "list") {
         // Nothing running is not an error to report; it is the ordinary answer for
-        // someone who has not started a session yet. A daemon that is there and says
-        // something else is a different matter, and that one is worth printing.
+        // someone who has not started a session yet. A daemon that is there and
+        // says something else is a different matter, and that one is worth printing.
         DaemonClient client;
         std::string connect_error;
         if (!client.connect(connect_error)) {
@@ -672,17 +702,16 @@ inline int runSessionCommand(int argc, char** argv) {
             return 0;
         }
         const std::vector<SessionInfo> sessions = listSessions(error);
-        if (!error.empty()) {
-            std::cerr << "kai-term: " << error << "\n";
-            return 1;
-        }
+        if (!error.empty())
+            return fail();
+        const std::string here = currentSessionHandle();
         const std::vector<SessionInfo> listed = worthListing(sessions);
-        printSessionTable(listed);
+        printSessionTable(listed, here.empty() ? -1 : std::atoi(here.c_str()));
         if (listed.size() < sessions.size())
             std::cout << (sessions.size() - listed.size())
                       << " shell(s) are open in windows and not saved yet\n";
-        // Someone looking at this listing is looking for their shells. If a daemon from
-        // before the upgrade is holding some of them, this is the place to say so.
+        // Someone looking at this listing is looking for their shells. If a daemon
+        // from before the upgrade is holding some of them, this is the place.
         mentionForeignDaemon();
         return 0;
     }
@@ -692,111 +721,180 @@ inline int runSessionCommand(int argc, char** argv) {
             std::cout << "the daemon is already running\n";
             return 0;
         }
-        if (!startDaemon(error)) {
-            std::cerr << "kai-term: " << error << "\n";
-            return 1;
-        }
+        if (!startDaemon(error))
+            return fail();
         std::cout << "started a daemon at " << daemonSocketPath() << "\n";
         mentionForeignDaemon();
         return 0;
     }
 
-    if (verb == "new") {
-        if (!ensureDaemon(error)) {
-            std::cerr << "kai-term: " << error << "\n";
-            return 1;
-        }
-        if (args.name.empty())
-            args.name = freeName(listSessions(error));
-        if (args.cwd.empty())
-            args.cwd = homeDirectory();
-        DaemonClient client;
-        if (!client.connect(error)) {
-            std::cerr << "kai-term: " << error << "\n";
-            return 1;
-        }
-        Frame reply;
-        if (!client.command({{"command", "new"},
-                             {"name", args.name},
-                             {"shell", args.shell},
-                             {"cwd", args.cwd},
-                             {"rows", std::to_string(args.rows)},
-                             {"cols", std::to_string(args.cols)}},
-                            reply, error)) {
-            std::cerr << "kai-term: " << error << "\n";
-            return 1;
-        }
-        if (reply.kind != MsgKind::Ack) {
-            std::cerr << "kai-term: "
-                      << fieldValue(decodeFields(reply.body), "message", "the daemon refused")
-                      << "\n";
-            return 1;
-        }
-        std::cout << "started session " << args.name << "\n";
-        std::cout << "attach with: kai-term session attach -s " << args.name << "\n";
-        return 0;
-    }
-
     if (verb == "shutdown") {
-        // Bringing the daemon down is not about one session, so it takes no name.
-        DaemonClient client;
-        Frame shutdown_reply;
-        if (!client.connect(error) ||
-            !client.command({{"command", "shutdown"}}, shutdown_reply, error)) {
-            std::cerr << "kai-term: " << error << "\n";
-            return 1;
-        }
+        // Bringing the daemon down is not about one session, so it takes no id.
+        Frame reply;
+        if (!oneCommand({{"command", "shutdown"}}, reply))
+            return fail();
         std::cout << "the daemon is shutting down\n";
         return 0;
     }
 
-    if (args.name.empty()) {
-        std::cerr << "kai-term: session " << verb << " needs -s NAME\n";
-        return 2;
+    if (verb == "new") {
+        if (positional.size() > 1) {
+            std::cerr << "kai-term: new takes one name at most; `kai-term new work`\n";
+            return 2;
+        }
+        if (!ensureDaemon(error))
+            return fail();
+        std::string name = positional.empty() ? freeName(listSessions(error)) : positional[0];
+        // Shell and directory from the environment, because a session is a shell
+        // and a shell starts where a person is standing and speaks the dialect
+        // they set. The home-directory default belongs to a window's shell, which
+        // has no standing to borrow; a session started from a terminal does.
+        char cwd_buffer[4096];
+        const std::string cwd =
+            ::getcwd(cwd_buffer, sizeof(cwd_buffer)) ? cwd_buffer : homeDirectory();
+        const char* shell_env = std::getenv("KAI_SHELL");
+        if (!shell_env || !*shell_env)
+            shell_env = std::getenv("SHELL");
+        int rows = 24;
+        int cols = 80;
+        terminalSize(rows, cols);
+        Frame reply;
+        if (!oneCommand({{"command", "new"},
+                         {"name", name},
+                         {"shell", shell_env ? shell_env : ""},
+                         {"cwd", cwd},
+                         {"rows", std::to_string(rows)},
+                         {"cols", std::to_string(cols)}},
+                        reply))
+            return fail();
+        if (refused(reply))
+            return fail();
+        const Fields ack = decodeFields(reply.body);
+        const std::string id = fieldValue(ack, "id", "?");
+        std::cout << "started session " << id << " named " << fieldValue(ack, "name", name)
+                  << "\n";
+        std::cout << "attach with: kai-term attach " << id << "\n";
+        return 0;
     }
 
     if (verb == "attach") {
-        if (!attachSession(args.name, error)) {
-            if (!error.empty())
-                std::cerr << "kai-term: " << error << "\n";
-            return 0;
+        if (!named.empty() && !positional.empty()) {
+            std::cerr << "kai-term: attach takes an id or -n NAME, not both\n";
+            return 2;
         }
-        return 1;
+        std::string handle = named.empty() && !positional.empty() ? positional[0] : named;
+        if (handle.empty()) {
+            std::cerr << "kai-term: attach which session? `kai-term list` shows them\n";
+            return 2;
+        }
+        if (use_window) {
+            // A window wants the name behind the number, because the name is what
+            // the title bar says and what the window will ask the daemon for.
+            const std::string name = resolveHandle(handle, error);
+            if (name.empty())
+                return fail();
+            // Become the window rather than raise a child to wait for: this
+            // command's whole job from here is being that window.
+            char* const windows[] = {const_cast<char*>("kai-term"),
+                                     const_cast<char*>("--attach-to"),
+                                     const_cast<char*>(name.c_str()), nullptr};
+            ::execv("/proc/self/exe", windows);
+            std::cerr << "kai-term: the window would not start: " << std::strerror(errno)
+                      << "\n";
+            return 1;
+        }
+        // The old shape printed the error only on the path where the session had
+        // ended cleanly, which meant `attach 999` said nothing at all and left a
+        // person wondering. Whatever the exit code, if there is a reason, say it.
+        const int status = attachSession(handle, error);
+        if (!error.empty())
+            std::cerr << "kai-term: " << error << "\n";
+        return status;
     }
 
-    DaemonClient client;
-    if (!client.connect(error)) {
-        std::cerr << "kai-term: " << error << "\n";
-        return 1;
+    if (verb == "detach") {
+        // tmux's `detach-session` takes a target; this one does not, because the
+        // session you mean is the one whose prompt you are typing at — the daemon
+        // said so in KAI_SESSION when it started this shell. From outside, kicking
+        // the views out of somebody else's session is a window's business or a
+        // kill, not a word to guess at.
+        if (!positional.empty() || !named.empty()) {
+            std::cerr << "kai-term: detach takes no arguments; it sends away the views of "
+                         "the session you are standing in\n";
+            return 2;
+        }
+        const std::string here = currentSessionHandle();
+        if (here.empty()) {
+            std::cerr << "kai-term: you are not standing in a session; `kai-term list` "
+                         "shows them, and `kai-term attach <id>` stands you in one\n";
+            return 2;
+        }
+        Frame reply;
+        if (!oneCommand({{"command", "detach"}, {"name", here}}, reply) || refused(reply))
+            return fail();
+        std::cout << "sent away the views of session " << here << "\n";
+        return 0;
     }
-    Frame reply;
-    // `send` carries the keys it should type; the others have nothing but a name.
-    const std::string text = args.enter ? args.text + "\n" : args.text;
-    if (!client.command({{"command", verb},
-                         {"name", args.name},
-                         {"text", text},
-                         {"as", args.as}},
-                        reply, error)) {
-        std::cerr << "kai-term: " << error << "\n";
-        return 1;
+
+    if (verb == "save") {
+        // Inside a session, no arguments: the shell knows its own number. From
+        // outside, the id from a listing, and an optional new name after it —
+        // `kai-term save 2 build`, where the old surface would have wanted two
+        // flags to say the same sentence.
+        if (positional.size() > 2) {
+            std::cerr << "kai-term: save takes an id and a name at most\n";
+            return 2;
+        }
+        const std::string handle =
+            positional.empty() ? currentSessionHandle() : positional[0];
+        if (handle.empty()) {
+            std::cerr << "kai-term: save needs a session id — or run it inside the session "
+                         "you want kept\n";
+            return 2;
+        }
+        const std::string wanted = positional.size() > 1 ? positional[1] : "";
+        Frame reply;
+        if (!oneCommand({{"command", "save"}, {"name", handle}, {"as", wanted}}, reply) ||
+            refused(reply))
+            return fail();
+        const std::string kept_name = fieldValue(decodeFields(reply.body), "name", handle);
+        // The handle first when a new name comes after it: "keeping 2 as build"
+        // says which session was meant and what it answers to now. The daemon's
+        // answer already carries the new name, so repeating it as the thing that
+        // *was* kept would describe a session nobody called that.
+        std::cout << (wanted.empty() ? "keeping " + kept_name
+                                     : "keeping " + handle + " as " + wanted)
+                  << "\n";
+        return 0;
     }
-    if (reply.kind != MsgKind::Ack) {
-        std::cerr << "kai-term: "
-                  << fieldValue(decodeFields(reply.body), "message", "the daemon refused") << "\n";
-        return 1;
+
+    if (verb == "send" || verb == "kill") {
+        if (verb == "send" && positional.size() < 2) {
+            std::cerr << "kai-term: send needs a session and the text: "
+                         "`kai-term send 2 make --enter`\n";
+            return 2;
+        }
+        if (verb == "kill" && positional.size() != 1) {
+            std::cerr << "kai-term: kill needs a session id; `kai-term list` shows them\n";
+            return 2;
+        }
+        const std::string handle = positional[0];
+        const std::string text =
+            verb == "send" ? positional[1] + (enter ? "\n" : "") : "";
+        Frame reply;
+        if (!oneCommand({{"command", verb}, {"name", handle}, {"text", text}}, reply) ||
+            refused(reply))
+            return fail();
+        if (verb == "send")
+            std::cout << "typed into session " << handle << "\n";
+        else
+            std::cout << "ended session " << handle << "\n";
+        return 0;
     }
-    if (verb == "save")
-        std::cout << (args.as.empty() ? "keeping " + args.name
-                                      : "keeping " + args.name + " as " + args.as) << "\n";
-    if (verb == "kill")
-        std::cout << "ended session " << args.name << "\n";
-    if (verb == "detach")
-        std::cout << "sent away the views of " << args.name << "\n";
-    if (verb == "send")
-        std::cout << "typed into " << args.name << "\n";
-    if (verb == "shutdown")
-        std::cout << "the daemon is shutting down\n";
-    return 0;
+
+    std::cerr << "kai-term: no such command: " << verb << "\n";
+    usage();
+    return 2;
 }
 
 } // namespace kai

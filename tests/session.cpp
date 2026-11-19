@@ -363,7 +363,7 @@ int main() {
                 expect("and told it was the protocol",
                        message.find("protocol mismatch") != std::string::npos);
                 expect("and what to do about it",
-                       message.find("session shutdown") != std::string::npos);
+                       message.find("kai-term shutdown") != std::string::npos);
             }
         }
     }

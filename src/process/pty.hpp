@@ -36,7 +36,8 @@ namespace kai {
 // goes to the group.
 class Pty {
 public:
-    explicit Pty(int rows, int cols, std::string shell = {}, std::string cwd = {})
+    explicit Pty(int rows, int cols, std::string shell = {}, std::string cwd = {},
+                 std::string session_id = {})
         : master_(-1), child_(-1)
     {
         if (rows < 1)
@@ -88,6 +89,16 @@ public:
                 _exit(127);
             }
             setenv("TERM", "xterm-256color", 1);
+            // Which session this shell is, so a command run inside it — `save`,
+            // `detach`, `list` marking where you are — can know without being
+            // told. Set or cleared, never merely inherited: a daemon started
+            // from inside somebody's session would otherwise hand that session's
+            // number to every shell it ever starts, and an argument-free `save`
+            // would keep a shell nobody is standing in.
+            if (!session_id.empty())
+                setenv("KAI_SESSION", session_id.c_str(), 1);
+            else
+                ::unsetenv("KAI_SESSION");
             execl(chosen.c_str(), chosen.c_str(), "-i", nullptr);
             std::fprintf(stderr, "kai-term: cannot run %s: %s\r\n", chosen.c_str(),
                          std::strerror(errno));

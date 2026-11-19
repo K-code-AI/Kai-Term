@@ -132,7 +132,7 @@ struct SessionSpec {
 struct SessionInfo {
     // Handed out by the daemon in the order shells started, from 0, never reused while
     // that daemon lives. A name is something a person chose and can be typed; an id is
-    // what `session list` puts first and what a person types back when there is no name
+    // what `kai-term list` puts first and what a person types back when there is no name
     // worth reading, which is most of the time.
     int id = -1;
     std::string name;
@@ -321,7 +321,7 @@ public:
     // A daemon that outlived its sessions would leave them with no master, and a
     // terminal without a master cannot be attached to again; a daemon that kept them
     // alive with nothing to show them would be running jobs nobody can see or stop.
-    // So stopping means stopping, and `kai-term session list` after that is empty.
+    // So stopping means stopping, and `kai-term list` after that is empty.
     void stop() {
         stopping_ = true;
         {
@@ -388,7 +388,7 @@ public:
     }
 
     // Control interface, used both by the protocol and by the tests.
-    bool create(const SessionSpec& spec, std::string& error) {
+    bool create(const SessionSpec& spec, std::string& error, int* created_id = nullptr) {
         if (!sessionNameOk(spec.name)) {
             error = "not a usable session name: " + spec.name;
             return false;
@@ -408,14 +408,19 @@ public:
                 return false;
             }
         }
-        auto pty = std::make_unique<Pty>(spec.rows, spec.cols, spec.shell, spec.cwd);
+        // The number is handed out before the shell starts, because the shell
+        // carries it: `KAI_SESSION` in the child's environment is what lets an
+        // argument-free `save` or `detach` know which session it is standing in.
+        const int session_id = next_id_++;
+        auto pty = std::make_unique<Pty>(spec.rows, spec.cols, spec.shell, spec.cwd,
+                                         std::to_string(session_id));
         // The child starts in the directory it was given, rather than being sent a
         // `cd` command after it has started. Typing a command for the person is not
         // the same as starting the shell there, and a shell that rejects the directory
         // says so on its own terminal.
 
         auto record = std::make_shared<Record>();
-        record->id = next_id_++;
+        record->id = session_id;
         record->name = spec.name;
         record->pty = std::move(pty);
         record->screen = std::make_unique<Screen>(spec.rows, spec.cols);
@@ -443,6 +448,8 @@ public:
         // own, removes it from the table when the shell ends, and closes the master
         // last, from the thread that had been reading it.
         had_session_ = true;
+        if (created_id)
+            *created_id = record->id;
         std::thread([this, record] { readSession(record); }).detach();
         return true;
     }
@@ -488,7 +495,11 @@ public:
     // findable afterwards. Renaming a saved session works the same way, and a name
     // already taken is refused rather than quietly taken over — the other session has
     // a shell in it that somebody is watching.
-    bool save(const std::string& name, const std::string& wanted, std::string& error) {
+    // The name the session answers to when this returns, through `final_name`: a
+    // person who typed `save 2 build` and is told "keeping build" should be hearing
+    // the record's own name, not an echo of what they typed.
+    bool save(const std::string& name, const std::string& wanted, std::string& error,
+              std::string* final_name = nullptr) {
         std::lock_guard<std::mutex> lock(table_mutex_);
         // Resolved rather than looked up, because the handle may be an id — and this
         // function holds the table lock from its first line, so resolving is all it may do.
@@ -497,8 +508,10 @@ public:
             error = "no such session: " + name;
             return false;
         }
-        if (wanted.empty() || wanted == name) {
+        if (wanted.empty() || wanted == record->name) {
             record->saved = true;
+            if (final_name)
+                *final_name = record->name;
             return true;
         }
         if (!sessionNameOk(wanted)) {
@@ -517,6 +530,8 @@ public:
         record->name = wanted;
         record->saved = true;
         table_[wanted] = record;
+        if (final_name)
+            *final_name = record->name;
         return true;
     }
 
@@ -959,7 +974,7 @@ private:
                                    std::string(kProtocolVersion) + ", the client said " +
                                    (client_version.empty() ? "nothing" : client_version) +
                                    ". A daemon from another build of Kai-Term is holding "
-                                   "these shells; `kai-term session shutdown` stops it."}})));
+                                   "these shells; `kai-term shutdown` stops it."}})));
             return;
         }
         if (command == "list") {
@@ -978,12 +993,19 @@ private:
             spec.cols = std::stoi(fieldValue(fields, "cols", "80"));
             spec.saved = fieldValue(fields, "saved", "1") != "0";
             std::string error;
-            if (!create(spec, error)) {
+            int created_id = -1;
+            if (!create(spec, error, &created_id)) {
                 static_cast<void>(
                     detail::sendFrame(fd, MsgKind::Error, encodeFields({{"message", error}})));
                 return;
             }
-            static_cast<void>(detail::sendFrame(fd, MsgKind::Ack, encodeFields({{"name", name}})));
+            // The id comes back with the yes, because `kai-term new` promises to
+            // print it, and a number the client had to look up after the fact is a
+            // number that might belong to a different session by the time it is
+            // looked up.
+            static_cast<void>(detail::sendFrame(
+                fd, MsgKind::Ack,
+                encodeFields({{"name", name}, {"id", std::to_string(created_id)}})));
             return;
         }
         if (command == "kill") {
@@ -999,14 +1021,14 @@ private:
         if (command == "save") {
             std::string error;
             const std::string wanted = fieldValue(fields, "as");
-            if (!save(name, wanted, error)) {
+            std::string kept_name;
+            if (!save(name, wanted, error, &kept_name)) {
                 static_cast<void>(
                     detail::sendFrame(fd, MsgKind::Error, encodeFields({{"message", error}})));
                 return;
             }
             static_cast<void>(detail::sendFrame(
-                fd, MsgKind::Ack,
-                encodeFields({{"name", wanted.empty() ? name : wanted}})));
+                fd, MsgKind::Ack, encodeFields({{"name", kept_name}})));
             return;
         }
         if (command == "discard") {

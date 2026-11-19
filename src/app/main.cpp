@@ -13,13 +13,29 @@
 static void print_help()
 {
     std::cout << "Kai-Term " << KAI_TERM_VERSION << "\n"
-              << "Usage: kai-term [--version] [--help] [open <session>] [session <command>]\n"
+              << "Usage: kai-term                                    a window\n"
+              << "       kai-term list | new [NAME] | attach ID [--window]\n"
+              << "                | detach | save [ID] [NAME] | send ID TEXT [--enter]\n"
+              << "                | kill ID | start | shutdown | serve\n"
               << "A native terminal emulator and PTY-backed shell.\n"
-              << "Ctrl+Shift+S keeps this shell and starts a fresh one, Ctrl+Shift+A\n"
-              << "brings back one that was kept. Run `kai-term session --help` for the\n"
-              << "same from a terminal, and `kai-term open NAME` for a window onto a\n"
-              << "session that is already running.\n"
-              << "and `kai-term open NAME` for a window onto one that is already running.\n";
+              << "Inside a window, Ctrl+Shift+S keeps this shell and starts a fresh one;\n"
+              << "Ctrl+Shift+A brings back one that was kept. From any terminal,\n"
+              << "`kai-term list` shows the shells a daemon is keeping and\n"
+              << "`kai-term attach <id>` shows one in this terminal; --window opens\n"
+              << "a window onto it instead.\n";
+}
+
+// The words that mean sessions. Anything else — no word at all, a file, a flag
+// for Qt — is a window being asked for, which is how `kai-term` has always read.
+static bool is_session_verb(std::string_view word)
+{
+    static const std::string_view verbs[] = {"list",   "new",     "attach", "detach",
+                                             "save",   "send",    "kill",   "start",
+                                             "shutdown", "serve", "session", "open"};
+    for (const std::string_view verb : verbs)
+        if (word == verb)
+            return true;
+    return false;
 }
 
 int main(int argc, char **argv)
@@ -37,24 +53,27 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    // `kai-term open NAME` is the graphical counterpart of `session attach NAME`:
-    // that one takes over the terminal it was run from, this one opens a window. Both
-    // are views of the same session, so a shell can be started in a window, picked up
-    // in a terminal over ssh, and left running when both go away.
+    // Sessions are handled before Qt exists: they are a conversation with a daemon
+    // over a socket, and none of it needs a display. `kai-term list` on a headless
+    // machine should work, and does.
+    if (is_session_verb(first))
+        return kai::runSessionCommand(argc, argv);
+
+    // `kai-term attach <id> --window` is the graphical counterpart of a plain
+    // attach: that one takes over the terminal it was run from, this one becomes a
+    // window. Both are views of the same session, so a shell can be started in a
+    // window, picked up in a terminal over ssh, and left running when both go
+    // away. The word is --attach-to rather than a nice one because it is not for
+    // typing: the CLI resolves the number to a name and then becomes this program
+    // with that word, so it is the seam between the two halves of one command.
     std::string_view attach_to;
-    if (first == "open") {
+    if (first == "--attach-to") {
         if (argc < 3) {
-            std::cerr << "kai-term open: which session? try `kai-term session list`\n";
+            std::cerr << "kai-term --attach-to: which session? try `kai-term list`\n";
             return 2;
         }
         attach_to = argv[2];
     }
-
-    // Sessions are handled before Qt exists: they are a conversation with a daemon
-    // over a socket, and none of it needs a display. `kai-term session list` on a
-    // headless machine should work, and does.
-    if (first == "session")
-        return kai::runSessionCommand(argc, argv);
 
     if (std::getenv("KAI_TERM_TEST_NO_WINDOW") != nullptr)
         return 0;
