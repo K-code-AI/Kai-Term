@@ -15,9 +15,6 @@
 #include "../terminal/terminalwidget.hpp"
 
 #include <QCloseEvent>
-#include <QMenu>
-#include <QMessageBox>
-#include <QPushButton>
 
 #include <cstdio>
 #include <cstdlib>
@@ -62,7 +59,8 @@ inline WindowStart startWindowBackend(int rows, int cols) {
             error = e.what();
         }
     }
-    return {std::make_unique<PtyBackend>(rows, cols, std::string()), std::string(),
+    return {std::make_unique<PtyBackend>(rows, cols, std::string(), homeDirectory()),
+            std::string(),
             "no session daemon: " + (error.empty() ? std::string("it would not start") : error),
             rows, cols};
 }
@@ -183,34 +181,87 @@ public:
         return out;
     }
 
-    // Ctrl+Shift+A: the kept sessions, in a menu you can point at and click.
+    // Ctrl+Shift+A: the sessions you could go back to, listed inside the terminal
+    // itself and walked like any TUI picker — Up/Down or j/k to choose, Enter to go,
+    // Esc to put it away, and the number keys to jump straight to an entry. It is
+    // drawn by the widget in the terminal's own font, so it looks like a part of the
+    // terminal, because it is one.
     //
     // The listing is taken when the key is pressed rather than kept up to date, because
     // the alternative is a menu that is wrong about what is running the moment a window
     // opens or a session is killed somewhere else.
     void showSessionMenu() {
-        QMenu menu(this);
         const std::vector<SessionInfo> choices = restorableSessions();
         if (choices.empty()) {
-            QAction* nothing = menu.addAction("nothing to go back to — Ctrl+Shift+S keeps this shell");
-            nothing->setEnabled(false);
+            askInTerminal("Nothing to go back to",
+                          "Ctrl+Shift+S keeps this shell, and it will be here when you "
+                          "come back for it.",
+                          {"OK"}, 0, [](int) {});
+            return;
         }
+        std::vector<std::string> labels;
+        std::vector<std::string> names;
         for (const SessionInfo& info : choices) {
-            QAction* entry = menu.addAction(QString::fromStdString(sessionMenuLabel(info)));
-            entry->setData(QString::fromStdString(info.name));
+            labels.push_back(sessionMenuLabel(info));
+            names.push_back(info.name);
         }
-        // Centred on the window rather than under the pointer. The menu is called by a
-        // key, and a key has no position; where the pointer happened to stop is a poor
-        // place to be asked — over the line you were reading, or jammed against the edge
-        // of the screen you left it on. Qt keeps the menu inside the screen from here.
-        QAction* chosen = menu.exec(mapToGlobal(QPoint(width() / 2, height() / 2)));
-        if (chosen == nullptr || chosen->data().isNull())
-            return; // the disabled line, or a menu dismissed without choosing
-        restoreSession(chosen->data().toString().toStdString());
+        chooseInTerminal("Go to another session", labels, [this, names](int which) {
+            if (which >= 0 && which < static_cast<int>(names.size()))
+                confirmSwitchTo(names[which]);
+        });
     }
 
-    // Bring a kept session into this window.
-    void restoreSession(const std::string& name) {
+    // Switching sessions when something is running in this one is the same
+    // decision the close button asks: the switch ends this shell, and whatever
+    // it is doing goes with it. So it gets the same question, in the same
+    // shape — one line, Yes / No / Save Session, No focused, letters
+    // answering — with the load in place of the quit. Two things make it
+    // silent: nothing running out here (there is nothing to lose), and a
+    // session that is already kept (its work goes on whether or not this
+    // window is looking at it, which is the entire arrangement).
+    void confirmSwitchTo(const std::string& name) {
+        const std::string running = runningProgram();
+        if (session_kept_ || running.empty()) {
+            restoreSession(name);
+            return;
+        }
+        std::vector<std::string> choices{"Yes", "No", "Save Session"};
+        askInTerminal("Load session " + name + " while " + running + " is running?",
+                      std::string(), choices, 1,
+                      [this, name](int which) {
+                          if (which == 0) {
+                              restoreSession(name);
+                              return;
+                          }
+                          if (which != 2)
+                              return; // No, or the question put away: stay here
+                          // The same keeping Ctrl+Shift+S does, aimed at the
+                          // switch rather than the window: the name a person
+                          // would type, and if renaming fails the session is
+                          // kept under the name it has, since keeping it is
+                          // the part that matters.
+                          std::string error;
+                          const std::string kept = nextKeptName();
+                          bool saved = !kept.empty() && saveSession(session_, kept, error);
+                          if (!saved)
+                              saved = saveSession(session_, std::string(), error);
+                          if (!saved) {
+                              // The answer was "save it first", so a save that
+                              // failed must not quietly become a switch that
+                              // loses the work the button was pressed to keep.
+                              setStatusText("could not save the session: " + error, 8000);
+                              return;
+                          }
+                          // `false`, because there is nothing to discard: the
+                          // shell behind this one was kept a moment ago.
+                          restoreSession(name, false);
+                      });
+    }
+
+    // Bring a kept session into this window. `discard_current` is the word for
+    // the shell being left: true ends it when nobody kept it, false is for a
+    // caller that just kept it and means it.
+    void restoreSession(const std::string& name, bool discard_current = true) {
         std::unique_ptr<SessionBackend> restored;
         try {
             restored = std::make_unique<SessionBackend>(name, rows(), cols());
@@ -220,7 +271,7 @@ public:
         }
         // Leaving this shell on purpose: if it was never kept, that is the word that
         // ends it, and if it was kept the daemon keeps it whatever this says.
-        showSession(std::move(restored), true);
+        showSession(std::move(restored), discard_current);
         session_ = name;
         // Not kept. The daemon says the same thing the moment this view arrives, and
         // saying it here too is what makes the window's own question honest: closing
@@ -235,8 +286,32 @@ public:
 
 protected:
     // Closing the window. Asked about whenever something is running, kept session or
-    // not — see closeprompt.hpp for what each answer costs.
+    // not — see closeprompt.hpp for what each answer costs. The question is asked
+    // inside the terminal, in its own font and colours, and answered from the
+    // keyboard or the pointer; a native dialog would arrive wearing the desktop's
+    // theme and remind everybody that the terminal is a rectangle.
     void closeEvent(QCloseEvent* ev) override {
+        // The question is already up. This is the same request arriving a second
+        // time — another press of the window's close button, a desktop repeating
+        // itself — and the dialog on screen is what it should look at, not a twin
+        // stacked behind it.
+        if (overlayActive()) {
+            ev->ignore();
+            return;
+        }
+        if (close_approved_) {
+            // The second pass of an answered question: the overlay said what to do,
+            // asked for the close again, and this pass lets it through without
+            // asking twice. The answer decides whether the shell goes with the
+            // window: Yes ends it, Save Session has already kept it.
+            const bool keep_session = close_keep_session_;
+            close_approved_ = false;
+            close_keep_session_ = false;
+            if (!keep_session)
+                endUnkeptShell();
+            TerminalWidget::closeEvent(ev);
+            return;
+        }
         const ConfirmPolicy policy = closePolicy();
         // Never means never, so it does not go and ask the daemon what is running just to
         // conclude that it will not say so.
@@ -262,30 +337,40 @@ protected:
             return;
         }
 
-        QMessageBox box(this);
-        box.setIcon(QMessageBox::Warning);
-        box.setWindowTitle("Kai-Term");
-        box.setText(QString::fromStdString(question));
-        box.setInformativeText(QString::fromStdString(closeDetail(session_, session_kept_)));
-        QPushButton* yes = box.addButton(QMessageBox::Yes);
-        QPushButton* no = box.addButton(QMessageBox::No);
-        QPushButton* detach = nullptr;
-        if (closeOfferDetach(session_, session_kept_))
-            detach = box.addButton("Detach session before closing terminal",
-                                   QMessageBox::AcceptRole);
-        no->setDefault(true);
-        box.exec();
-
-        const CloseAnswer answer = answerOf(box.clickedButton(), yes, no, detach);
-        if (answer == CloseAnswer::Stay) {
-            ev->ignore();
-            return;
-        }
-        if (answer == CloseAnswer::CloseAnyway)
-            endUnkeptShell(); // the shutdown in the destructor ends the session too
-        // Detach needs nothing here: leaving a session without saying it is being
-        // discarded is exactly what keeping it means.
-        TerminalWidget::closeEvent(ev);
+        // This close stops here. The answer, when it comes, asks for the close a
+        // second time through approveClose().
+        ev->ignore();
+        // Yes / No / Save Session, in that order, with the focus starting on No:
+        // Enter fires the focused answer, and the focused answer at a question asked
+        // in haste should be the one that cannot lose a build. "Save Session" is
+        // only there when there is a session that is not already kept — see
+        // closeOfferSave for why a kept session does not get a second button for
+        // the thing it already is. Nothing else is said: the question is the whole
+        // question, and a paragraph underneath it is a wall between a person and
+        // the three buttons that answer it.
+        std::vector<std::string> choices{"Yes", "No"};
+        const bool offer_save = closeOfferSave(session_, session_kept_);
+        if (offer_save)
+            choices.push_back("Save Session");
+        askInTerminal(question, std::string(), choices, 1,
+                      [this, offer_save](int which) {
+                          if (which == 0) {
+                              approveClose(false);
+                              return;
+                          }
+                          if (which >= 2 && offer_save) {
+                              // Say it failed, but let the window go either way: a
+                              // session that could not be saved is still left behind
+                              // rather than ended, which is the gentler half of what
+                              // the button was asked to do.
+                              std::string error;
+                              if (!saveSession(session_, std::string(), error))
+                                  setStatusText("could not save the session: " + error, 8000);
+                              approveClose(true);
+                          }
+                          // No, or the question put away with Esc or a click outside:
+                          // the window stays exactly where it was.
+                      });
     }
 
 private:
@@ -367,15 +452,13 @@ private:
             discardOnClose();
     }
 
-    static CloseAnswer answerOf(const QAbstractButton* clicked, const QAbstractButton* yes,
-                                const QAbstractButton* no, const QAbstractButton* detach) {
-        if (clicked == nullptr || clicked == no)
-            return CloseAnswer::Stay; // including a dialog closed by its window button
-        if (detach != nullptr && clicked == detach)
-            return CloseAnswer::Detach;
-        if (clicked == yes)
-            return CloseAnswer::CloseAnyway;
-        return CloseAnswer::Stay;
+    // An answer from the question inside the terminal: remember what it said, and
+    // ask the host to close the window a second time — a close already underway
+    // cannot be resumed from a callback, only started again and let through.
+    void approveClose(bool keep_session) {
+        close_approved_ = true;
+        close_keep_session_ = keep_session;
+        close();
     }
 
     // A menu entry says the name, and what is happening in it: a list of names is a
@@ -394,6 +477,11 @@ private:
 
     std::string session_;
     bool session_kept_ = false;
+    // The answer to a close that was asked inside the terminal, and which of the
+    // three answers it was: approved says the next close may through, keep_session
+    // says the shell does not go with it. Consumed by that one close.
+    bool close_approved_ = false;
+    bool close_keep_session_ = false;
 };
 
 } // namespace kai

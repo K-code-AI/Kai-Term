@@ -1,9 +1,11 @@
 #pragma once
 
-// Whether closing a window needs asking about, and what to say when it does.
+// Whether closing a window needs asking about, and what the asking is.
 //
 // Kept apart from the dialog because the question is the part worth testing and the
-// dialog is the part a person has to look at. Nothing here knows about Qt.
+// dialog is the part a person has to look at. The question is one line — the answers
+// say the rest — because a paragraph underneath a yes-or-no is a wall between a
+// person and the buttons. Nothing here knows about Qt.
 
 #include <string>
 
@@ -29,12 +31,12 @@ inline ConfirmPolicy confirmPolicy(const std::string& setting) {
     return ConfirmPolicy::Running;
 }
 
-// What a person chose when a window with work in it was closed.
-enum class CloseAnswer {
-    CloseAnyway, // quit, and take the shell and whatever is running in it along
-    Stay,        // nothing happens; the window stays where it was
-    Detach,      // quit the window, keep the session running
-};
+// What a person chose when a window with work in it was closed is three things:
+// quit and take the shell along, stay, or save the session and let the window
+// go. The window keeps those answers as plain flags rather than as an enum,
+// because the question is now asked inside the terminal and answered through a
+// callback — see `AppWindow::closeEvent` — and one-off answers do not need a
+// type. The words worth testing are the ones below.
 
 // The question to ask before closing, or empty when closing loses nothing and should
 // simply happen.
@@ -50,8 +52,8 @@ enum class CloseAnswer {
 // window of a kept session loses nothing. Kaida closed two of those in a row and reported
 // the second as a bug, and they are right: keeping a session says what happens to the
 // shell, not that the window may throw away whatever is running inside it on the way out.
-// Being kept changes what the second line says — see `closeDetail` — and whether Detach is
-// offered, which would be a second way to press the same button. It does not buy silence.
+// Being kept changes only whether the Save Session button is offered, which on a kept
+// session would be a second way to press the first one. It does not buy silence.
 inline std::string closeQuestion(const std::string& running_program,
                                  ConfirmPolicy policy = ConfirmPolicy::Running) {
     if (policy == ConfirmPolicy::Never)
@@ -68,30 +70,13 @@ inline std::string closeQuestion(const std::string& running_program,
     return "Quit while " + running_program + " is running?";
 }
 
-// The second line, which is where the difference between the two ways of quitting is
-// said. Ending a window ends a shell; detaching is the one that keeps both, and it is
-// worth naming the session it keeps so that the person knows what to look for later.
-inline std::string closeDetail(const std::string& session_name, bool session_kept) {
-    if (session_kept) {
-        // Said because it is the surprising half of a kept session: whatever is running
-        // out there keeps running, so this question is about the window, not the work.
-        return "This session was kept, so it goes on running either way. Closing takes "
-               "the window, not the work in it.";
-    }
-    if (session_name.empty())
-        return "Ending this window ends the shell in it, and whatever is running in "
-               "that shell.";
-    return "Ending this window ends the shell in it. Detach keeps it running, and " +
-           session_name + " will still be there to come back to.";
-}
-
-// Detaching is only on the menu when there is a session for the daemon to hold on to.
-// A window running a shell of its own has nothing to detach from, and offering a third
+// Saving a session is only on the menu when there is a session for the daemon to hold
+// on to. A window running a shell of its own has nothing to save, and offering a third
 // button that does the same thing as the first would be a lie with an extra click.
-inline bool closeOfferDetach(const std::string& session_name, bool session_kept) {
-    // A kept session is already detached in everything but name: it goes on running
-    // whether or not this window does, so a "detach" button would be a second way to
-    // press the first one.
+inline bool closeOfferSave(const std::string& session_name, bool session_kept) {
+    // A kept session is already saved in everything but the highlight: it goes on
+    // running whether or not this window does, so a "save" button would be a second
+    // way to press the first one.
     return !session_name.empty() && !session_kept;
 }
 

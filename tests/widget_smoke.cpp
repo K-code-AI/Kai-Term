@@ -361,10 +361,25 @@ int main(int argc, char** argv) {
     // not run; it only looks like the terminal ignored the sequence.
     sendKey(&w, Qt::Key_U, Qt::ControlModifier);
     pump(150);
+    const int cols_at_prompt = w.cols();
+    const int rows_at_prompt = w.rows();
+    expect("a shell's grid is inset from the window's edge",
+           w.cellTopLeft(0, 0).x() > 0.0 && w.cellTopLeft(0, 0).y() > 0.0);
     sendText(&w, "printf '\\033[?1049h' > /dev/tty");
     sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
     expect("the program took the alternate screen",
            waitFor([&] { return w.screen().inAlternateScreen(); }, 3000));
+    // The margin around the grid exists to keep a shell's glyphs out of the
+    // rounded corners of a borderless window. A program drawing its own frame
+    // does not want it — and takes it personally when its colours clash with
+    // the terminal's, because the margin is the terminal's background — so it
+    // goes to zero while the alternate screen holds the window, and the grid
+    // grows into the room the margin used to hold.
+    expect("the grid starts at the window's own edge now",
+           waitFor([&] { return w.cellTopLeft(0, 0).x() == 0.0 && w.cellTopLeft(0, 0).y() == 0.0; },
+                   2000));
+    expect("and took the freed room", w.cols() >= cols_at_prompt && w.rows() >= rows_at_prompt);
+    expectEq("the model and the shell were told the same", w.screen().cols(), w.cols());
     expectEq("the view sits where the program is drawing", w.scrollOffset(), 0);
     expectEq("there is nothing for this view to scroll", w.scrollRange(), 0);
     expect("and no scroll bar is offered over it", !w.scrollIndicator().visible);
@@ -382,6 +397,9 @@ int main(int argc, char** argv) {
     sendKey(&w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
     expect("the program gave the screen back",
            waitFor([&] { return !w.screen().inAlternateScreen(); }, 3000));
+    expect("the margin came back with the shell",
+           waitFor([&] { return w.cellTopLeft(0, 0).x() > 0.0; }, 2000));
+    expectEq("and the grid gave the room back", w.cols(), cols_at_prompt);
     expect("the shell's scrollback is where it was",
            waitFor([&] { return w.scrollRange() > 0; }, 2000));
     expect("the scroll bar is offered again", w.scrollIndicator().visible);

@@ -5,8 +5,9 @@
 // what is being checked is the whole path: a window that starts with a shell held by
 // the daemon, a keybind that keeps that shell and starts a fresh one in the same
 // window, and a kept session coming back into the window that asked for it. The menu
-// and the close prompt need a pointer and a person, so what is checked here is what
-// they would show and what they would be about, not what they look like.
+// and the close prompt are drawn by the terminal itself and answered from the
+// keyboard, so what is checked here is what they offer, in what order, which answer
+// holds the focus, and what each one does — the pixels are for a person to look at.
 
 #include "../src/app/appwindow.hpp"
 #include "../src/app/closeprompt.hpp"
@@ -15,7 +16,6 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QKeyEvent>
-#include <QMessageBox>
 #include <QTimer>
 #include <QWidget>
 #include <chrono>
@@ -117,30 +117,20 @@ std::string writtenInto(const std::string& name) {
 }
 
 // Close a window the way a desktop closes one — an ordinary close, not a call into the
-// teardown underneath it — and take the question it puts up, if it puts one up. The answer
-// handed back is "no", which leaves the window standing so a caller can close it again
-// under different weather. Nothing here is seen by an eye: what is being checked is
-// whether the window asks at all, which is the thing reported missing at a real desktop.
-std::string closeAndCatchQuestion(QWidget& window) {
-    std::string asked;
-    bool answered = false;
-    QTimer looking;
-    QObject::connect(&looking, &QTimer::timeout, [&] {
-        for (QWidget* top : QApplication::topLevelWidgets()) {
-            auto* box = qobject_cast<QMessageBox*>(top);
-            if (box == nullptr || !box->isVisible())
-                continue;
-            asked = box->text().toStdString();
-            box->done(0); // no button was pressed, which is the window being told to stay
-            answered = true;
-            looking.stop();
-            return;
-        }
-    });
-    looking.start(50);
+// teardown underneath it — and take the question it puts up inside itself, if it puts
+// one up. The question is drawn by the terminal rather than by the desktop now, so it
+// is caught on the widget instead of among the top-level windows, and it is answered
+// the way a person answers it: with a key. The answer handed back is Esc, "not now",
+// which leaves the window standing so a caller can close it again under different
+// weather.
+std::string closeAndCatchQuestion(kai::TerminalWidget& window) {
     QMetaObject::invokeMethod(&window, [&window] { window.close(); }, Qt::QueuedConnection);
-    pump(2000);
-    return answered ? asked : std::string();
+    if (!waitFor([&window] { return window.overlayActive(); }, 2000))
+        return {}; // nothing was asked; the window went about its closing quietly
+    const std::string asked = window.overlayQuestion();
+    sendKey(&window, Qt::Key_Escape);
+    pump(150);
+    return asked;
 }
 
 } // namespace
@@ -347,6 +337,31 @@ int main(int argc, char** argv) {
                    written.find("fg=sleep") != std::string::npos);
         }
         ::unsetenv("KAI_DEBUG_CLOSE");
+
+        // The question is drawn inside the terminal now, and it is answerable from
+        // the keyboard. The buttons read Yes / No / Save Session, in that order; No
+        // holds the focus, because Enter fires what is focused and the focused
+        // answer at a question nobody has read yet must not be the one that ends a
+        // build; and Yes, walked to and pressed, really does close the window.
+        busy.close();
+        expect("the question is put up inside the terminal itself", busy.overlayActive());
+        const std::vector<std::string> answers = busy.overlayChoices();
+        expect("the buttons read Yes / No / Save Session, in that order",
+               answers.size() == 3 && answers[0] == "Yes" && answers[1] == "No" &&
+                   answers[2] == "Save Session");
+        expect("and No holds the focus, so Enter cannot end the build by accident",
+               busy.overlaySelected() == 1);
+        sendKey(&busy, Qt::Key_Right);
+        expect("Right walks from No to Save Session", busy.overlaySelected() == 2);
+        sendKey(&busy, Qt::Key_Left);
+        expect("and Left walks back", busy.overlaySelected() == 1);
+        // The first letter of an answer answers it wherever the focus is: a
+        // person who can read "Yes" should not have to walk to it.
+        sendKey(&busy, Qt::Key_Y);
+        expect("Y answers Yes without touching the focus, and closes the window",
+               waitFor([&busy] { return !busy.isVisible(); }));
+        expect("with the question gone along with it", !busy.overlayActive());
+
         // Said out loud, because the shell in it is running something: this window is
         // being closed by a person, which is the word that ends a shell nobody kept.
         // Left unsaid, the session would be left behind and the next check would find
@@ -369,6 +384,12 @@ int main(int argc, char** argv) {
             static_cast<void>(waitFor([&plain] { return !plain.sessionName().empty(); }));
             expect("a plain window has a shell", !plain.sessionName().empty());
             expect("and nothing to go back to", plain.restorableSessions().empty());
+            plain.showSessionMenu();
+            expect("with nothing kept, the list says so inside the terminal, one button wide",
+                   plain.overlayActive() && plain.overlayChoices().size() == 1 &&
+                       plain.overlayChoices()[0] == "OK");
+            sendKey(&plain, Qt::Key_Escape);
+            expect("which Esc puts away", !plain.overlayActive());
             expect("with nobody else looking at it",
                    waitFor([&daemon, &plain] {
                        return sees(daemon, plain.sessionName(),
@@ -442,8 +463,107 @@ int main(int argc, char** argv) {
         // The window you are in is not somewhere else, whatever else is true of it.
         expect("and the menu leaves out the session this window is showing",
                window.sessionName() != "orphan");
+
+        // Ctrl+Shift+A puts the list inside the terminal, and it is walked like any
+        // TUI picker: the sessions are rows, Enter goes to the one under the
+        // highlight, and the whole thing is gone the moment it has been answered.
+        window.showSessionMenu();
+        expect("the list is drawn inside the terminal", window.overlayActive());
+        const std::vector<std::string> rows = window.overlayChoices();
+        expect("and it offers the orphan as a row to choose",
+               rows.size() == 1 && rows[0].find("orphan") != std::string::npos);
+        sendKey(&window, Qt::Key_Return);
+        expect("Enter goes to the session under the highlight",
+               waitFor([&window] { return window.sessionName() == "orphan"; }));
+        expect("and the list is gone once it has been answered", !window.overlayActive());
+
         window.shutdown();
         static_cast<void>(daemon.kill("orphan", orphan_error));
+    }
+
+    {
+        // "Save Session", the third answer, is the one that lets the window go and
+        // keeps the shell: after it the window is gone, and the session is still
+        // there — saved, with nobody looking at it — waiting for the next window
+        // that asks for it.
+        kai::AppWindow leaving(kai::startWindowBackend(24, 80));
+        leaving.show();
+        static_cast<void>(waitFor([&leaving] { return !leaving.sessionName().empty(); }));
+        const std::string name = leaving.sessionName();
+        runLine(&leaving, "sleep 60");
+        expect("with a program running to make the close worth asking about",
+               waitFor([&leaving] { return leaving.runningProgram() == "sleep"; }));
+        leaving.close();
+        expect("the question offers all three answers", leaving.overlayChoices().size() == 3);
+        sendKey(&leaving, Qt::Key_S); // S is Save Session, wherever the focus is
+        expect("answered Save Session, the window goes",
+               waitFor([&leaving] { return !leaving.isVisible(); }));
+        expect("and the session is still there, kept for the next window",
+               waitFor([&daemon, &name] {
+                   return sees(daemon, name, [](const SessionInfo& info) {
+                       return info.alive && info.saved;
+                   });
+               }));
+        leaving.shutdown();
+        pump(200);
+        static_cast<void>(daemon.kill(name, error));
+    }
+
+    {
+        // Ctrl+Shift+A over a running program asks the same shape of question
+        // that the close button asks, because the switch ends this shell and
+        // whatever it is doing goes with it. "Save Session" is the answer that
+        // keeps the work and still switches: after it the window is looking at
+        // the session it chose, and the one it left is still there, saved.
+        SessionSpec elsewhere;
+        elsewhere.name = "elsewhere";
+        elsewhere.saved = false;
+        elsewhere.rows = 24;
+        elsewhere.cols = 80;
+        std::string elsewhere_error;
+        expect("a session to go to", daemon.create(elsewhere, elsewhere_error));
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        const std::string here = window.sessionName();
+        runLine(&window, "sleep 90");
+        expect("with something running in the one being left",
+               waitFor([&window] { return window.runningProgram() == "sleep"; }));
+        window.showSessionMenu();
+        sendKey(&window, Qt::Key_1); // the first row, chosen by number
+        expect("the switch asks the same question the close asks, in the same shape",
+               window.overlayActive());
+        const std::string asked = window.overlayQuestion();
+        expect("it names what would be lost and what would be loaded: " + asked,
+               asked.find("sleep") != std::string::npos &&
+                   asked.find("elsewhere") != std::string::npos);
+        const std::vector<std::string> answers = window.overlayChoices();
+        expect("Yes / No / Save Session, No focused",
+               answers.size() == 3 && answers[0] == "Yes" && answers[1] == "No" &&
+                   answers[2] == "Save Session" && window.overlaySelected() == 1);
+        sendKey(&window, Qt::Key_N);
+        expect("N keeps the question honest: nothing moved",
+               waitFor([&window] { return !window.overlayActive(); }) &&
+                   window.sessionName() == here);
+        expect("and the program is still running", window.runningProgram() == "sleep");
+        // Ask again and answer S: this shell is kept — under a name of the kept
+        // range, the way Ctrl+Shift+S renames it — and the window moves on.
+        window.showSessionMenu();
+        sendKey(&window, Qt::Key_1);
+        expect("asked again", window.overlayActive());
+        sendKey(&window, Qt::Key_S);
+        expect("S saves this shell and switches",
+               waitFor([&window] { return window.sessionName() == "elsewhere"; }));
+        expect("and the shell that was left is still there, saved",
+               waitFor([&daemon] {
+                   for (const SessionInfo& info : daemon.list())
+                       if (info.saved && info.alive && info.name != "elsewhere")
+                           return true;
+                   return false;
+               }));
+        window.shutdown();
+        for (const SessionInfo& info : daemon.list())
+            static_cast<void>(daemon.kill(info.name, elsewhere_error));
     }
 
     daemon.stop();

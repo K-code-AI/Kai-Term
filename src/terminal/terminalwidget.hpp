@@ -30,11 +30,14 @@
 #include <QGuiApplication>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QString>
+#include <QStringList>
 #include <functional>
 #include <QSizeF>
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <string>
 #include <thread>
 #include <utility>
@@ -78,6 +81,10 @@ public:
         // Any-event mouse reporting (?1003) needs motion with no button held.
         setMouseTracking(true);
 
+        // The screen the backend is already holding, before its reader is let loose: a
+        // window built around a session should have that session's screen the moment it
+        // exists, not whenever an event finally reaches a widget that may not be shown yet.
+        feedWhatIsHeld();
         startReader();
     }
 
@@ -193,9 +200,13 @@ public:
         scroll_offset_ = 0;
         clearSelection();
         status_.clear();
+        // A dialog belongs to the shell it was asked about. The shell it was
+        // asked about is gone; the answer is not owed to whoever arrives next.
+        overlay_ = Overlay{};
         // The new shell is asked to fit this window rather than the size it was started
         // at: a session restored into a small window should be a small session.
         backend_->resize(rows_, cols_);
+        feedWhatIsHeld();
         startReader();
         update();
         // Asked for again and again for a moment, because the one update() above is worth
@@ -232,6 +243,70 @@ public:
         update();
     }
     const std::string& statusText() const { return status_; }
+
+    // -----------------------------------------------------------------------
+    // The terminal's own dialogs: the question asked when a window is closed
+    // with something running in it, and the list of sessions you could go
+    // back to. Both are drawn by this widget in the terminal's own font and
+    // colours, and both take the keyboard while they are up, so they read as
+    // part of the terminal rather than as a window from somewhere else that
+    // happened to land on top of it. A dialog that arrives in its own native
+    // window brings its own theme, font and button order with it, and the
+    // first thing it does is remind you that the terminal is a rectangle the
+    // desktop happens to be drawing.
+    //
+    // The answer comes back as an index into the choices, or -1 when the
+    // question went away without one being given — Esc, or a click outside
+    // the panel, both of which mean "not now" and nothing more.
+    // -----------------------------------------------------------------------
+
+    // A question, some detail under it (which may be empty — one clean line is
+    // often the whole question), and a row of buttons. The arrow keys or Tab
+    // walk the buttons; the first letter of an answer picks it from wherever
+    // the focus is, because a person who can read "Yes" should not have to
+    // walk to it. `focus` is the button that starts out highlighted, and it
+    // is worth choosing with care: Enter fires it, so the safe answer is the
+    // one that should sit under the finger.
+    void askInTerminal(const std::string& question, const std::string& detail,
+                       const std::vector<std::string>& choices, int focus,
+                       std::function<void(int)> answer) {
+        overlay_ = Overlay{};
+        overlay_.active = true;
+        overlay_.lines.push_back(question);
+        if (!detail.empty())
+            overlay_.lines.push_back(detail);
+        overlay_.choices = choices;
+        if (focus >= 0 && focus < static_cast<int>(choices.size()))
+            overlay_.selected = focus;
+        overlay_.answer = std::move(answer);
+        update();
+    }
+
+    // A title and a list of entries walked with Up/Down (or j/k), jumped to
+    // with the number keys, chosen with Enter and put away with Esc — the
+    // way every TUI picker works, because a menu you can only point at is a
+    // menu that stops working the moment the pointer is elsewhere.
+    void chooseInTerminal(const std::string& title, const std::vector<std::string>& entries,
+                          std::function<void(int)> answer) {
+        overlay_ = Overlay{};
+        overlay_.active = true;
+        overlay_.vertical = true;
+        overlay_.lines.push_back(title);
+        overlay_.choices = entries;
+        overlay_.hint = "up/down choose · enter go · esc close · 1-9 jump";
+        overlay_.answer = std::move(answer);
+        update();
+    }
+
+    bool overlayActive() const { return overlay_.active; }
+    // What is being asked and what it is being asked with — exposed so the
+    // words and the order of the answers can be checked without an eye on a
+    // screen, and so a screenshot tool can photograph a dialog on purpose.
+    std::string overlayQuestion() const {
+        return overlay_.lines.empty() ? std::string() : overlay_.lines.front();
+    }
+    const std::vector<std::string>& overlayChoices() const { return overlay_.choices; }
+    int overlaySelected() const { return overlay_.selected; }
 
     // Read-only view of the terminal model, for tests and for UI pieces such as
     // a scrollbar that must agree with the painted content.
@@ -315,7 +390,21 @@ public:
         return !synchronized_output || ms_since_last_repaint >= kSyncRepaintIntervalMs;
     }
     QPointF cellTopLeft(int row, int col) const {
-        return QPointF(padding_ + col * cellWidth(), padding_ + row * cellHeight());
+        const double pad = activePadding();
+        return QPointF(pad + col * cellWidth(), pad + row * cellHeight());
+    }
+
+    // How far the grid is inset right now. An ordinary shell keeps the margin:
+    // a borderless Wayland window has rounded corners, and a glyph in the corner
+    // cell is clipped by the compositor rather than read. A full-screen
+    // application holding the alternate screen wants the whole window — it
+    // paints its own frame and knows where its own glyphs have to stay clear
+    // of — so the inset goes to zero while it holds the screen, and the grid
+    // grows to take the room the margin used to hold. The clash it removes is
+    // a real one: the margin is the terminal's background, and btop's blue
+    // inside a grey-black ring is two programs drawing one window.
+    double activePadding() const {
+        return screen_.inAlternateScreen() ? 0.0 : padding_;
     }
 
     // Paste as if the text came from the clipboard: newlines become carriage
@@ -351,6 +440,32 @@ public:
             out = "\x1b[200~" + out + "\x1b[201~";
 
         writeToPty(out);
+    }
+
+    // A screen we are already holding does not need to be sent to us. A session's first
+    // screen sits in the backend the moment its connection is made, and the only route
+    // from there into the model was a reader thread posting an event to this widget —
+    // which is worth nothing while the widget has not been shown, because a hidden widget
+    // does not go looking at its own posted events. That is the black window on re-attach:
+    // the bytes were there, the model never saw them, and the first keystroke was the next
+    // thing to touch the queue. So the first screen is fed here, on the GUI thread, before
+    // anybody is asked to paint.
+    void feedWhatIsHeld() {
+        if (!backend_)
+            return;
+        const std::string all = backend_->heldBytes();
+        if (all.empty())
+            return;
+        backend_->clearHeldBytes();
+        screen_.feed(all);
+        if (auto title = screen_.takeTitle())
+            setWindowTitle(QString::fromStdString(*title));
+        if (screen_.inAlternateScreen())
+            scroll_offset_ = 0;
+        // A session can arrive already inside a full-screen program, and the
+        // grid it was built for was inset for a shell it is not showing.
+        syncGridToScreen();
+        update();
     }
 
     bool event(QEvent* e) override {
@@ -413,6 +528,11 @@ public:
             else
                 followScroll(history_before);
 
+            // The same bytes that changed whose screen this is may have changed
+            // how much room the grid has: an application taking the screen over
+            // gets the margin back and grows into it.
+            syncGridToScreen();
+
             // New output moves the text under a selection. The highlight follows
             // it instead of being thrown away, so selecting from a log that is
             // still filling up keeps working; once the selected lines have gone
@@ -472,6 +592,17 @@ public:
         if (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt ||
             key == Qt::Key_AltGr || key == Qt::Key_Meta)
             return;
+
+        // While one of the terminal's own dialogs is up it owns the keyboard.
+        // Every key belongs to it and nothing reaches the shell: a stray
+        // letter typed at a question would otherwise land in the command line
+        // underneath, and pressing Enter at a "Quit while make is running?"
+        // must mean the highlighted answer, not a newline someone else has to
+        // explain.
+        if (overlay_.active) {
+            overlayKeyPress(key, mods);
+            return;
+        }
 
         // Ctrl+Shift+C and Ctrl+Shift+V are the terminal's own, handled before
         // anything else and never written to the PTY. Without the early return
@@ -542,6 +673,12 @@ public:
     // mouse.
     void mousePressEvent(QMouseEvent* ev) override {
         setFocus();
+        // A dialog is up: the press either answers it or dismisses it, and it
+        // is never a selection drag or a scroll-bar grab pretending not to be.
+        if (overlay_.active) {
+            overlayPress(ev->position());
+            return;
+        }
         stopEdgeScroll();
         if (scrollBarPress(ev->position()))
             return;
@@ -597,6 +734,10 @@ public:
     }
 
     void mouseMoveEvent(QMouseEvent* ev) override {
+        if (overlay_.active) {
+            overlayHover(ev->position());
+            return;
+        }
         if (scrollbar_drag_) {
             scrollBarDragTo(ev->position());
             return;
@@ -726,6 +867,13 @@ public:
     // older lines. With mouse reporting on it is a button for the application
     // instead, which is how scrolling works in vim and less.
     void wheelEvent(QWheelEvent* ev) override {
+        // The view does not scroll out from under a dialog: while one is up
+        // the wheel has nothing to do, and saying so is better than letting
+        // the question float away from the text behind it.
+        if (overlay_.active) {
+            ev->accept();
+            return;
+        }
         const int steps = ev->angleDelta().y() / 120;
         if (steps == 0)
             return;
@@ -795,6 +943,15 @@ public:
     }
 
     void resizeEvent(QResizeEvent*) override {
+        applyGridGeometry();
+    }
+
+    // Work out how many rows and columns fit the window at the padding the
+    // screen is in — zero for a full-screen application, the margin for a
+    // shell — and tell the model and the shell when that changed. Called on
+    // every resize and every change of hands between the shell and an
+    // application taking the screen over, because both change the room.
+    void applyGridGeometry() {
         QFontMetricsF fm(font_);
         double cw = fm.horizontalAdvance(QChar('M'));
         if (cw <= 0.0)
@@ -804,10 +961,14 @@ public:
             return;
         updateCellPixels(); // the cell size may have changed with a different font
 
-        const int new_cols = std::max(1, static_cast<int>((width() - 2.0 * padding_) / cw));
-        const int new_rows = std::max(1, static_cast<int>((height() - 2.0 * padding_) / ch));
-        if (new_rows == rows_ && new_cols == cols_)
+        const double pad = activePadding();
+        geometry_padding_ = pad;
+        const int new_cols = std::max(1, static_cast<int>((width() - 2.0 * pad) / cw));
+        const int new_rows = std::max(1, static_cast<int>((height() - 2.0 * pad) / ch));
+        if (new_rows == rows_ && new_cols == cols_) {
+            update();
             return;
+        }
 
         rows_ = new_rows;
         cols_ = new_cols;
@@ -819,6 +980,17 @@ public:
         clearSelection();
         clampScroll();
         update();
+    }
+
+    // The screen changing hands between the shell and an application taking the
+    // whole thing over changes the room the grid has, because the margin comes
+    // and goes with it. Called after anything that feeds the model, and cheap
+    // when nobody changed hands: one comparison against the padding the
+    // geometry was last built for.
+    void syncGridToScreen() {
+        if (screen_.inAlternateScreen() == (geometry_padding_ == 0.0))
+            return;
+        applyGridGeometry();
     }
 
     void paintEvent(QPaintEvent*) override {
@@ -836,6 +1008,9 @@ public:
             return;
 
         const Color default_bg = background; // an OSC 11 may have changed it
+        // Where the grid starts: inset for a shell, flush for the application
+        // holding the alternate screen.
+        const double grid_pad = activePadding();
         // Selection is drawn as a solid band with light text so it stays legible
         // whatever colours the application had chosen for those cells.
         const Color selection_bg{62, 96, 168};
@@ -848,8 +1023,8 @@ public:
             const int line_cols = std::min(cols_, static_cast<int>(line.size()));
             for (int c = 0; c < line_cols; ++c) {
                 const Cell& cell = line[c];
-                const double x = padding_ + c * cw;
-                const double y = padding_ + r * ch;
+                const double x = grid_pad + c * cw;
+                const double y = grid_pad + r * ch;
 
                 // Blank cells are skipped below, so the highlight for them has
                 // to be painted here or a dragged band would show gaps.
@@ -911,8 +1086,8 @@ public:
             const int cx = std::clamp(screen_.cursorX(), 0, cols_ - 1);
             const int cy = std::clamp(screen_.cursorY(), 0, rows_ - 1);
             const Cell& under = screen_.at(cy, cx);
-            const double x = padding_ + cx * cw;
-            const double y = padding_ + cy * ch;
+            const double x = grid_pad + cx * cw;
+            const double y = grid_pad + cy * ch;
             const double span = cw * std::max(1, under.width);
             p.setPen(Qt::NoPen);
             switch (screen_.cursorShape()) {
@@ -966,9 +1141,333 @@ public:
             p.setPen(QColor(240, 240, 240));
             p.drawText(box, Qt::AlignVCenter | Qt::AlignLeft | Qt::TextSingleLine, line);
         }
+
+        // A dialog, if one is up, sits over everything: it is the thing being
+        // read at this moment, and it belongs to this terminal rather than to
+        // the desktop around it.
+        paintOverlay(p);
     }
 
 private:
+    // -----------------------------------------------------------------------
+    // The dialog itself: state, keys, pointer, geometry and paint.
+    //
+    // The shape is deliberately small — a few lines of text and a set of
+    // choices — because everything richer wants layout machinery, and layout
+    // machinery is how a terminal ends up looking like a form letter. Two
+    // shapes cover what a terminal actually asks: a question with a row of
+    // buttons, and a list you walk.
+    // -----------------------------------------------------------------------
+    struct Overlay {
+        bool active = false;
+        std::vector<std::string> lines;   // the question, or a title and its detail
+        std::vector<std::string> choices; // the buttons, or the rows to choose between
+        bool vertical = false;            // a list walked with Up/Down, not a button row
+        int selected = 0;
+        std::string hint;                 // the keys, said once, under the list
+        std::function<void(int)> answer;  // the index picked; -1 means it went away
+    };
+
+    // Where the panel and each choice landed, computed the same way for the
+    // painter and for the pointer, so a click hits what it is sitting on.
+    struct OverlayLayout {
+        QRectF panel;
+        std::vector<QString> lines;   // wrapped, as they are painted
+        int question_lines = 1;       // how many of those belong to the first source line
+        std::vector<QString> choices; // one per entry of Overlay::choices
+        std::vector<QRectF> boxes;    // one per choice, in the same order
+        QRectF hint;
+    };
+
+    // Break a paragraph into lines that fit `max_width`, on spaces. The
+    // detail line of a question is long enough that it has to wrap, and a
+    // dialog whose text runs off its own panel is a dialog you cannot read.
+    static std::vector<QString> wrapLine(const QString& text, double max_width,
+                                         const QFontMetricsF& fm) {
+        std::vector<QString> out;
+        QString current;
+        const QStringList words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        for (const QString& word : words) {
+            const QString trial =
+                current.isEmpty() ? word : current + QLatin1Char(' ') + word;
+            if (!current.isEmpty() && fm.horizontalAdvance(trial) > max_width) {
+                out.push_back(current);
+                current = word;
+            } else {
+                current = trial;
+            }
+        }
+        if (!current.isEmpty() || out.empty())
+            out.push_back(current);
+        return out;
+    }
+
+    OverlayLayout overlayLayout() const {
+        OverlayLayout lay;
+        QFontMetricsF fm(font_);
+        const double cw = cellWidth();
+        const double ch = cellHeight();
+        const double pad = 1.5 * ch;
+        // A dialog nearly as wide as the window is a wall; one barely wider
+        // than its text cannot hold a wrapped line. Somewhere near five
+        // sixths of the width, and never wider than the text needs.
+        const double inner_max = std::max(240.0, width() * 0.8) - 2 * pad;
+
+        double inner_w = 0.0;
+        for (std::size_t i = 0; i < overlay_.lines.size(); ++i) {
+            const std::vector<QString> wrapped =
+                wrapLine(QString::fromStdString(overlay_.lines[i]), inner_max, fm);
+            if (i == 0)
+                lay.question_lines = static_cast<int>(wrapped.size());
+            for (const QString& piece : wrapped) {
+                inner_w = std::max(inner_w, fm.horizontalAdvance(piece));
+                lay.lines.push_back(piece);
+            }
+        }
+        for (const std::string& choice : overlay_.choices) {
+            const QString label = QString::fromStdString(choice);
+            inner_w = std::max(inner_w, fm.horizontalAdvance(label) + 2 * cw);
+            lay.choices.push_back(label);
+        }
+        if (!overlay_.hint.empty())
+            inner_w = std::max(inner_w, fm.horizontalAdvance(QString::fromStdString(overlay_.hint)));
+
+        const double lines_h = lay.lines.size() * ch;
+        const double gap = 0.9 * ch; // between the text and the choices
+        const double box_h = overlay_.vertical ? ch + 6.0 : ch + 8.0;
+        const double row_gap = 2.0 * cw; // between buttons, horizontally
+        const int n = static_cast<int>(lay.choices.size());
+        double choices_w = 0.0;
+        if (n > 0) {
+            if (overlay_.vertical) {
+                choices_w = inner_w; // rows are full-width bands, not per-label boxes
+            } else {
+                for (const QString& label : lay.choices)
+                    choices_w += fm.horizontalAdvance(label) + 2 * cw;
+                choices_w += (n - 1) * row_gap;
+            }
+        }
+        const double choices_h = n > 0 ? n * box_h + (n - 1) * (overlay_.vertical ? 3.0 : 0.0) : 0.0;
+        const double hint_h = overlay_.hint.empty() ? 0.0 : 0.5 * ch + ch;
+
+        const double panel_w = std::max({inner_w, choices_w}) + 2 * pad;
+        const double panel_h = pad + lines_h + (n > 0 || hint_h > 0 ? gap : 0.0) + choices_h +
+                               hint_h + pad;
+        lay.panel = QRectF((width() - panel_w) / 2.0, (height() - panel_h) / 2.0, panel_w,
+                           panel_h);
+
+        double y = lay.panel.y() + pad + lines_h + (n > 0 || hint_h > 0 ? gap : 0.0);
+        if (n > 0 && !overlay_.vertical) {
+            double x = lay.panel.center().x() - choices_w / 2.0;
+            for (std::size_t i = 0; i < lay.choices.size(); ++i) {
+                const double w = fm.horizontalAdvance(lay.choices[i]) + 2 * cw;
+                lay.boxes.push_back(QRectF(x, y, w, box_h));
+                x += w + row_gap;
+            }
+        } else {
+            for (int i = 0; i < n; ++i) {
+                lay.boxes.push_back(QRectF(lay.panel.x() + pad, y, inner_w, box_h));
+                y += box_h + 3.0;
+            }
+        }
+        if (!overlay_.hint.empty())
+            lay.hint = QRectF(lay.panel.x(), lay.panel.bottom() - pad - ch, panel_w, ch);
+        return lay;
+    }
+
+    // Hand the answer over and put the dialog away before the callback runs:
+    // the callback may close the window or switch the session, and either
+    // way it should not find a live overlay pointing back at itself.
+    void finishOverlay(int which) {
+        const std::function<void(int)> answer = std::move(overlay_.answer);
+        overlay_ = Overlay{};
+        update();
+        if (answer)
+            answer(which);
+    }
+
+    void overlayKeyPress(int key, Qt::KeyboardModifiers mods) {
+        const int count = static_cast<int>(overlay_.choices.size());
+        const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
+        auto step = [this, count](int delta) {
+            if (count == 0)
+                return;
+            overlay_.selected = (overlay_.selected + delta + count) % count;
+            update();
+        };
+
+        if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
+            finishOverlay(-1);
+            return;
+        }
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            finishOverlay(count > 0 ? overlay_.selected : -1);
+            return;
+        }
+        if (key == Qt::Key_Tab) {
+            step(1);
+            return;
+        }
+        if (key == Qt::Key_Backtab) {
+            step(-1);
+            return;
+        }
+
+        if (overlay_.vertical) {
+            if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
+                step(-1);
+                return;
+            }
+            if (key == Qt::Key_Down || (plain && key == Qt::Key_J)) {
+                step(1);
+                return;
+            }
+            if (key == Qt::Key_Home) {
+                overlay_.selected = 0;
+                update();
+                return;
+            }
+            if (key == Qt::Key_End && count > 0) {
+                overlay_.selected = count - 1;
+                update();
+                return;
+            }
+            // A numbered list is picked by number, the way every picker list
+            // has ever worked: one key instead of one key per row skipped.
+            if (plain && key >= Qt::Key_1 && key <= Qt::Key_9) {
+                const int which = key - Qt::Key_1;
+                if (which < count)
+                    finishOverlay(which);
+                return;
+            }
+            return;
+        }
+
+        if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
+            step(-1);
+            return;
+        }
+        if (key == Qt::Key_Right || (plain && key == Qt::Key_L)) {
+            step(1);
+            return;
+        }
+        // A letter whose first letter is an answer answers it, wherever the
+        // focus happens to be: at a question with Yes and No in front of you,
+        // Y and N are answers, and making somebody walk a button they can read
+        // is a detour invented by toolkits. It runs after the movement keys
+        // above so that a plain `l` still moves when no answer starts with it.
+        if (plain && key >= Qt::Key_A && key <= Qt::Key_Z) {
+            for (std::size_t i = 0; i < overlay_.choices.size(); ++i) {
+                const std::string& label = overlay_.choices[i];
+                if (!label.empty() &&
+                    std::toupper(static_cast<unsigned char>(label[0])) ==
+                        static_cast<char>(key)) {
+                    finishOverlay(static_cast<int>(i));
+                    return;
+                }
+            }
+        }
+    }
+
+    void overlayPress(const QPointF& where) {
+        const OverlayLayout lay = overlayLayout();
+        for (std::size_t i = 0; i < lay.boxes.size(); ++i) {
+            if (lay.boxes[i].contains(where)) {
+                finishOverlay(static_cast<int>(i));
+                return;
+            }
+        }
+        if (lay.panel.contains(where))
+            return; // a click inside the panel that hit no choice chooses nothing
+        finishOverlay(-1); // a click outside it is the same word as Esc
+    }
+
+    // Over a list, the pointer is a selector: where it rests is what Enter
+    // would choose, the same rule every TUI menu follows.
+    void overlayHover(const QPointF& where) {
+        if (!overlay_.vertical)
+            return;
+        const OverlayLayout lay = overlayLayout();
+        for (std::size_t i = 0; i < lay.boxes.size(); ++i) {
+            if (!lay.boxes[i].contains(where))
+                continue;
+            if (overlay_.selected != static_cast<int>(i)) {
+                overlay_.selected = static_cast<int>(i);
+                update();
+            }
+            return;
+        }
+    }
+
+    void paintOverlay(QPainter& p) const {
+        if (!overlay_.active)
+            return;
+        const OverlayLayout lay = overlayLayout();
+        QFontMetricsF fm(font_);
+        const Color bg = screen_.defaultBackground();
+        const Color fg = screen_.defaultForeground();
+
+        // The panel is the terminal's own surface — its background, dimmed a
+        // little so the grid behind it reads as "behind" — with the terminal's
+        // own font on it. Nothing about it belongs to the desktop, which is
+        // the entire point of drawing the question here rather than in a
+        // window the window manager decorates for you.
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(fg.r, fg.g, fg.b, 80), 1));
+        p.setBrush(QColor(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255), 255));
+        p.drawRoundedRect(lay.panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
+
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setFont(font_);
+        double y = lay.panel.y() + 1.5 * cellHeight() + fm.ascent();
+        for (std::size_t i = 0; i < lay.lines.size(); ++i) {
+            // The question is said at full strength; the detail under it is a
+            // quieter voice, so the eye goes to the question first.
+            const bool detail = static_cast<int>(i) >= lay.question_lines;
+            p.setPen(detail ? QColor(fg.r, fg.g, fg.b, 190) : QColor(fg.r, fg.g, fg.b));
+            p.drawText(QRectF(lay.panel.x(), y - fm.ascent(), lay.panel.width(), fm.height()),
+                       Qt::AlignHCenter | Qt::AlignVCenter, lay.lines[i]);
+            y += cellHeight();
+        }
+
+        for (std::size_t i = 0; i < lay.boxes.size(); ++i) {
+            const bool focused = static_cast<int>(i) == overlay_.selected;
+            if (overlay_.vertical) {
+                // The focused row wears the same band as a selection made
+                // with the pointer, because it means the same thing: this is
+                // the line you are on.
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.setPen(Qt::NoPen);
+                p.setBrush(focused ? QColor(62, 96, 168) : QColor(0, 0, 0, 0));
+                if (focused)
+                    p.drawRoundedRect(lay.boxes[i], kScrollBarRadius, kScrollBarRadius);
+                p.setRenderHint(QPainter::Antialiasing, false);
+                p.setPen(focused ? QColor(240, 240, 240) : QColor(fg.r, fg.g, fg.b, 225));
+                p.drawText(lay.boxes[i].adjusted(8, 0, -8, 0),
+                           Qt::AlignLeft | Qt::AlignVCenter, lay.choices[i]);
+                continue;
+            }
+            // Buttons, kitty's way: no fill to speak of, a rule around the
+            // word, and the highlighted one lit in blue rather than painted
+            // over, so the row reads as part of the screen it is on.
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(focused ? QColor(110, 160, 255) : QColor(fg.r, fg.g, fg.b, 150), 1));
+            p.setBrush(focused ? QColor(110, 160, 255, 40) : QColor(0, 0, 0, 0));
+            p.drawRoundedRect(lay.boxes[i], kScrollBarRadius + 1, kScrollBarRadius + 1);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setPen(focused ? QColor(240, 244, 255) : QColor(fg.r, fg.g, fg.b, 200));
+            p.drawText(lay.boxes[i], Qt::AlignCenter, lay.choices[i]);
+        }
+
+        if (!lay.hint.isEmpty()) {
+            p.setPen(QColor(fg.r, fg.g, fg.b, 140));
+            p.drawText(lay.hint, Qt::AlignHCenter | Qt::AlignVCenter,
+                       QString::fromStdString(overlay_.hint));
+        }
+    }
+
     // A press that lands on the indicator belongs to the terminal, not to the
     // application inside it and not to a text selection.
     bool scrollBarPress(const QPointF& where) {
@@ -1035,8 +1534,14 @@ private:
     std::atomic<int> generation_{0};
     std::string status_;
     QTimer* status_timer_ = nullptr;
+    Overlay overlay_;
     bool closing_on_close_ = false;
     double padding_ = 10.0;
+    // The padding the current rows/cols were computed with. It is the memory of
+    // whose screen this is — the shell's, inset, or a full-screen application's,
+    // edge to edge — and the thing `syncGridToScreen()` compares against to
+    // notice that the screen changed hands.
+    double geometry_padding_ = padding_;
 
     // Rows moved by one wheel notch, and how far the view is scrolled back from
     // the live bottom in lines. Zero means "following the shell".
@@ -1184,11 +1689,14 @@ private:
         const double ch = cellHeight();
         if (cw <= 0.0 || ch <= 0.0)
             return {};
+        // The same inset the painter used, so a click at the edge of a
+        // full-screen application's frame lands on the character it is on.
+        const double pad = activePadding();
         CellPos out;
-        out.row = std::clamp(static_cast<int>((pos.y() - padding_) / ch), 0, rows_ - 1);
+        out.row = std::clamp(static_cast<int>((pos.y() - pad) / ch), 0, rows_ - 1);
         // A click in the right-hand margin selects up to the end of the row,
         // which is column count, one past the last cell.
-        out.col = std::clamp(static_cast<int>((pos.x() - padding_) / cw), 0, cols_);
+        out.col = std::clamp(static_cast<int>((pos.x() - pad) / cw), 0, cols_);
         return out;
     }
 

@@ -3,7 +3,10 @@
 // The dialog itself can only be looked at by a person. The decision underneath it —
 // whether to interrupt somebody at all, and whether the words name the thing they are
 // about to lose — is a plain function of what is running and whether the session was
-// kept, so it is checked here instead.
+// kept, so it is checked here instead. There used to be a second line under the
+// question, explaining the difference between the answers; Kaida asked for it to be
+// dropped, and they were right: the three buttons say what the answers are, and a
+// paragraph above them is a wall. What is left is what the asking is made of.
 
 #include "../src/app/closeprompt.hpp"
 
@@ -49,29 +52,11 @@ int main() {
         expect("an empty program name never produces one", closeQuestion("").empty());
     }
     {
-        // The second line is where the two ways of quitting differ, so it has to say
-        // which is which and what the kept one is called.
-        const std::string with_session = closeDetail("w3", false);
-        expect("a window holding a session names it", with_session.find("w3") != std::string::npos);
-        expect("and says detaching keeps it running",
-               with_session.find("Detach keeps it running") != std::string::npos);
-        const std::string plain = closeDetail("", false);
-        expect("a window with a shell of its own says what ending it loses",
-               plain.find("ends the shell") != std::string::npos);
-        expect("and does not mention a session it does not have",
-               plain.find("Detach") == std::string::npos);
-        const std::string kept = closeDetail("w3", true);
-        expect("a kept session is told the truth about itself: the work goes on either way",
-               kept.find("goes on running") != std::string::npos);
-        expect("so the line never promises to end a shell it is not going to end",
-               kept.find("ends the shell") == std::string::npos);
-    }
-    {
-        expect("detaching is offered when there is a session to detach",
-               closeOfferDetach("w3", false));
-        expect("and not when the window owns its shell", !closeOfferDetach("", false));
+        expect("saving is offered when there is a session to save",
+               closeOfferSave("w3", false));
+        expect("and not when the window owns its shell", !closeOfferSave("", false));
         expect("nor when the session is kept already, which would be the same button twice",
-               !closeOfferDetach("w3", true));
+               !closeOfferSave("w3", true));
     }
     {
         // How often closing interrupts is a person's call. The words are the ones
