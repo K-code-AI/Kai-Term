@@ -149,6 +149,27 @@ public:
     // True while the alternate screen (vim, less, tmux) is active. Scrolling the
     // primary-screen history is then the application's job, not the terminal's.
     bool inAlternateScreen() const { return alternate_valid_; }
+    // The primary screen the alternate one is covering. A snapshot of a session
+    // that is inside btop has to carry both: the alternate grid is what is showing,
+    // and the primary grid and history are what come back when the program leaves.
+    int primaryHistorySize() const {
+        return alternate_valid_ ? static_cast<int>(alternate_scrollback_.size())
+                               : static_cast<int>(scrollback_.size());
+    }
+    const Row* primaryHistoryRow(int i) const {
+        const std::vector<Row>& rows = alternate_valid_ ? alternate_scrollback_ : scrollback_;
+        if (i < 0 || i >= static_cast<int>(rows.size()))
+            return nullptr;
+        return &rows[static_cast<std::size_t>(i)];
+    }
+    const Cell& primaryAt(int r, int c) const {
+        const std::vector<Row>& rows = alternate_valid_ ? alternate_grid_ : grid_;
+        return rows.at(r).at(c);
+    }
+    int primaryCursorX() const { return alternate_valid_ ? alternate_cursor_x_ : cursor_x_; }
+    int primaryCursorY() const { return alternate_valid_ ? alternate_cursor_y_ : cursor_y_; }
+    int primaryScrollTop() const { return alternate_valid_ ? alternate_scroll_top_ : scroll_top_; }
+    int primaryScrollBottom() const { return alternate_valid_ ? alternate_scroll_bottom_ : scroll_bottom_; }
 
     // DECCKM (ESC[?1h): applications ask for SS3 cursor sequences.
     bool applicationCursorKeys() const { return application_cursor_keys_; }

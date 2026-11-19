@@ -11,6 +11,10 @@
 // by the daemon, which is the one place that has a model whether or not anyone is
 // looking; answering here as well would give the program two replies.
 
+#include <poll.h>
+#include <cstdio>
+
+#include <chrono>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -43,6 +47,40 @@ public:
             throw std::runtime_error(fieldValue(decodeFields(welcome.body), "message",
                                                 "the daemon did not welcome us"));
         }
+        // The screen itself, taken here rather than left for the reader thread. The
+        // daemon answers an attach with the Welcome frame and the screen back to back, so
+        // waiting for the second one is not a round trip but a look at what is already in
+        // the socket — and taking it now means a window has the session's screen *in hand*
+        // before anybody tries to draw it. Left in the socket it waits on a reader thread
+        // posting events to a widget that may not have been shown yet, which is the blank
+        // window: content arriving into a view that was never asked to paint it, filling in
+        // on the first keystroke. A kept session whose screen is empty gets no frame at
+        // all, so the wait is bounded rather than endless.
+        constexpr int kSnapshotWaitMs = 250;
+        constexpr int kHandshakeFrames = 64;
+        for (int i = 0; i < kHandshakeFrames; ++i) {
+            // The welcome read can leave the screen in the reader's own buffer; polling
+            // the socket first would then see nothing and return before taking it.
+            Frame frame;
+            // The welcome read can leave the screen in the client's own buffer; polling
+            // the socket first would then see nothing and return before taking it.
+            if (!client_.pop(frame)) {
+                pollfd ready{client_.descriptor(), POLLIN, 0};
+                if (::poll(&ready, 1, kSnapshotWaitMs) <= 0 || (ready.revents & POLLIN) == 0)
+                    return;
+                if (!client_.nextFrame(frame, error))
+                    return;
+            }
+            // A program that never stops printing puts its own output between the Welcome
+            // and the screen, so the wait is for the screen and not for one frame — and
+            // what arrives first is kept, not thrown away to make the count come out.
+            if (frame.kind == MsgKind::Data)
+                pending_ += frame.body;
+            if (frame.kind == MsgKind::Snapshot) {
+                pending_ += frame.body;
+                return;
+            }
+        }
     }
 
     int descriptor() const override { return client_.descriptor(); }
@@ -53,6 +91,8 @@ public:
     // The attach handshake leaves the session's current screen here, and no further
     // frame has to arrive for it to be wanted.
     bool hasBuffered() const override { return !pending_.empty(); }
+    std::string heldBytes() const override { return pending_; }
+    void clearHeldBytes() override { pending_.clear(); }
 
     ssize_t read(char* buf, std::size_t n) override {
         for (;;) {

@@ -211,9 +211,8 @@ int main(int argc, char** argv) {
                    return writtenInto("shown").find("AFTER-THE-WINDOW") != std::string::npos;
                }));
         // Joined at the size the session has, not at a size picked here. Attaching at
-        // a different one reflows the screen, and a line the reflow pushes off the top
-        // does not come across: a snapshot carries the screen that is showing, not the
-        // scrollback behind it, which is a known open question rather than a surprise.
+        // a different one reflows the screen, and the snapshot now carries the scrollback
+        // behind the visible screen as well.
         int rows_now = 24;
         int cols_now = 80;
         for (const SessionInfo& info : daemon.list()) {

@@ -78,6 +78,28 @@ inline bool sameRendition(const Cell& a, const Cell& b) {
     return a.attr == b.attr && a.fg == b.fg && a.bg == b.bg;
 }
 
+// The text of one history row, with blank columns kept as spaces so a gap in
+// the row does not become two words run together. A wide glyph's continuation
+// column is skipped rather than counted as a blank.
+inline std::string rowPlainText(const Row* row) {
+    std::string out;
+    if (!row)
+        return out;
+    for (std::size_t col = 0; col < row->cells.size();) {
+        const Cell& cell = row->cells[col];
+        if (cell.text.empty()) {
+            out.push_back(' ');
+            ++col;
+        } else {
+            out += cell.text;
+            col += std::max(1, cell.width);
+        }
+    }
+    while (!out.empty() && out.back() == ' ')
+        out.pop_back();
+    return out;
+}
+
 // The modes the application asked for, replayed around the glyphs.
 //
 // A snapshot of the grid alone arrives as a picture of a terminal rather than one. The
@@ -92,23 +114,16 @@ inline bool sameRendition(const Cell& a, const Cell& b) {
 // Split in two because some of them change what the coordinates *mean*. Origin mode makes
 // cursor addressing relative to the scroll region, and the glyphs are painted with
 // absolute addresses; wrap off would make a full row behave differently as it is written.
-// So the alternate screen and the region go first, and the rest go after the last glyph
-// has been placed, which is where an application would have set them anyway.
-inline std::string modePrelude(const Screen& screen) {
+// So the alternate screen is left and the region is cleared before the glyphs, and the
+// rest are set after the last glyph has been placed, which is where an application would
+// have set them anyway.
+inline std::string modePrelude() {
     std::string out;
-    // Entering the alternate screen erases it, so this comes before anything is drawn
-    // and the glyphs land where the application is actually drawing them.
-    out += screen.inAlternateScreen() ? "\x1b[?1049h" : "\x1b[?1049l";
-    // The region is *cleared* here and said for real afterwards, which is the opposite of
-    // what this function used to do — and the bug that came from doing it the other way is
-    // exactly the size of the region. Replaying a session's region before the glyphs means
-    // every cursor address that follows is clamped inside it: a screen's worth of lines
-    // lands on the handful of rows the region allows, each overwriting the last, and what
-    // a person sees is a window with one character in the corner. A program that leaves a
-    // region behind when it exits — vim, less, anything cut short — leaves that behind in
-    // the daemon's model, so the region a snapshot replays need not have anything to do
-    // with what is on the screen. Origin mode is cleared for the same reason: it makes
-    // cursor addressing relative to the region, and the glyphs are written absolutely.
+    // Leave whatever alternate screen the view is on, so the primary buffer is the
+    // one this snapshot paints. The alternate screen is entered again below when
+    // the session is in one.
+    out += "\x1b[?1049l";
+    // Clear the region and origin for painting; they are restored afterwards.
     out += "\x1b[r\x1b[?6l";
     return out;
 }
@@ -169,15 +184,91 @@ inline std::string modePostscript(const Screen& screen) {
     return out;
 }
 
+// Paint one grid — the primary screen or the alternate screen — without moving
+// the cursor, so the caller can decide where the cursor goes afterwards.
+inline std::string paintGrid(const Screen& screen, bool primary) {
+    const Color default_fg = screen.defaultForeground();
+    const Color default_bg = screen.defaultBackground();
+    std::string out;
+    Cell current{};
+    current.fg = default_fg;
+    current.bg = default_bg;
+    bool have_current = false;
+    for (int row = 0; row < screen.rows(); ++row) {
+        out += "\x1b[" + std::to_string(row + 1) + ";1H";
+        int next_col = 0;
+        for (int col = 0; col < screen.cols(); ++col) {
+            const Cell& cell = primary ? screen.primaryAt(row, col) : screen.at(row, col);
+            if (cell.text.empty())
+                continue;
+            if (cell.width == 0) {
+                next_col = col + 1;
+                continue;
+            }
+            if (col != next_col)
+                out += "\x1b[" + std::to_string(row + 1) + ";" + std::to_string(col + 1) + "H";
+            if (!have_current || !sameRendition(current, cell)) {
+                out += rendition(cell, default_fg, default_bg);
+                current = cell;
+                have_current = true;
+            }
+            out += cell.text;
+            next_col = col + std::max(1, cell.width);
+        }
+    }
+    return out;
+}
+
+// Paint one history row at the top of the screen, keeping the renditions the
+// line had when it was written. A history row is a row of cells, not a string:
+// a warning printed in red is red in the scrollback too, and the same is true of
+// bold, underline and reverse. The row is written with absolute cursor addresses
+// for gaps, so blank columns stay where they were.
+inline std::string paintHistoryRow(const Row* row, int cols,
+                             const Color& default_fg, const Color& default_bg) {
+    std::string out = "[1;1H";
+    if (!row)
+        return out;
+    Cell current{};
+    current.fg = default_fg;
+    current.bg = default_bg;
+    bool have_current = false;
+    int next_col = 0;
+    const int limit = std::min(static_cast<int>(row->cells.size()), cols);
+    for (int col = 0; col < limit; ++col) {
+        const Cell& cell = row->cells[static_cast<std::size_t>(col)];
+        if (cell.text.empty())
+            continue;
+        if (cell.width == 0) {
+            next_col = col + 1;
+            continue;
+        }
+        if (col != next_col)
+            out += "[1;" + std::to_string(col + 1) + "H";
+        if (!have_current || !sameRendition(current, cell)) {
+            out += rendition(cell, default_fg, default_bg);
+            current = cell;
+            have_current = true;
+        }
+        out += cell.text;
+        next_col = col + std::max(1, cell.width);
+    }
+    return out;
+}
+
 inline std::string screenSnapshot(const Screen& screen) {
     const Color default_fg = screen.defaultForeground();
     const Color default_bg = screen.defaultBackground();
+    const int rows = screen.rows();
+    const int cols = screen.cols();
 
     std::string out;
-    out += "\x1b" "[?25l"; // the cursor goes last, so it never flickers mid-paint
+    out += "\x1b[?25l"; // the cursor goes last, so it never flickers mid-paint
     out += "\x1b[0m";
-    out += modePrelude(screen);
-    out += "\x1b[H\x1b[2J";
+    out += modePrelude();
+    // Clear the screen and its scrollback first: a snapshot replaces the state
+    // it is showing, so replaying it twice must not stack two histories.
+    out += "\x1b[H\x1b[3J";
 
     // Colours the application asked for. Cells store resolved RGB, so the text would
     // survive without these, but an application that later prints with the *default*
@@ -192,45 +283,61 @@ inline std::string screenSnapshot(const Screen& screen) {
                "\x07";
     }
 
-    // The cursor is parked at the start of each row and the row written across,
-    // because a screen can hold gaps: a row that was erased on one end, or a wide
-    // glyph whose second half sits in a column nothing else occupies.
-    Cell current{};
-    current.fg = default_fg;
-    current.bg = default_bg;
-    bool have_current = false;
-    for (int row = 0; row < screen.rows(); ++row) {
-        out += "\x1b[" + std::to_string(row + 1) + ";1H";
-        // Where the next glyph has to land. Blanks are skipped to keep the snapshot
-        // small, which means the writer has to say where it is going next rather than
-        // assume it follows the last thing it wrote; without this, "start" and "later"
-        // on one row arrive as "startlater".
-        int next_col = 0;
-        for (int col = 0; col < screen.cols(); ++col) {
-            const Cell& cell = screen.at(row, col);
-            if (cell.text.empty())
-                continue; // blank, which is what the erase left there
-            if (cell.width == 0) {
-                next_col = col + 1; // the second half of a wide glyph, already written
-                continue;
-            }
-            if (col != next_col)
-                out += "\x1b[" + std::to_string(row + 1) + ";" + std::to_string(col + 1) + "H";
-            if (!have_current || !sameRendition(current, cell)) {
-                out += rendition(cell, default_fg, default_bg);
-                current = cell;
-                have_current = true;
-            }
-            out += cell.text;
-            next_col = col + std::max(1, cell.width);
-        }
+    // What has already scrolled away, said first with the renditions it had. Restoring a
+    // session should put you back where you were, and a session kept for an hour with
+    // nowhere to scroll back to is a session whose work you have lost — the visible screen
+    // is the last page of it, not the whole of it. A warning printed in red is red in the
+    // scrollback too, not a plain line that lost its colour on the way across. Only the
+    // tail goes on the wire: a snapshot is sent to every view of a session every time one
+    // of them changes size, so a scrollback of tens of thousands of lines would be a great
+    // deal of bytes to move to see a screen that holds eighty of them.
+    //
+    // A session inside a full-screen program has two buffers: the alternate grid that
+    // is showing, and the primary grid and history that come back when the program leaves.
+    // Both are carried here. The primary history is written first, then the primary grid,
+    // and only then the alternate screen is entered and painted.
+    //
+    // Each row is written at the top and then one line feed at the bottom pushes it
+    // into the scrollback. Writing it at the bottom instead would push whatever was
+    // already at the top, which is not the row being restored.
+    constexpr int kSnapshotHistoryRows = 2000;
+    const int history = screen.primaryHistorySize();
+    for (int i = history > kSnapshotHistoryRows ? history - kSnapshotHistoryRows : 0;
+         i < history; ++i) {
+        const Row* row = screen.primaryHistoryRow(i);
+        if (!row)
+            continue;
+        out += "\x1b[1;1H";
+        out += paintHistoryRow(row, cols, default_fg, default_bg);
+        out += "\x1b[" + std::to_string(rows) + ";1H";
+        out += "\r\n";
     }
 
-    // One thing is knowingly not transferred: a cursor sitting *past* the last column
-    // with a pending wrap. No cursor move can express that state, and it does not
-    // need to be — the glyph is drawn in the last column either way, and the
-    // application that prints next moves its own cursor before it prints.
-    const int cursor_col = std::min(screen.cursorX(), screen.cols() - 1);
+    // The primary screen, painted before entering the alternate screen so that
+    // entering it saves that screen and its history.
+    out += paintGrid(screen, true);
+
+    // The primary region and cursor are set before entering the alternate screen,
+    // because entering it saves them along with the grid and history.
+    const int primary_top = screen.primaryScrollTop();
+    const int primary_bottom = screen.primaryScrollBottom();
+    if (primary_top != 0 || primary_bottom != rows - 1)
+        out += "\x1b[" + std::to_string(primary_top + 1) + ";" +
+               std::to_string(primary_bottom + 1) + "r";
+    const int primary_col = std::min(screen.primaryCursorX(), cols - 1);
+    out += "\x1b[" + std::to_string(screen.primaryCursorY() + 1) + ";" +
+           std::to_string(primary_col + 1) + "H";
+
+    if (screen.inAlternateScreen()) {
+        out += "\x1b[?1049h";
+        out += paintGrid(screen, false);
+    }
+
+    out += modePostscript(screen);
+
+    // The visible cursor goes after the modes, so restoring the region does not
+    // home it away.
+    const int cursor_col = std::min(screen.cursorX(), cols - 1);
     out += "\x1b[" + std::to_string(screen.cursorY() + 1) + ";" +
            std::to_string(cursor_col + 1) + "H";
     switch (screen.cursorShape()) {
@@ -245,8 +352,7 @@ inline std::string screenSnapshot(const Screen& screen) {
             break;
     }
     if (screen.cursorVisible())
-        out += "\x1b" "[?25h";
-    out += modePostscript(screen);
+        out += "\x1b[?25h";
     return out;
 }
 

@@ -196,11 +196,9 @@ int main(int argc, char** argv) {
     // typed joins a queue it will not read until the loop ends — which is also what a
     // person pressing Ctrl+C is for.
     //
-    // What is deliberately not asserted here is *what it lands on*: the snapshot carries
-    // the grid the application is drawing on, not the other buffer, so a view that
-    // arrives after an application took the screen has no primary-screen history of that
-    // session to go back to. That is a known gap, written in the roadmap, not a
-    // behaviour to bless with a passing check.
+    // What it lands on is now carried too: the snapshot paints the primary screen and
+    // its history before entering the alternate screen, so the buffer the application
+    // was covering comes back when it quits.
     expect("the program is interrupted out of its loop", daemon.type("live", "\003"));
     pump(500);
     expect("and is told to leave the alternate screen",
@@ -246,6 +244,37 @@ int main(int argc, char** argv) {
     expect("and the window is drawn again when the session has something new to show",
            quiet_painter.paints > paints_before);
     silent.shutdown();
+
+    // Scrollback is part of what a session is, not decoration. A session that has
+    // printed more than a screenful must bring that history across when a view
+    // joins it; otherwise the view starts at the bottom of a screen whose older
+    // lines have nowhere to go.
+    SessionSpec history_spec;
+    history_spec.name = "history";
+    history_spec.saved = true;
+    history_spec.rows = 24;
+    history_spec.cols = 80;
+    expect("a session is made with more lines than its screen", daemon.create(history_spec, error));
+    expect("and it prints a hundred lines",
+           daemon.type("history", "for i in $(seq 1 100); do echo \"row $i\"; done\r"));
+    pump(900);
+
+    kai::TerminalWidget scrollback(24, 80,
+        std::make_unique<SessionBackend>("history", 24, 80));
+    scrollback.resize(800, 500);
+    scrollback.show();
+    pump(900);
+    expect("the new view shows the bottom of that screen",
+           onScreen(scrollback).find("row 100") != std::string::npos);
+    expect("and it has the history above it",
+           scrollback.screen().historySize() > 0);
+    bool row_one = false;
+    for (int i = 0; i < scrollback.screen().historySize() && !row_one; ++i)
+        if (rowPlainText(scrollback.screen().historyRow(i)).find("row 1") !=
+            std::string::npos)
+            row_one = true;
+    expect("with row 1 really in the history", row_one);
+    scrollback.shutdown();
 
     // The way the program actually restores a session. Everything above hands a session
     // to a brand-new window, which is what a tab would do; what Ctrl+Shift+A really does
@@ -351,14 +380,11 @@ int main(int argc, char** argv) {
     kai::TerminalWidget late(24, 80, std::make_unique<SessionBackend>("late", 24, 80));
     late.resize(800, 500);
     pump(900);
-    // PARKED, AND IT FAILS: a view built while its window is still hidden never takes in
-    // the session's screen at all — the model stays empty until the window is shown. That
-    // is a second, separate fault from the one this file was written for, and it is the
-    // reproduction Kaida's screenshots describe. It is left here rather than deleted, and
-    // left unfired rather than quietly dropped, because a green suite that hides the bug
-    // helps nobody: when the delivery path is fixed, uncomment and it should pass.
-    // expect("a view built while hidden takes in its session's screen",
-    //        onScreen(late).find("THE-LATE-LINE") != std::string::npos);
+    // The check that was parked while the delivery path was broken: a view built while
+    // its window is still hidden must take in the session's screen. It is fired now because
+    // the delivery path is fixed.
+    expect("a view built while hidden takes in its session's screen",
+           onScreen(late).find("THE-LATE-LINE") != std::string::npos);
     late.show();
     pump(600);
     // Pixels, not the model: the model holding the screen is exactly what the report says

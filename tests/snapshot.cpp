@@ -28,6 +28,24 @@ void expect(const char* what, bool value) {
     std::cerr << "FAIL: " << what << "\n";
 }
 
+// Compare a history row cell by cell, including the rendition. A warning printed
+// in red has to stay red in the scrollback; the same goes for bold and underline.
+// Missing trailing cells are treated as the default cell, because a row is
+// allowed to be shorter than the screen's width.
+bool sameHistoryRow(const Row* a, const Row* b) {
+    if (!a || !b)
+        return a == b;
+    const std::size_t n = std::max(a->cells.size(), b->cells.size());
+    for (std::size_t i = 0; i < n; ++i) {
+        const Cell& ca = i < a->cells.size() ? a->cells[i] : Cell{};
+        const Cell& cb = i < b->cells.size() ? b->cells[i] : Cell{};
+        if (ca.text != cb.text || ca.width != cb.width || ca.attr != cb.attr ||
+            ca.fg != cb.fg || ca.bg != cb.bg)
+            return false;
+    }
+    return true;
+}
+
 // Snapshot into a screen of the same size and compare cell by cell. The first
 // difference is reported with its coordinates, because "the screens differ" is not
 // something anyone can act on.
@@ -35,12 +53,24 @@ bool roundTrips(const char* what, Screen& source) {
     Screen copy(source.rows(), source.cols());
     copy.feed(screenSnapshot(source));
     ++checks;
-    if (copy.historySize() != 0) {
+    // A snapshot carries the session's scrollback as well as its visible screen.
+    // Replaying it into an empty screen must produce the same history, not a
+    // screen that has scrolled the history into itself or a history that is
+    // appended on top of an older one.
+    if (copy.historySize() != source.historySize()) {
         ++failures;
-        std::cerr << "FAIL: " << what << ": the snapshot scrolled the new screen, so "
-                  << "history would arrive on top of history\n";
+        std::cerr << "FAIL: " << what << ": history " << copy.historySize()
+                  << " not " << source.historySize() << "\n";
         return false;
     }
+    for (int i = 0; i < source.historySize(); ++i) {
+        if (!sameHistoryRow(copy.historyRow(i), source.historyRow(i))) {
+            ++failures;
+            std::cerr << "FAIL: " << what << ": history row " << i << " differs\n";
+            return false;
+        }
+    }
+    ++checks;
     for (int row = 0; row < source.rows(); ++row) {
         for (int col = 0; col < source.cols(); ++col) {
             const Cell& a = source.at(row, col);
@@ -189,13 +219,33 @@ int main() {
     }
 
     {
-        // A session scrolled off the top: the snapshot carries what is on screen, and
-        // must not push the source's history through the bottom of the new screen.
+        // A session scrolled off the top: the snapshot carries the history as well as
+        // the visible screen, and must not push it through the bottom of the new screen.
         Screen source(4, 20);
         for (int i = 0; i < 20; ++i)
             source.feed("line \x1b[32m" + std::to_string(i) + "\x1b[0m\r\n");
         expect("the source has history", source.historySize() > 0);
         roundTrips("a screen with history behind it", source);
+    }
+
+    {
+        // A warning printed in red is part of what happened. It has to stay red in
+        // the scrollback, not arrive as a plain black-and-white line. The same
+        // applies to the attributes on it: bold and underline are part of the
+        // warning's rendition, not decoration the snapshot can drop.
+        Screen source(4, 20);
+        source.feed("\x1b[31;1;4mwarning: disk almost full\x1b[0m\r\n");
+        for (int i = 0; i < 10; ++i)
+            source.feed("line " + std::to_string(i) + "\r\n");
+        expect("the warning is in the history", source.historySize() > 0);
+        roundTrips("a red warning in history", source);
+        Screen copy(4, 20);
+        copy.feed(screenSnapshot(source));
+        const Row* warning = copy.historyRow(0);
+        expect("the warning keeps its red",
+               warning && warning->at(0).fg == Color{128, 0, 0});
+        expect("and its bold and underline",
+               warning && warning->at(0).attr.bold && warning->at(0).attr.underline);
     }
 
     {
