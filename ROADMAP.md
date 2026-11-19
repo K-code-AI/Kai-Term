@@ -150,7 +150,7 @@ a person: what a window showing a session looks like is still unverified.
 A session is a pty and a screen model owned by a process of their own, so a window is a
 view of a session rather than the thing keeping it alive.
 
-- Session daemon: `kai-term session serve`, in the foreground for whoever is watching it
+- Session daemon: `kai-term serve`, in the foreground for whoever is watching it
   in a terminal. `kai-term` is the only program built — the daemon is the same binary
   started a different way, which matters because a separate daemon binary is a second
   thing to install, version and get wrong. One daemon per user, listening on
@@ -168,8 +168,9 @@ view of a session rather than the thing keeping it alive.
   an OSC 52 copy request into a frame for a view to carry, and reaps the shell. A program
   that gets no answer waits — fish spends ten seconds on the device attributes query
   before announcing that its terminal is broken.
-- Session create/list/attach/detach: `kai-term session new|list|attach|detach|kill|send`
-  and `kai-term open NAME` for a window. The first `new` starts the daemon. Attaching
+- Session create/list/attach/detach: `kai-term new|list|attach|detach|kill|send`, and
+  `attach --window` for a window. The first `new` starts the daemon. (These read in the
+  old long form until 2026-11-19; the verbs are where the M4 surface put them.) Attaching
   later is shown what is on the screen now, from a snapshot of the daemon's model rather
   than a replay of raw bytes, because replaying bytes at a different column count lays
   them out wrong.
@@ -271,11 +272,13 @@ Done:
 - A window can be pointed at another shell while it stays open, which is what restoring
   means; pane clipping from M3 is in place and waiting for a host that draws splits.
 
-### The command surface, agreed with Kaida on 2026-11-17
+### The command surface, agreed with Kaida on 2026-11-17 — built 2026-11-19
 
 The `session` word goes away, sessions get numbers, and the words come straight after
 `kai-term`. Agreed verb by verb rather than in one sweep, because the long form
 (`kai-term session attach -s work`) is what made the whole thing feel like work.
+Retired words are not silent: typing `kai-term session list` says the sentence has a
+shorter form now. What is not here yet is the attached view's status line, below.
 
 ```
 kai-term                      a new window, as before
@@ -332,7 +335,10 @@ Needed:
 - Horizontal and vertical splits, with `setPanes()` called with the cells each pane owns.
 - Pane selection and resizing.
 - Multiple windows and tabs.
-- The command surface above: ids, the flattened verbs, the attached view's status line.
+- The attached view's status line — which session, what is running in it, how to leave —
+  and the `Ctrl+S to leave` the status line promises. The flattened verbs and ids are
+  done; the view still hands over the whole terminal with no notice of what it is looking
+  at, and there is no way out of it but killing the session's shell.
 - One question for the whole window, not one per shell: Old-Term counts every session in
   the window that has something in its foreground group and names each of them, so a
   window with four panes asks once about all four. That wants the tabs and splits above
@@ -341,6 +347,16 @@ Needed:
 - A config file, so that `confirm_quit` and the rest have somewhere to live that is not
   the environment. Old-Term reads `config.c`'s key=value file; matching its words is
   already half the work.
+- **Themable, and configured inside the terminal itself** — agreed with Kaida on
+  2026-11-19. The colours a terminal draws with are somebody's taste, not a build
+  decision: the palette, the accent the dialogs' focused button wears (fixed blue
+  today), the cell spacing. And the way to choose them should be the terminal's own:
+  a small TUI, drawn by the widget the way the dialogs are, that edits the settings
+  **with a live preview** — a patch of real grid, cursor, selection and a dialog or
+  two, repainted as each choice moves — so the question "what does this look like with
+  a build running" is answered before anything is saved, not after. It wants the config
+  file above to exist first, because a preview that cannot be persisted is a toy;
+  together they are one piece of work.
 
 ## M5 — File manager
 

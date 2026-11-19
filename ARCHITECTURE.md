@@ -149,7 +149,7 @@ does not work, for a reason nobody can see.
 A daemon already running is never stopped by this. It holds shells somebody started, and a
 terminal that killed other people's sessions to tidy up after an upgrade would be worse
 than the confusion it fixed. What it does instead is say once, in the window and in
-`session list`, that an older daemon is running, which protocol it speaks, which process
+`kai-term list`, that an older daemon is running, which protocol it speaks, which process
 it is, and that its shells cannot be reached from this build.
 
 ### Kept and unkept
@@ -183,7 +183,7 @@ That is what lets a window ask "Quit while `make` is running?" instead of guessi
 how long since you last typed, and it is asked of the daemon rather than of the window,
 because the shell is not the window's child.
 
-`session list` shows kept sessions and the left-behind ones, and not the shells other
+`kai-term list` shows kept sessions and the left-behind ones, and not the shells other
 windows are looking at: those are somebody's typing, not a session you saved.
 
 ## Terminal window and its backends

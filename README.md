@@ -186,7 +186,7 @@ cmake --build build
 ```
 
 This builds one program, `build/kai-term`, and twenty-one test binaries under
-`build/tests/`. One program matters: the daemon is `kai-term session serve`, not a second
+`build/tests/`. One program matters: the daemon is `kai-term serve`, not a second
 executable to install, version and get out of step with the terminal it serves. The tests
 are kept out of the way because someone who has just built the terminal should not have to
 pick the terminal out of a directory of test binaries.
@@ -307,22 +307,29 @@ KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term
 ./build/kai-term --help
 ```
 
-The shell is chosen from `KAI_SHELL`, then `SHELL`, then `/bin/sh`. With no `--cwd`, a
-new shell starts in the user's home directory; the shell is started there, not sent a
-`cd` command.
+The shell is chosen from `KAI_SHELL`, then `SHELL`, then `/bin/sh`; a new shell starts in
+the directory you ran the command from, or your home for a window. The shell is started
+there, not sent a `cd` command.
 
-Sessions — shells that stay alive when the window closes:
+Sessions — shells that stay alive when the window closes. The words come straight after
+`kai-term`, and a session is named by the number a listing prints first:
 
 ```sh
-./build/kai-term session new -s work --cwd ~/src   # starts the daemon if it is not running
-./build/kai-term session list
-./build/kai-term open work                         # a window onto it
-./build/kai-term session attach -s work            # or this terminal
-./build/kai-term session send -s work --text 'make' --enter
-./build/kai-term session detach -s work            # send the views away, keep the shell
-./build/kai-term session kill -s work              # end the shell
-./build/kai-term session shutdown                  # stop the daemon and everything
+./build/kai-term new work          # start a session; prints its number, starts the daemon
+./build/kai-term list              # the sessions; * marks the one you are standing in
+./build/kai-term attach 0          # show session 0 in this terminal
+./build/kai-term attach 0 --window # ...or open a window onto it instead
+./build/kai-term send 0 make --enter   # type into it without watching it
+./build/kai-term save 0 build      # keep it, and name it "build"
+./build/kai-term kill 0            # end it
+./build/kai-term shutdown          # stop the daemon and everything it holds
 ```
+
+Inside a session — a window's shell, or a terminal you `attach`ed into — the number is in
+the shell's environment as `KAI_SESSION`, so `save` and `detach` need no arguments there:
+`save` keeps the session you are standing in, and `detach` sends away its views. `list`
+stars that same session. From outside, pass the number. The old `kai-term session ...`
+and `kai-term open NAME` are retired; typing one says what now does the job.
 
 The socket is `$XDG_RUNTIME_DIR/kai-term/daemon-v3.sock` — the number is the protocol it
 speaks, so a daemon left running by an older build is not the one a new build talks to.
@@ -331,7 +338,7 @@ so the keybind that keeps a shell would say `unknown command`, and it says nothi
 whether a session was kept, so a listing would hide shells and a menu come up empty. A new
 build starts its own daemon and says, once, that an older one is still running with shells
 it cannot reach and which process to stop; it never stops that daemon by itself, because a
-daemon holding somebody's shells is not ours to tidy away. `kai-term session serve` runs
+daemon holding somebody's shells is not ours to tidy away. `kai-term serve` runs
 the daemon in the foreground instead of the background — that is the way to see why a
 daemon would not start. `kai-term` is the only program built; the daemon is the same
 binary started a different way. What is on the
@@ -404,7 +411,7 @@ for a new tab, **Ctrl+Shift+H** to switch between side-by-side panes and a tab v
 A window's own shell is a session like any other, but unsaved: it is not listed as one
 of yours, it does not stop the window closing, and closing the window on purpose ends
 it. Losing that window *without* meaning to — a crash, a `kill -9` — leaves the shell
-behind, listed by `session list` as **left behind**, so the work is still there.
+behind, listed by `kai-term list` as **left behind**, so the work is still there.
 
 The keybinds and the close question have been used at a live Wayland session, and the
 close question and both sides of the margin rule have been looked at as pictures; the

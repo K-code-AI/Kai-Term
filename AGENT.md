@@ -98,6 +98,23 @@ the daemon fresh after a rebuild.
   quietly become a switch that loses the work the button was pressed to keep.
   Nothing is asked when nothing is running, and nothing is asked about a session
   that is already kept — its work goes on either way.
+- 2026-11-19: the command surface Kaida agreed to verb by verb is built. The words come
+  straight after `kai-term` — `list`, `new`, `attach`, `detach`, `save`, `send`, `kill`,
+  `start`, `shutdown`, `serve` — a number from the listing is the handle (name still
+  wins, so a session called "7" means itself), and `attach --window` opens a window
+  instead of taking over the terminal. `kai-term session ...` and `kai-term open NAME`
+  are retired and say so rather than failing like a typo. A shell the daemon starts
+  carries its number in `KAI_SESSION`, set-not-inherited in the child before exec (a
+  daemon started from inside a session must not hand that session to every shell it
+  later spawns), which is what lets `save` and `detach` take no arguments inside a
+  session and lets `list` star the row for the session you are standing in. `new` prints
+  the id and the name behind it; `save` answers with the record's own name, not an echo
+  of the handle typed. `tests/cli_surface.cpp` (30 checks) runs the real binary in a
+  private `$XDG_RUNTIME_DIR` — retired words, ids, the star, argument-free save, the
+  fake-parent `KAI_SESSION=99` that a new shell must not inherit. Fixing the surface
+  turned up that `attach 999` had never printed its reason: the old code printed the
+  error only on the clean-exit path. The attached view's status line and its
+  `Ctrl+S to leave` are the last piece of the agreed surface and are next.
 - 2026-11-19: documentation audit. README, ARCHITECTURE, RESUME and ROADMAP were
   re-read against the code: test counts (21 binaries; session 126, widget-session 44,
   app-window 78, close-prompt 18 after the detail line went away, widget-panes 24), the
@@ -119,9 +136,19 @@ the daemon fresh after a rebuild.
 
 ## Next Steps
 
+- **The attached view's status line and `Ctrl+S to leave`.** `kai-term attach 0` hands
+  over the whole terminal with no word about which session it is looking at and no way
+  out but ending the shell — the one piece of the agreed command surface not built yet.
+  The view has to reserve a row, keep the session's grid below it, and answer Ctrl+S by
+  sending `Detach` and returning the terminal, because a terminal cannot tell Ctrl+S
+  from Ctrl+Shift+S and the byte that arrives from an attached view is Ctrl+S.
+- **Themable, configured inside the terminal with a live preview** — agreed with Kaida
+  on 2026-11-19. A small TUI drawn by the widget the way the dialogs are, editing
+  palette, accent (the dialogs' focused button is fixed blue today) and spacing, with a
+  patch of real grid, cursor, selection and a sample dialog repainted as each choice
+  moves. Wants the config file first, so a preview can be persisted; see ROADMAP M4.
 - Visually verify the two dialogs on a live Wayland/X11 session: the question over a
   real build, and the session list with four or five sessions in it.
-- Consider a theme or accent colour for the focused button rather than the fixed blue.
 - Visually verify the attached window and its coloured scrollback on a live Wayland/X11 session.
 - Restart the session daemon after a rebuild: a running daemon keeps the old snapshot code even after the binary on disk is replaced.
 - Keep the widget-level history check and the home-directory check in the test suite.

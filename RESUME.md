@@ -6,10 +6,10 @@
 
 M3 put the pty and the screen model in a process of their own: a session is
 something a window looks at rather than something a window keeps alive. There is a
-daemon (`kai-term session serve` — the same binary as the window, started a different
+daemon (`kai-term serve` — the same binary as the window, started a different
 way), a framed protocol over a Unix
-socket, `session new|list|attach|detach|kill|send|shutdown` on the command line,
-`kai-term open NAME` for a window onto a running session, a backend seam so the widget
+socket, `kai-term new|list|attach|detach|kill|send|shutdown` on the command line,
+`attach --window` for a window onto a running session, a backend seam so the widget
 cannot tell a local shell from a session across the socket, and pane-scoped selection
 so a drag stops at the edge of the pane it started in.
 
@@ -17,7 +17,11 @@ M4 has its first pieces in: a window's shell is held by the daemon (started for 
 window, not before it), Ctrl+Shift+S keeps that shell and starts a fresh one in the same
 window, Ctrl+Shift+A lists the kept and left-behind sessions inside the terminal
 and brings the chosen one back — asking first when something is running where you
-stand — and closing a window with something running asks instead of ending it. A window can be pointed at
+stand — and closing a window with something running asks instead of ending it. The
+command line was flattened to what Kaida agreed verb by verb: the words come straight
+after `kai-term`, a number from the listing is the handle, and a shell started by the
+daemon carries its number in `KAI_SESSION`, which is what lets `save` and `detach` be
+argument-free inside a session and lets `list` star the session you are standing in. A window can be pointed at
 another shell while it stays open, which is what restoring means.
 
 **The keep-this-shell keybind and the close question in M4 have been used at a live
@@ -194,8 +198,8 @@ M3 — sessions that outlive their window:
   `send(..., MSG_NOSIGNAL)` fails with `ENOTSOCK` on a pipe, which is why CLI output uses
   a plain `write` loop and an `attach` with its output redirected stopped printing
   nothing at all.
-- A background daemon now execs `kai-term session serve`, because a copy of whatever
-  started it shows up in `ps` as `kai-term session new -s work --cwd /tmp` and nobody can
+- A background daemon now execs `kai-term serve`, because a copy of whatever
+  started it shows up in `ps` under a stranger's command line and nobody can
   tell what is holding their shells. The Command column has said so ever since; the
   Program column still said `exe`, because that is the last part of the
   `/proc/self/exe` path the daemon execs by, so `serve` now names the task
@@ -226,11 +230,11 @@ Fixes found by a person running it (niri, 2026-11-17):
 Work done since, which is the start of M4 — the workflow a person described rather than
 the one a multiplexer manual describes:
 
-- `kai-daemon` is gone. One program is built; the daemon is `kai-term session serve`, and
+- `kai-daemon` is gone. One program is built; the daemon is `kai-term serve`, and
   a window asks for a daemon rather than requiring one. Twenty test binaries moved to
   `build/tests/` so the build directory holds the terminal and nothing else.
 - A session records whether it has been kept. A window's shell is unkept and named `w1`,
-  `w2` …; `session list` does not show those, but does show one that was left behind when
+  `w2` …; `kai-term list` does not show those, but does show one that was left behind when
   a window died without saying so, next to a column naming what is running out front.
 - `Detach` with `discard=1` ends an unkept session; silence does not. That is the whole
   difference between closing a terminal and losing one, and it is a message field rather
