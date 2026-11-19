@@ -104,11 +104,10 @@ and the window shows one character in the corner. A region outlives the program 
 it — vim, less, anything interrupted leaves one behind — so the region in the model need
 not describe the screen being shown at all.
 
-What a snapshot does not carry is the buffer the application is not on. A view that
-arrives while a program holds the alternate screen has no primary-screen history of that
-session to return to when the program quits; it lands on what was there when it joined.
-Said here because it is the sort of thing that reads as a bug in a year, and it is in the
-roadmap rather than in the code as a surprise.
+A snapshot carries both buffers. The primary screen and its history are painted first,
+then the alternate screen is entered and painted, so a view that arrives while a program
+holds the alternate screen has the primary screen and history to return to when the
+program quits.
 
 Because it owns the model, the daemon also answers the questions programs ask the
 terminal — device attributes, cursor position — which it must: nobody answering is not a

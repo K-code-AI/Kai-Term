@@ -63,7 +63,12 @@ Implemented:
 - DECCKM application cursor keys (`ESC[?1h`), so vim, less and fish's Vi mode get
   `ESC O A`-style sequences instead of `ESC [ A`.
 - Arrow keys are sent to fish as ANSI cursor bindings (`ESC[A]`, `ESC[B]`, `ESC[C]`, `ESC[D]`); fish moves its own command-line cursor and updates autosuggestions. A visible cursor marker follows the screen cursor.
-- Rendering has a small padding buffer around the glyph grid.
+- Rendering has a small padding buffer around the glyph grid, to keep a shell's
+  glyphs out of the rounded corners of a borderless window. A full-screen
+  application holding the alternate screen gets the whole window instead: the
+  inset goes to zero while it holds the screen and its grid grows into the room,
+  because it paints its own frame and the margin is the terminal's background —
+  btop's blue inside a grey-black ring is two programs drawing one window.
 - Alternate screen buffers (`ESC[?1049h` / `ESC[?1049l`) are supported; `ESC[3J` clears the screen and scrollback. Lines that scroll off the alternate screen are discarded instead of entering the shell's history, and resizing while an alternate-screen application is running preserves the primary screen and its scrollback.
 - Scroll regions (`ESC[...r]`) and scroll-content-up/down (`ESC[...S]` / `ESC[...T]`) are supported for tmux-style layouts, including a region given on one side only (`ESC[3r`) and a bottom bound past the last row. Lines SU pushes off the top of a whole screen go into the scrollback, as a newline's would.
 - OSC sequences that applications send and expect an answer from: window and icon title (`OSC 0/1/2`, with `OSC 23;1` and the `ESC[22 t` / `ESC[23 t` title stack), the working directory (`OSC 7`, percent-decoded), the clipboard (`OSC 52`, both set and query — a program inside the terminal can copy text out, and can read the clipboard when it asks), the default foreground and background (`OSC 10/11`) and palette entries (`OSC 4`, reset by `OSC 104`).
@@ -301,7 +306,9 @@ KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term
 ./build/kai-term --help
 ```
 
-The shell is chosen from `KAI_SHELL`, then `SHELL`, then `/bin/sh`.
+The shell is chosen from `KAI_SHELL`, then `SHELL`, then `/bin/sh`. With no `--cwd`, a
+new shell starts in the user's home directory; the shell is started there, not sent a
+`cd` command.
 
 Sessions — shells that stay alive when the window closes:
 
@@ -316,7 +323,7 @@ Sessions — shells that stay alive when the window closes:
 ./build/kai-term session shutdown                  # stop the daemon and everything
 ```
 
-The socket is `$XDG_RUNTIME_DIR/kai-term/daemon-v2.sock` — the number is the protocol it
+The socket is `$XDG_RUNTIME_DIR/kai-term/daemon-v3.sock` — the number is the protocol it
 speaks, so a daemon left running by an older build is not the one a new build talks to.
 That matters because the ways an old daemon gets it wrong are invisible: it has no `save`,
 so the keybind that keeps a shell would say `unknown command`, and it says nothing about
@@ -328,8 +335,9 @@ the daemon in the foreground instead of the background — that is the way to se
 daemon would not start. `kai-term` is the only program built; the daemon is the same
 binary started a different way. What is on the
 screen when attaching comes from the daemon's own model, so a session started this
-morning shows this morning; the scrollback above the visible screen is not transferred
-yet.
+morning shows this morning; the scrollback above the visible screen comes with it now,
+including the primary screen and history behind a full-screen program, with the colours
+and attributes those lines had. Only the last 2000 history rows are sent.
 
 ### From inside a window
 
@@ -341,9 +349,16 @@ nothing can be kept.
 - **Ctrl+Shift+S** keeps the shell this window is showing and starts a fresh one in the
   same window. The window stays, because what ended was the shell, not the window. The
   kept session gets a name (`s1`, `s2`, …) and the corner says which.
-- **Ctrl+Shift+A** opens a menu of the kept sessions with what is happening in each —
-  `s1   sleep`, `s2   at a prompt` — and clicking one brings it back into this window.
-  The session already being shown is not in the list.
+- **Ctrl+Shift+A** puts the list of sessions you could go back to inside the terminal
+  itself, drawn in its own font and walked like any TUI picker: Up/Down or j/k move the
+  highlight, Enter goes, Esc puts it away, and the number keys jump straight to a row.
+  Each row says what is happening in the session — `s1  sleep running  kept`,
+  `s2  at a prompt`. The session already being shown is not in the list. If
+  something is running in the shell being left behind, the switch asks the same
+  question the close button asks — **"Load session s2 while btop is running?"**,
+  Yes / No / Save Session — because the switch ends this shell and the work goes
+  with it; a session that was kept is asked about by nobody, since its work goes
+  on whether or not this window is looking at it.
 
 - Plain **Ctrl+S** is left alone and goes to the shell, where it stops and starts
   output the way it always has. That is why the key above has Shift in it: a terminal
@@ -354,16 +369,19 @@ nothing can be kept.
 Keys held free for what is coming, so that a later feature does not quietly take one
 that has become somebody else's: **Ctrl+Shift+F** for a file manager, **Ctrl+Shift+N**
 for a new tab, **Ctrl+Shift+H** to switch between side-by-side panes and a tab view.
-- Closing a window with something running asks **"Quit while `make` is running?"** with
-  **Yes**, **No** and **Detach session before closing terminal**. A shell sitting at a
-  prompt is not asked about, because there is nothing out there to lose.
+- Closing a window with something running asks **"Quit while `make` is running?"**
+  inside the terminal itself — the terminal's own font on its own surface, not a
+  window the desktop decorates — with **Yes**, **No** and **Save Session** in that
+  order. The arrows or Tab walk the buttons, their first letters answer without
+  walking, and **No** holds the focus, so an absent-minded Enter loses nothing. A
+  shell sitting at a prompt is not asked about, because there is nothing out there
+  to lose.
 
 - A session that was kept is asked about too, when something is running in it. Keeping a
   session says what happens to the *shell*; it is not permission for the window to drop
-  whatever is running inside it on the way out. The second line says which of the two it
-  is — for a kept one, that the work goes on running either way and closing takes only the
-  window — and Detach is left off, because on a kept session it would be a second way to
-  press the first button.
+  whatever is running inside it on the way out. Being kept changes only whether **Save
+  Session** is on offer at all — on a kept session it would be a second way to press
+  the first button.
 
 - **`KAI_CONFIRM_QUIT`** says how often to ask: `running` (the default) asks whenever
   something is running in the window, `always` asks at every close, and `never` lets the

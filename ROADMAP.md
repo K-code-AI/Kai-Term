@@ -221,9 +221,8 @@ Needed:
 
 - A person to run `kai-term session new`, `kai-term open NAME` and `session attach` and
   say whether it reads well.
-- Scrollback is not transferred on attach, only the visible screen. A session that has
-  been running since before the window existed shows the last screenful and the scroll
-  bar says there is nothing above it.
+- Scrollback now comes across on attach, including the primary screen and history
+  behind an alternate-screen program. Only the last 2000 history rows are sent.
 - One view's size is the session's size, last writer wins. Two windows of different
   heights attached to one session will fight, which a multiplexer has to decide about
   rather than leave to whichever resized last.
@@ -245,14 +244,18 @@ Done:
   cannot reach a daemon says so once and runs a shell of its own.
 - **Ctrl+Shift+S** keeps the shell and starts a fresh one in the same window. The window
   stays, because what ended was the shell.
-- **Ctrl+Shift+A** lists the kept sessions with what is happening in each and brings the
-  one you click back into this window.
-- Closing a window with something running asks — Yes, No, or Detach session before
-  closing terminal — and names the program, from the process group the terminal owns.
-  Nothing is asked about a shell at a prompt. A kept session with something running is
-  asked about like any other; what being kept changes is the wording and whether Detach is
-  offered, not whether the window asks. Kaida found the old rule by closing two of those
-  without being asked, which is the sort of thing a rule should not survive.
+- **Ctrl+Shift+A** lists the sessions you could go back to, inside the terminal and in
+  its own font, with what is happening in each; arrows or the number keys walk it and
+  Enter goes there. Leaving a shell with something running in it asks the same question
+  the close button asks first — Yes, No, or Save Session — because the switch ends
+  that shell.
+- Closing a window with something running asks — Yes, No, or Save Session, in that
+  order, inside the terminal — and names the program, from the process group the
+  terminal owns. Nothing is asked about a shell at a prompt. A kept session with
+  something running is asked about like any other; what being kept changes is whether
+  Save Session is offered, not whether the window asks. Kaida found the old rule by
+  closing two of those without being asked, which is the sort of thing a rule should
+  not survive.
 - How often that happens is a setting, `KAI_CONFIRM_QUIT=never|running|always`, under the
   same three words Old-Term's `confirm_quit` takes. It is read from the environment
   because there is no config file yet; when there is one, that is where it goes.

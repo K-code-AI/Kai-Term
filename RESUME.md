@@ -190,7 +190,10 @@ M3 — sessions that outlive their window:
   nothing at all.
 - A background daemon now execs `kai-term session serve`, because a copy of whatever
   started it shows up in `ps` as `kai-term session new -s work --cwd /tmp` and nobody can
-  tell what is holding their shells.
+  tell what is holding their shells. The Command column has said so ever since; the
+  Program column still said `exe`, because that is the last part of the
+  `/proc/self/exe` path the daemon execs by, so `serve` now names the task
+  `kai-term-daemon` with `prctl(PR_SET_NAME)` before it starts listening.
 
 Fixes found by a person running it (niri, 2026-11-17):
 
@@ -242,7 +245,7 @@ the one a multiplexer manual describes:
   treated as the query, so the commonest form of it emptied the clipboard instead) is
   forwarded to views with `query=1`, and a view's answer goes back down as a `Data` frame.
 - The protocol between a window and the daemon has a number, `kProtocolVersion`, and the
-  daemon's socket is named after it (`daemon-v2.sock`), so a daemon left running by an
+  daemon's socket is named after it (`daemon-v3.sock`), so a daemon left running by an
   older build is not the one a new build talks to. This was found by it actually
   happening: a daemon from before the kept-sessions work was still running here, and the
   new keybind said `unknown command: save` — while `session list`, reading a reply with no
@@ -280,12 +283,12 @@ Key files:
 - `src/process/pty.hpp` — `forkpty()` PTY and shell lifecycle. The child branch execs the shell; the parent owns the master descriptor. Resize uses `TIOCSWINSZ`.
 - `src/app/main.cpp` — application entry point: arguments, then one window.
 - `src/app/appwindow.hpp` — the window a person runs. Owns the session name, Ctrl+Shift+S
-  (keep this shell, start a fresh one here), Ctrl+Shift+A (a menu of kept sessions that
-  restores the one clicked) and the close prompt. The widget stays ignorant of sessions.
+  (keep this shell, start a fresh one here), Ctrl+Shift+A (the sessions you could go back
+  to, listed inside the terminal, which restores the one chosen) and the close prompt.
+  The widget stays ignorant of sessions.
 - `src/app/closeprompt.hpp` — `ConfirmPolicy` (`never` / `running` / `always`, the words
-  Old-Term's `confirm_quit` takes) and `closeQuestion()` / `closeDetail()` /
-  `closeOfferDetach()`:
-  when closing has to ask, and what it says. No Qt, so the decision is tested and only the
+  Old-Term's `confirm_quit` takes) and `closeQuestion()` / `closeOfferSave()`:
+  when closing has to ask, and what it asks. No Qt, so the decision is tested and only the
   dialog is left for a person to look at.
 - `src/process/job.hpp` — `foregroundJob(master, shell)`: the command name of the process
   group the terminal says owns the foreground, empty when that group is the shell itself.
@@ -451,7 +454,7 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
   session and closing again went silently, because the window counted a kept session as
   nothing-to-lose. Kaida's rule, which is the one implemented: attaching to a session does
   not make it kept, and closing a window with something running always asks. Being kept
-  changes the second line and the buttons, not whether it asks.
+  changes the buttons, not whether it asks.
 - **Almost everything else in M3 and M4 has still not been looked at by a person.** The
   keep-this-shell keybind has been used at a live Wayland session (niri) and works. What the
   question's three buttons feel like under a hand, where the status line sits, what the
@@ -459,12 +462,12 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
   The daemon, the command line and the window showing a session are tested with no display. What the menu looks like, where the status line sits, whether three buttons
   read well when you have a build running, and what Ctrl+Shift+S feels like the third
   time are all unverified.
-- The session menu is a `QMenu` built when Ctrl+Shift+A is pressed, so it is correct at
-  the moment it opens and wrong afterwards; nothing updates a menu that is already on
-  the screen. Nobody has tried holding it open while a session ends.
-- Attaching transfers the visible screen and not the scrollback above it, and the scroll
-  bar agrees with what was transferred, so a session that has been running since this
-  morning shows the last screenful and says there is nothing above it.
+- The session list is built when Ctrl+Shift+A is pressed and drawn inside the terminal,
+  so it is correct at the moment it opens and wrong afterwards; nothing updates a list
+  that is already on the screen. Nobody has tried holding it open while a session ends.
+- Attaching transfers the visible screen and the scrollback above it, including the
+  primary screen and history behind an alternate-screen program. The snapshot sends
+  the last 2000 history rows.
 - One view's size is the session's size and the last writer wins. Two windows of
   different heights attached to one session will fight over it; a multiplexer has to
   decide about that rather than leave it to whoever resized last.
@@ -580,8 +583,8 @@ useless. Agreed with Kaida on 2026-11-17.
 5. Decide the two policy questions the daemon leaves open: what happens to a session's
    size when a second view of a different size attaches, and what a wedged client that
    stops reading should cost the session.
-6. Transfer scrollback on attach, or say in the UI that the view starts at the bottom of
-   what was kept.
+6. Transfer scrollback on attach — done, including the primary buffer behind an
+   alternate-screen program.
 7. The command surface agreed with Kaida on 2026-11-17, written out in ROADMAP.md:
    session ids as the default handle, `kai-term list` / `attach 3` / `detach` / `save`
    with no `session` word, `KAI_SESSION` so a command knows where it is running, and a
