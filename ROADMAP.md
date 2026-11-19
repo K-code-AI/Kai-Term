@@ -154,8 +154,9 @@ view of a session rather than the thing keeping it alive.
   in a terminal. `kai-term` is the only program built — the daemon is the same binary
   started a different way, which matters because a separate daemon binary is a second
   thing to install, version and get wrong. One daemon per user, listening on
-  `$XDG_RUNTIME_DIR/kai-term/daemon.sock` (directory 0700, socket 0600, and the peer's
-  uid checked on every connection). Every missing level of that path is created, because
+  `$XDG_RUNTIME_DIR/kai-term/daemon-v3.sock` — the number is the protocol it speaks, so a
+  daemon left running by an older build is not the one a new build talks to (directory
+  0700, socket 0600, and the peer's uid checked on every connection). Every missing level of that path is created, because
   pointing `$XDG_RUNTIME_DIR` somewhere of your own is how sessions end up somewhere
   specific.
 - Unix socket IPC: `src/ipc/protocol.hpp`, a framed codec with escaped fields — length,
@@ -205,22 +206,25 @@ view of a session rather than the thing keeping it alive.
 - New tests: `kai-term-ipc` (framing and field escaping), `kai-term-sockets` (paths,
   binding, stale sockets, peer credentials, directories that have to be created),
   `kai-term-snapshot` (a screen snapshot fed back into a fresh model reproduces it cell
-  for cell), `kai-term-session` (96 checks over a real pty and a real socket),
+  for cell), `kai-term-session` (126 checks over a real pty and a real socket),
   `kai-term-widget-session` (a window showing a session: what was already printed,
   typing, size, closing the window, a second window, being pointed at another shell),
   `kai-term-widget-panes` (real mouse drags across a pane boundary).
 
 Not yet verified:
 
-- Anything a person has looked at. Every check here is offscreen or headless; what an
-  attached window looks like, and what a session feels like to use, is for a person to
-  say.
+- What an attached window looks like is partly known now: Kaida attached to a live
+  session, and the re-attach black screen and the missing scrollback found there are
+  fixed and re-checked at a live attach. What a session feels like to use from another
+  terminal, to someone who did not build it, is still for a person to say.
 - X11, as before: no X server on this machine.
 
 Needed:
 
-- A person to run `kai-term session new`, `kai-term open NAME` and `session attach` and
-  say whether it reads well.
+- A person other than the one who built it to run `kai-term session new`,
+  `kai-term open NAME` and `session attach` and say whether it reads well. (Kaida has run
+  them at a live session, and the bugs those runs found — the black first screen, the
+  missing scrollback — are fixed.)
 - Scrollback now comes across on attach, including the primary screen and history
   behind an alternate-screen program. Only the last 2000 history rows are sent.
 - One view's size is the session's size, last writer wins. Two windows of different
@@ -235,7 +239,10 @@ Needed:
 
 ## M4 — Native multiplexer
 
-Status: **in progress, headless**. No part of it has been looked at by a person.
+Status: **in progress**. The keep-this-shell keybind, the close question and the
+in-terminal dialogs have been used live on niri, by Kaida, and the dialog's shape came
+out of that use. The session list, the switch question and the margin rule are tested and
+photographed offscreen and have not been seen on a live display yet.
 
 Done:
 
@@ -325,7 +332,6 @@ Needed:
 - Horizontal and vertical splits, with `setPanes()` called with the cells each pane owns.
 - Pane selection and resizing.
 - Multiple windows and tabs.
-- A scrollback that comes across with a session when a second view joins it.
 - The command surface above: ids, the flattened verbs, the attached view's status line.
 - One question for the whole window, not one per shell: Old-Term counts every session in
   the window that has something in its foreground group and names each of them, so a

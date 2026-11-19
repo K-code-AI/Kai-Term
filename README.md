@@ -10,14 +10,15 @@ implemented and tested, and M4 (the native multiplexer) has its first pieces: ev
 window's shell is held by the session daemon, **Ctrl+Shift+S** keeps one and starts a
 fresh shell in the same window, **Ctrl+Shift+A** brings a kept one back, and closing a
 window with something running asks rather than ends. M1 and M2 have been used at a live
-Wayland session. Of M3 and M4, the keep-this-shell keybind has been used at a live
-Wayland session — on niri, by Kaida — and it works. Everything else in them is still
-checked
-headless or offscreen only, so what the session menu looks like, what the close prompt
-reads like when you have a build running, and what it feels like to attach to a session
-from another terminal are still somebody else's to say. Since the last milestone closed, the parts an audit found thin have been
-filled in: scrollback reflows when
-the window changes width, the view says where it is in the history, a selection
+Wayland session. Of M3 and M4, the keep-this-shell keybind and the close question have
+been used at a live Wayland session — on niri, by Kaida — and the dialog's current shape
+came out of that use. What the session list looks like with several sessions in it, what
+the switch question feels like mid-build, and what the margin rule does at a live
+compositor's rounded corners have been photographed offscreen but not yet seen on a
+display; neither has what it feels like to attach to a session from another terminal.
+
+Since the last milestone closed, the parts an audit found thin have been filled in:
+scrollback reflows when the window changes width, the view says where it is in the history, a selection
 dragged to an edge scrolls, the shell's process tree is taken down with it, and the
 escape-sequence coverage applications actually send (window titles, OSC 52 clipboard,
 working directory, colour queries, window-size queries) is answered instead of
@@ -184,11 +185,11 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-This builds one program, `build/kai-term`, and twenty test binaries under
+This builds one program, `build/kai-term`, and twenty-one test binaries under
 `build/tests/`. One program matters: the daemon is `kai-term session serve`, not a second
 executable to install, version and get out of step with the terminal it serves. The tests
 are kept out of the way because someone who has just built the terminal should not have to
-work out which of twenty-one files is the terminal.
+pick the terminal out of a directory of test binaries.
 
 The tests are listed under [Tests](#tests); `cmake --build build` builds all of them, and
 `cmake --build build --target kai-term` builds only the application.
@@ -405,9 +406,11 @@ of yours, it does not stop the window closing, and closing the window on purpose
 it. Losing that window *without* meaning to — a crash, a `kill -9` — leaves the shell
 behind, listed by `session list` as **left behind**, so the work is still there.
 
-Nothing here has been looked at by a person: the keybinds, the menu and the close
-prompt are tested offscreen, which checks what they decide and what they would show, not
-what they look like.
+The keybinds and the close question have been used at a live Wayland session, and the
+close question and both sides of the margin rule have been looked at as pictures; the
+session list, the switch question and the margin rule on a real compositor have not
+been looked at on a live display. What the offscreen tests check is what each dialog
+decides and what it would show, not what it looks like to a person mid-build.
 
 ## Configuration
 

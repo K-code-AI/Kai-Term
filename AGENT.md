@@ -7,14 +7,19 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
 ## Current Status
 
 - Build: `cmake --build build -- -j4` succeeds.
-- Tests: all `build/tests/kai-term-*` binaries pass after the changes below.
+- Tests: all 21 `build/tests/kai-term-*` binaries pass after the changes below.
+- Everything through the 2026-11-19 documentation audit is committed and pushed to
+  `origin/main`.
 - Verified: a view built around a session now takes the session's screen before it is shown, so the black window is gone without a keypress.
 - Verified: snapshots carry scrollback history, including the primary screen and history behind an alternate-screen program.
 - Not verified: visual inspection on a live Wayland/X11 session; this machine has no X server.
 
 ## Current Task
 
-The two dialogs the window puts up — the question asked when a window is closed with
+The documentation audit is done: every doc was re-read against the code and brought in
+line — stale test counts, the "no person has looked at it" claims that Kaida's live runs
+outran, the old socket path, the missing module entries, and the daemon's new behaviour
+in ARCHITECTURE. The two dialogs the window puts up — the question asked when a window is closed with
 something running, and the Ctrl+Shift+A session list — are drawn inside the terminal
 itself now, in the terminal's own font and colours, and both are answered from the
 keyboard: the question offers Yes / No / Save Session with No focused and the first
@@ -93,6 +98,14 @@ the daemon fresh after a rebuild.
   quietly become a switch that loses the work the button was pressed to keep.
   Nothing is asked when nothing is running, and nothing is asked about a session
   that is already kept — its work goes on either way.
+- 2026-11-19: documentation audit. README, ARCHITECTURE, RESUME and ROADMAP were
+  re-read against the code: test counts (21 binaries; session 126, widget-session 44,
+  app-window 78, close-prompt 18 after the detail line went away, widget-panes 24), the
+  daemon socket path in ARCHITECTURE, the module layout and file lists (`sessionmenu.hpp`
+  was missing), the M3/M4 "nobody has looked at it" claims Kaida's live use outran, the
+  done scrollback item still on M4's needed list, and the new rules — dialogs drawn by
+  the widget, the margin belonging to the screen's owner, the daemon's caps, races and
+  name — written down where the next person will read them.
 - 2026-11-19: `tests/app_window.cpp` catches the question on the widget rather than as
   a top-level `QMessageBox`, checks the button order, the focus, the arrow walking and
   the letter answers, and walks the session list to a session. README, ROADMAP, RESUME

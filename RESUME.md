@@ -15,19 +15,25 @@ so a drag stops at the edge of the pane it started in.
 
 M4 has its first pieces in: a window's shell is held by the daemon (started for the
 window, not before it), Ctrl+Shift+S keeps that shell and starts a fresh one in the same
-window, Ctrl+Shift+A brings a kept one back with a mouse-usable menu, and closing a
-window with something running asks instead of ending it. A window can be pointed at
+window, Ctrl+Shift+A lists the kept and left-behind sessions inside the terminal
+and brings the chosen one back — asking first when something is running where you
+stand — and closing a window with something running asks instead of ending it. A window can be pointed at
 another shell while it stays open, which is what restoring means.
 
-**The keep-this-shell keybind in M4 has been used at a live Wayland session, on niri,
-by Kaida, who reports it works.** (It was Ctrl+Shift+D when that was said; it is
-Ctrl+Shift+S now, by request, and the D is retired.) Everything else in M3 and M4 is checked headless or
-offscreen only: 109 daemon checks over a real pty and a real socket, 36 checks of a window
-rendering a session and switching between two, 22 checks of the application window's
-keybinds and menu contents, 14 of when a close asks at all, 24 checks of drags across a
-pane boundary, plus the protocol, socket and snapshot tests. What an attached window
-looks like, what the menu looks like and what the close prompt reads like when you are
-holding a build you did not want to lose belongs to whoever runs it next.
+**The keep-this-shell keybind and the close question in M4 have been used at a live
+Wayland session, on niri, by Kaida, who reports they work.** (The keybind was
+Ctrl+Shift+D when that was said; it is Ctrl+Shift+S now, by request, and the D is
+retired. The question was a desktop dialog then; it is the terminal's own now, also by
+request.) Everything else in M3 and M4 is checked headless or
+offscreen only: 126 daemon checks over a real pty and a real socket, 44 checks of a
+window rendering a session and switching between two, 78 checks of the application
+window's keybinds and dialogs, 18 of when a close asks at all and what it offers, 24
+checks of drags across a pane boundary, plus the protocol, socket and snapshot tests.
+What an attached window looks like has been seen — the re-attach bugs Kaida found
+were found at a live session — and the close question has been read and answered
+there twice over, once as a native dialog and once as the terminal's own question.
+What the session list and the switch question look like on a live display, and what
+attaching feels like to someone who did not build it, belong to whoever runs it next.
 
 M1 and M2 are unchanged in that respect: tested headlessly and offscreen, and used at a
 live Wayland session by a person, but never inspected on X11.
@@ -38,7 +44,7 @@ mouse reporting for applications, a scrollback view that reflows and shows where
 is, and a shell teardown that takes the whole session with it. The parser, PTY
 handling, keyboard and mouse byte encoding, scrollback model, scroll indicator,
 process lifecycle, selection geometry, text extraction and widget code paths are
-verified by headless tests (`ctest` runs twenty binaries, all passing), and one of
+verified by headless tests (`ctest` runs twenty-one binaries, all passing), and one of
 them drives a real application (btop) with the mouse inside the widget. The GUI has
 been exercised with Qt's offscreen platform, and a person has used it at a live
 Wayland session for selection, paste into other applications and general
@@ -279,13 +285,16 @@ Key files:
 - `src/terminal/selection.hpp` — `CellPos`, `Selection{anchor, head}` with the head column exclusive, and `expandToWord()`, which takes a classifier callback so it does not depend on the cell representation.
 - `src/terminal/text.hpp` — `rowText()`, `screenText()`, `selectionText()`, and `selectionTextAt()`, which takes a row callback so the widget can resolve scrolled-back rows through the same code.
 - `src/terminal/vtparser.cpp` — native VT parser. Handles cursor movement, SGR colors/attributes, erase, OSC ignore, DEC save/restore, UTF-8, and scroll.
-- `src/terminal/terminalwidget.hpp` — Qt widget, owning the selection, the copy and paste bindings, and the scrollback view. Reads PTY output on a reader thread and posts output events to the Qt event loop. Keyboard input is encoded by `keyencode.hpp` and written to the PTY master. Holds `scroll_offset_`, the number of lines scrolled back from the live bottom, and the current `Selection`. Mouse press, move and release either build a selection or, when the application asked for reporting, go to `encodeMouse()` and the PTY; `cellSize()` and `cellTopLeft()` expose the grid geometry so a test can aim at a character.
+- `src/terminal/terminalwidget.hpp` — Qt widget, owning the selection, the copy and paste bindings, and the scrollback view. Reads PTY output on a reader thread and posts output events to the Qt event loop. Keyboard input is encoded by `keyencode.hpp` and written to the PTY master. Holds `scroll_offset_`, the number of lines scrolled back from the live bottom, and the current `Selection`. Mouse press, move and release either build a selection or, when the application asked for reporting, go to `encodeMouse()` and the PTY; `cellSize()` and `cellTopLeft()` expose the grid geometry so a test can aim at a character. Draws the window's dialogs inside itself (`askInTerminal()`, `chooseInTerminal()`), in the terminal's own font, and insets the grid by a margin that goes to zero while an application holds the alternate screen (`activePadding()`).
 - `src/process/pty.hpp` — `forkpty()` PTY and shell lifecycle. The child branch execs the shell; the parent owns the master descriptor. Resize uses `TIOCSWINSZ`.
 - `src/app/main.cpp` — application entry point: arguments, then one window.
 - `src/app/appwindow.hpp` — the window a person runs. Owns the session name, Ctrl+Shift+S
   (keep this shell, start a fresh one here), Ctrl+Shift+A (the sessions you could go back
-  to, listed inside the terminal, which restores the one chosen) and the close prompt.
-  The widget stays ignorant of sessions.
+  to, listed inside the terminal, which restores the one chosen after asking the close
+  question's twin when something is running where you stand) and the close prompt. The
+  widget stays ignorant of sessions.
+- `src/app/sessionmenu.hpp` — what one row of the session list says: the id, the name,
+  what is running, kept or left behind. No Qt, so the words are tested without a window.
 - `src/app/closeprompt.hpp` — `ConfirmPolicy` (`never` / `running` / `always`, the words
   Old-Term's `confirm_quit` takes) and `closeQuestion()` / `closeOfferSave()`:
   when closing has to ask, and what it asks. No Qt, so the decision is tested and only the
@@ -455,13 +464,15 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
   nothing-to-lose. Kaida's rule, which is the one implemented: attaching to a session does
   not make it kept, and closing a window with something running always asks. Being kept
   changes the buttons, not whether it asks.
-- **Almost everything else in M3 and M4 has still not been looked at by a person.** The
-  keep-this-shell keybind has been used at a live Wayland session (niri) and works. What the
-  question's three buttons feel like under a hand, where the status line sits, what the
-  session menu looks like with four sessions in it and the daemon a bit slow — unverified.
-  The daemon, the command line and the window showing a session are tested with no display. What the menu looks like, where the status line sits, whether three buttons
-  read well when you have a build running, and what Ctrl+Shift+S feels like the third
-  time are all unverified.
+- **Parts of M3 and M4 have still not been looked at by a person.** The keep-this-shell
+  keybind and the close question have been used at a live Wayland session (niri), and the
+  dialog's current shape — one line, Yes / No / Save Session, letters answering, No
+  focused — came out of that use. What the session list looks like with four sessions in
+  it and the daemon a bit slow, what the switch question feels like mid-build, and what
+  the margin rule does at a live compositor's rounded corners are unverified; the dialogs
+  and both sides of the margin are photographed offscreen, which is a picture of a
+  decision, not a display. The daemon, the command line and the window showing a session
+  are tested with no display.
 - The session list is built when Ctrl+Shift+A is pressed and drawn inside the terminal,
   so it is correct at the moment it opens and wrong afterwards; nothing updates a list
   that is already on the screen. Nobody has tried holding it open while a session ends.

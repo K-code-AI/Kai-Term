@@ -35,8 +35,8 @@ The PTY is held in `Pty`, not inside the widget rendering code. M3 moves PTY own
 - Output is read from the PTY master on a reader thread and posted to the Qt widget through `QCoreApplication::postEvent`.
 - Keyboard input is sent to the PTY master from Qt `keyPressEvent`.
 
-Two rules about the view are worth stating because they are the ones a well-meaning
-change breaks:
+Three rules about the view are worth stating because they are the ones a
+well-meaning change breaks:
 
 - **The view's scroll capacity is one number**, `scrollRange()` in the widget, and the
   indicator, the wheel, Shift+PageUp, the thumb drag and the edge-scroll timer all ask it
@@ -50,6 +50,12 @@ change breaks:
 - **A cell stores what it looks like, not a palette index.** `OSC 4` and `OSC 10/11`
   recolour what is written from then on and leave what is already on screen alone, which
   is what a program expects when it changes the background and repaints nothing.
+- **The margin around the grid belongs to the screen's owner.** It exists to keep a
+  shell's glyphs out of the rounded corners of a borderless window, and it is the
+  terminal's own background — so while an application holds the alternate screen it goes
+  to zero and the grid grows into the freed room, because a full-screen program paints
+  its own frame and two backgrounds in one window clash. `activePadding()` is the one
+  question, and the painter, the hit-tester and the grid geometry all ask it.
 
 Still open: Unicode width handling is basic and may need refinement for combining
 characters and unusual emoji sequences, and `OSC 8` hyperlinks are parsed and discarded.
@@ -59,7 +65,7 @@ characters and unusual emoji sequences, and `OSC 8` hyperlinks are parsed and di
 One daemon per user, keeping sessions alive whether or not anybody is looking:
 
 ```
-$XDG_RUNTIME_DIR/kai-term/daemon.sock
+$XDG_RUNTIME_DIR/kai-term/daemon-v3.sock
 ```
 
 The directory is 0700 and the socket 0600, and every connection is checked with
@@ -161,6 +167,16 @@ What ends an unkept session is being told, not being left:
 - `save` promotes one to kept, optionally renaming it; a name already in use is refused,
   because that name belongs to a shell somebody is watching. `discard` and `kill` end one.
 
+A daemon holding people's shells is one they have good reasons never to restart, so its
+resources are capped rather than hoped about: a bounded number of connection threads, a
+timeout on connections that never introduce themselves, retired workers collected without
+a thread ever joining itself — the retiring thread's own handle is detached, and a worker
+does not reach into a slot table a shutdown has already swapped out — and a stop-itself
+when no session is saved and no window is watching. And because it execs by
+`/proc/self/exe`, it names itself `kai-term-daemon` with `prctl`: the kernel names a
+process after the last part of the path it execs, and "exe" is the least informative word
+a process holding every kept shell can introduce itself as.
+
 A listing says which is which, and names what is running out front — the process group
 the terminal reports owning, read from `/proc`, empty when the group is the shell itself.
 That is what lets a window ask "Quit while `make` is running?" instead of guessing from
@@ -208,8 +224,14 @@ bytes from the one behind cannot be painted onto the screen of the one in front;
 queue does not empty itself just because the writer stopped.
 
 The widget knows two key combinations belong to whoever owns it and never reach the
-shell, and otherwise has no idea what a session is. `src/app/appwindow.hpp` is where
-sessions, menus and the close prompt live, and the prompt's *decision* is in
+shell, and otherwise has no idea what a session is. It does, however, draw the dialogs
+its host asks for: `askInTerminal()` and `chooseInTerminal()` put a question with a row
+of buttons, or a walked list, over the grid in the terminal's own font on a panel of the
+terminal's own background, and take the keyboard while they are up. A native dialog
+arrives wearing the desktop's theme, font and button order, and reminds everybody that
+the terminal is a rectangle the window manager decorates; these do not.
+`src/app/appwindow.hpp` is where sessions and the two dialogs live, `src/app/sessionmenu.hpp`
+is what a row of the list says, and the close prompt's *decision* is in
 `src/app/closeprompt.hpp` with no Qt in it: what to ask is worth testing, what the dialog
 looks like has to be looked at.
 
@@ -264,7 +286,8 @@ Do not hardcode compositor-specific behavior. Keyboard, mouse, clipboard, drag-a
 ```
 src/
   app/          main.cpp (arguments, then one window), appwindow.hpp (the keybinds, the
-                menu, the close prompt), closeprompt.hpp (when closing asks — no Qt)
+                session list, the close and switch questions), closeprompt.hpp (when
+                closing asks — no Qt), sessionmenu.hpp (what a list row says — no Qt)
   ipc/          protocol.hpp (frames, fields, records), socket.hpp (bind, connect, peers)
   process/      pty.hpp (forkpty, resize, read, reap), job.hpp (what is running out front)
   session/      daemon.hpp (sessions, views, commands), cli.hpp (the `session` verbs and
