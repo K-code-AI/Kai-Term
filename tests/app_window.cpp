@@ -20,9 +20,11 @@
 #include <QWidget>
 #include <chrono>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -144,6 +146,10 @@ int main(int argc, char** argv) {
     ::mkdir(root.c_str(), 0700);
     ::setenv("XDG_RUNTIME_DIR", root.c_str(), 1);
     ::setenv("KAI_SHELL", "/bin/sh", 1);
+    // The window reads a config file now, and a test must not be at the mercy
+    // of whoever runs it having opinions about their colours. Point it at a
+    // file that is not there; the blocks that want a config set it themselves.
+    ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
 
     Daemon daemon;
     std::string error;
@@ -430,6 +436,80 @@ int main(int argc, char** argv) {
         quiet.discardOnClose();
         quiet.shutdown();
         pump(200);
+    }
+
+    {
+        // The config file reaching a real window: colours the widget paints
+        // with, the closing answer taken from the file, the environment still
+        // outranking it, and a typo in the file said out loud instead of
+        // eaten. The parser itself is checked headless in tests/config.cpp;
+        // this is the wiring from the file into the window.
+        const std::string cfg = root + "/themed-config";
+        {
+            std::ofstream out(cfg);
+            out << "# window test\n"
+                   "confirm_quit = always\n"
+                   "background = #123456\n"
+                   "foreground = #fedcba\n"
+                   "accent = #ff00ff\n"
+                   "confirm_exit = never\n"; // the typo, announced not skipped
+        }
+        ::setenv("KAI_TERM_CONFIG", cfg.c_str(), 1);
+        // The complaint about the typo'd key is meant for a person's terminal
+        // at startup, so the window is built with stderr aimed at a file and
+        // what it said is read back — a warning nobody can prove was printed
+        // is a warning that can silently stop being.
+        const std::string note_file = root + "/config-notes";
+        ::fflush(stderr);
+        const int saved_err = ::dup(STDERR_FILENO);
+        const int sink = ::open(note_file.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (sink >= 0)
+            ::dup2(sink, STDERR_FILENO);
+        kai::AppWindow themed(kai::startWindowBackend(24, 80));
+        ::fflush(stderr);
+        if (sink >= 0) {
+            ::dup2(saved_err, STDERR_FILENO);
+            ::close(sink);
+        }
+        ::close(saved_err);
+        themed.show();
+        static_cast<void>(waitFor([&themed] { return !themed.sessionName().empty(); }));
+        {
+            std::ifstream notes(note_file);
+            const std::string said((std::istreambuf_iterator<char>(notes)),
+                                   std::istreambuf_iterator<char>());
+            expect("the typo'd key is said out loud, with its file and line: " + said,
+                   said.find("confirm_exit") != std::string::npos &&
+                       said.find(cfg) != std::string::npos);
+            expect("and the settings it understood are not complained about",
+                   said.find("confirm_quit") == std::string::npos &&
+                       said.find("accent") == std::string::npos);
+        }
+        expect("the file's background is the screen's background",
+               themed.screen().defaultBackground().r == 0x12 &&
+                   themed.screen().defaultBackground().g == 0x34 &&
+                   themed.screen().defaultBackground().b == 0x56);
+        expect("and its foreground the default ink",
+               themed.theme().foreground.r == 0xFE && themed.theme().foreground.b == 0xBA);
+        expect("the accent the dialogs wear comes from the file too",
+               themed.theme().accent.r == 0xFF && themed.theme().accent.b == 0xFF);
+        // The file's `confirm_quit = always` reaching the close path: a shell
+        // with nothing running is asked, where the default would let it go.
+        const std::string asked = closeAndCatchQuestion(themed);
+        expect("confirm_quit from the file reaches the close prompt: " + asked,
+               !asked.empty());
+        ::setenv("KAI_CONFIRM_QUIT", "never", 1);
+        QCloseEvent overridden;
+        QCoreApplication::sendEvent(&themed, &overridden);
+        expect("and the environment still outranks the file", overridden.isAccepted());
+        ::unsetenv("KAI_CONFIRM_QUIT");
+        themed.discardOnClose();
+        themed.shutdown();
+        pump(200);
+        std::remove(cfg.c_str());
+        std::remove(note_file.c_str());
+        // Back to isolation, for every window built after this one.
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
     }
 
     {

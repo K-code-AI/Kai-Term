@@ -172,6 +172,8 @@ add_test(NAME app-window COMMAND kai-term-app-window)
 
 add_executable(kai-term-close-prompt tests/close_prompt.cpp)
 add_test(NAME close-prompt COMMAND kai-term-close-prompt)
+add_executable(kai-term-config tests/config.cpp)
+add_test(NAME config COMMAND kai-term-config)
 
 # Closing the real binary under a real compositor. The close prompt was once "verified" by
 # calling the window's close from a test, while the terminal sat inside a QMainWindow and
@@ -228,6 +230,7 @@ set(KAI_TEST_TARGETS
     kai-term-attach-state
     kai-term-app-window
     kai-term-close-prompt
+    kai-term-config
     kai-term-widget-panes
     kai-term-mouse-app)
 foreach(kai_test ${KAI_TEST_TARGETS})

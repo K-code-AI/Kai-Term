@@ -256,6 +256,15 @@ public:
 
     Color defaultForeground() const { return default_fg_; }
     Color defaultBackground() const { return default_bg_; }
+    // The colours a blank screen and unstyled text wear. Set from the config
+    // file before the first byte arrives, which is why no existing cell
+    // changes: a cell stores what it looked like when it was written, and a
+    // person changing their theme is deciding what the next screen looks like,
+    // not asking for archaeology on the old one.
+    void setDefaults(const Color& fg, const Color& bg) {
+        default_fg_ = fg;
+        default_bg_ = bg;
+    }
     // Whether an OSC 4 has changed this entry from the built-in palette. A session
     // being attached to has to hand its recolours over, or a theme that repaints the
     // palette arrives at the new window as the defaults.

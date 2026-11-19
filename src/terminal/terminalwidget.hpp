@@ -88,6 +88,41 @@ public:
         startReader();
     }
 
+    // The colours the window wears when nobody has said otherwise, and the
+    // ones a config file chose. These are not the screen's colours — an
+    // application repaints those with escape sequences whenever it likes —
+    // they are what a blank screen and unstyled text wear, plus the two the
+    // window itself owns: the highlight under a dragged selection and the
+    // accent a dialog puts on the answer its focus is on.
+    struct Theme {
+        Color foreground{220, 220, 220};
+        Color background{30, 30, 30};
+        Color cursor{220, 220, 220};
+        Color selection{62, 96, 168};
+        Color accent{110, 160, 255};
+    };
+
+    // Applying a theme is a decision about the next screen, not a rewrite of
+    // the last one: the defaults move, cells already on screen keep what they
+    // were written with, and the window repaints what it has. That is the
+    // same rule an escape-sequence recolour follows, which is why a theme
+    // that painted existing cells would be two authorities over one grid.
+    //
+    // `owns_screen` says whether the window may set those defaults at all. A
+    // window that started a fresh shell owns the blank screen and colours it
+    // from the theme; a window that attached to a running session does not —
+    // that session arrived with its own colours, including any it set with
+    // OSC 10/11, and stamping over them would undo the very state the snapshot
+    // crossed a process boundary to bring. The cursor, selection and accent
+    // are this window's own chrome and follow the theme either way.
+    void applyTheme(const Theme& theme, bool owns_screen) {
+        theme_ = theme;
+        if (owns_screen)
+            screen_.setDefaults(theme.foreground, theme.background);
+        update();
+    }
+    const Theme& theme() const { return theme_; }
+
     // The thread that turns bytes from the far end into events for this window. Its own
     // method because a window can be shown a different shell, and the new one needs a
     // reader of its own. The generation number and the backend are both taken here, at
@@ -1013,7 +1048,7 @@ public:
         const double grid_pad = activePadding();
         // Selection is drawn as a solid band with light text so it stays legible
         // whatever colours the application had chosen for those cells.
-        const Color selection_bg{62, 96, 168};
+        const Color selection_bg = theme_.selection;
         const Color selection_fg{240, 240, 240};
 
         for (int r = 0; r < rows_; ++r) {
@@ -1096,7 +1131,7 @@ public:
                     // that glyph is drawn again on top in the colour it is now
                     // sitting on. Skip the second pass and the character under the
                     // cursor simply disappears — a block cursor that eats text.
-                    p.setBrush(QColor(220, 220, 220));
+                    p.setBrush(QColor(theme_.cursor.r, theme_.cursor.g, theme_.cursor.b));
                     p.drawRect(QRectF(x, y, span, ch));
                     if (!under.text.empty()) {
                         p.setPen(QColor(under.bg.r, under.bg.g, under.bg.b));
@@ -1105,11 +1140,11 @@ public:
                     }
                     break;
                 case Screen::CursorShape::Bar:
-                    p.setBrush(QColor(220, 220, 220, 210));
+                    p.setBrush(QColor(theme_.cursor.r, theme_.cursor.g, theme_.cursor.b, 210));
                     p.drawRect(QRectF(x, y, std::min(2.0, cw), ch));
                     break;
                 case Screen::CursorShape::Underline:
-                    p.setBrush(QColor(220, 220, 220, 210));
+                    p.setBrush(QColor(theme_.cursor.r, theme_.cursor.g, theme_.cursor.b, 210));
                     p.drawRect(QRectF(x, y + ch - 2.0, span, 2.0));
                     break;
             }
@@ -1440,7 +1475,8 @@ private:
                 // the line you are on.
                 p.setRenderHint(QPainter::Antialiasing, true);
                 p.setPen(Qt::NoPen);
-                p.setBrush(focused ? QColor(62, 96, 168) : QColor(0, 0, 0, 0));
+                p.setBrush(focused ? QColor(theme_.selection.r, theme_.selection.g, theme_.selection.b)
+                                   : QColor(0, 0, 0, 0));
                 if (focused)
                     p.drawRoundedRect(lay.boxes[i], kScrollBarRadius, kScrollBarRadius);
                 p.setRenderHint(QPainter::Antialiasing, false);
@@ -1453,8 +1489,10 @@ private:
             // word, and the highlighted one lit in blue rather than painted
             // over, so the row reads as part of the screen it is on.
             p.setRenderHint(QPainter::Antialiasing, true);
-            p.setPen(QPen(focused ? QColor(110, 160, 255) : QColor(fg.r, fg.g, fg.b, 150), 1));
-            p.setBrush(focused ? QColor(110, 160, 255, 40) : QColor(0, 0, 0, 0));
+            const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+            p.setPen(QPen(focused ? accent : QColor(fg.r, fg.g, fg.b, 150), 1));
+            p.setBrush(focused ? QColor(accent.red(), accent.green(), accent.blue(), 40)
+                               : QColor(0, 0, 0, 0));
             p.drawRoundedRect(lay.boxes[i], kScrollBarRadius + 1, kScrollBarRadius + 1);
             p.setRenderHint(QPainter::Antialiasing, false);
             p.setPen(focused ? QColor(240, 244, 255) : QColor(fg.r, fg.g, fg.b, 200));
@@ -1537,6 +1575,9 @@ private:
     Overlay overlay_;
     bool closing_on_close_ = false;
     double padding_ = 10.0;
+    // The colours this window wears. Defaults until a config file says
+    // otherwise; see `applyTheme()`.
+    Theme theme_;
     // The padding the current rows/cols were computed with. It is the memory of
     // whose screen this is — the shell's, inset, or a full-screen application's,
     // edge to edge — and the thing `syncGridToScreen()` compares against to

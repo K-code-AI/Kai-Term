@@ -9,6 +9,7 @@
 // and which session it is showing; it does not know a daemon exists.
 
 #include "closeprompt.hpp"
+#include "../config/config.hpp"
 #include "../session/cli.hpp"
 #include "../session/sessionbackend.hpp"
 #include "sessionmenu.hpp"
@@ -72,6 +73,7 @@ public:
         : TerminalWidget(start.rows, start.cols, std::move(start.backend)),
           session_(std::move(start.session)) {
         bindKeybinds();
+        adoptConfig(true);
         if (!start.note.empty())
             setStatusText(start.note, 8000);
     }
@@ -85,6 +87,31 @@ public:
           // this window is now responsible for it, and only a save from here keeps it.
           session_kept_(false) {
         bindKeybinds();
+        // The theme's chrome applies; its screen colours do not. The session's
+        // own colours are part of the state this window came to show.
+        adoptConfig(false);
+    }
+
+    // Read the config file once, take what it says, and say out loud — on
+    // stderr, at startup, before the first frame — anything it could not use.
+    // A typo'd setting that is silently skipped is an afternoon of wondering;
+    // one that names its own line is a fifteen-second fix.
+    void adoptConfig(bool owns_screen) {
+        config_ = loadConfig();
+        for (const std::string& problem : config_.problems)
+            std::fprintf(stderr, "kai-term: %s\n", problem.c_str());
+        Theme theme; // the built-in colours first, then whatever the file overrode
+        const auto lift = [](Color& into, const std::optional<Rgb>& from) {
+            if (from)
+                into = Color{static_cast<std::uint8_t>(from->r), static_cast<std::uint8_t>(from->g),
+                             static_cast<std::uint8_t>(from->b)};
+        };
+        lift(theme.foreground, config_.foreground);
+        lift(theme.background, config_.background);
+        lift(theme.cursor, config_.cursor);
+        lift(theme.selection, config_.selection);
+        lift(theme.accent, config_.accent);
+        applyTheme(theme, owns_screen);
     }
 
     const std::string& sessionName() const { return session_; }
@@ -385,13 +412,16 @@ private:
     // chased.
     static bool tracingClose() { return std::getenv("KAI_DEBUG_CLOSE") != nullptr; }
 
-    // How often closing interrupts. The environment for now, because there is no config
-    // file yet; the words are the ones Old-Term's `confirm_quit` takes, so a person who
-    // knows one knows the other, and when there is a config file the value moves there
-    // without changing what anybody writes.
-    static ConfirmPolicy closePolicy() {
-        const char* setting = std::getenv("KAI_CONFIRM_QUIT");
-        return confirmPolicy(setting != nullptr ? setting : "");
+    // How often closing interrupts. The words are the ones Old-Term's
+    // `confirm_quit` takes, so a person who knows one knows the other. The
+    // environment beats the file on purpose: `KAI_CONFIRM_QUIT=never` is the
+    // thing you type once to try something, and a setting you are holding in
+    // your hand right now should not be outranked by one you decided on weeks
+    // ago. With neither, closing asks only when something is running.
+    ConfirmPolicy closePolicy() const {
+        if (const char* setting = std::getenv("KAI_CONFIRM_QUIT"))
+            return confirmPolicy(setting);
+        return confirmPolicy(config_.confirm_quit);
     }
 
     static std::string policyWord(ConfirmPolicy policy) {
@@ -476,6 +506,12 @@ private:
     }
 
     std::string session_;
+    // What the config file said, read once at construction. The colours went
+    // into the theme; this stays because `confirm_quit` is asked at close, not
+    // at startup, and re-reading the file every time a window closes would let
+    // an edit mid-session change the answer under someone deciding in the
+    // moment — the colours would not, and neither should this.
+    Config config_;
     bool session_kept_ = false;
     // The answer to a close that was asked inside the terminal, and which of the
     // three answers it was: approved says the next close may through, keep_session
