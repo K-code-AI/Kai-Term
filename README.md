@@ -317,7 +317,7 @@ Sessions — shells that stay alive when the window closes. The words come strai
 ```sh
 ./build/kai-term new work          # start a session; prints its number, starts the daemon
 ./build/kai-term list              # the sessions; * marks the one you are standing in
-./build/kai-term attach 0          # show session 0 in this terminal
+./build/kai-term attach 0          # show session 0 in this terminal (Ctrl+S leaves it)
 ./build/kai-term attach 0 --window # ...or open a window onto it instead
 ./build/kai-term send 0 make --enter   # type into it without watching it
 ./build/kai-term save 0 build      # keep it, and name it "build"
@@ -373,6 +373,12 @@ nothing can be kept.
   cannot tell Ctrl+S from Ctrl+Shift+S — a control letter arrives as one byte and Shift
   is not in it — so claiming the letter would take it away from every program in the
   window. Qt can tell them apart, which is why the window can have the letter at all.
+- In a terminal that `attach`ed into a session there is no window to bind the shifted
+  form to, so there the plain byte is the way out: **Ctrl+S** leaves the view, and the
+  shell keeps running (it is kept, and `kai-term list` still shows it). Only a Ctrl+S
+  that arrives on its own leaves, so a paste carrying the byte is sent whole, and raw
+  mode has already switched flow control off, so nothing a program there could use is
+  taken.
 
 Keys held free for what is coming, so that a later feature does not quietly take one
 that has become somebody else's: **Ctrl+Shift+F** for a file manager, **Ctrl+Shift+N**

@@ -334,6 +334,9 @@ inline int attachSession(const std::string& name, std::string& error) {
         error = "the daemon did not welcome us";
         return 1;
     }
+    const Fields view = decodeFields(welcome.body);
+    const std::string view_id = fieldValue(view, "id", "?");
+    const std::string view_name = fieldValue(view, "name", name);
 
     // Only worth doing when there is a terminal to look after. Piped in, the bytes go
     // through as they are, which is what a script expects.
@@ -342,6 +345,18 @@ inline int attachSession(const std::string& name, std::string& error) {
     if (tty) {
         raw = std::make_unique<RawTerminal>();
         ::signal(SIGWINCH, [](int) { g_resize_requested = 1; });
+        // Say once, before the session's screen takes the terminal over, which
+        // session this is and how to get out. It is a notice, not a persistent
+        // bar: a raw byte pipe cannot hold a row against a full-screen program
+        // that places its cursor by absolute address, so a real status line wants
+        // the view to emulate the screen rather than relay it. For now the one key
+        // a person needs is put in front of them on the way in, and for a session
+        // that only prints lines the notice stays in the scrollback to be found.
+        std::fprintf(stderr,
+                     "kai-term: viewing session %s (%s) — Ctrl+S leaves it running; "
+                     "`kai-term attach %s` comes back\r\n",
+                     view_id.c_str(), view_name.c_str(), view_id.c_str());
+        std::fflush(stderr);
     }
 
     bool first_screen = true;
@@ -363,6 +378,7 @@ inline int attachSession(const std::string& name, std::string& error) {
     int status = 0;
     bool finished = false;
     bool keys_done = false;
+    bool left = false; // Ctrl+S, not the session ending
     while (!finished) {
         if (g_resize_requested) {
             g_resize_requested = 0;
@@ -403,7 +419,23 @@ inline int attachSession(const std::string& name, std::string& error) {
             char buf[4096];
             const ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
             if (n > 0) {
-                if (!client.send(MsgKind::Data, std::string(buf, static_cast<std::size_t>(n)))) {
+                const std::string in(buf, static_cast<std::size_t>(n));
+                // Ctrl+S on its own leaves the view and leaves the shell running.
+                // A terminal cannot tell Ctrl+S from Ctrl+Shift+S — a control
+                // letter arrives as one byte and the Shift is not in it — so in an
+                // attached view, where there is no window to bind the shifted form
+                // to, the plain byte is the way out. Raw mode has already switched
+                // flow control off, so this steals nothing a program here could use
+                // as XOFF; and only a Ctrl+S that arrives alone leaves, so a paste
+                // that happens to carry the byte is handed over whole.
+                if (tty && in == std::string(1, '\x13')) {
+                    // No `discard`: leaving this view is "stop showing it to me",
+                    // which the daemon reads as a keep, not a destruction.
+                    static_cast<void>(client.send(MsgKind::Detach, encodeFields({})));
+                    left = true;
+                    break;
+                }
+                if (!client.send(MsgKind::Data, in)) {
                     error = "the daemon stopped listening";
                     status = 1;
                     break;
@@ -440,6 +472,15 @@ inline int attachSession(const std::string& name, std::string& error) {
     if (raw) {
         raw->restore();
         static_cast<void>(writeStdout("\r\n"));
+    }
+    if (left) {
+        // The terminal is the caller's again. Say what happened and where the
+        // shell went, because the natural fear after leaving a session in a
+        // hurry is that leaving killed it.
+        std::fprintf(stderr,
+                     "kai-term: detached from session %s; it is still running — "
+                     "`kai-term list` shows it\n",
+                     view_id.c_str());
     }
     ::signal(SIGWINCH, SIG_DFL);
     return status;

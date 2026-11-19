@@ -335,10 +335,13 @@ Needed:
 - Horizontal and vertical splits, with `setPanes()` called with the cells each pane owns.
 - Pane selection and resizing.
 - Multiple windows and tabs.
-- The attached view's status line — which session, what is running in it, how to leave —
-  and the `Ctrl+S to leave` the status line promises. The flattened verbs and ids are
-  done; the view still hands over the whole terminal with no notice of what it is looking
-  at, and there is no way out of it but killing the session's shell.
+- The attached view's **persistent** status line — which session, what is running in it.
+  The escape is built: Ctrl+S leaves the view and keeps the shell, and a notice on entry
+  says so. A status line that survives a full-screen program is the harder thing and is
+  deliberately not faked: a raw byte pipe cannot hold a row against an app that places
+  its cursor by absolute address, so a real line wants the view to emulate the screen —
+  keep a model and repaint it a row down — rather than relay bytes. That is its own
+  piece of work, not a coat of paint on the relay.
 - One question for the whole window, not one per shell: Old-Term counts every session in
   the window that has something in its foreground group and names each of them, so a
   window with four panes asks once about all four. That wants the tabs and splits above

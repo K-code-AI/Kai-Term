@@ -98,6 +98,17 @@ the daemon fresh after a rebuild.
   quietly become a switch that loses the work the button was pressed to keep.
   Nothing is asked when nothing is running, and nothing is asked about a session
   that is already kept — its work goes on either way.
+- 2026-11-19: the attached view got its way out. Ctrl+S on its own sends `Detach`
+  (no discard, so the daemon keeps the shell) and returns the terminal with status 0;
+  before the session's screen takes over, a one-line notice names the session and the
+  key. A terminal cannot tell Ctrl+S from Ctrl+Shift+S, so in a view with no window the
+  plain byte is the leave key — raw mode already turned flow control off, so nothing is
+  stolen from programs, and only a lone Ctrl+S leaves so a paste carrying the byte is
+  sent whole. `tests/cli_surface.cpp` drives it over a real pty (forkpty, write 0x13,
+  expect exit 0 and the session still listed) — 35 checks, run three times for flakiness.
+  The persistent status line is deliberately left undone: a raw byte relay cannot hold a
+  row against a full-screen app that addresses its cursor absolutely, so a real one
+  wants the view to emulate and repaint, which is its own milestone, not paint on a relay.
 - 2026-11-19: the command surface Kaida agreed to verb by verb is built. The words come
   straight after `kai-term` — `list`, `new`, `attach`, `detach`, `save`, `send`, `kill`,
   `start`, `shutdown`, `serve` — a number from the listing is the handle (name still
@@ -136,12 +147,13 @@ the daemon fresh after a rebuild.
 
 ## Next Steps
 
-- **The attached view's status line and `Ctrl+S to leave`.** `kai-term attach 0` hands
-  over the whole terminal with no word about which session it is looking at and no way
-  out but ending the shell — the one piece of the agreed command surface not built yet.
-  The view has to reserve a row, keep the session's grid below it, and answer Ctrl+S by
-  sending `Detach` and returning the terminal, because a terminal cannot tell Ctrl+S
-  from Ctrl+Shift+S and the byte that arrives from an attached view is Ctrl+S.
+- **A persistent status line in the attached view**, if it is wanted: which session,
+  what is running in it. The escape hatch is built (Ctrl+S leaves, shell kept, entry
+  notice says so). A line that survives a full-screen app cannot be painted on a raw
+  byte relay — an app that addresses its cursor absolutely will overwrite it — so a
+  real one means the view keeps a Screen model and repaints it a row down, the way the
+  Qt widget does. That is a renderer for the CLI, a milestone of its own, and the
+  tmux_e2e test is proof of how much care terminal repainting wants; do not fake it.
 - **Themable, configured inside the terminal with a live preview** — agreed with Kaida
   on 2026-11-19. A small TUI drawn by the widget the way the dialogs are, editing
   palette, accent (the dialogs' focused button is fixed blue today) and spacing, with a

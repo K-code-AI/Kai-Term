@@ -15,7 +15,9 @@
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
+#include <pty.h>
 #include <string>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
@@ -265,6 +267,70 @@ int main() {
         const Run k = run({"kill", "2"}, here);
         expect(k.code == 0 && contains(k.out, "ended session 2"), "kill answers: " + k.out);
         expect(!contains(listing(here), "inherit"), "the killed session is off the listing");
+    }
+
+    // Ctrl+S leaves an attached view and leaves the shell running — the way
+    // out that did not exist before, when stopping watching a session meant
+    // ending its shell. It runs over a real pty, because the key only means
+    // something when there is a terminal to read it from and hand back.
+    {
+        const Run mk = run({"new", "escape"}, here);
+        expect(mk.code == 0 && contains(mk.out, "started session 3 named escape"),
+               "a session to attach and leave: " + mk.out);
+        // The id, taken from what `new` printed rather than trusted to be 3.
+        std::string sid;
+        {
+            const std::string pre = "started session ";
+            const std::size_t p = mk.out.find(pre);
+            if (p != std::string::npos) {
+                const std::size_t s = p + pre.size();
+                const std::size_t e = mk.out.find_first_not_of("0123456789", s);
+                sid = mk.out.substr(s, e - s);
+            }
+        }
+        int master = -1;
+        struct winsize ws{};
+        ws.ws_row = 24;
+        ws.ws_col = 80;
+        const pid_t child = ::forkpty(&master, nullptr, nullptr, &ws);
+        if (child == 0) {
+            ::setenv("XDG_RUNTIME_DIR", runtime_dir.c_str(), 1);
+            ::unsetenv("KAI_SESSION");
+            char* const av[] = {const_cast<char*>("kai-term"),
+                                const_cast<char*>("attach"),
+                                const_cast<char*>(sid.c_str()), nullptr};
+            ::execv(KAI_TERM_BIN, av);
+            _exit(127);
+        }
+        expect(child > 0, "the attached view started");
+        // Let it attach and paint, draining what it prints so the pty does not fill.
+        char drain[4096];
+        for (int i = 0; i < 20; ++i) {
+            struct pollfd p {master, POLLIN, 0};
+            if (::poll(&p, 1, 50) <= 0)
+                continue;
+            if (::read(master, drain, sizeof(drain)) <= 0)
+                break;
+        }
+        // The leave key.
+        const char leave = 0x13;
+        static_cast<void>(::write(master, &leave, 1));
+        int st = 0;
+        bool exited = false;
+        for (int i = 0; i < 100 && !exited; ++i) {
+            if (::waitpid(child, &st, WNOHANG) == child)
+                exited = true;
+            else
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (master >= 0)
+            ::close(master);
+        expect(exited, "Ctrl+S made the attached view leave");
+        expect(exited && WIFEXITED(st) && WEXITSTATUS(st) == 0,
+               "and it left on purpose, status 0, not a killed shell");
+        // The shell is still there, now kept, and findable.
+        const std::string out = listing(here);
+        expect(contains(out, "escape"), "the session is still listed after Ctrl+S: " + out);
     }
 
     // The daemon itself: shutdown is final, and the listing after it is honest.

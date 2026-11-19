@@ -129,6 +129,9 @@ add_test(NAME session COMMAND kai-term-session)
 # against a re-reading of it.
 add_executable(kai-term-cli-surface tests/cli_surface.cpp)
 target_compile_definitions(kai-term-cli-surface PRIVATE KAI_TERM_BIN="$<TARGET_FILE:kai-term>")
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-cli-surface PRIVATE ${UTIL_LIBRARY})
+endif()
 add_test(NAME cli-surface COMMAND kai-term-cli-surface)
 
 # A window rendering a session owned by the daemon: the backend seam, exercised with a
