@@ -8,6 +8,7 @@
 
 #include "../src/ipc/protocol.hpp"
 #include "../src/session/daemon.hpp"
+#include "../src/session/cli.hpp"
 #include "../src/terminal/screen.hpp"
 
 #include <algorithm>
@@ -938,6 +939,26 @@ int main() {
         expect("and the shell that was number " + std::to_string(top) + " is still here",
                listed_have(top_name));
         expect("nothing else went with it", listed().size() == all.size());
+    }
+
+    {
+        // A window's shell starts where a shell starts, not where the executable
+        // happens to live. That is the user's home, and it is the shell's own
+        // starting directory rather than a `cd` command typed into it.
+        std::string error;
+        const std::string home = homeDirectory();
+        const std::string session = startWindowSession(24, 80, error);
+        expect("a window's shell is started", !session.empty());
+        TestClient view;
+        std::string snapshot;
+        expect("and the view attaches", attach(view, session, 24, 80, snapshot, &error));
+        expect("no cd command was typed",
+               TestClient::render(snapshot, 24, 80).find("cd ") == std::string::npos);
+        view.send(MsgKind::Data, "pwd\n");
+        const std::string text = view.waitFor(home);
+        expect("and pwd says the user's home", text.find(home) != std::string::npos);
+        ::close(view.fd);
+        view.fd = -1;
     }
 
     {

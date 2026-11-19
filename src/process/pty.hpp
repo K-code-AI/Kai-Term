@@ -36,7 +36,7 @@ namespace kai {
 // goes to the group.
 class Pty {
 public:
-    explicit Pty(int rows, int cols, std::string shell = {})
+    explicit Pty(int rows, int cols, std::string shell = {}, std::string cwd = {})
         : master_(-1), child_(-1)
     {
         if (rows < 1)
@@ -79,6 +79,14 @@ public:
         if (pid == 0) {
             // forkpty has already made the slave the controlling terminal, so
             // anything written here is what a person sees in the window.
+            // The shell starts in the directory it was asked to start in, not by
+            // being sent a `cd` command afterwards: a terminal that types a command
+            // for the person is not the same as a terminal that starts there.
+            if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
+                std::fprintf(stderr, "kai-term: cannot start in %s: %s\r\n", cwd.c_str(),
+                             std::strerror(errno));
+                _exit(127);
+            }
             setenv("TERM", "xterm-256color", 1);
             execl(chosen.c_str(), chosen.c_str(), "-i", nullptr);
             std::fprintf(stderr, "kai-term: cannot run %s: %s\r\n", chosen.c_str(),

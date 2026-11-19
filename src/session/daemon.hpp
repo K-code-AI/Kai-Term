@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstring>
+#include <chrono>
 #include <ctime>
 #include <functional>
 #include <map>
@@ -34,6 +35,7 @@
 #include <poll.h>
 #include <string>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -49,7 +51,36 @@ namespace kai {
 
 inline constexpr int kDaemonBacklog = 16;
 inline constexpr int kDaemonPollMs = 100;
+// A just-created unsaved session has no window attached yet. Give the window
+// a moment to attach before the daemon decides it is idle.
+inline constexpr int kDaemonIdleGraceMs = 5000;
 inline constexpr int kDaemonStopWaitMs = 5000;
+
+// How long a connection may take to introduce itself.
+//
+// A thread blocked in read() with no limit is a thread belonging to whoever opened the
+// socket rather than to the daemon. Nothing real needs five seconds to send a hello —
+// the client builds the frame before it connects — but a program that opens the socket
+// and stays quiet would otherwise hold a thread, a descriptor and a place in the
+// daemon's own bookkeeping until the daemon was restarted, and a daemon holding someone's
+// shells is a daemon you have good reasons not to restart.
+inline constexpr int kDaemonHelloTimeoutMs = 5000;
+
+// How many retired workers may wait to be joined before the daemon collects them.
+// Joining a thread that has already finished costs nothing but a syscall, so this is
+// not about sparing work: it is about not letting the list of retired connections grow
+// without limit on a daemon that has been up for a week.
+inline constexpr std::size_t kFinishedWorkersToJoin = 32;
+
+// How many connections may be served at once.
+//
+// One thread per connection is the right shape — a person typing at one window has
+// nothing to do with a second window waiting for output — but "one thread per
+// connection" with no ceiling is a resource the other end gets to decide. Over the
+// ceiling the daemon simply stops accepting: the connections sit in the kernel's
+// backlog and are served as slots come free, which is a slow moment rather than a
+// daemon with two thousand threads in it.
+inline constexpr int kDaemonMaxWorkers = 128;
 
 // The daemon's socket is named after the protocol, not just after the daemon.
 //
@@ -194,16 +225,53 @@ public:
     const std::string& socketPath() const { return path_; }
     int listener() const { return listener_; }
 
+    // Whether the daemon still has something worth keeping alive: a saved session,
+    // or a window attached to any session. An unsaved session with no window is not
+    // a reason to stay; a crash saves the session, and a window that closes without
+    // saving it destroys it. So no saved session and no window means the daemon can
+    // stop itself.
+    bool needed() {
+        {
+            std::lock_guard<std::mutex> lock(table_mutex_);
+            for (const auto& [name, record] : table_)
+                if (record->saved)
+                    return true;
+        }
+        std::lock_guard<std::mutex> lock(all_clients_mutex_);
+        return !all_clients_.empty();
+    }
+
     // Accept connections until asked to stop. Each client is served on its own
     // thread, because a person typing at one window has nothing to do with a second
     // window waiting for output.
     void run() {
         while (!stopping_) {
+            // Once a session has existed, the daemon is only needed while one is
+            // saved or a window is attached. A just-created unsaved session has no
+            // window attached yet, so wait a grace period before stopping: the window
+            // that asked for it is about to attach.
+            if (had_session_ && !needed()) {
+                if (!idle_started_) {
+                    idle_started_ = true;
+                    idle_since_ = std::chrono::steady_clock::now();
+                } else if (std::chrono::steady_clock::now() - idle_since_ >=
+                           std::chrono::milliseconds(kDaemonIdleGraceMs)) {
+                    stopping_ = true;
+                    break;
+                }
+            } else {
+                idle_started_ = false;
+            }
             struct pollfd pfd {listener_, POLLIN, 0};
             const int ready = ::poll(&pfd, 1, kDaemonPollMs);
             if (stopping_)
                 break;
             if (ready <= 0)
+                continue;
+            // At the ceiling, do not take the next connection at all. Left in the
+            // kernel's backlog it waits politely and is served when a slot comes free;
+            // accepted, it would be a thread and a descriptor with nothing to say.
+            if (active_workers_ >= kDaemonMaxWorkers)
                 continue;
             const int fd = ::accept(listener_, nullptr, nullptr);
             if (fd < 0)
@@ -216,7 +284,32 @@ public:
             }
             {
                 std::lock_guard<std::mutex> lock(workers_mutex_);
-                workers_.emplace_back([this, fd] { serve(fd); });
+                ++active_workers_;
+                // The slot is chosen here and belongs to this one connection. A worker
+                // that retired by reaching for "the last one" could be handed an index
+                // another connection had already taken over, so it moves its own slot
+                // out and leaves an empty one behind for the next connection to fill.
+                const std::size_t slot = reuseOrAppendWorkerSlot();
+                workers_[slot] = std::thread([this, fd, slot] {
+                    serve(fd);
+                    // Retire on the way out. A finished thread is no longer a thread —
+                    // it is a few words of bookkeeping the kernel keeps until somebody
+                    // joins it — and a daemon that kept every connection it had ever
+                    // served would be holding the whole history of the day in order to
+                    // shut down, joining thousands of threads that ended hours ago.
+                    std::lock_guard<std::mutex> done(workers_mutex_);
+                    --active_workers_;
+                    // The slot may already belong to somebody else: a shutdown
+                    // happening at this very moment swaps the slot table out and
+                    // takes the handles with it, joining this thread on the way
+                    // down. Reaching into the vector it replaced would be a read
+                    // past its end; an empty or missing slot simply says the
+                    // other half already picked this handle up.
+                    if (slot < workers_.size() && workers_[slot].joinable())
+                        finished_.push_back(std::move(workers_[slot]));
+                    if (finished_.size() >= kFinishedWorkersToJoin)
+                        joinFinishedLocked();
+                });
             }
         }
     }
@@ -258,14 +351,19 @@ public:
             ::usleep(kDaemonPollMs * 1000);
         }
         std::vector<std::thread> workers;
+        std::vector<std::thread> retired;
         {
             std::lock_guard<std::mutex> lock(workers_mutex_);
             workers.swap(workers_);
+            retired.swap(finished_);
         }
-        for (std::thread& worker : workers) {
-            if (worker.joinable())
-                worker.join();
-        }
+        // The retired ones first: they have already ended, so this is the cheap half,
+        // and it is the half that would otherwise grow with every window that has ever
+        // opened and closed since the daemon started.
+        for (std::vector<std::thread>* batch : {&retired, &workers})
+            for (std::thread& worker : *batch)
+                if (worker.joinable())
+                    worker.join();
         if (listener_ >= 0) {
             ::close(listener_);
             listener_ = -1;
@@ -303,13 +401,18 @@ public:
             error = "a session needs at least one row and one column";
             return false;
         }
-        auto pty = std::make_unique<Pty>(spec.rows, spec.cols, spec.shell);
-        if (!spec.cwd.empty() && pty->alive()) {
-            // The child is already running by the time we get here, so the way to
-            // start it somewhere else is to ask it, once, before anything else is
-            // typed. A shell that rejects the directory says so on its own terminal.
-            pty->write("cd " + shellQuote(spec.cwd) + "\n");
+        if (!spec.cwd.empty()) {
+            struct stat st{};
+            if (::stat(spec.cwd.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+                error = "not a directory: " + spec.cwd;
+                return false;
+            }
         }
+        auto pty = std::make_unique<Pty>(spec.rows, spec.cols, spec.shell, spec.cwd);
+        // The child starts in the directory it was given, rather than being sent a
+        // `cd` command after it has started. Typing a command for the person is not
+        // the same as starting the shell there, and a shell that rejects the directory
+        // says so on its own terminal.
 
         auto record = std::make_shared<Record>();
         record->id = next_id_++;
@@ -339,6 +442,7 @@ public:
         // The reader thread owns the record from here: it holds a reference of its
         // own, removes it from the table when the shell ends, and closes the master
         // last, from the thread that had been reading it.
+        had_session_ = true;
         std::thread([this, record] { readSession(record); }).detach();
         return true;
     }
@@ -457,6 +561,41 @@ public:
     }
 
 private:
+    // A slot for the next connection: the first one left empty by a connection that
+    // retired, or a new one. Called with workers_mutex_ held. Without the reuse the
+    // vector would grow to the highest number of windows open at one moment and stay
+    // there for the life of the daemon, holding a moved-from thread each.
+    std::size_t reuseOrAppendWorkerSlot() {
+        for (std::size_t i = 0; i < workers_.size(); ++i)
+            if (!workers_[i].joinable())
+                return i;
+        workers_.emplace_back();
+        return workers_.size() - 1;
+    }
+
+    // Collect the retired workers. Called with workers_mutex_ held. A finished thread
+    // is only a few words of kernel bookkeeping, so this is tidying rather than saving;
+    // what it does save is the shutdown, which would otherwise join every connection the
+    // daemon ever served, however long ago they ended.
+    void joinFinishedLocked() {
+        for (std::thread& worker : finished_) {
+            if (!worker.joinable())
+                continue;
+            // One entry in the list is the thread running this code: a retiring
+            // worker moves its own handle out of the slots, and until the lambda
+            // returns, that handle names a live thread — itself. Joining yourself
+            // is a wait that can never be satisfied, and the runtime says so by
+            // throwing. Detaching is the honest word: the thread ends the moment
+            // its lambda returns, which is a few statements away.
+            if (worker.get_id() == std::this_thread::get_id()) {
+                worker.detach();
+                continue;
+            }
+            worker.join();
+        }
+        finished_.clear();
+    }
+
     struct Record {
         // Set once, when the shell is made, and read-only after that.
         int id = -1;
@@ -775,6 +914,11 @@ private:
     }
 
     void serveConnected(int fd) {
+        // The handshake is timed out, and only the handshake. Every command a real
+        // client sends is built before it connects, so a hello that has not arrived
+        // inside the limit is not a slow client — it is a socket that was opened and
+        // left, and the thread reading it belongs to the daemon no longer.
+        static_cast<void>(setReadTimeout(fd, kDaemonHelloTimeoutMs));
         // The socket is private to its owner, so this should be impossible. It is
         // cheap to check anyway, and what is being handed over is a shell.
         uid_t uid = 0;
@@ -900,6 +1044,10 @@ private:
             return;
         }
         if (command == "attach") {
+            // A view watching a shell that has nothing to print is the one thing that
+            // must not be on a clock: the hello limit is for the handshake, and a
+            // person reading a page for ten minutes is not a dead connection.
+            static_cast<void>(setReadTimeout(fd, 0));
             attach(fd, reader, fields, name);
             return;
         }
@@ -915,6 +1063,14 @@ private:
     std::string path_;
     int listener_ = -1;
     std::atomic<bool> stopping_{false};
+    // Whether any session has ever been created. Before one exists the daemon has
+    // to stay for the first command; after one exists it can stop when nothing is
+    // saved and no window is attached.
+    std::atomic<bool> had_session_{false};
+    // The grace period starts when the daemon first looks idle, and resets whenever
+    // a window attaches or a session is saved.
+    bool idle_started_ = false;
+    std::chrono::steady_clock::time_point idle_since_{};
     // From 0, and never given out twice. A restarted daemon starts over, which is fine:
     // the shells it had are gone with it, so there is nothing for an old number to mean.
     std::atomic<int> next_id_{0};
@@ -922,6 +1078,11 @@ private:
     std::map<std::string, std::shared_ptr<Record>> table_;
     std::mutex workers_mutex_;
     std::vector<std::thread> workers_;
+    // Retired workers, waiting to be joined. Their threads have already ended; only the
+    // record of them is left, and joining gives that back.
+    std::vector<std::thread> finished_;
+    // How many connections are being served right now, which is what the ceiling is on.
+    std::atomic<int> active_workers_{0};
     std::mutex all_clients_mutex_;
     std::vector<int> all_clients_;
 };

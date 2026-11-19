@@ -7,6 +7,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -244,6 +245,24 @@ inline ssize_t readSome(int fd, char* buf, std::size_t n) {
         if (got >= 0 || errno != EINTR)
             return got;
     }
+}
+
+// How long a read may wait before it gives up: 0 turns the limit off again.
+//
+// A server that blocks in read() with no limit is a server whose thread count is
+// whatever the other end decides to open. Something connected that never says a word —
+// a port scanner, a monitoring probe, a script that opened a socket and forgot it —
+// would otherwise hold a thread and a descriptor for as long as the daemon lives, and
+// a daemon holding shells is one you cannot restart. So the handshakes that a real
+// client answers in milliseconds are given a limit, and the long waits that belong to
+// a person looking at a session are given none.
+inline bool setReadTimeout(int fd, int ms) {
+    struct timeval tv {};
+    if (ms > 0) {
+        tv.tv_sec = ms / 1000;
+        tv.tv_usec = (ms % 1000) * 1000;
+    }
+    return ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
 }
 
 } // namespace kai

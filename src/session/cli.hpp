@@ -22,9 +22,11 @@
 #include <poll.h>
 #include <string>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <thread>
+#include <pwd.h>
 #include <unistd.h>
 #include <vector>
 
@@ -34,7 +36,36 @@
 
 namespace kai {
 
+// The shell starts where a person expects a shell to start: the user's home,
+// not whatever directory happened to launch the window. A session created by
+// `session new` or by a window's Ctrl+Shift+S follows the same rule, and an
+// explicit `--cwd` still wins.
+inline std::string homeDirectory() {
+    const struct passwd* pw = getpwuid(getuid());
+    if (pw && pw->pw_dir && *pw->pw_dir)
+        return pw->pw_dir;
+    const char* home = std::getenv("HOME");
+    if (home && *home)
+        return home;
+    return "/";
+}
+
 inline constexpr int kDaemonReadyWaitMs = 3000;
+
+// Say what this process is, in the words a process list shows.
+//
+// The name a process carries — the `comm` that `ps -e`, btop's Program column and
+// every `pkill -x` work from — is taken by the kernel from the last part of the path
+// the program was exec'd by, and the daemon is exec'd by `/proc/self/exe` so that it
+// does not depend on where the binary happened to be found. The last part of that
+// path is `exe`, so the process holding every shell anybody kept introduced itself
+// to btop as "exe", the single least informative word available. argv[0] already
+// says better — that is the Command column — but argv[0] is not what `comm` reads.
+// The task name is the one thing settable after the exec, and fifteen characters is
+// all it holds, which is why the daemon is `kai-term-daemon` and not a sentence.
+inline void nameSelfForProcessLists(const char* name) {
+    ::prctl(PR_SET_NAME, name, 0, 0, 0);
+}
 
 // Bytes out to the person's terminal. Not the socket helper: `send()` on a pipe or a
 // redirected file fails with ENOTSOCK, which would mean an attach printing nothing at
@@ -515,7 +546,8 @@ inline std::string startWindowSession(int rows, int cols, std::string& error) {
                         {"name", name},
                         {"rows", std::to_string(rows)},
                         {"cols", std::to_string(cols)},
-                        {"saved", "0"}},
+                        {"saved", "0"},
+                        {"cwd", homeDirectory()}},
                        error))
         return {};
     return name;
@@ -561,6 +593,10 @@ inline int runSessionCommand(int argc, char** argv) {
     // what a foreground `session serve` runs. No name, no options: it owns
     // everything or nothing.
     if (verb == "serve") {
+        // Named before anything else, because the life starting here is the long
+        // one, and a process that spends it answering as "exe" is a process nobody
+        // can find when they want to know what is holding their shells.
+        nameSelfForProcessLists("kai-term-daemon");
         // Say where it is before blocking: this is the way to watch a daemon that
         // will not start, and a debugging session where you cannot tell whether it
         // bound anything is a waste of a debugging session.
@@ -672,6 +708,8 @@ inline int runSessionCommand(int argc, char** argv) {
         }
         if (args.name.empty())
             args.name = freeName(listSessions(error));
+        if (args.cwd.empty())
+            args.cwd = homeDirectory();
         DaemonClient client;
         if (!client.connect(error)) {
             std::cerr << "kai-term: " << error << "\n";

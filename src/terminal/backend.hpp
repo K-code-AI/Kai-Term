@@ -55,6 +55,14 @@ public:
     // screen until something else made the far end talk.
     virtual bool hasBuffered() const { return false; }
 
+    // The bytes a backend is already holding, without consuming them. A terminal asked to
+    // show a session has that session's screen in hand the moment the connection is made,
+    // and a widget that is not shown yet does not go looking at its own posted events — so
+    // the first screen goes to the model directly, on the GUI thread, instead of waiting
+    // for a reader thread to tell a window about something it is already holding.
+    virtual std::string heldBytes() const { return {}; }
+    virtual void clearHeldBytes() {}
+
     // A local shell is a child, and only collecting it says whether it left. A remote
     // session has no child here, so its transport says so itself and these stay off.
     virtual bool collectsChild() const { return false; }
@@ -89,7 +97,8 @@ public:
 // A shell started here, on the other end of a pseudo-terminal.
 class PtyBackend final : public TerminalBackend {
 public:
-    PtyBackend(int rows, int cols, std::string shell = {}) : pty_(rows, cols, std::move(shell)) {}
+    PtyBackend(int rows, int cols, std::string shell = {}, std::string cwd = {})
+        : pty_(rows, cols, std::move(shell), std::move(cwd)) {}
 
     int descriptor() const override { return pty_.master(); }
 
