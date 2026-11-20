@@ -1534,6 +1534,78 @@ int main(int argc, char** argv) {
     }
 
     {
+        // Two things the walking got wrong, on a window nobody else is touching:
+        // coming back up from `save` skipped the last row, and the left/right arrows
+        // moved a cursor nobody asked about instead of changing the value. (Kaida,
+        // 2026-11-20: "the last option gets skipped when going back up"; "Arrows
+        // should edit the value instead of moving the cursor on everything but the
+        // colors".)
+        const std::string walk_cfg = root + "/walk-config";
+        std::ofstream(walk_cfg) << "font_size = 12\npadding = 7\n";
+        ::setenv("KAI_TERM_CONFIG", walk_cfg.c_str(), 1);
+        kai::AppWindow walking(kai::startWindowBackend(24, 80));
+        walking.resize(900, 600);
+        walking.show();
+        pump(200);
+
+        const auto walk_key = [&walking](int key) {
+            QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier);
+            QCoreApplication::sendEvent(&walking, &ev);
+        };
+        const auto open_settings = [&walking] {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&walking, &ev);
+        };
+        const int rows = 7; // font, two opacities, padding, scrollback, cursor, confirm
+        const int padding_row = 3;
+
+        open_settings();
+        pump(120);
+        expect("the settings menu is up", walking.settingsActive());
+        for (int i = 0; i < rows; ++i) { // past the last row, onto `save`
+            walk_key(Qt::Key_Down);
+            pump(20);
+        }
+        expect("walking down off the last row lands on `save`",
+               walking.settingsCursor().second == 1);
+        walk_key(Qt::Key_Up);
+        pump(20);
+        expect("and one step back up is the last row, not the one before it",
+               walking.settingsCursor().first == rows - 1 && walking.settingsCursor().second == 0);
+
+        const QRectF row = walking.settingsRowRect(padding_row);
+        const QPointF at(row.left() + 4.0, row.center().y());
+        QMouseEvent press(QEvent::MouseButtonPress, at, walking.mapToGlobal(at.toPoint()),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, at, walking.mapToGlobal(at.toPoint()),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(&walking, &press);
+        QCoreApplication::sendEvent(&walking, &release);
+        pump(40);
+        expect("a setting is chosen by clicking its name",
+               walking.settingsCursor().first == padding_row &&
+                   walking.settingsCursor().second == 0 && walking.padding() == 7.0);
+        walk_key(Qt::Key_Right);
+        pump(40);
+        const double nudged = walking.padding();
+        walk_key(Qt::Key_Left);
+        pump(40);
+        expect("and the arrows change the value rather than moving a cursor",
+               nudged == 8.0 && walking.padding() == 7.0);
+
+        walk_key(Qt::Key_Escape);
+        pump(60);
+        expect("Escape leaves without writing",
+               !walking.settingsActive() && walking.padding() == 7.0);
+
+        walking.discardOnClose();
+        walking.shutdown();
+        pump(200);
+        std::remove(walk_cfg.c_str());
+    }
+
+    {
         // The same rule, met the way it is met in practice: a shell painting over the
         // window's colours, and then a new shell starting in the same window. (Kaida,
         // 2026-11-20: "a session spawn still gets rid of our theming".) Starting a

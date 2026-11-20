@@ -392,6 +392,20 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   The mixer's bars are painted from `channelAt(mixer, channel, fraction)` — the channel at a
   fraction with the others at the *precise* wheel — with 7 stops for hue (the wheel laid
   flat) and 3 for lightness (black → colour → white), plus rounded ends and a knob.
+- 2026-11-20: **the walking ring had a join in it, and the join was wrong.** `overlayWalk`
+  moved `focus` and left the row to the model's `step()`, but the two disagree at the
+  boundary: walking down off the last row leaves the model where it was and puts the keys on
+  `save`, so stepping *up* from there moved the model one more time and landed on the
+  second-to-last row. The walk is now one line of stops (`pos = (pos + dir) % (rows + 2)`)
+  that names the row instead of stepping towards it, and both models grew nothing because
+  `setRow(int)` already existed. Left/Right change a setting's value on every row except a
+  colour's digits — with `previewSetting()`, because a change you cannot see is not a change
+  (the first version moved the model and the test caught it). The bottom line reads
+  "Arrows to Navigate - Enter to Select - Escape to Cancel" in all three panels; rows are
+  centred in the panel rather than hung off its left edge (the panel is as wide as the hint,
+  which left the right side empty); the mixer's preview sentence picks black or white when
+  the mixed colour is too close to the ink to read; and the colour list is hidden while the
+  mixer is up, because two panels stacked read as one crowded panel.
 
 ## Next Steps
 

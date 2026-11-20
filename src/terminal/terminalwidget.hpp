@@ -1329,13 +1329,20 @@ public:
             if (steps != 0) {
                 const int direction = steps > 0 ? -1 : 1;
                 if (mixer_) {
-                    if (overlayWalk(mixer_focus_, mixer_->row(), kMixChannelCount,
-                                    direction) == OverlayMove::MoveRow)
-                        mixer_->step(direction);
+                    int row = mixer_->row();
+                    overlayWalk(mixer_focus_, row, kMixChannelCount, direction);
+                    if (mixer_focus_ == 0)
+                        mixer_->setRow(row);
                 } else if (picker_) {
-                    picker_->step(direction);
+                    int row = picker_->row();
+                    overlayWalk(picker_focus_, row, static_cast<int>(picker_->fields().size()),
+                                direction);
+                    picker_->setRow(row);
                 } else {
-                    settings_->step(direction);
+                    int row = settings_->row();
+                    overlayWalk(settings_focus_, row, static_cast<int>(settings_->rows().size()),
+                                direction);
+                    settings_->setRow(row);
                 }
                 update();
             }
@@ -1613,7 +1620,14 @@ public:
         // read at this moment, and it belongs to this terminal rather than to
         // the desktop around it.
         paintOverlay(p);
-        paintPicker(p);
+        // The colour list makes way for the mixer it was opened from. Two panels
+        // stacked with a gap between them read as one crowded panel, and the row
+        // the mixer came from is not something you are choosing between while you
+        // are mixing; it is back the moment the mixer closes. (Kaida, 2026-11-20:
+        // "don't show the color menu when in the color picker, it looks clustered
+        // underneath".)
+        if (!mixer_)
+            paintPicker(p);
         paintSettings(p);
         paintMixer(p); // on top of the list it was opened from
     }
@@ -1843,21 +1857,25 @@ private:
     // reach save and leave, they should be reachable when going down. the
     // interfaces must be Cohesive.") A chord of its own for the two words would
     // have been a second rule to remember for the motion you are already doing.
-    enum class OverlayMove { MoveRow, Stay };
 
-    static OverlayMove overlayWalk(int& focus, int row, int rows, int direction) {
-        if (direction > 0) {
-            if (focus == 0 && row + 1 < rows)
-                return OverlayMove::MoveRow;
-            focus = focus == 0 ? 1 : (focus == 1 ? 2 : 0);
-        } else {
-            if (focus == 0 && row > 0)
-                return OverlayMove::MoveRow;
-            focus = focus == 0 ? 2 : (focus == 2 ? 1 : 0);
+    // Walking the ring, which is one line of stops rather than two: the rows,
+    // then `save`, then `cancel`, then the first row again. The row is moved here
+    // instead of being stepped towards by the model, because the two disagree at
+    // the join. Walking down off the last row leaves the model where it was and
+    // puts the keys on `save`; stepping up from there then moved the model one
+    // *more* time and landed on the second-to-last row, skipping the last one on
+    // the way back. (Kaida, 2026-11-20: "when going back up from a save button
+    // highlighted it jump to the second to last option instead of the last option".)
+    static void overlayWalk(int& focus, int& row, int rows, int direction) {
+        int pos = focus == 0 ? row : (focus == 1 ? rows : rows + 1);
+        const int stops = rows + 2;
+        pos = (pos + direction + stops) % stops;
+        if (pos >= rows) {
+            focus = pos == rows ? 1 : 2;
+            return;
         }
-        // Wrapping past the words lands among the rows again — the first going
-        // down, the last going up, which is what the model's own wrap does.
-        return focus == 0 ? OverlayMove::MoveRow : OverlayMove::Stay;
+        focus = 0;
+        row = pos;
     }
 
     // Left and Right switch between the two words while the keys are on them,
@@ -1906,14 +1924,18 @@ private:
         }
         const int rows = static_cast<int>(picker_->fields().size());
         if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
-            if (overlayWalk(picker_focus_, picker_->row(), rows, -1) == OverlayMove::MoveRow)
-                picker_->step(-1);
+            int row = picker_->row();
+            overlayWalk(picker_focus_, row, rows, -1);
+            if (picker_focus_ == 0)
+                picker_->setRow(row);
             update();
             return;
         }
         if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
-            if (overlayWalk(picker_focus_, picker_->row(), rows, 1) == OverlayMove::MoveRow)
-                picker_->step(1);
+            int row = picker_->row();
+            overlayWalk(picker_focus_, row, rows, 1);
+            if (picker_focus_ == 0)
+                picker_->setRow(row);
             update();
             return;
         }
@@ -2000,16 +2022,18 @@ private:
             return;
         }
         if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
-            if (overlayWalk(mixer_focus_, mixer_->row(), kMixChannelCount, -1) ==
-                OverlayMove::MoveRow)
-                mixer_->step(-1);
+            int row = mixer_->row();
+            overlayWalk(mixer_focus_, row, kMixChannelCount, -1);
+            if (mixer_focus_ == 0)
+                mixer_->setRow(row);
             update();
             return;
         }
         if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
-            if (overlayWalk(mixer_focus_, mixer_->row(), kMixChannelCount, 1) ==
-                OverlayMove::MoveRow)
-                mixer_->step(1);
+            int row = mixer_->row();
+            overlayWalk(mixer_focus_, row, kMixChannelCount, 1);
+            if (mixer_focus_ == 0)
+                mixer_->setRow(row);
             update();
             return;
         }
@@ -2124,8 +2148,7 @@ private:
         const double ch = cellHeight();
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
-        const QString hint = QStringLiteral(
-            "arrows walk · type or push a bar · down to save/cancel");
+        const QString hint = QStringLiteral("Arrows to Navigate - Enter to Select - Escape to Cancel");
 
         const int label_w = 12;    // `saturation` is the longest name
         const int bar_cells = 20;  // a bar wide enough to push with a pointer
@@ -2157,7 +2180,12 @@ private:
                    Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Mix colour"));
         y += ch + kTitleGap;
 
-        const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
+        // The rows are centred in the panel rather than hung off its left edge.
+        // The panel is as wide as the widest thing in it, which is the line at the
+        // bottom, and a table starting at the padding left all the extra width as
+        // dead space on the right. (Kaida, 2026-11-20: "text should be centenred in
+        // the interface, lots of empty space on the right as it is now".)
+        const double table_x = panel.x() + pad + (inner_w - table_w) / 2.0;
         const Rgb mixed = mixer_->colour();
 
         // The preview is the whole point of a mixer: the colour at full width, with
@@ -2168,9 +2196,23 @@ private:
         p.fillRect(preview, QColor(mixed.r, mixed.g, mixed.b));
         p.setPen(QPen(panel_ink(fg, 120), 1));
         p.drawRect(preview);
-        p.setPen(panel_ink(fg));
-        p.drawText(preview.adjusted(cw, 0, -cw, 0), Qt::AlignLeft | Qt::AlignVCenter,
-                   QStringLiteral("Aa Bb Cc 0123 #$%&  the quick brown fox"));
+        // The ink is chosen against the colour, not out of the theme. The window's
+        // own foreground is the first choice because that is the text the person
+        // reads all day; when the mixed colour leaves less than a readable step
+        // between them, black or white takes over by how light the ground is. A
+        // sentence you cannot see is not a preview of anything. (Kaida, 2026-11-20:
+        // "the sentence with the quick brown fox doesn't get updated … it should
+        // serve as a proper preview".)
+        {
+            const double ground = (0.299 * mixed.r + 0.587 * mixed.g + 0.114 * mixed.b) / 255.0;
+            const double ink = (0.299 * fg.r + 0.587 * fg.g + 0.114 * fg.b) / 255.0;
+            QColor text(fg.r, fg.g, fg.b);
+            if ((ink > ground ? ink - ground : ground - ink) < 0.25)
+                text = ground > 0.55 ? QColor(0, 0, 0) : QColor(255, 255, 255);
+            p.setPen(text);
+            p.drawText(preview.adjusted(cw, 0, -cw, 0), Qt::AlignLeft | Qt::AlignVCenter,
+                       QStringLiteral("Aa Bb Cc 0123 #$%&  the quick brown fox"));
+        }
         y += 2 * ch;
 
         mixer_hit_ = OverlayHit{};
@@ -2342,18 +2384,38 @@ private:
             update();
             return;
         }
+        // Left and Right change the value while the keys are on a row, which is
+        // what they mean on a row of settings: the row is already chosen and the
+        // question is what it should say. The colour menu is the one place they
+        // mean something else — six digits to choose between — and it keeps that.
+        // (Kaida, 2026-11-20: "Arrows should edit the value instead of moving the
+        // cursor on everything but the colors".)
+        if (settings_focus_ == 0 && (key == Qt::Key_Left || (plain && key == Qt::Key_H))) {
+            if (settings_->cycle(-1))
+                previewSetting(); // live, exactly as `-` and `+` are
+            update();
+            return;
+        }
+        if (settings_focus_ == 0 && (key == Qt::Key_Right || (plain && key == Qt::Key_L))) {
+            if (settings_->cycle(1))
+                previewSetting();
+            update();
+            return;
+        }
         const int rows = static_cast<int>(settings_->rows().size());
         if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
-            if (overlayWalk(settings_focus_, settings_->row(), rows, -1) ==
-                OverlayMove::MoveRow)
-                settings_->step(-1);
+            int row = settings_->row();
+            overlayWalk(settings_focus_, row, rows, -1);
+            if (settings_focus_ == 0)
+                settings_->setRow(row);
             update();
             return;
         }
         if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
-            if (overlayWalk(settings_focus_, settings_->row(), rows, 1) ==
-                OverlayMove::MoveRow)
-                settings_->step(1);
+            int row = settings_->row();
+            overlayWalk(settings_focus_, row, rows, 1);
+            if (settings_focus_ == 0)
+                settings_->setRow(row);
             update();
             return;
         }
@@ -2746,7 +2808,7 @@ private:
         const Color fg = screen_.defaultForeground();
 
         const QString hint =
-            QStringLiteral("arrows walk · hex edits · enter mixes · down to save/cancel");
+            QStringLiteral("Arrows to Navigate - Enter to Select - Escape to Cancel");
         const auto& fields = picker_->fields();
 
         // The label column is as wide as the longest name plus a space —
@@ -2797,7 +2859,12 @@ private:
                    Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Colours"));
         y += ch + kTitleGap;
 
-        const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
+        // The rows are centred in the panel rather than hung off its left edge.
+        // The panel is as wide as the widest thing in it, which is the line at the
+        // bottom, and a table starting at the padding left all the extra width as
+        // dead space on the right. (Kaida, 2026-11-20: "text should be centenred in
+        // the interface, lots of empty space on the right as it is now".)
+        const double table_x = panel.x() + pad + (inner_w - table_w) / 2.0;
         const int last = std::min(first + visible, total);
         picker_hit_ = OverlayHit{};
         picker_hit_.panel = panel;
@@ -2888,7 +2955,7 @@ private:
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
         const QString hint =
-            QStringLiteral("arrows walk · type or click · - + nudge · down to save/cancel");
+            QStringLiteral("Arrows to Navigate - Enter to Select - Escape to Cancel");
         const auto& rows = settings_->rows();
 
         int label_w = 16;
@@ -2929,7 +2996,12 @@ private:
                    Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Settings"));
         y += ch + kTitleGap;
 
-        const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
+        // The rows are centred in the panel rather than hung off its left edge.
+        // The panel is as wide as the widest thing in it, which is the line at the
+        // bottom, and a table starting at the padding left all the extra width as
+        // dead space on the right. (Kaida, 2026-11-20: "text should be centenred in
+        // the interface, lots of empty space on the right as it is now".)
+        const double table_x = panel.x() + pad + (inner_w - table_w) / 2.0;
         const int last = std::min(first + visible, total);
         settings_hit_ = OverlayHit{};
         settings_hit_.panel = panel;

@@ -373,7 +373,8 @@ nothing can be kept.
 - **Ctrl+Shift+K** opens the settings menu over the grid — font size, the two
   transparencies, padding, scrollback, cursor style and when closing asks — walked
   with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, and one
-  more step down from the last row landing on the words `save` and `cancel`. Enter opens
+  more step down from the last row landing on the words `save` and `cancel`, and one step
+  back up landing on the last row again. Enter opens
   whatever the keys are standing on and answers the word when the keys are on a word;
   there is no shortcut for saving, on purpose — a key that both saves a panel and dives
   into a row of it is a key you have to remember the mood of. Cancelling puts the window
@@ -534,6 +535,10 @@ something you can push. Pushing
 one changes the window while the button is down, because a preview you have to accept
 before you can judge is not a preview. Enter hands the colour back into the row it came
 from; Esc leaves it as it was; the list's `save` is what writes the file.
+
+In the settings menu, the left and right arrows change the value — the row is already
+chosen and the question is what it should say. The colour menu is the one place they mean
+something else: six hex digits to choose between.
 
 One thing is lit at a time. The highlight sits on the row the keys are standing on and
 nowhere else, so walking down to `save` takes it off the last row instead of leaving two
