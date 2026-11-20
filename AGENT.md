@@ -7,26 +7,33 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
 ## Current Status
 
 - Build: `cmake --build build -- -j4` succeeds.
-- Tests: all 21 `build/tests/kai-term-*` binaries pass after the changes below.
+- Tests: all 25 `build/tests/kai-term-*` binaries pass after the changes below (two clean
+  back-to-back runs on an idle machine).
 - Everything through the 2026-11-19 documentation audit is committed and pushed to
-  `origin/main`.
+  `origin/main`. The 2026-11-19 config split, colour picker, body settings and the
+  full-screen resize-loop fix are done here and committed at the end of this session.
 - Verified: a view built around a session now takes the session's screen before it is shown, so the black window is gone without a keypress.
 - Verified: snapshots carry scrollback history, including the primary screen and history behind an alternate-screen program.
+- Verified: a full-screen program (btop, tmux) no longer hangs when there is scrollback to
+  scroll back to — the resize loop that reflowed the whole history on every frame is broken
+  by feeding a restored screen to the model in one piece (`tests/snapshot_resize.cpp`).
 - Not verified: visual inspection on a live Wayland/X11 session; this machine has no X server.
 
 ## Current Task
 
-The documentation audit is done: every doc was re-read against the code and brought in
-line — stale test counts, the "no person has looked at it" claims that Kaida's live runs
-outran, the old socket path, the missing module entries, and the daemon's new behaviour
-in ARCHITECTURE. The two dialogs the window puts up — the question asked when a window is closed with
-something running, and the Ctrl+Shift+A session list — are drawn inside the terminal
-itself now, in the terminal's own font and colours, and both are answered from the
-keyboard: the question offers Yes / No / Save Session with No focused and the first
-letters answering, and the list is walked like a TUI picker. The warning paragraph
-under the question was dropped at Kaida's request; the question and the three buttons
-are the whole dialog. The remaining work is verification on a live display and keeping
-the daemon fresh after a rebuild.
+The 2026-11-19 work: the settings split into two files (`kai-term.conf` for behaviour,
+`theme.conf` for colours) with `font_size`, `cols`, `rows` and `opacity` now honoured at
+startup; the theme picker grew to edit all sixteen palette colours as well as the five
+chrome colours; and a full-screen program hanging once there was scrollback was traced to a
+resize loop and fixed. The picker's cursor sat one glyph left of the digit it edited (the
+`#` of `#rrggbb` occupies the first cell), and the colour writer rendered nibbles 10-15 as
+`'a'+v` instead of `'a'+(v-10)`, so a saved colour with a letter in it came back unreadable
+— both fixed, with tests that use letters, not just digits.
+
+A separate, unfixed finding is recorded under Next Steps: a fork-exec loop of session
+daemons was observed while stress-testing with throwaway probes that shared one hardcoded
+private runtime directory; it did not reproduce under the test suite or normal use, but the
+daemon's stale-socket start path is worth hardening.
 
 ## Progress Journal
 
@@ -154,6 +161,48 @@ the daemon fresh after a rebuild.
   a top-level `QMessageBox`, checks the button order, the focus, the arrow walking and
   the letter answers, and walks the session list to a session. README, ROADMAP, RESUME
   and ISSUES say the same thing the code does.
+- 2026-11-19: the settings split into two files at Kaida's direction — behaviour in
+  `~/.config/kai-term/kai-term.conf`, colours in `~/.config/kai-term/theme.conf`, both
+  overridable by `KAI_TERM_CONFIG` / `KAI_TERM_THEME`. The reader is lenient about which
+  file holds which key and reads the theme last so a colour in either file wins; a future
+  `/etc/kai-term/` system-default layer is deferred to the installer work.
+- 2026-11-19: the theme picker grew from five chrome colours to twenty-one rows — the
+  five plus all sixteen palette colours (`color0`..`color15`, labelled by name so a person
+  picks "bright magenta", not an index). The palette reaches the screen through a new
+  authority stack in `Screen::paletteColor`: OSC 4 session colours beat the theme palette,
+  which beats the built-in table; a theme change repaints future writes, and the in-row
+  swatch is the live feedback.
+- 2026-11-19: the picker's cursor sat one glyph left of the digit it was editing, because
+  the `#` of `#rrggbb` occupies the first cell — the underline is at `label_w + 1 + digit`,
+  not `label_w + digit`. A test that only round-trips digit-only colours could never have
+  caught the next bug either: `colourText` rendered nibbles 10-15 as `'a'+v` instead of
+  `'a'+(v-10)`, so a saved colour containing a letter came back unreadable — the file
+  looked written correctly but loaded as garbage. Fixed, with tests that use letters.
+- 2026-11-19: `font_size`, `cols`, `rows` and `opacity` are honoured at startup now, read
+  from the real `kai-term.conf` before the window is built so the PTY is born at the
+  configured size and the font is set before the window is sized to the grid.
+- 2026-11-19: **a full-screen program (btop, tmux) hung whenever there was scrollback, and
+  ran fine when there was not.** The cause was a resize loop, not a parser bug. When a
+  session changes size the daemon re-sends the whole screen as a snapshot; that snapshot
+  begins with `ESC[?1049l` (to paint the primary buffer) and re-enters the alternate screen
+  at the end. With scrollback the snapshot is large and the widget's reader split it across
+  several reads; a boundary landing between the leave and the re-enter showed the window a
+  transient primary buffer, so it flipped its padding, resized the PTY, and the session
+  answered with another snapshot — an endless loop that reflowed the entire scrollback on
+  every turn, saturating the GUI thread. A small snapshot (no scrollback) lands in one read
+  and the transient is never seen, which is exactly why it only hung with history. The fix
+  is in `src/terminal/terminalwidget.hpp`: the reader now drains the whole buffered run
+  into one event, so a snapshot reaches the model in a single `feed` and its transient
+  alternate-screen leave is invisible to `syncGridToScreen`. `tests/snapshot_resize.cpp`
+  drives a large alternate-screen snapshot through the reader with a tape backend and
+  asserts the window neither leaves the alternate screen nor resizes when it is applied;
+  it fails on the old code and passes on the fixed code.
+- 2026-11-19: a fork-exec storm of `kai-term serve` daemons (500+, load 47) was seen while
+  stress-testing with throwaway probes that shared one hardcoded private runtime directory
+  across many rapid runs. It did not reproduce under the test suite or normal use, and was
+  cleared by freezing and killing the group; but tests can leave a daemon running on the
+  default runtime dir, and the daemon's stale-socket start path (`ensureDaemon` →
+  `startDaemon`) is the thing to harden. Recorded under Next Steps.
 
 - 2026-11-18: `src/process/pty.hpp` gained a `cwd` argument and calls `chdir(cwd)` in the child before `execl`, so a shell starts in the requested directory without a typed `cd` command.
 - 2026-11-18: `src/session/daemon.hpp` passes `spec.cwd` to `Pty` instead of writing `cd ...` into the shell.
@@ -170,30 +219,32 @@ the daemon fresh after a rebuild.
   real one means the view keeps a Screen model and repaints it a row down, the way the
   Qt widget does. That is a renderer for the CLI, a milestone of its own, and the
   tmux_e2e test is proof of how much care terminal repainting wants; do not fake it.
-- **The theme picker: a TUI inside the terminal with a live preview** — agreed with Kaida
-  on 2026-11-19. The ground is ready: the config file exists, and `foreground`,
-  `background`, `cursor`, `selection` and `accent` already reach the widget through
-  `applyTheme()`, so a picker is a surface that edits those five keys and re-applies on
-  every keystroke — the live preview is the window itself, which is exactly why the
-  overlay approach works. What remains is the picker's own walk (one key per row, the
-  colour field editing hex digits, write-back to the file), plus the settings it will
-  grow when the surfaces that need them exist: the 256-colour palette and cell spacing.
-  See ROADMAP M4.
+- **Harden the daemon's start path against a stale socket.** A fork-exec storm of
+  `kai-term serve` was seen under throwaway probes that shared one runtime directory; the
+  `ensureDaemon` → `startDaemon` path should not be able to pile up daemons when the socket
+  is stale or a launch races itself, and a test that spawns a daemon should shut it down so
+  runs do not accumulate them on the default runtime dir. Not reproduced under the suite or
+  normal use, so this is hardening, not a proven live defect.
 - Visually verify the two dialogs on a live Wayland/X11 session: the question over a
   real build, and the session list with four or five sessions in it.
 - Visually verify the attached window and its coloured scrollback on a live Wayland/X11 session.
+- Visually verify the full-screen fix on a live Wayland/X11 session: `seq 1 500` then `btop`
+  and `tmux` in the same window, which is the exact thing that used to hang.
 - Restart the session daemon after a rebuild: a running daemon keeps the old snapshot code even after the binary on disk is replaced.
-- Keep the widget-level history check and the home-directory check in the test suite.
+- Keep the widget-level history check, the home-directory check and the new snapshot-resize
+  regression test in the suite.
 
 ## Project Files
 
-- `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow.
-- `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, and the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`).
-- `src/config/config.hpp` — the key=value config file: its path rules, colours, complaints (no Qt).
+- `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow, and the palette authority stack (`paletteColor`, `setThemePalette`).
+- `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`), the theme picker, and the reader that hands a whole buffered run to the model at once.
+- `src/config/config.hpp` — the two key=value files (`kai-term.conf`, `theme.conf`): their path rules, colours, palette, body settings (font, size, opacity), complaints (no Qt).
+- `src/config/themepicker.hpp` — the picker's Qt-free state machine: rows, digit stepping, hex editing, and which fields changed.
 - `src/session/sessionbackend.hpp` — a window's view of a daemon-owned session.
 - `src/session/snapshot.hpp` — bytes that rebuild a screen and its history.
 - `src/session/daemon.hpp` — session daemon, PTY ownership, attach/resize/snapshot handling.
 - `tests/snapshot.cpp` — snapshot round-trip checks, now including history.
+- `tests/snapshot_resize.cpp` — a large alternate-screen snapshot applied through the reader must not resize the window or drop the program (the full-screen hang regression test).
 - `tests/attach_state.cpp` — attach-state checks, including hidden-window delivery.
 - Other source and test files remain as before.
 
@@ -222,3 +273,5 @@ the daemon fresh after a rebuild.
 - A snapshot replaces the screen state: it clears the screen and scrollback first, then rebuilds history and the visible grid. Replaying it twice must not stack histories.
 - History rows carry their renditions. A warning printed in red stays red in the scrollback, and bold, underline and reverse survive too.
 - A session inside an alternate-screen program has two buffers. The snapshot carries both so the primary screen and its history survive when the program exits.
+- A restored screen must reach the model in one piece. A snapshot that leaves and re-enters the alternate screen is only safe if the window never sees the gap between the two, because the window gives a full-screen program the whole window and a transient primary buffer would make it resize — and a resize makes the daemon send another snapshot, which is a loop that reflows the whole scrollback every turn. The reader therefore hands the whole buffered run over as a single event. A local shell has nothing buffered between reads, so this is only about snapshots.
+- Behaviour and colours live in separate files — `kai-term.conf` and `theme.conf` — because they are edited for different reasons and the colour file is what the picker rewrites on every keystroke. The reader is lenient about which key is in which file and reads the theme last, so a person editing either by hand gets the answer they meant.

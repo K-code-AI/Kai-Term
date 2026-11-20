@@ -56,6 +56,15 @@ well-meaning change breaks:
   to zero and the grid grows into the freed room, because a full-screen program paints
   its own frame and two backgrounds in one window clash. `activePadding()` is the one
   question, and the painter, the hit-tester and the grid geometry all ask it.
+- **A restored screen is fed to the model in one piece.** A session's snapshot leaves the
+  alternate screen to repaint the primary buffer and re-enters it at the end, and the
+  margin rule above means a window that momentarily saw the primary buffer would resize
+  itself — which makes the session resize and answer with another snapshot, a loop that
+  reflows the whole scrollback every turn. So the reader thread takes the entire run the
+  backend is holding and posts it as a single event; the transient never reaches the
+  geometry. This is why a full-screen program used to hang only when there was scrollback:
+  a snapshot with nothing behind it is small enough to land in one read, and a large one
+  is not. See `tests/snapshot_resize.cpp`.
 
 Still open: Unicode width handling is basic and may need refinement for combining
 characters and unusual emoji sequences, and `OSC 8` hyperlinks are parsed and discarded.
@@ -235,22 +244,43 @@ is what a row of the list says, and the close prompt's *decision* is in
 `src/app/closeprompt.hpp` with no Qt in it: what to ask is worth testing, what the dialog
 looks like has to be looked at.
 
-Settings live in a key=value file — `~/.config/kai-term/config`, `KAI_TERM_CONFIG` to
-point elsewhere — because the words a person has typed in a dozen other dotfiles beat
-a table syntax they will look up. Parsing is `src/config/config.hpp`, no Qt, tested
-headless: comments and whitespace free, colours `#rrggbb` and nothing as colourful as a
-name. Two rules underneath it. An unknown key is announced with its file and line and
-the rest of the file still applies — a setting skipped in silence is an afternoon of
-wondering, and losing your colours to a typo'd key on another line is a worse afternoon
-than being told twice. And the environment beats the file everywhere they overlap:
-the environment is what you are holding in your hand right now.
+Settings live in key=value files — `~/.config/kai-term/kai-term.conf` for how the
+program behaves and `~/.config/kai-term/theme.conf` for how it looks, `KAI_TERM_CONFIG`
+and `KAI_TERM_THEME` to point either at somewhere else — because the words a person has
+typed in a dozen other dotfiles beat a table syntax they will look up. The split is not
+tidiness: it is what lets the picker save colours without ever rewriting the file that
+holds somebody's other decisions, so the two writers never touch each other's file.
+Parsing is `src/config/config.hpp`, no Qt, tested headless: comments and whitespace
+free, colours `#rrggbb` and nothing as colourful as a name, numbers refused whole —
+`14px` gets a complaint, not a silent read of the 14. Three rules underneath it. An
+unknown key is announced with its file and line and the rest of the file still applies
+— a setting skipped in silence is an afternoon of wondering, and losing your colours to
+a typo'd key on another line is a worse afternoon than being told twice. The environment
+beats the file everywhere they overlap: the environment is what you are holding in your
+hand right now. And the theme file is read last, so where a colour somehow appears in
+both, the file the picker writes is the more recent intention. `/etc/kai-term/` will
+join the layering as the system defaults, read first, when there is an installer with
+somewhere to put it; the names and the read order are chosen now so that layer is a
+call and not a rethink.
 
-The file's colours reach the widget as a `Theme` (foreground, background, cursor,
-selection, accent — the window's own chrome) with the same authority rule an
+The files reach the widget whole: `font_size`, `cols`, `rows` and `opacity` shape the
+window's body before the first frame, and the colours reach it as a `Theme` — the five
+window colours plus the sixteen ANSI palette entries — with the same authority rule an
 escape-sequence recolour follows: a theme decides the *next* screen, cells already
 written keep what they were written with, and a window attached to a running session
-takes the chrome but never the session's own colours — those crossed a process
-boundary to be here.
+takes the chrome but never the session's own colours — those crossed a process boundary
+to be here. The palette sits inside that rule the same way: an OSC 4 the session set
+outranks the theme palette, which colours only the entries the session never touched,
+and the built-in table answers beneath both.
+
+Choosing the colours without a text editor is the picker (Ctrl+Shift+P): the state
+machine in `src/config/themepicker.hpp` has no Qt in it and is tested headless, the
+widget paints what the model says and routes the keys, and the preview is the window
+itself — every keystroke goes through the same `applyTheme` a file goes through. Saving
+writes back only the colours that actually moved, in place: a line being set keeps its
+alignment and its trailing comment, comments and settings the picker has never heard of
+are copied byte for byte, and the file is replaced through a temp file and a rename so
+an interrupted save leaves the old one standing.
 
 ## Multiplexer subsystem
 

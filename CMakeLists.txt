@@ -146,6 +146,18 @@ if(UTIL_LIBRARY)
 endif()
 add_test(NAME widget-session COMMAND kai-term-widget-session)
 
+# A restored screen that arrives in pieces must not be mistaken for a full-screen program
+# letting go of the screen. Regression test for the resize loop that hung btop and tmux
+# once there was scrollback to reflow.
+add_executable(kai-term-snapshot-resize
+    tests/snapshot_resize.cpp
+    src/terminal/vtparser.cpp
+)
+target_link_libraries(kai-term-snapshot-resize PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core Threads::Threads)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-snapshot-resize PRIVATE ${UTIL_LIBRARY})
+endif()
+add_test(NAME snapshot-resize COMMAND kai-term-snapshot-resize)
 
 # What a second view of a session arrives knowing — the modes the program asked for, not
 # only the glyphs on the grid. Each of these was found by Kaida from btop in a
@@ -227,6 +239,7 @@ set(KAI_TEST_TARGETS
     kai-term-ipc
     kai-term-sockets
     kai-term-snapshot
+    kai-term-snapshot-resize
     kai-term-session
     kai-term-cli-surface
     kai-term-widget-session

@@ -244,9 +244,15 @@ public:
                 // Feeding the whole buffered run at once hides the transient, and the
                 // loop never starts. A local shell holds nothing between reads, so it is
                 // unaffected.
-                QCoreApplication::postEvent(
-                    this, new TerminalOutputEvent(std::string(buf, static_cast<size_t>(n)),
-                                                  generation));
+                std::string run(buf, static_cast<size_t>(n));
+                while (backend->hasBuffered()) {
+                    const ssize_t more = backend->read(buf, sizeof(buf));
+                    if (more <= 0)
+                        break;
+                    run.append(buf, static_cast<size_t>(more));
+                }
+                QCoreApplication::postEvent(this,
+                                            new TerminalOutputEvent(std::move(run), generation));
             }
         });
     }
