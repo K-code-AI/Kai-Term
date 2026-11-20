@@ -84,6 +84,23 @@ the path is created, since pointing `$XDG_RUNTIME_DIR` at a path of your own is 
 sessions end up somewhere specific and a daemon that cannot bind leaves nothing but a
 missing socket as the clue.
 
+*One* daemon is the rule, and three things hold it up, because starting one used to be a
+question with no memory of having been asked. A process launched in order to be the daemon
+carries `KAI_TERM_DAEMON=1`, set before the `execv` so it is carried whatever
+`/proc/self/exe` turns out to be, and `startDaemon` will not start a daemon while it
+carries it — a launch is therefore one generation deep whatever happens to answer it. A
+`flock` on `daemon-v3.sock.lock`, held across the whole of "is anyone home? then start
+one", turns N commands in one moment into one launcher and N−1 waiters instead of one
+winner and N−1 processes that lost. And the daemon writes its pid into
+`daemon-v3.sock.pid`, removed alongside the socket, so a command that finds the socket
+taken can say *which* process has it; the pid is only read when a listener is answering,
+so the file a killed daemon left behind cannot name a
+process number the kernel has since handed to something else. Both files are beside the
+socket rather than inside it, and the directory scan that lists daemons looks only for
+names ending in `.sock`, so neither is mistaken for a server. A shell is told none of
+this: the marker is cleared from its environment, since a shell that thought it was the
+daemon would refuse to start one exactly when its own daemon has just died.
+
 The protocol is frames, not JSON (`src/ipc/protocol.hpp`):
 
 ```

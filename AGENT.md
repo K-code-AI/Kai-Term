@@ -66,12 +66,16 @@ the session's to recolour. The picker preview moves that lock too (so it stays l
 beat the session), and re-reads the config after a save so the locked set matches the file.
 `--config-dir DIR` was added as the one way to run against a different set of settings.
 
-A separate, unfixed finding is recorded under Next Steps: a fork-exec loop of session
-daemons was observed again on 2026-11-19, this time while running the test suite repeatedly
-(not only throwaway probes), and it reached ~577 `kai-term serve` processes at load 47 before
-being frozen and killed. It does not happen in normal single-window use, but it is reachable
-and dangerous, and the suite is now run under a fork cap and a watchdog until the daemon's
-stale-socket start path is hardened so a daemon can never start another daemon.
+A finding that was open since 2026-11-19 is now **fixed**: a fork-exec loop of session
+daemons — ~577 `kai-term serve` at load 47, reached again on 2026-11-20 by a test tool that
+opened a window — cannot happen any more. A launched process carries `KAI_TERM_DAEMON=1`
+and refuses to start a daemon when it carries it, so a launch is one generation deep no
+matter what `/proc/self/exe` turns out to be; a launch lock makes "is anyone home?" and
+"then start one" one gesture instead of a race; and the daemon writes its pid beside its
+socket so whoever is locked out names the process instead of hunting it. `kai-term new`
+inside a session still works because that marker is cleared from a shell's environment on
+the way in. The suite no longer needs a watchdog against it; the fork cap stays because a
+test that hangs should still cost a test and not a machine.
 
 ## Progress Journal
 
@@ -437,6 +441,32 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   the last row sits above the two words; the pixel ones fail without the fix, and the
   row-and-word one fails with the fallback font switched off.
 
+- 2026-11-20: **a daemon is one process, and nothing starts a second one.** The storm was
+  open since 2026-11-19 and came back this evening through a route nobody had thought of:
+  `startDaemon` execs `/proc/self/exe` and trusts the program that comes back to read the
+  word `serve`. A helper built from these same sources — a tool that opens a window and
+  takes no notice of its arguments — re-ran *itself* instead, asked for a daemon, and
+  started another copy; five hundred processes and load 270 later the shape of the fault
+  was clear, which was that nothing in the launch path knew it was the launch path. Three
+  belts, all of them checked by a test that fails when the belt is switched off. (1) A
+  process launched to be the daemon carries `KAI_TERM_DAEMON=1`, set before the exec so it
+  is carried whatever the binary turns out to be, and `startDaemon` refuses to start a
+  daemon when it is set — one generation deep, always. `serve` says the same about itself,
+  so a daemon started by hand is under the same rule. It is cleared from a shell's
+  environment on the way in, because a shell that believed it was the daemon would answer
+  "the daemon does not start another daemon" to someone standing in a shell whose daemon
+  had just died — the one moment it is needed. (2) A `flock` beside the socket, held across
+  the whole of "is anyone home? then start one", so six commands at one moment make one
+  daemon and five waiters rather than one winner and five losers whose only contribution
+  was processes; a launcher that cannot get the lock says so instead of forking. (3) The
+  daemon writes its pid beside its socket and removes it with the socket, and whoever is
+  locked out says "already running, at pid N" — the hunt `ps`-and-grep through a crowd
+  calling itself `kai-term serve` is what made the last storm expensive to clean up. The
+  pid is only read when a listener is actually answering, so the file a killed daemon
+  leaves behind cannot point at a process number the kernel has since handed to something
+  else. `tests/cli_surface.cpp` counts daemons by *runtime directory and marker* rather
+  than by process name, so it can say "one" and mean this test's one.
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,
@@ -446,17 +476,18 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   real one means the view keeps a Screen model and repaints it a row down, the way the
   Qt widget does. That is a renderer for the CLI, a milestone of its own, and the
   tmux_e2e test is proof of how much care terminal repainting wants; do not fake it.
-- **Harden the daemon's start path against a stale socket — now a required fix.** The
-  `kai-term serve` fork-exec storm recurred on 2026-11-19 while running the test suite
-  repeatedly (~577 daemons, load 47), so it is reachable, not theoretical. The concrete
-  invariant to enforce: **a process that is a daemon must never start another daemon** — set
-  an environment marker when `startDaemon` execs `serve` and have `ensureDaemon`/`startDaemon`
-  refuse when it is set, which caps the storm at one generation whatever makes a `serve` want
-  to connect. Also: `startDaemon` should not let a launch pile up when the socket is stale or
-  races itself, and a test that spawns a detached daemon should shut it down so runs do not
-  accumulate them. Until this lands, run the suite under a fork cap (`ulimit -u`) and a
-  watchdog; the storm is cleared with `pkill -STOP -x exe` then `pkill -9 -x exe` (a `serve`'s
-  `comm` is `exe` because it execs `/proc/self/exe`).
+- **The daemon's start path is hardened — done 2026-11-20.** A process started in order
+  to be the daemon carries `KAI_TERM_DAEMON=1` and refuses to start a daemon while it
+  carries it, so a launch is one generation deep whatever `/proc/self/exe` turns out to
+  be — including a test tool built from these sources that reads no arguments and opens a
+  window instead of serving. A `flock` beside the socket makes "is anyone home?" and "then
+  start one" one gesture, so a loaded machine gets one daemon and five commands that
+  waited for it. The daemon leaves its pid beside the socket and whoever is locked out
+  names it. Checked in `tests/cli_surface.cpp`, each check confirmed to fail with its belt
+  switched off. Keep running the suite under a fork cap (`ulimit -u`) — a hung test should
+  cost a test, not a machine — and remember that a daemon left by a killed build keeps
+  running old code: `kai-term shutdown` after a rebuild. A stray one is `pkill -x
+  kai-term-daemon`; the older ones exec'd `/proc/self/exe` and answered to `exe`.
 - Visually verify the two dialogs on a live Wayland/X11 session: the question over a
   real build, and the session list with four or five sessions in it.
 - Visually verify the attached window and its coloured scrollback on a live Wayland/X11 session.

@@ -24,6 +24,27 @@
 
 namespace kai {
 
+// Which kind of process this is, said in the one place a child can be told: its
+// environment.
+//
+// `KAI_TERM_DAEMON` means *this process was started in order to be the daemon*. It is
+// set by the fork in `startDaemon` just before the exec, and it is what stops a
+// daemon from starting a daemon: the launch trusts that whatever `/proc/self/exe`
+// turns out to be will read the word `serve` and go and sit on a socket, and that
+// trust had no backstop. A helper built from these same sources — a test tool that
+// opens a window and takes no notice of its arguments — asked for a daemon, got one
+// that re-ran the tool instead of serving, which asked for a daemon in its turn, and
+// so on until the machine had two hundred and seventy points of load and five hundred
+// processes all claiming to be `kai-term serve`. The marker is the backstop: whatever
+// the exec'd program is, it carries the reason it was started, and a process holding
+// that reason does not go looking for a daemon by launching one.
+//
+// It lives here rather than beside the launch because a shell must be told the
+// opposite. The daemon's own shells inherit its environment, and a shell that
+// believed it was the daemon would refuse to start one — which is precisely the
+// moment a shell needs it, a daemon having died while its shells carried on.
+inline constexpr const char* kDaemonMarkerEnv = "KAI_TERM_DAEMON";
+
 // A child process on the other end of a pseudo-terminal.
 //
 // Two things about this are easy to get wrong and are the reason the interface
@@ -99,6 +120,11 @@ public:
                 setenv("KAI_SESSION", session_id.c_str(), 1);
             else
                 ::unsetenv("KAI_SESSION");
+            // And the daemon's marker goes the other way, always cleared: this child
+            // is a shell. Carrying it would mean a `kai-term new` run from inside a
+            // session after its daemon had died answering "the daemon does not start
+            // another daemon" to someone who was not a daemon.
+            ::unsetenv(kDaemonMarkerEnv);
             execl(chosen.c_str(), chosen.c_str(), "-i", nullptr);
             std::fprintf(stderr, "kai-term: cannot run %s: %s\r\n", chosen.c_str(),
                          std::strerror(errno));

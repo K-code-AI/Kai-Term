@@ -23,6 +23,7 @@
 #include <poll.h>
 #include <string>
 #include <sys/ioctl.h>
+#include <sys/file.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -33,6 +34,7 @@
 
 #include "../ipc/protocol.hpp"
 #include "../ipc/socket.hpp"
+#include "../process/pty.hpp"  // for kDaemonMarkerEnv, said here and unsaid there
 #include "daemon.hpp"
 
 namespace kai {
@@ -111,6 +113,97 @@ inline bool daemonAlive() {
     return client.nextFrame(reply, error) && reply.kind == MsgKind::Welcome;
 }
 
+// Which process is holding the daemon's socket, in the daemon's own words. Empty when
+// there is nothing useful to say — no file, an unreadable one, a number that is not
+// running — because a note about a daemon is only worth reading when it is true. The
+// socket is asked first: the pid file outlives a daemon that was killed, and a listener
+// actually answering is the whole reason a process number is worth naming.
+inline std::string liveDaemonPid() {
+    const std::string socket = daemonSocketPath();
+    if (socket.empty() || !socketHasListener(socket))
+        return {};
+    const int fd = ::open((socket + ".pid").c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return {};
+    char digits[24] = {};
+    const ssize_t n = ::read(fd, digits, sizeof(digits) - 1);
+    ::close(fd);
+    if (n <= 0)
+        return {};
+    const long pid = std::strtol(digits, nullptr, 10);
+    if (pid <= 0 || ::kill(static_cast<pid_t>(pid), 0) != 0)
+        return {};
+    return std::to_string(pid);
+}
+
+// Whether this process was started in order to be the daemon. See kDaemonMarkerEnv.
+inline bool weAreTheDaemon() {
+    const char* marker = std::getenv(kDaemonMarkerEnv);
+    return marker != nullptr && *marker != '\0';
+}
+
+// The file a daemon launch is guarded by, next to the socket it guards. It is never
+// removed, and it does not need to be: what a lock is is the inode, and what matters
+// about it is who is holding it.
+inline std::string daemonLaunchLockPath() {
+    const std::string socket = daemonSocketPath();
+    return socket.empty() ? std::string() : socket + ".lock";
+}
+
+// The right to start a daemon, held for as long as one takes to start.
+//
+// `ensureDaemon` asks a question — is anyone home? — and starts a daemon when the
+// answer is no. Asked twice in the same moment, the question gets the same answer
+// twice, and each launcher forks; the socket has room for one winner, so the others
+// get as far as "a daemon is already listening" and the only thing they contributed
+// was processes. A daemon that is alive but slow to answer looks exactly like no
+// daemon at all, which is how a loaded machine turns one question into a queue of
+// them. The lock makes the asking and the starting one gesture: whoever comes second
+// waits, and then finds the daemon the first one made, which is the answer it wanted.
+class DaemonLaunchLock {
+public:
+    DaemonLaunchLock() { acquire(); }
+    DaemonLaunchLock(const DaemonLaunchLock&) = delete;
+    DaemonLaunchLock& operator=(const DaemonLaunchLock&) = delete;
+    ~DaemonLaunchLock() {
+        if (fd_ >= 0) {
+            ::flock(fd_, LOCK_UN);
+            ::close(fd_);
+        }
+    }
+
+    bool held() const { return fd_ >= 0; }
+    // True when it came behind somebody else rather than taking it outright, which is
+    // the difference between launching a daemon and joining a launch.
+    bool waited() const { return waited_; }
+
+private:
+    void acquire() {
+        const std::string path = daemonLaunchLockPath();
+        if (path.empty() || !makeSocketDirectory(path))
+            return;
+        fd_ = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if (fd_ < 0)
+            return;
+        if (::flock(fd_, LOCK_EX | LOCK_NB) == 0)
+            return;
+        for (int slept = kDaemonPollMs; slept <= kDaemonReadyWaitMs; slept += kDaemonPollMs) {
+            ::usleep(kDaemonPollMs * 1000);
+            if (::flock(fd_, LOCK_EX | LOCK_NB) == 0) {
+                waited_ = true;
+                return;
+            }
+        }
+        // Somebody has been launching for three seconds and still is. Starting a
+        // second daemon would not beat them; it would only be a second loser.
+        ::close(fd_);
+        fd_ = -1;
+    }
+
+    int fd_ = -1;
+    bool waited_ = false;
+};
+
 // Defined below, next to the loop it wraps.
 inline int serveDaemonForeground(std::string& error);
 
@@ -119,6 +212,23 @@ inline int serveDaemonForeground(std::string& error);
 // there is nobody left to read it and a daemon that dies writing to a closed pipe
 // would be a poor way to keep a shell alive.
 inline bool startDaemon(std::string& error) {
+    // The rule that keeps a launch from becoming a chain: a process that exists in
+    // order to be the daemon does not go and look for one. `kai-term serve` typed by
+    // hand is under it too, because `serveDaemonForeground` says so before it binds.
+    if (weAreTheDaemon()) {
+        error = std::string("this process is the daemon; it does not start another one") +
+                " (it carries " + kDaemonMarkerEnv + ")";
+        return false;
+    }
+    const DaemonLaunchLock launch;
+    if (!launch.held()) {
+        error = "another command is starting the daemon; try again in a moment";
+        return false;
+    }
+    // Whoever held the lock may have finished the job while we were queueing, and a
+    // daemon that answers is a daemon there is no reason to start.
+    if (daemonAlive())
+        return true;
     const pid_t pid = ::fork();
     if (pid < 0) {
         error = std::string("cannot start a daemon: ") + std::strerror(errno);
@@ -141,6 +251,12 @@ inline bool startDaemon(std::string& error) {
         // process list. The session number goes too: a daemon must not inherit
         // somebody's session and hand it to every shell it later starts.
         ::unsetenv("KAI_SESSION");
+        // And this goes the other way: from here on we are the daemon, whatever
+        // `/proc/self/exe` turns out to be when it runs. If it is not kai-term after
+        // all — a test tool built from these sources, say — it inherits the reason
+        // it was started, and cannot answer that reason by starting another daemon
+        // the way the tool that re-ran itself did.
+        ::setenv(kDaemonMarkerEnv, "1", 1);
         char* const serve[] = {const_cast<char*>("kai-term"), const_cast<char*>("serve"),
                                nullptr};
         ::execv("/proc/self/exe", serve);
@@ -158,13 +274,21 @@ inline bool startDaemon(std::string& error) {
             // It gave up instead of answering, and its reason went to /dev/null along
             // with the rest of its output. That trade is right for a background
             // process; it just means the way to see the reason has to be said.
-            error = "the daemon could not start; run `kai-term serve` to see why";
+            const std::string holder = liveDaemonPid();
+            error = holder.empty()
+                        ? "the daemon could not start; run `kai-term serve` to see why"
+                        : "a daemon is already listening, at pid " + holder;
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+    // Something may be listening and simply not answering — a daemon stopped mid-step,
+    // or one so loaded it cannot get a thread together. That is the case a second
+    // daemon cannot fix, so say who to deal with rather than who to start.
+    const std::string holder = liveDaemonPid();
     error = "the daemon did not answer within " + std::to_string(kDaemonReadyWaitMs / 1000) +
-            " seconds";
+            " seconds" +
+            (holder.empty() ? std::string() : "; pid " + holder + " is listening on it");
     return false;
 }
 
@@ -292,9 +416,18 @@ inline void daemonStopSignal(int) {
 // by `serve` in the foreground and by the background daemon a window or
 // `new` starts.
 inline int serveDaemonForeground(std::string& error) {
+    // Said before binding, because whoever starts life as `serve` *is* the daemon,
+    // whether a person typed it or `startDaemon` exec'd it, and the rule that a daemon
+    // does not start a daemon cannot depend on which of the two it was.
+    ::setenv(kDaemonMarkerEnv, "1", 1);
     Daemon daemon;
     if (!daemon.start(error)) {
         error += " (" + daemonSocketPath() + ")";
+        // The other half of the answer: refusing to bind over a live daemon is right,
+        // and on its own it leaves whoever read it looking for the process.
+        const std::string holder = liveDaemonPid();
+        if (!holder.empty())
+            error += ", held by pid " + holder;
         return 1;
     }
     g_running_daemon = &daemon;
@@ -759,7 +892,10 @@ inline int runSessionCommand(int argc, char** argv) {
 
     if (verb == "start") {
         if (daemonAlive()) {
-            std::cout << "the daemon is already running\n";
+            const std::string holder = liveDaemonPid();
+            std::cout << (holder.empty() ? std::string("the daemon is already running")
+                                         : "the daemon is already running, at pid " + holder)
+                      << "\n";
             return 0;
         }
         if (!startDaemon(error))

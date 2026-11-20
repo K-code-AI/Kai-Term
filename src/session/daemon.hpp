@@ -219,8 +219,31 @@ public:
         listener_ = bindListen(path_, kDaemonBacklog, error);
         if (listener_ < 0)
             return false;
+        writePidFile();
         stopping_ = false;
         return true;
+    }
+
+    // Who owns the socket, written beside it for whoever is locked out of it.
+    //
+    // "a daemon is already listening" is a true answer and only half of one: it does
+    // not say which process, and picking the live one out of a crowd that all call
+    // themselves `kai-term serve` is exactly the hunt a launch storm turns into
+    // `ps`-and-grep. Nothing about running depends on the file — a daemon that cannot
+    // write it is still a daemon — and it is only read when a listener is answering,
+    // so the one a killed daemon leaves behind cannot send anyone chasing a dead pid.
+    std::string pidPath() const { return path_ + ".pid"; }
+
+    void writePidFile() const {
+        if (path_.empty())
+            return;
+        const std::string path = pidPath();
+        const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (fd < 0)
+            return;
+        const std::string text = std::to_string(static_cast<long>(::getpid())) + "\n";
+        static_cast<void>(::write(fd, text.data(), text.size()));
+        ::close(fd);
     }
 
     const std::string& socketPath() const { return path_; }
@@ -369,6 +392,10 @@ public:
             ::close(listener_);
             listener_ = -1;
             ::unlink(path_.c_str());
+            // Both names or neither: a socket that is gone and a pid file that stayed
+            // is a note about a daemon nobody can find, pointing at a process number
+            // the kernel is free to hand to something else tomorrow.
+            ::unlink(pidPath().c_str());
         }
     }
 

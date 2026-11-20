@@ -10,13 +10,16 @@
 
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pty.h>
 #include <string>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -142,6 +145,80 @@ Run run(const std::vector<std::string>& args, const std::vector<std::string>& en
 // The listing, as the program prints it.
 std::string listing(const std::vector<std::string>& env = {}) {
     return run({"list"}, env).out;
+}
+
+std::string readWholeFile(const std::string& path) {
+    std::string out;
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return out;
+    char buf[8192];
+    for (;;) {
+        const ssize_t n = ::read(fd, buf, sizeof(buf));
+        if (n <= 0)
+            break;
+        out.append(buf, static_cast<std::size_t>(n));
+    }
+    ::close(fd);
+    return out;
+}
+
+// Which processes are daemons *for this runtime directory*, by pid.
+//
+// Going by process name would count every kai-term on the machine, including a real
+// one belonging to whoever is running the test; what makes a daemon this test's is the
+// runtime directory it was started with. The marker is part of the question too, so
+// finding exactly one daemon is also finding that the launched process knows what it
+// is — which is the thing that keeps a launch from becoming a chain of them.
+std::vector<std::string> daemonsFor(const std::string& dir) {
+    std::vector<std::string> found;
+    DIR* proc = ::opendir("/proc");
+    if (proc == nullptr)
+        return found;
+    const std::string mine = "XDG_RUNTIME_DIR=" + dir;
+    while (dirent* entry = ::readdir(proc)) {
+        const std::string name = entry->d_name;
+        if (name.empty() || name[0] < '0' || name[0] > '9')
+            continue;
+        if (readWholeFile("/proc/" + name + "/cmdline").find("serve") == std::string::npos)
+            continue;
+        const std::string env = readWholeFile("/proc/" + name + "/environ");
+        if (env.find(mine) != std::string::npos &&
+            env.find("KAI_TERM_DAEMON=1") != std::string::npos)
+            found.push_back(name);
+    }
+    ::closedir(proc);
+    return found;
+}
+
+// The lock a daemon launch takes, found by looking rather than by rebuilding its name:
+// the socket is named after the protocol version, and a test should not have to know
+// which one that is today.
+std::string launchLockIn(const std::string& runtime_dir) {
+    const std::string dir = runtime_dir + "/kai-term";
+    DIR* handle = ::opendir(dir.c_str());
+    if (handle == nullptr)
+        return {};
+    std::string found;
+    while (dirent* entry = ::readdir(handle)) {
+        const std::string name = entry->d_name;
+        if (name.size() > 5 && name.compare(name.size() - 5, 5, ".lock") == 0) {
+            found = dir + "/" + name;
+            break;
+        }
+    }
+    ::closedir(handle);
+    return found;
+}
+
+std::string joined(const std::vector<std::string>& parts) {
+    std::string out;
+    for (const std::string& part : parts) {
+        if (!out.empty())
+            out += " ";
+        out += part;
+    }
+    return out;
 }
 
 } // namespace
@@ -346,6 +423,146 @@ int main() {
         expect(gone, "after shutdown the listing is empty again");
     }
 
+    // One daemon, and never a second one started by the first.
+    //
+    // The launch execs `/proc/self/exe` and trusts that whatever comes back reads the
+    // word `serve` and goes and sits on a socket. A helper built from these same
+    // sources does not: it opens a window, asks for a daemon, and starts another copy
+    // of itself to be one — which is how one command became five hundred processes and
+    // a machine at load 270, all of them claiming to be `kai-term serve`. Two things
+    // stop that: the marker a launched process carries, so that whatever it turns out
+    // to be knows it was started to be the daemon and does not go looking for one; and
+    // the lock that makes "is anyone home?" and "then start one" a single gesture
+    // rather than a race. Checked through the real binary, in a runtime directory of
+    // its own so the counts below are this test's and nobody else's.
+    char alone_tmpl[] = "/tmp/kai-cli-alone-XXXXXX";
+    const std::string alone_dir = ::mkdtemp(alone_tmpl) ? alone_tmpl : "/tmp/kai-cli-none";
+    const std::vector<std::string> alone = {"XDG_RUNTIME_DIR=" + alone_dir};
+    {
+        const Run r = run({"new", "storm"},
+                          {"XDG_RUNTIME_DIR=" + alone_dir, "KAI_TERM_DAEMON=1"});
+        expect(r.code != 0, "a daemon asked for another one fails instead of obliging: " + r.out);
+        expect(contains(r.out, "does not start another"), "and says why: " + r.out);
+        expect(daemonsFor(alone_dir).empty(),
+               "and nothing was left running: " + joined(daemonsFor(alone_dir)));
+        expect(contains(run({"list"}, alone).out, "no sessions"),
+               "and the socket is empty afterwards");
+    }
+    {
+        // Six commands in the same moment. Each one used to answer its own "nobody is
+        // home" with a fork, and the socket has room for one winner; what the rest
+        // contributed was processes. What is checked here is the outcome — everyone
+        // ends up with a daemon and exactly one exists — which is what the person
+        // typing notices; the lock that produces it is checked on its own below.
+        std::vector<pid_t> kids;
+        for (int i = 0; i < 6; ++i) {
+            const pid_t kid = ::fork();
+            if (kid == 0) {
+                ::setenv("XDG_RUNTIME_DIR", alone_dir.c_str(), 1);
+                ::unsetenv("KAI_TERM_DAEMON");
+                const int null_fd = ::open("/dev/null", O_WRONLY);
+                if (null_fd >= 0) {
+                    ::dup2(null_fd, STDOUT_FILENO);
+                    ::dup2(null_fd, STDERR_FILENO);
+                }
+                char* const av[] = {const_cast<char*>("kai-term"),
+                                    const_cast<char*>("start"), nullptr};
+                ::execv(KAI_TERM_BIN, av);
+                _exit(127);
+            }
+            kids.push_back(kid);
+        }
+        int answered = 0;
+        for (const pid_t kid : kids) {
+            int st = 0;
+            static_cast<void>(::waitpid(kid, &st, 0));
+            if (WIFEXITED(st) && WEXITSTATUS(st) == 0)
+                ++answered;
+        }
+        expect(answered == 6,
+               "all six got a daemon rather than a loss, got " + std::to_string(answered));
+        const std::vector<std::string> daemons = daemonsFor(alone_dir);
+        expect(daemons.size() == 1, "one daemon for six requests, got " +
+                                        std::to_string(daemons.size()) + ": " + joined(daemons));
+    }
+    {
+        // The number the daemon left beside its socket is its own, so whoever was
+        // locked out can name the process instead of hunting it through `ps`.
+        const Run s = run({"start"}, alone);
+        expect(s.code == 0 && contains(s.out, "already running, at pid "),
+               "start names the daemon it found: " + s.out);
+        const std::vector<std::string> daemons = daemonsFor(alone_dir);
+        expect(daemons.size() == 1 && contains(s.out, "at pid " + daemons[0]),
+               "and the number it names is the daemon's: " + s.out);
+    }
+    {
+        // A shell is not a daemon. The marker is cleared on the way in, or a `kai-term
+        // new` run from inside a session whose daemon had died would be answered "the
+        // daemon does not start another daemon" by someone standing in a shell.
+        const Run mk = run({"new", "clean"}, alone);
+        expect(mk.code == 0 && contains(mk.out, "started session "), "a shell to look inside: " + mk.out);
+        std::string sid;
+        {
+            const std::string pre = "started session ";
+            const std::size_t p = mk.out.find(pre);
+            if (p != std::string::npos) {
+                const std::size_t s = p + pre.size();
+                const std::size_t e = mk.out.find_first_not_of("0123456789", s);
+                sid = mk.out.substr(s, e - s);
+            }
+        }
+        // The shell writes what it was given to a file rather than to a screen: an
+        // attach reads a moment in a redraw, and whether a variable is set is not
+        // something to judge out of a half-painted prompt.
+        const std::string probe = alone_dir + "/marker-probe.txt";
+        static_cast<void>(::unlink(probe.c_str()));
+        static_cast<void>(run({"send", sid,
+                               "echo MARKER=$KAI_TERM_DAEMON SID=$KAI_SESSION > " + probe,
+                               "--enter"},
+                              alone));
+        std::string written;
+        for (int i = 0; i < 50 && written.empty(); ++i) {
+            written = readWholeFile(probe);
+            if (written.empty())
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        expect(contains(written, "SID=" + sid),
+               "the probe ran, and the shell knows its own number: " + written);
+        expect(!contains(written, "MARKER=1"),
+               "the daemon's marker does not reach its shells: " + written);
+        static_cast<void>(::unlink(probe.c_str()));
+    }
+    {
+        const Run s = run({"shutdown"}, alone);
+        expect(s.code == 0 && contains(s.out, "shutting down"), "the private daemon stops: " + s.out);
+    }
+    {
+        // The lock, asked for directly rather than inferred from a race. Somebody else
+        // is starting a daemon — here, forever, since this test holds the lock and never
+        // lets go — so the second command waits, says so, and above all does not fork a
+        // daemon of its own. That fork was the pile-up: one question whose every
+        // no-answer turned into a process.
+        const std::string lock = launchLockIn(alone_dir);
+        expect(!lock.empty(), "a launch left its lock beside the socket: " + alone_dir);
+        const int held = ::open(lock.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        expect(held >= 0 && ::flock(held, LOCK_EX | LOCK_NB) == 0, "the test can hold the lock");
+        const Run r = run({"start"}, alone);
+        expect(r.code != 0 && contains(r.out, "another command is starting the daemon"),
+               "a launch already under way is reported, not doubled: " + r.out);
+        expect(daemonsFor(alone_dir).empty(), "and nothing was started behind the lock: " +
+                                                  joined(daemonsFor(alone_dir)));
+        if (held >= 0) {
+            ::flock(held, LOCK_UN);
+            ::close(held);
+        }
+        // Let go, and the same command works: waiting was the point, not refusing.
+        const Run after = run({"start"}, alone);
+        expect(after.code == 0 && daemonsFor(alone_dir).size() == 1,
+               "and the launch goes ahead once the lock is let go: " + after.out);
+        const Run done = run({"shutdown"}, alone);
+        expect(done.code == 0, "and stops again: " + done.out);
+    }
+
     // The help a person reads before typing anything.
     {
         const Run h = run({"--help"}, here);
@@ -354,6 +571,7 @@ int main() {
     }
 
     ::rmdir(runtime_dir.c_str());
+    ::rmdir(alone_dir.c_str());
     if (failures == 0) {
         std::printf("PASS: %d command surface checks passed\n", checks);
         return 0;

@@ -343,7 +343,12 @@ it cannot reach and which process to stop; it never stops that daemon by itself,
 daemon holding somebody's shells is not ours to tidy away. `kai-term serve` runs
 the daemon in the foreground instead of the background — that is the way to see why a
 daemon would not start. `kai-term` is the only program built; the daemon is the same
-binary started a different way. What is on the
+binary started a different way. There is one daemon per user and nothing will start a
+second: a process launched to be the daemon knows what it was launched to be and says so
+if asked to find a daemon, commands that all want one at the same moment make one daemon
+and wait for it rather than one apiece, and a command that finds the socket taken names
+the process holding it (`the daemon is already running, at pid 412`) instead of leaving
+you to find it in `ps`. What is on the
 screen when attaching comes from the daemon's own model, so a session started this
 morning shows this morning; the scrollback above the visible screen comes with it now,
 including the primary screen and history behind a full-screen program, with the colours
