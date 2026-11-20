@@ -130,7 +130,16 @@ struct Config {
     std::optional<int> font_size;
     std::optional<int> cols;
     std::optional<int> rows;
-    std::optional<double> opacity;
+    // How solid the window is against whatever is behind it, in two halves: the
+    // ground the cells sit on, and the ink drawn over it. Separate because the
+    // reason to see through a terminal is to see the desktop behind the
+    // *background*, and the reason not to is that text you cannot read is worse
+    // than a desktop you cannot see. 0 is gone, 1 is solid.
+    //
+    // `background_opacity` also answers to the older single name `opacity`, which
+    // is what it always meant — the file a person already wrote keeps working.
+    std::optional<double> background_opacity;
+    std::optional<double> foreground_opacity;
     std::optional<Rgb> foreground;
     std::optional<Rgb> background;
     std::optional<Rgb> cursor;
@@ -295,12 +304,20 @@ inline void parseConfigFile(const std::string& path, Config& config) {
                 note(line_no, "rows wants a number from 2 to 1000, got '" + value + "'");
             else
                 config.rows = got;
-        } else if (key == "opacity") {
+        } else if (key == "background_opacity" || key == "opacity") {
+            // `opacity` is the older name for the same thing and still reads, so a
+            // file written before the two halves were split keeps working.
             double got = 0.0;
-            if (!fractionFromText(value, 0.1, 1.0, got))
-                note(line_no, "opacity wants a number from 0.1 to 1, got '" + value + "'");
+            if (!fractionFromText(value, 0.0, 1.0, got))
+                note(line_no, key + " wants a number from 0 to 1, got '" + value + "'");
             else
-                config.opacity = got;
+                config.background_opacity = got;
+        } else if (key == "foreground_opacity") {
+            double got = 0.0;
+            if (!fractionFromText(value, 0.0, 1.0, got))
+                note(line_no, "foreground_opacity wants a number from 0 to 1, got '" + value + "'");
+            else
+                config.foreground_opacity = got;
         } else if (key == "foreground") {
             colour(config.foreground);
         } else if (key == "background") {

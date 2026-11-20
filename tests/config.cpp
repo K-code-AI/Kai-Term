@@ -114,7 +114,38 @@ int main() {
         expect("the body settings all arrive",
                body.problems.empty() && body.font_size && *body.font_size == 16 &&
                    body.cols && *body.cols == 120 && body.rows && *body.rows == 40 &&
-                   body.opacity && *body.opacity > 0.84 && *body.opacity < 0.86);
+                   body.background_opacity && *body.background_opacity > 0.84 &&
+                   *body.background_opacity < 0.86);
+        // `opacity` is the older single name for the ground. It still reads, so a
+        // file written before the two halves were split keeps working — and it says
+        // nothing about the ink, which stays at the built-in answer.
+        expect("the older `opacity` names the ground, and leaves the ink alone",
+               body.background_opacity && !body.foreground_opacity);
+    }
+    // The two halves of transparency, named separately: a background you can see
+    // the desktop through and text that stays solid is the whole point of there
+    // being two numbers.
+    const std::string glass = dir + "/body-glass";
+    writeFile(glass, "background_opacity = 0.55\nforeground_opacity = 1\n");
+    ::setenv("KAI_TERM_CONFIG", glass.c_str(), 1);
+    {
+        const Config both = loadConfig();
+        expect("both transparencies arrive, and separately",
+               both.problems.empty() && both.background_opacity &&
+                   *both.background_opacity > 0.54 && *both.background_opacity < 0.56 &&
+                   both.foreground_opacity && *both.foreground_opacity == 1.0);
+    }
+    {
+        // A ground of 0 is allowed — an invisible background is a thing a person
+        // may genuinely want — and a negative one is not.
+        const std::string edges = dir + "/body-glass-edges";
+        writeFile(edges, "background_opacity = 0\nforeground_opacity = -1\n");
+        ::setenv("KAI_TERM_CONFIG", edges.c_str(), 1);
+        const Config edge = loadConfig();
+        expect("a fully transparent ground is accepted",
+               edge.background_opacity && *edge.background_opacity == 0.0);
+        expect("a negative ink is refused by name",
+               !edge.foreground_opacity && mentions(edge.problems, "foreground_opacity"));
     }
     const std::string nonsense = dir + "/body-nonsense";
     writeFile(nonsense, "font_size = 14px\ncols = 0\nopacity = 3\nrows = 9999\n");
@@ -125,7 +156,7 @@ int main() {
                !junk.font_size && mentions(junk.problems, "font_size"));
         expect("zero columns is out of range", !junk.cols && mentions(junk.problems, "cols"));
         expect("an opacity of three is out of range",
-               !junk.opacity && mentions(junk.problems, "opacity"));
+               !junk.background_opacity && mentions(junk.problems, "opacity"));
         expect("nine thousand rows is out of range", !junk.rows);
         expect("every refusal said its piece, four in all", junk.problems.size() == 4);
     }

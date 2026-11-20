@@ -100,7 +100,12 @@ public:
     // stderr, at startup, before the first frame — anything it could not use.
     // A typo'd setting that is silently skipped is an afternoon of wondering;
     // one that names its own line is a fifteen-second fix.
-    void adoptConfig(bool owns_screen) {
+    // `apply_body` is true for a window being built, where the config's font and
+    // grid decide the window. It is false when re-reading after the picker saves
+    // colours: the colours and their locks are refreshed from the file, but the
+    // window's size is whatever the person has it at now — saving a colour must
+    // not resize the terminal out from under them.
+    void adoptConfig(bool owns_screen, bool apply_body = true) {
         config_ = loadConfig();
         for (const std::string& problem : config_.problems)
             std::fprintf(stderr, "kai-term: %s\n", problem.c_str());
@@ -117,6 +122,13 @@ public:
         lift(theme.accent, config_.accent);
         for (std::size_t i = 0; i < theme.palette.size(); ++i)
             lift(theme.palette[i], config_.palette[i]);
+        // The two alphas travel with the colours rather than being applied to the
+        // window as a whole, because they are not one thing: the ground the cells
+        // sit on and the ink drawn over it get separate numbers, so a background you
+        // can see the desktop through leaves the text as readable as it ever was.
+        // `opacity` is the older name for the ground and still reads.
+        theme.background_opacity = config_.background_opacity.value_or(1.0);
+        theme.foreground_opacity = config_.foreground_opacity.value_or(1.0);
         applyTheme(theme, owns_screen);
         // A colour the person put in their config is now a LOCK in the screen: it
         // outranks whatever the session paints (OSC 4/10/11) and survives a
@@ -140,15 +152,20 @@ public:
         // config that says `cols = 100` means the opening window is as wide
         // as a hundred of them at that font. Font first, size second — the
         // other order would measure the hundred columns with the old ruler.
-        if (config_.font_size)
-            setFontPixelSize(*config_.font_size);
-        if (config_.cols || config_.rows)
-            resize(sizeForGrid(config_.rows.value_or(rows()), config_.cols.value_or(cols())));
-        // A window you can half-see through is a window with the desktop
-        // behind it; Qt asks the compositor, and without one the number is
-        // simply ignored, which is the honest answer rather than a fake.
-        if (config_.opacity)
-            setWindowOpacity(*config_.opacity);
+        // Skipped when re-reading after a colour save, so picking a colour
+        // never snaps the window back to the configured grid.
+        if (apply_body) {
+            if (config_.font_size)
+                setFontPixelSize(*config_.font_size);
+            if (config_.cols || config_.rows)
+                resize(sizeForGrid(config_.rows.value_or(rows()), config_.cols.value_or(cols())));
+        }
+        // No `setWindowOpacity()` here, deliberately: it asks the X11 window manager
+        // for `_NET_WM_WINDOW_OPACITY`, which a Wayland compositor has no equivalent
+        // of — so on a Wayland desktop the setting was accepted, remembered, and
+        // quietly done nothing with. And where it does work it dims the whole window,
+        // glyphs included, which is a watermark rather than a transparent terminal.
+        // The real thing is per-pixel and happens in `TerminalWidget::setTransparency`.
     }
 
     const std::string& sessionName() const { return session_; }
@@ -561,19 +578,52 @@ private:
         pickThemeInTerminal(fields, [this](std::vector<ThemeField> changed, bool saved) {
             if (!saved || changed.empty())
                 return; // cancel already put the old colours back; nothing changed
-            std::vector<std::pair<std::string, std::string>> updates;
-            for (const ThemeField& field : changed)
-                updates.emplace_back(field.key, colourText(field.value));
+            // Two files, because two kinds of thing live in them. Colours are how the
+            // window looks and go to the theme file; the transparency settings are
+            // how the window behaves on the desktop and go to the settings file,
+            // next to `font_size` and `cols` where the rest of them are. Writing a
+            // percentage into the colours file would be a number nothing there reads.
+            std::vector<std::pair<std::string, std::string>> colours;
+            std::vector<std::pair<std::string, std::string>> body;
+            for (const ThemeField& field : changed) {
+                if (field.kind == FieldKind::Percent)
+                    body.emplace_back(field.key, fractionText(field.value.r));
+                else
+                    colours.emplace_back(field.key, colourText(field.value));
+            }
             std::string error;
-            if (saveConfigValues(config_.theme_path, updates, error,
-                                 "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n")) {
-                setStatusText("colours saved to " + config_.theme_path, 6000);
+            bool wrote = true;
+            std::string where;
+            if (wrote && !colours.empty()) {
+                wrote = saveConfigValues(
+                    config_.theme_path, colours, error,
+                    "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n");
+                where = config_.theme_path;
+            }
+            if (wrote && !body.empty()) {
+                wrote = saveConfigValues(config_.settings_path, body, error);
+                if (!where.empty())
+                    where += " and ";
+                where += config_.settings_path;
+            }
+            if (wrote) {
+                setStatusText("saved to " + where, 6000);
                 // Re-read so the locks match the file that is now on disk: the
                 // colours just written become locked, and any colour the preview
                 // had locked but not saved goes back to the session's authority.
-                adoptConfig(ownsScreen());
+                //
+                // `false` for the body, and that is the whole of the fix for the
+                // window jumping size on a save: re-reading is about colours, and
+                // the second argument is what keeps the config's `cols`/`rows` and
+                // font from being applied a second time and snapping the window
+                // back to the configured grid while the person is looking at it
+                // (Kaida, 2026-11-19: "it resize my terminal when a new theme is
+                // saved"). The size a window is at now is the size it keeps — and
+                // the transparency the preview was already showing is re-applied,
+                // because that is a colour decision, not a body one.
+                adoptConfig(ownsScreen(), false);
             } else
-                setStatusText("could not save colours: " + error, 8000);
+                setStatusText("could not save: " + error, 8000);
         });
     }
 
@@ -598,6 +648,18 @@ private:
         for (std::size_t i = 0; i < theme.palette.size(); ++i)
             fields.push_back({"color" + std::to_string(i), rgbOf(theme.palette[i]),
                               kPaletteNames[i]});
+        // Last, and on their own terms: these two are not colours. They are
+        // percentages, they are edited as three decimal digits instead of six hex
+        // ones, and they are written to the settings file rather than the colours
+        // file. 100 means fully solid, which is what a window whose file says
+        // nothing is, so opening the picker and saving without touching them cannot
+        // change the window by a single pixel.
+        fields.push_back({"background_opacity",
+                          Rgb{percentFromFraction(theme.background_opacity), 0, 0},
+                          "background opacity", FieldKind::Percent});
+        fields.push_back({"foreground_opacity",
+                          Rgb{percentFromFraction(theme.foreground_opacity), 0, 0},
+                          "foreground opacity", FieldKind::Percent});
         return fields;
     }
 

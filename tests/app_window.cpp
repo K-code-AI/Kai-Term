@@ -64,6 +64,38 @@ bool waitFor(std::function<bool()> pred, int timeout_ms = 6000) {
 
 std::string onScreen(const kai::TerminalWidget& w) { return w.screen().text(); }
 
+// Every run of `needle` on the visible screen, top to bottom, with the ink it
+// was written in. This asks what a written character was actually painted with,
+// which is not what the default-colour accessors report.
+//
+// A token typed at a prompt is on the screen twice: once in the line the shell
+// echoed back, and once in what the command printed. Only the printed one says
+// anything about how output is coloured, so callers take the LAST match — the
+// echoed command line sits above it.
+std::vector<std::pair<int, Color>> cellMatches(const kai::TerminalWidget& w,
+                                               const std::string& needle) {
+    std::vector<std::pair<int, Color>> hits;
+    const Screen& s = w.screen();
+    for (int r = 0; r < w.rows(); ++r)
+        for (int c = 0; c + static_cast<int>(needle.size()) <= w.cols(); ++c) {
+            bool hit = true;
+            for (std::size_t k = 0; k < needle.size(); ++k)
+                if (s.at(r, static_cast<int>(c) + static_cast<int>(k)).text !=
+                    std::string(1, needle[k]))
+                    hit = false;
+            if (hit)
+                hits.emplace_back(r, s.at(r, c).fg);
+        }
+    return hits;
+}
+
+Color lastCellFgWithText(const kai::TerminalWidget& w, const std::string& needle) {
+    const std::vector<std::pair<int, Color>> hits = cellMatches(w, needle);
+    if (hits.empty())
+        return Color{255, 0, 255}; // sentinel: the text was never on screen
+    return hits.back().second;
+}
+
 void sendKey(kai::TerminalWidget* w, int key, Qt::KeyboardModifiers mods = Qt::NoModifier,
              const QString& text = QString()) {
     QKeyEvent ev(QEvent::KeyPress, key, mods, text);
@@ -532,8 +564,16 @@ int main(int argc, char** argv) {
         expect("the config's font size is the window's font", shaped.fontPixelSize() == 12);
         expect("and the window opens at the config's grid, not the built-in one",
                shaped.cols() == 100 && shaped.rows() == 30);
-        expect("and the config's opacity is the window's opacity",
-               shaped.windowOpacity() > 0.79 && shaped.windowOpacity() < 0.81);
+        // Not `windowOpacity()`. That call asks the X11 window manager for
+        // `_NET_WM_WINDOW_OPACITY`; a Wayland compositor has no such request, so the
+        // number was stored, reported back as 0.8 by the offscreen platform, and
+        // done nothing at all on the desktop the setting was written for. The real
+        // thing is the window's own alpha, so that is what is checked here and in
+        // the transparency block below.
+        expect("and the config's opacity is the window's background alpha",
+               qFuzzyCompare(shaped.backgroundOpacity(), 0.8));
+        expect("with a surface that carries an alpha channel to show for it",
+               shaped.testAttribute(Qt::WA_TranslucentBackground));
         shaped.discardOnClose();
         shaped.shutdown();
         pump(200);
@@ -564,8 +604,44 @@ int main(int argc, char** argv) {
         authoring.show();
         static_cast<void>(waitFor([&authoring] { return !authoring.sessionName().empty(); }));
         const std::string shared = authoring.sessionName();
+
+        // Kaida's exact symptom: does COMMAND OUTPUT wear the theme on the very first
+        // window, before Ctrl+Shift+P is ever opened? The snapshot that arrived with
+        // the window reset the Screen's raw default colours to the session's; the lock
+        // has to govern what text is WRITTEN, not only what the accessors report. Echo
+        // a token and read the ink of the cell it landed in — the bug painted it with
+        // the session's colour and only the picker's setDefaults corrected it.
+        runLine(&authoring, "echo ZEBRA");
+        expect("command output appears", waitFor(
+                   [&authoring] { return onScreen(authoring).find("ZEBRA") != std::string::npos; }));
+        const Color zebra_ink = lastCellFgWithText(authoring, "ZEBRA");
+        expect("plain command output wears the theme's ink before the picker is opened",
+               zebra_ink.r == 0x00 && zebra_ink.g == 0xF0 && zebra_ink.b == 0xA0);
+
+        // Resizing must not knock the theme off. A resize makes the session resend a
+        // snapshot carrying its own colours, and the lock has to survive it — Kaida's
+        // "colour change on resize and stop following the theme."
+        const QSize before = authoring.size();
+        authoring.resize(before.width() + 160, before.height() + 80);
+        pump(400);
+        expect("the theme still holds the background after a resize",
+               authoring.screen().defaultBackground().r == 0x02 &&
+                   authoring.screen().defaultBackground().g == 0x22 &&
+                   authoring.screen().defaultBackground().b == 0x23);
+        runLine(&authoring, "echo ZEBRA2");
+        static_cast<void>(waitFor(
+            [&authoring] { return onScreen(authoring).find("ZEBRA2") != std::string::npos; }));
+        const Color zebra2_ink = lastCellFgWithText(authoring, "ZEBRA2");
+        expect("command output after a resize still wears the theme's ink",
+               zebra2_ink.r == 0x00 && zebra2_ink.g == 0xF0 && zebra2_ink.b == 0xA0);
+
+        // The shell repaints its own background magenta and re-colours palette
+        // entry 1 green, then prints a token in that entry — all in one command, so
+        // the token, the recolours and the session's own colours are on the screen
+        // together and the checks below cannot pass by accident.
         runLine(&authoring,
-                "printf '\\033]11;rgb:ff/00/ff\\007\\033]4;1;rgb:00/ff/00\\007'; sleep 40");
+                "printf '\\033]11;rgb:ff/00/ff\\007\\033]4;1;rgb:00/ff/00\\007"
+                "\\033[31mPALTOKEN\\033[0m\\n'; sleep 40");
         pump(500);
 
         // The window that ran those bytes still wears the theme: the lock held.
@@ -577,6 +653,31 @@ int main(int argc, char** argv) {
                authoring.screen().paletteColor(1).r == 0xAF &&
                    authoring.screen().paletteColor(1).g == 0x0F &&
                    authoring.screen().paletteColor(1).b == 0x0F);
+        expect("the token is on the screen in the locked entry",
+               waitFor([&authoring] {
+                   return onScreen(authoring).find("PALTOKEN") != std::string::npos;
+               }));
+        expect("and it is painted with the config's red, not the session's green",
+               lastCellFgWithText(authoring, "PALTOKEN").r == 0xAF);
+
+        // The 16 palette colours, which is where Kaida saw the theme come off:
+        // "the color with the bug are the 16 default color those are the one getting
+        // resetted when resizing". A resize makes the session re-send the whole
+        // screen, and a snapshot that writes each cell's resolved RGB is a colour no
+        // lock can touch — the cell came back wearing the SESSION's entry 1, which
+        // the shell had just painted green. A cell now remembers the index it was
+        // asked for, the index is what travels, and the view resolves it through its
+        // own lock again, so the resize repaints the theme rather than the session.
+        authoring.resize(authoring.width() + 200, authoring.height() + 100);
+        pump(600);
+        expect("the palette token is still on the screen after a resize",
+               waitFor([&authoring] {
+                   return onScreen(authoring).find("PALTOKEN") != std::string::npos;
+               }));
+        const Color pal_after = lastCellFgWithText(authoring, "PALTOKEN");
+        expect("and it still wears the locked palette colour after a resize",
+               pal_after.r == 0xAF && pal_after.g == 0x0F && pal_after.b == 0x0F);
+        expect("so it did not fall back to the session's green", pal_after.g != 0xFF);
 
         // Control: the session really is magenta underneath. Read its snapshot into a
         // plain, unlocked screen — exactly what an attaching window would show without
@@ -664,11 +765,21 @@ int main(int argc, char** argv) {
         // is the path from the keystroke to the disk.
         const std::string cfg = root + "/picker-config";
         const std::string theme = root + "/picker-theme";
+        // A settings file that names a grid, so the window opens at a size the
+        // config chose and then gets resized away from it by hand. That is the only
+        // shape where a colour save could steal the window's size: re-reading the
+        // config after a save applied `cols`/`rows` a second time and snapped the
+        // window back to the configured grid, out from under the person who had just
+        // resized it (Kaida, 2026-11-19: "it resize my terminal when a new theme is
+        // saved"). Saving colours is about colours.
+        std::ofstream(cfg) << "cols = 90\nrows = 28\n";
         ::setenv("KAI_TERM_CONFIG", cfg.c_str(), 1);
         ::setenv("KAI_TERM_THEME", theme.c_str(), 1);
         kai::AppWindow window(kai::startWindowBackend(24, 80));
         window.show();
         static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        window.resize(640, 380);
+        pump(200);
 
         const auto press = [&window](int key, const QString& text = QString()) {
             QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
@@ -707,12 +818,21 @@ int main(int argc, char** argv) {
                window.theme().foreground.r == 0x11 && window.theme().foreground.g == 0xFF &&
                    window.theme().foreground.b == 0x00);
 
-        // Enter saves: the theme file gets the new colour, and the settings
-        // file — a different file — is not created, because saving colours
-        // has no business touching how-the-program-behaves settings.
+        // Enter saves: the theme file gets the new colour, the settings file — a
+        // different file — is not written by it, and the window keeps the size it is
+        // at. That last one is the whole of the second complaint: a save re-reads
+        // the config to refresh the locks, and re-reading must not re-apply the
+        // body.
+        const int kept_rows = window.rows();
+        const int kept_cols = window.cols();
+        const int kept_height = window.height();
         press(Qt::Key_Return);
         pump(60);
         expect("Enter closes the picker", !window.pickerActive());
+        expect("saving colours does not resize the window",
+               window.rows() == kept_rows && window.cols() == kept_cols);
+        expect("and does not resize the window's pixels either",
+               window.height() == kept_height);
         {
             std::ifstream in(theme);
             const std::string written((std::istreambuf_iterator<char>(in)),
@@ -720,8 +840,10 @@ int main(int argc, char** argv) {
             expect("the saved colour is in the theme file: " + written,
                    written.find("foreground = #11ff00") != std::string::npos);
             std::ifstream settings(cfg);
-            expect("and the settings file was not written by a colour save",
-                   !settings.good());
+            const std::string settings_text((std::istreambuf_iterator<char>(settings)),
+                                            std::istreambuf_iterator<char>());
+            expect("and a colour save writes nothing into the settings file: " + settings_text,
+                   settings_text == "cols = 90\nrows = 28\n");
         }
 
         // A fresh window reads that colour back from the theme file.
@@ -799,6 +921,90 @@ int main(int argc, char** argv) {
         pump(200);
         std::remove(cfg.c_str());
         std::remove(theme.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+        ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
+    }
+
+    {
+        // Transparency, end to end. The settings file names the number, the window
+        // reads it, the picker previews it as you type, and a save writes it back to
+        // the SETTINGS file — next to `cols` and `font_size`, where how-the-window-
+        // behaves lives — and not into the colours file, where a number nothing
+        // there reads would sit. And the window becomes a surface with an alpha
+        // channel, which is the only kind of transparency a Wayland compositor can
+        // show: `_NET_WM_WINDOW_OPACITY` is an X11 request that goes nowhere here,
+        // and where it does work it fades the text along with the background.
+        const std::string glass_cfg = root + "/glass-settings";
+        const std::string glass_theme = root + "/glass-theme";
+        std::ofstream(glass_cfg) << "background_opacity = 0.6\n";
+        ::setenv("KAI_TERM_CONFIG", glass_cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", glass_theme.c_str(), 1);
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+
+        expect("the file's background opacity reaches the window",
+               qFuzzyCompare(window.backgroundOpacity(), 0.6));
+        expect("and the ink stays solid unless the file says otherwise",
+               qFuzzyCompare(window.foregroundOpacity(), 1.0));
+        expect("so the window asks for a surface with an alpha channel",
+               window.testAttribute(Qt::WA_TranslucentBackground));
+
+        const auto press_key = [&window](int key, const QString& text = QString()) {
+            QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const auto open_picker = [&window] {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+
+        open_picker();
+        pump(60);
+        expect("the picker opens", window.pickerActive());
+        // Rows: five window colours, then sixteen palette entries, then the two
+        // transparency settings.
+        for (int i = 0; i < 21; ++i)
+            press_key(Qt::Key_Down);
+        pump(40);
+        press_key(Qt::Key_0, "0");
+        press_key(Qt::Key_4, "4");
+        press_key(Qt::Key_0, "0");
+        pump(60);
+        expect("typing on the transparency row moves the real alpha as you go",
+               qFuzzyCompare(window.backgroundOpacity(), 0.4));
+
+        const int rows_before = window.rows();
+        const int cols_before = window.cols();
+        press_key(Qt::Key_Return);
+        pump(80);
+        expect("saving transparency does not resize the window",
+               window.rows() == rows_before && window.cols() == cols_before);
+        {
+            std::ifstream in(glass_cfg);
+            const std::string written((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+            expect("the percentage is written to the settings file as a fraction: " + written,
+                   written.find("background_opacity = 0.4") != std::string::npos);
+        }
+        {
+            std::ifstream in(glass_theme);
+            expect("and never into the colours file", !in.good());
+        }
+
+        kai::AppWindow reopened(kai::startWindowBackend(24, 80));
+        expect("the next window reads the transparency back from the file",
+               qFuzzyCompare(reopened.backgroundOpacity(), 0.4));
+        reopened.discardOnClose();
+        reopened.shutdown();
+        pump(200);
+
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        std::remove(glass_cfg.c_str());
+        std::remove(glass_theme.c_str());
         ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
         ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
     }

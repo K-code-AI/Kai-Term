@@ -26,7 +26,8 @@ another shell while it stays open, which is what restoring means. There are conf
 files now — key=value in `~/.config/kai-term/kai-term.conf` for behaviour and
 `theme.conf` for colours, environment beating them, unknown keys announced with their
 line — carrying `confirm_quit`, the window's body (`font_size`, `cols`, `rows`,
-`opacity`, all followed by the real window at startup) and twenty-one colours: the five
+`background_opacity`, `foreground_opacity`, all followed by the real window at startup) and
+twenty-one colours: the five
 window colours and the sixteen ANSI palette entries. The colours reach the window as a
 theme, and **a colour the config names is the top authority**: it outranks the session's
 own `OSC 4/10/11` and holds on every window, including one attached to a running session,
@@ -34,7 +35,14 @@ so a saved theme is not washed back to defaults by a shell that recolours at sta
 colour the config left unnamed stays the session's to set, and the built-in palette answers
 beneath both. And all twenty-one can be chosen inside the window itself —
 **Ctrl+Shift+P** opens the picker over the grid, previews on the window as you type,
-and writes the changed lines back to `theme.conf` and nowhere else.
+and writes the changed lines back to `theme.conf`. Two rows below the colours choose how
+solid the window is — `background_opacity` for the ground the cells sit on and
+`foreground_opacity` for the text, cursor and dialogs, typed `1` to `100` — and because
+those are not colours they go to `kai-term.conf`. The ground is transparent by painting
+it at its own alpha on a surface that has one, so the desktop shows through while the
+text stays as solid as it was made; the X11 whole-window fade was tried first and does
+nothing on a Wayland compositor, and would have dimmed the glyphs along with the
+background where it works.
 
 **The keep-this-shell keybind and the close question in M4 have been used at a live
 Wayland session, on niri, by Kaida, who reports they work.** (The keybind was
@@ -42,9 +50,10 @@ Ctrl+Shift+D when that was said; it is Ctrl+Shift+S now, by request, and the D i
 retired. The question was a desktop dialog then; it is the terminal's own now, also by
 request.) Everything else in M3 and M4 is checked headless or
 offscreen only: 126 daemon checks over a real pty and a real socket, 44 checks of a
-window rendering a session and switching between two, 78 checks of the application
-window's keybinds and dialogs, 18 of when a close asks at all and what it offers, 24
-checks of drags across a pane boundary, plus the protocol, socket and snapshot tests.
+window rendering a session and switching between two, 128 checks of the application
+window's keybinds, dialogs and settings, 25 of which colour wins when a session and a
+theme disagree, 18 of when a close asks at all and what it offers, 24 checks of drags
+across a pane boundary, plus the protocol, socket and snapshot tests.
 What an attached window looks like has been seen — the re-attach bugs Kaida found
 were found at a live session — and the close question has been read and answered
 there twice over, once as a native dialog and once as the terminal's own question.

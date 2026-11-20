@@ -263,11 +263,22 @@ join the layering as the system defaults, read first, when there is an installer
 somewhere to put it; the names and the read order are chosen now so that layer is a
 call and not a rethink.
 
-The files reach the widget whole: `font_size`, `cols`, `rows` and `opacity` shape the
-window's body before the first frame, and the colours reach it as a `Theme` — the five
-window colours plus the sixteen ANSI palette entries — deciding the *next* screen, so
-cells already written keep what they were written with, the same rule an escape-sequence
-recolour follows.
+The files reach the widget whole: `font_size`, `cols` and `rows` shape the window's body
+before the first frame, and the colours reach it as a `Theme` — the five window colours,
+the sixteen ANSI palette entries, and the two transparency alphas — deciding the *next*
+screen, so cells already written keep what they were written with, the same rule an
+escape-sequence recolour follows.
+
+**Transparency is two painted alphas, not one dimmed window.** `background_opacity` is the
+alpha the ground is filled at, `foreground_opacity` the alpha the ink is drawn at — glyphs,
+cursor, selection, dialogs. The widget gives its surface an alpha channel
+(`WA_TranslucentBackground`) when either is below 1 and paints every colour through
+`ground()` or `ink()`, so the compositor blends the desktop in behind the cells while the
+text stays exactly as solid as the person chose. `QWidget::setWindowOpacity` is
+deliberately not used: it is a `_NET_WM_WINDOW_OPACITY` request to an X11 window manager,
+which a Wayland compositor has no equivalent of — the number is stored, reported back as
+what was asked for, and does nothing on the desktop the setting was written for — and where
+it does work it multiplies the whole window, text included.
 
 **A colour the config file named is a lock, and a lock is the top authority.** It
 outranks everything a session writes — `OSC 10/11` for the defaults, `OSC 4` for a palette
@@ -281,7 +292,27 @@ program did not. A colour the config left *unnamed* is not locked and stays the 
 to recolour, so a program that legitimately changes a colour is still heard; the built-in
 table answers beneath both. The lock lives in the `Screen` (`lockDefaults`, `lockPalette`)
 rather than the widget so the authority is one rule in the model, and it is deliberately
-*not* touched by a program's colour writes — only by the config and the picker.
+*not* touched by a program's colour writes — only by the config and the picker. Three
+consequences of that one rule took a while to fall out, and each is now a test:
+
+- **A lock outranks a program's reset.** `RIS` puts the built-in colours back in the
+  *raw* defaults, which is what a reset means; the current rendition follows them to the
+  *effective* default, which under a lock is the lock. Writing the built-in there is how
+  the first screen after a shell's startup reset came back un-themed.
+- **A session announcing its colours does not move locked text.** `OSC 10/11` moves the
+  raw default, and a rendition sitting on the default follows it — to what the default
+  *resolves to*, not to the raw value the session wrote. Following the raw value dragged
+  every cell written after a snapshot's `OSC 10/11` onto the session's colours while every
+  accessor still reported the theme, which is the exact shape of "theming does not reach
+  command output until I open the theme menu once".
+- **A snapshot carries a colour's role, not its RGB.** A `Cell` remembers the palette
+  index it was asked for (`fg_role`), and a snapshot sends `38;5;n` for those cells and
+  `38;2;r;g;b` only for a truecolour no palette entry answers for. Sending the resolved RGB
+  was the one path that outran a lock: a resize re-sends the whole screen, and an explicit
+  triple is a colour no lock can touch, so every palette-coloured cell came back in the
+  session's colours (Kaida: "the 16 default colors… are the one getting resetted when
+  resizing"). Roles are also what makes a re-sent screen look the way the view's own live
+  output would.
 
 Choosing the colours without a text editor is the picker (Ctrl+Shift+P): the state
 machine in `src/config/themepicker.hpp` has no Qt in it and is tested headless, the

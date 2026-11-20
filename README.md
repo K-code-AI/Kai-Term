@@ -373,7 +373,9 @@ nothing can be kept.
 - **Ctrl+Shift+P** opens the colour picker over the grid: the five window colours
   and the sixteen ANSI palette entries, walked with Up/Down or k/j, digits walked
   with Left/Right or h/l, a hex digit typed replaces the one under the cursor and
-  the cursor steps along, Enter saves, Esc leaves with nothing written. The
+  the cursor steps along, Enter saves, Esc leaves with nothing written. Below the
+  colours are two more rows, `background opacity` and `foreground opacity`, typed as
+  `1` to `100` where 100 is fully solid. The
   preview is not a preview: it is the window. Each keystroke recolours the real
   screen, so what you watch choosing is what you get — on a window attached to a
   running session the preview moves only the window's chrome, because a session's
@@ -442,10 +444,12 @@ decides and what it would show, not what it looks like to a person mid-build.
 Two files, because two kinds of thing get set:
 
 - **`~/.config/kai-term/kai-term.conf`** is how the program behaves and presents:
-  `confirm_quit`, `font_size`, the opening grid, opacity — whatever joins them later.
+  `confirm_quit`, `font_size`, the opening grid, the two transparency settings —
+  whatever joins them later.
 - **`~/.config/kai-term/theme.conf`** is how it looks: the five window colours and the
-  sixteen palette entries. It is the file Ctrl+Shift+P writes, so saving colours never
-  rewrites the file holding your other decisions.
+  sixteen palette entries. It is the file Ctrl+Shift+P writes colours to, so saving
+  colours never rewrites the file holding your other decisions. (The picker's two
+  transparency rows are not colours, and go back to `kai-term.conf`.)
 
 Both live under `$XDG_CONFIG_HOME` when it is set, else `~/.config`; `KAI_TERM_CONFIG`
 and `KAI_TERM_THEME` point either one at a different file, which is how a test gets a
@@ -465,7 +469,9 @@ confirm_quit = running          # never | running | always
 font_size    = 14               # the cells are this many pixels tall
 cols         = 100              # the grid a new window opens with
 rows         = 30
-opacity      = 0.8              # how solid the window is; needs a compositor
+background_opacity = 0.8        # how solid the ground is: 0.2 lets the desktop through
+foreground_opacity = 1          # how solid the text, cursor and dialogs are
+                                # (`opacity` is the older name for the ground; it still reads)
 
 # ~/.config/kai-term/theme.conf
 foreground   = #dcdcdc          # the ink of unstyled text
@@ -493,7 +499,32 @@ changes a colour is still heard, and the built-in palette answers beneath both.
 
 Everything in `theme.conf` — all twenty-one colours — is also editable from inside the
 window with **Ctrl+Shift+P**, which writes back only the lines that actually changed and
-leaves comments, alignment, and settings it has never heard of exactly as they were.
+leaves comments, alignment, and settings it has never heard of exactly as they were. The
+picker has two more rows below the colours, `background opacity` and `foreground opacity`,
+typed as `1` to `100` where 100 is fully solid; those two are saved to `kai-term.conf`,
+because they are not colours. Saving never resizes the window — the grid and font you have
+now are the ones you keep.
+
+### Transparency
+
+`background_opacity` is the desktop showing through the ground the cells sit on, and
+`foreground_opacity` is how solid the ink is: the glyphs, the cursor, the selection, the
+dialogs. They are two settings because they are two decisions. You want the first one so a
+term behind the window is still legible; you do not want the second one, because text you
+cannot read is worse than a desktop you cannot see. A window that says nothing is solid on
+both counts.
+
+This is per-pixel alpha, not a dimmed window. The other way — `QWidget::setWindowOpacity`,
+which asks an X11 window manager for `_NET_WM_WINDOW_OPACITY` — does two things nobody
+asked for: it fades the *text* along with the background, since it multiplies the whole
+window, and on a Wayland compositor there is no such request to make, so the setting is
+accepted, remembered, and quietly does nothing. Painting the background at its own alpha on
+a surface that has one works wherever the compositor composites, and leaves the glyphs as
+crisp as they were.
+
+A compositor is the requirement: under a bare X11 session with no compositing manager,
+alpha has nowhere to be blended and the window stays opaque. That is the honest answer
+rather than a fake, and it is the same rule every other terminal follows.
 
 Later, when there is an installer with somewhere to put it, `/etc/kai-term/` will hold
 the same two names as system defaults, read first and overridden by the user's files —

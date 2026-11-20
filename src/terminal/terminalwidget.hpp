@@ -33,6 +33,8 @@
 #include <QTimer>
 #include <QString>
 #include <QStringList>
+#include <QWindow>
+#include <QSurfaceFormat>
 #include <functional>
 #include <QSizeF>
 
@@ -105,6 +107,13 @@ public:
         // answer is the built-in palette — a theme that says nothing about
         // `red` leaves red the colour every program expects.
         std::array<Color, 16> palette = Screen::basePalette();
+        // How solid the two halves of the window are against whatever is behind
+        // it: the ground the cells sit on, and the ink drawn over it. They are two
+        // settings rather than one because the point of a see-through terminal is
+        // the desktop behind the background, and the point of the text is that you
+        // can read it. 1 is solid, which is what a window that says nothing is.
+        double background_opacity = 1.0;
+        double foreground_opacity = 1.0;
     };
 
     // Applying a theme is a decision about the next screen, not a rewrite of
@@ -131,9 +140,78 @@ public:
         // never touched. A window may colour what a session ignored; it may
         // not erase what a session said.
         screen_.setThemePalette(theme.palette);
+        setTransparency(theme.background_opacity, theme.foreground_opacity);
         update();
     }
     const Theme& theme() const { return theme_; }
+
+    // ---------------------------------------------------------------------
+    // Transparency, the real kind.
+    //
+    // `QWidget::setWindowOpacity()` is the obvious call and it is the wrong one
+    // twice over. It is X11-only — it asks the window manager for
+    // `_NET_WM_WINDOW_OPACITY`, and on a Wayland compositor (here: niri) there is
+    // no such request, so the number is accepted and nothing happens, which is
+    // exactly how "no matter the setting it's fully opaque" reads from the inside.
+    // And when it does work it multiplies the whole window, so the text goes
+    // translucent along with the background and the terminal becomes a watermark.
+    //
+    // The real kind is per-pixel: the surface carries an alpha channel, the
+    // background is painted at the background's alpha, and the ink is painted at
+    // the ink's. The compositor then blends that with whatever is behind, so the
+    // desktop comes through the ground while the glyphs stay as crisp as the day
+    // they were drawn. Two numbers because that is two decisions.
+    // ---------------------------------------------------------------------
+    void setTransparency(double background, double foreground) {
+        background_opacity_ = std::clamp(background, 0.0, 1.0);
+        foreground_opacity_ = std::clamp(foreground, 0.0, 1.0);
+        const bool translucent = background_opacity_ < 1.0 || foreground_opacity_ < 1.0;
+        if (translucent != translucent_) {
+            // The attribute is what gives the surface an alpha channel and stops
+            // Qt filling an opaque ground under us. Asking the window format for
+            // alpha as well covers a window that is already on screen when the
+            // setting moves, which is what the picker does while previewing.
+            setAttribute(Qt::WA_TranslucentBackground, translucent);
+            if (QWindow* window = windowHandle()) {
+                QSurfaceFormat format = window->format();
+                format.setAlphaBufferSize(translucent ? 8 : 0);
+                window->setFormat(format);
+            }
+            translucent_ = translucent;
+        }
+        update();
+    }
+    double backgroundOpacity() const { return background_opacity_; }
+    double foregroundOpacity() const { return foreground_opacity_; }
+
+    // The two halves of every colour this window paints. `ground` is what cells
+    // and panels sit on and is the half that lets the desktop through; `ink` is
+    // the glyphs, the cursor, the rules and the words, and stays solid unless the
+    // person asked otherwise. With both at 1 these hand back exactly the colour
+    // they were given, so an opaque window paints the way it always did.
+    QColor ground(const Color& c, int alpha = 255) const {
+        return QColor(c.r, c.g, c.b, scaleAlpha(alpha, background_opacity_));
+    }
+    QColor ink(const Color& c, int alpha = 255) const {
+        return QColor(c.r, c.g, c.b, scaleAlpha(alpha, foreground_opacity_));
+    }
+    // The same two, for the handful of colours the window invents out of numbers
+    // rather than out of the theme — the scrollbar's thumb, the status line's box.
+    QColor ground(int r, int g, int b, int alpha = 255) const {
+        return QColor(r, g, b, scaleAlpha(alpha, background_opacity_));
+    }
+    QColor ink(int r, int g, int b, int alpha = 255) const {
+        return QColor(r, g, b, scaleAlpha(alpha, foreground_opacity_));
+    }
+
+  private:
+    static int scaleAlpha(int alpha, double opacity) {
+        if (opacity >= 1.0)
+            return alpha;
+        return static_cast<int>(alpha * opacity + 0.5);
+    }
+
+  public:
 
     // Name the colours the config file supplied, so they outrank the session.
     // A field left as nullopt stays unlocked and the session may still set it.
@@ -1144,7 +1222,7 @@ public:
         ++paint_count_;
         QPainter p(this);
         const Color background = screen_.defaultBackground();
-        p.fillRect(0, 0, width(), height(), QColor(background.r, background.g, background.b));
+        p.fillRect(0, 0, width(), height(), ground(background));
 
         QFontMetricsF fm(font_);
         double cw = fm.horizontalAdvance(QChar('M'));
@@ -1176,8 +1254,7 @@ public:
                 // Blank cells are skipped below, so the highlight for them has
                 // to be painted here or a dragged band would show gaps.
                 if (selectedAt(r, c) && (cell.text.empty() || cell.width <= 0)) {
-                    p.fillRect(QRectF(x, y, cw, ch),
-                               QColor(selection_bg.r, selection_bg.g, selection_bg.b));
+                    p.fillRect(QRectF(x, y, cw, ch), ground(selection_bg));
                 }
 
                 if (cell.text.empty() || cell.width <= 0)
@@ -1195,7 +1272,7 @@ public:
                 }
 
                 if (bg.r != default_bg.r || bg.g != default_bg.g || bg.b != default_bg.b)
-                    p.fillRect(QRectF(x, y, cw * cell.width, ch), QColor(bg.r, bg.g, bg.b));
+                    p.fillRect(QRectF(x, y, cw * cell.width, ch), ground(bg));
 
                 QFont f = font_;
                 if (cell.attr.bold)
@@ -1203,7 +1280,7 @@ public:
                 if (cell.attr.italic)
                     f.setItalic(true);
                 p.setFont(f);
-                p.setPen(QColor(fg.r, fg.g, fg.b, cell.attr.dim ? 180 : 255));
+                p.setPen(ink(fg, cell.attr.dim ? 180 : 255));
 
                 QString text = QString::fromUtf8(cell.text.c_str(), cell.text.size());
                 p.drawText(QPointF(x, y + fm.ascent()), text);
@@ -1213,7 +1290,7 @@ public:
                 // made the last of them win, which is how a struck-out word with an
                 // underline on lost its underline.
                 if (cell.attr.underline || cell.attr.strike || cell.attr.overline) {
-                    p.setPen(QPen(QColor(fg.r, fg.g, fg.b), 1.0));
+                    p.setPen(QPen(ink(fg), 1.0));
                     const double right = x + cw * cell.width;
                     if (cell.attr.underline)
                         p.drawLine(QPointF(x, y + ch - 1.5), QPointF(right, y + ch - 1.5));
@@ -1243,20 +1320,20 @@ public:
                     // that glyph is drawn again on top in the colour it is now
                     // sitting on. Skip the second pass and the character under the
                     // cursor simply disappears — a block cursor that eats text.
-                    p.setBrush(QColor(theme_.cursor.r, theme_.cursor.g, theme_.cursor.b));
+                    p.setBrush(ink(theme_.cursor));
                     p.drawRect(QRectF(x, y, span, ch));
                     if (!under.text.empty()) {
-                        p.setPen(QColor(under.bg.r, under.bg.g, under.bg.b));
+                        p.setPen(ink(under.bg));
                         p.setBrush(Qt::NoBrush);
                         p.drawText(QPointF(x, y + fm.ascent()), QString::fromStdString(under.text));
                     }
                     break;
                 case Screen::CursorShape::Bar:
-                    p.setBrush(QColor(theme_.cursor.r, theme_.cursor.g, theme_.cursor.b, 210));
+                    p.setBrush(ink(theme_.cursor, 210));
                     p.drawRect(QRectF(x, y, std::min(2.0, cw), ch));
                     break;
                 case Screen::CursorShape::Underline:
-                    p.setBrush(QColor(theme_.cursor.r, theme_.cursor.g, theme_.cursor.b, 210));
+                    p.setBrush(ink(theme_.cursor, 210));
                     p.drawRect(QRectF(x, y + ch - 2.0, span, 2.0));
                     break;
             }
@@ -1269,7 +1346,7 @@ public:
         if (scroll_bar_.visible) {
             const int alpha = scrollbar_drag_ ? 190 : 90;
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor(220, 220, 220, alpha));
+            p.setBrush(ink(220, 220, 220, alpha));
             p.drawRoundedRect(scroll_bar_.thumb.adjusted(2, 0, -2, 0), kScrollBarRadius,
                               kScrollBarRadius);
         }
@@ -1282,10 +1359,10 @@ public:
             const double box_h = ch + padding_;
             const QRectF box(width() - box_w - padding_, height() - box_h - padding_, box_w,
                              box_h);
-            p.setPen(QPen(QColor(220, 220, 220, 200), 1));
-            p.setBrush(QColor(20, 20, 20, 235));
+            p.setPen(QPen(ink(220, 220, 220, 200), 1));
+            p.setBrush(ground(20, 20, 20, 235));
             p.drawRoundedRect(box, kScrollBarRadius, kScrollBarRadius);
-            p.setPen(QColor(240, 240, 240));
+            p.setPen(ink(240, 240, 240));
             p.drawText(box, Qt::AlignVCenter | Qt::AlignLeft | Qt::TextSingleLine, line);
         }
 
@@ -1465,6 +1542,14 @@ private:
                 theme.selection = colour;
             else if (field.key == "accent")
                 theme.accent = colour;
+            // The two transparency rows are percentages, not colours, and they fold
+            // onto the theme for the same reason the colours do: the preview IS the
+            // window, so typing a digit has to move the real alpha and not just the
+            // number in the list.
+            else if (field.key == "background_opacity")
+                theme.background_opacity = fractionFromPercent(field.value.r);
+            else if (field.key == "foreground_opacity")
+                theme.foreground_opacity = fractionFromPercent(field.value.r);
             else if (field.key.rfind("color", 0) == 0 && field.key.size() > 5) {
                 int index = -1;
                 if (numberFromText(field.key.substr(5), 0, 15, index))
@@ -1691,10 +1776,10 @@ private:
         // the entire point of drawing the question here rather than in a
         // window the window manager decorates for you.
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(QColor(fg.r, fg.g, fg.b, 80), 1));
-        p.setBrush(QColor(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
-                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
-                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255), 255));
+        p.setPen(QPen(ink(fg, 80), 1));
+        p.setBrush(ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                         std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                         std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
         p.drawRoundedRect(lay.panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
 
         p.setRenderHint(QPainter::Antialiasing, false);
@@ -1704,7 +1789,7 @@ private:
             // The question is said at full strength; the detail under it is a
             // quieter voice, so the eye goes to the question first.
             const bool detail = static_cast<int>(i) >= lay.question_lines;
-            p.setPen(detail ? QColor(fg.r, fg.g, fg.b, 190) : QColor(fg.r, fg.g, fg.b));
+            p.setPen(detail ? ink(fg, 190) : ink(fg));
             p.drawText(QRectF(lay.panel.x(), y - fm.ascent(), lay.panel.width(), fm.height()),
                        Qt::AlignHCenter | Qt::AlignVCenter, lay.lines[i]);
             y += cellHeight();
@@ -1718,12 +1803,12 @@ private:
                 // the line you are on.
                 p.setRenderHint(QPainter::Antialiasing, true);
                 p.setPen(Qt::NoPen);
-                p.setBrush(focused ? QColor(theme_.selection.r, theme_.selection.g, theme_.selection.b)
+                p.setBrush(focused ? ground(theme_.selection)
                                    : QColor(0, 0, 0, 0));
                 if (focused)
                     p.drawRoundedRect(lay.boxes[i], kScrollBarRadius, kScrollBarRadius);
                 p.setRenderHint(QPainter::Antialiasing, false);
-                p.setPen(focused ? QColor(240, 240, 240) : QColor(fg.r, fg.g, fg.b, 225));
+                p.setPen(focused ? ink(240, 240, 240) : ink(fg, 225));
                 p.drawText(lay.boxes[i].adjusted(8, 0, -8, 0),
                            Qt::AlignLeft | Qt::AlignVCenter, lay.choices[i]);
                 continue;
@@ -1733,17 +1818,17 @@ private:
             // over, so the row reads as part of the screen it is on.
             p.setRenderHint(QPainter::Antialiasing, true);
             const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
-            p.setPen(QPen(focused ? accent : QColor(fg.r, fg.g, fg.b, 150), 1));
-            p.setBrush(focused ? QColor(accent.red(), accent.green(), accent.blue(), 40)
+            p.setPen(QPen(focused ? accent : ink(fg, 150), 1));
+            p.setBrush(focused ? ground(accent.red(), accent.green(), accent.blue(), 40)
                                : QColor(0, 0, 0, 0));
             p.drawRoundedRect(lay.boxes[i], kScrollBarRadius + 1, kScrollBarRadius + 1);
             p.setRenderHint(QPainter::Antialiasing, false);
-            p.setPen(focused ? QColor(240, 244, 255) : QColor(fg.r, fg.g, fg.b, 200));
+            p.setPen(focused ? ink(240, 244, 255) : ink(fg, 200));
             p.drawText(lay.boxes[i], Qt::AlignCenter, lay.choices[i]);
         }
 
         if (!lay.hint.isEmpty()) {
-            p.setPen(QColor(fg.r, fg.g, fg.b, 140));
+            p.setPen(ink(fg, 140));
             p.drawText(lay.hint, Qt::AlignHCenter | Qt::AlignVCenter,
                        QString::fromStdString(overlay_.hint));
         }
@@ -1800,16 +1885,16 @@ private:
                            panel_h);
 
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(QColor(fg.r, fg.g, fg.b, 80), 1));
-        p.setBrush(QColor(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
-                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
-                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255), 255));
+        p.setPen(QPen(ink(fg, 80), 1));
+        p.setBrush(ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                         std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                         std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
         p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setFont(font_);
 
         double y = panel.y() + pad + fm.ascent();
-        p.setPen(QColor(fg.r, fg.g, fg.b));
+        p.setPen(ink(fg));
         p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
                    Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("colours"));
         y += ch;
@@ -1824,41 +1909,51 @@ private:
             if (focused) {
                 p.setRenderHint(QPainter::Antialiasing, true);
                 p.setPen(Qt::NoPen);
-                p.setBrush(QColor(theme_.selection.r, theme_.selection.g, theme_.selection.b));
+                p.setBrush(ground(theme_.selection));
                 p.drawRoundedRect(row, kScrollBarRadius, kScrollBarRadius);
                 p.setRenderHint(QPainter::Antialiasing, false);
             }
-            p.setPen(QColor(fg.r, fg.g, fg.b));
+            p.setPen(ink(fg));
             // The label sits in its column so every hex value starts at the
             // same x; a table that jaggeds is harder to read than one with a
             // column nobody asked for.
             const QString label =
                 QString::fromStdString(field.label.empty() ? field.key : field.label);
             p.drawText(QPointF(table_x, y), label.leftJustified(label_w, QLatin1Char(' ')));
-            const std::string hex = colourText(field.value);
+            const std::string hex = field.kind == FieldKind::Percent
+                                        ? std::to_string(field.value.r) + '%'
+                                        : colourText(field.value);
             p.drawText(QPointF(table_x + label_w * cw, y), QString::fromStdString(hex));
 
             // The digit the next keystroke will replace, lit with the same
-            // accent a dialog puts on the answer its focus is on. The hex
-            // text is `#rrggbb`, so digit zero sits one cell in from where
-            // the text starts — skip that cell and every cursor lands one
-            // digit early, rightmost digit wearing the second-to-last mark.
+            // accent a dialog puts on the answer its focus is on. A colour's text
+            // is `#rrggbb`, so its first editable digit sits one cell in from where
+            // the text starts — skip that cell or every cursor lands one digit
+            // early. A percentage has no leading cell, so its first digit is first.
             if (focused) {
                 const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
                 p.setPen(QPen(accent, 1));
-                const double dx = table_x + (label_w + 1 + picker_->digit()) * cw;
+                const int lead = field.kind == FieldKind::Percent ? 0 : 1;
+                const double dx = table_x + (label_w + lead + picker_->digit()) * cw;
                 p.drawLine(QPointF(dx, y + fm.descent() * 0.4),
                            QPointF(dx + cw - 1, y + fm.descent() * 0.4));
             }
 
             // The swatch: the colour itself, two cells wide, wearing a thin
             // rule of the foreground so a near-background colour is still a
-            // rectangle you can see.
+            // rectangle you can see. For transparency the swatch shows the
+            // transparency — the same ink filled at the chosen opacity, so a low
+            // number is a faint rectangle and 100 is solid.
             const QRectF swatch(table_x + (label_w + 7 + 2) * cw,
                                 y - ch + fm.ascent() * 0.15 + 2, 2 * cw, ch - 4);
-            const Rgb& c = field.value;
-            p.setPen(QPen(QColor(fg.r, fg.g, fg.b, 120), 1));
-            p.setBrush(QColor(c.r, c.g, c.b));
+            p.setPen(QPen(ink(fg, 120), 1));
+            if (field.kind == FieldKind::Percent) {
+                const int alpha = std::clamp(field.value.r, 0, 100) * 255 / 100;
+                p.setBrush(ink(fg, alpha));
+            } else {
+                const Rgb& c = field.value;
+                p.setBrush(QColor(c.r, c.g, c.b));
+            }
             p.drawRect(swatch);
             y += ch;
         }
@@ -1866,7 +1961,7 @@ private:
         // The hint is anchored to the bottom of the panel, because the panel
         // may be shorter than the list: a hint that scrolls away with the
         // rows would be the one line the picker always had and never kept.
-        p.setPen(QColor(fg.r, fg.g, fg.b, 140));
+        p.setPen(ink(fg, 140));
         p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
                           fm.height()),
                    Qt::AlignHCenter | Qt::AlignVCenter, hint);
@@ -1954,6 +2049,11 @@ private:
     // The colours this window wears. Defaults until a config file says
     // otherwise; see `applyTheme()`.
     Theme theme_;
+    // The two alphas `ground()` and `ink()` paint with, and whether the surface
+    // currently has an alpha channel at all. See `setTransparency()`.
+    double background_opacity_ = 1.0;
+    double foreground_opacity_ = 1.0;
+    bool translucent_ = false;
     // The padding the current rows/cols were computed with. It is the memory of
     // whose screen this is — the shell's, inset, or a full-screen application's,
     // edge to edge — and the thing `syncGridToScreen()` compares against to

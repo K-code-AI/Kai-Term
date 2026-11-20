@@ -7,12 +7,13 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
 ## Current Status
 
 - Build: `cmake --build build -- -j4` succeeds.
-- Tests: all 26 `build/tests/kai-term-*` binaries pass after the changes below (two clean
+- Tests: all 27 `build/tests/kai-term-*` binaries pass after the changes below (two clean
   back-to-back runs on an idle machine, run under a fork cap and a watchdog — see Next
   Steps on the daemon fork-storm).
 - Everything through the 2026-11-19 documentation audit is committed and pushed to
   `origin/main`. The 2026-11-19 config split, colour picker, body settings, the
-  full-screen resize-loop fix, and the config-wins colour authority are done here and
+  full-screen resize-loop fix, the config-wins colour authority, the palette-colours-after-
+  resize fix, the no-resize-on-save fix, and the two transparency settings are done here and
   committed at the end of this session.
 - Verified: a view built around a session now takes the session's screen before it is shown, so the black window is gone without a keypress.
 - Verified: snapshots carry scrollback history, including the primary screen and history behind an alternate-screen program.
@@ -23,12 +24,23 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
   new, and attached — so fish's startup `OSC 10/11` and a session's own colours no longer
   wash the theme back to defaults (`tests/colour_authority.cpp`, and the attach +
   OSC-override cases in `tests/app_window.cpp`).
+- Verified: a config palette colour survives a resize. A resize re-sends the whole screen,
+  and the re-sent cells now carry the palette index they were asked for, so each view
+  re-resolves them through its own locks instead of receiving the session's RGB
+  (`tests/app_window.cpp`, the token-wears-the-locked-colour-after-resize case).
+- Verified: saving colours in the picker does not resize the window (`tests/app_window.cpp`,
+  which moves a window off its configured grid, saves, and requires the grid to stay).
+- Verified offscreen: the two transparency settings reach the window's alpha, the picker
+  previews them as they are typed, and they save to `kai-term.conf` as fractions
+  (`tests/app_window.cpp`, the transparency block). Not verified on a live compositor —
+  whether the desktop actually shows through is a thing only a real screen can confirm.
 - Not verified: visual inspection on a live Wayland/X11 session; this machine has no X server.
 
 ## Current Task
 
 The 2026-11-19 work: the settings split into two files (`kai-term.conf` for behaviour,
-`theme.conf` for colours) with `font_size`, `cols`, `rows` and `opacity` now honoured at
+`theme.conf` for colours) with `font_size`, `cols`, `rows` and the two transparency
+alphas now honoured at
 startup; the theme picker grew to edit all sixteen palette colours as well as the five
 chrome colours; and a full-screen program hanging once there was scrollback was traced to a
 resize loop and fixed. The picker's cursor sat one glyph left of the digit it edited (the
@@ -256,6 +268,38 @@ stale-socket start path is hardened so a daemon can never start another daemon.
 - 2026-11-18: `src/session/cli.hpp` gained `homeDirectory()` and uses it as the default `cwd` for `session new` and `startWindowSession`; `src/app/appwindow.hpp` uses it for the fallback local shell too.
 - 2026-11-18: `tests/session.cpp` gained a check that a window's shell starts in the user's home with no `cd` command typed.
 - 2026-11-18: README and RESUME were corrected from `daemon-v2.sock` to `daemon-v3.sock`, and README now says a new shell starts in the user's home.
+- 2026-11-19: **a config colour now reaches the cells that are WRITTEN, not only the
+  accessors.** Four separate leaks took it out, found one at a time by measuring a written
+  cell (`screen().at(r,c).fg`) instead of trusting `defaultForeground()` — every earlier
+  test read the accessors, which is why they all passed while the bug was live. The SGR
+  write path (`0`, `39`, `49`, `clearCell`) used the raw defaults; `RIS` wrote the built-in
+  `220,220,220` into the current rendition; a session's `OSC 10/11` dragged the current
+  rendition to the raw value it wrote instead of the effective default; and a snapshot sent
+  each cell's resolved RGB as an explicit `38;2;…` triple, which no lock can touch, so a
+  resize — which re-sends the whole screen — reset all sixteen palette colours to the
+  session's. The last one is fixed in the model rather than at the symptom: a `Cell`
+  carries the palette index it was asked for (`fg_role`/`bg_role`, `kRgbColour` for an exact
+  colour), and a snapshot sends `38;5;n` for those and RGB only for a truecolour. Roles are
+  also what makes a re-sent screen agree with the view's own live output.
+  `tests/app_window.cpp` drives the real daemon path and reads the ink of the printed
+  token — taking the *last* match on screen, because a token typed at a prompt is on the
+  screen twice.
+- 2026-11-19: **saving colours no longer resizes the window.** `adoptConfig` re-reads the
+  file after a save to refresh the locks, and re-reading applied `cols`/`rows`/`font_size`
+  a second time, snapping the window back to the configured grid. It takes `apply_body`
+  now and the picker save passes `false`; a test resizes a window away from its config
+  grid, saves a colour, and requires the grid to stay put.
+- 2026-11-19: **real transparency, and why `setWindowOpacity` was doing nothing.** On this
+  desktop (Wayland, niri) `QWidget::setWindowOpacity` asks an X11 window manager for
+  `_NET_WM_WINDOW_OPACITY`; Wayland has no such request, so the value was stored,
+  `windowOpacity()` reported it back — and the window stayed solid. The offscreen test
+  platform reported 0.8 and passed, which is what hid it. Transparency is per-pixel now:
+  `background_opacity` and `foreground_opacity` (the older `opacity` still reads, as the
+  ground), `WA_TranslucentBackground` whenever either is below 1, and every painted colour
+  through the widget's `ground()`/`ink()`, so the desktop comes through the ground while
+  the text stays as solid as chosen. Both are picker rows too, typed `1..100` (100 = 1.0),
+  written as a fraction to `kai-term.conf` — not to `theme.conf`, where a number nothing
+  reads would have gone.
 
 ## Next Steps
 
@@ -277,11 +321,6 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   accumulate them. Until this lands, run the suite under a fork cap (`ulimit -u`) and a
   watchdog; the storm is cleared with `pkill -STOP -x exe` then `pkill -9 -x exe` (a `serve`'s
   `comm` is `exe` because it execs `/proc/self/exe`).
-- **Add a transparency (opacity) row to the theme picker** (Ctrl+Shift+P), which Kaida asked
-  for. `opacity` already works from the config file and is honoured at startup; it is not yet
-  a picker row because `ThemePicker` edits six-hex colours only. Adding it means a non-hex
-  field kind (a percentage), a different row painting and digit handling in the widget, and a
-  save that writes `opacity = 0.8`.
 - Visually verify the two dialogs on a live Wayland/X11 session: the question over a
   real build, and the session list with four or five sessions in it.
 - Visually verify the attached window and its coloured scrollback on a live Wayland/X11 session.
@@ -293,10 +332,10 @@ stale-socket start path is hardened so a daemon can never start another daemon.
 
 ## Project Files
 
-- `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow, and the colour authority stack: config lock > session `OSC 4/10/11` > theme > built-in (`paletteColor`, `setThemePalette`, `lockDefaults`, `lockPalette`).
-- `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`), the theme picker (which moves the colour lock on preview), and the reader that hands a whole buffered run to the model at once.
-- `src/config/config.hpp` — the two key=value files (`kai-term.conf`, `theme.conf`): their path rules incl. `--config-dir` (`setConfigDir`), colours, palette, body settings (font, size, opacity), complaints (no Qt).
-- `src/config/themepicker.hpp` — the picker's Qt-free state machine: rows, digit stepping, hex editing, and which fields changed.
+- `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow, and the colour authority stack: config lock > session `OSC 4/10/11` > theme > built-in (`paletteColor`, `setThemePalette`, `lockDefaults`, `lockPalette`). A cell also carries the palette index its colour was asked for (`fg_role`/`bg_role`, `kRgbColour` when no index answers), which is what lets a snapshot send `38;5;n` and keep a lock outrank a re-sent screen.
+- `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`), the theme picker (which moves the colour lock on preview), the two transparency alphas (`setTransparency`, and every paint going through `ground()`/`ink()` on a translucent surface), and the reader that hands a whole buffered run to the model at once.
+- `src/config/config.hpp` — the two key=value files (`kai-term.conf`, `theme.conf`): their path rules incl. `--config-dir` (`setConfigDir`), colours, palette, body settings (font, grid, the two transparencies), complaints (no Qt).
+- `src/config/themepicker.hpp` — the picker's Qt-free state machine: rows, digit stepping, hex editing and percentage editing (`FieldKind`, `percentFromFraction`/`fractionText`), and which fields changed.
 - `src/session/sessionbackend.hpp` — a window's view of a daemon-owned session.
 - `src/session/snapshot.hpp` — bytes that rebuild a screen and its history.
 - `src/session/daemon.hpp` — session daemon, PTY ownership, attach/resize/snapshot handling.

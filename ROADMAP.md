@@ -352,10 +352,20 @@ Needed:
   unknown keys announced with their line rather than skipped, environment beats file —
   and split into two files the same day Kaida asked for it: `~/.config/kai-term/kai-term.conf`
   for behaviour (`confirm_quit`, and now the window's body: `font_size`, `cols`, `rows`,
-  `opacity`, all followed by the real window) and `~/.config/kai-term/theme.conf` for
+  `background_opacity`, `foreground_opacity`, all followed by the real window) and
+  `~/.config/kai-term/theme.conf` for
   colours (the five window colours and the sixteen ANSI palette entries, `color0`
   through `color15`). The theme file is read last, so the file the picker writes wins
   where the two overlap.
+- **Real transparency, built 2026-11-19.** Two settings because two decisions:
+  `background_opacity` is how much of the desktop shows through the ground, and
+  `foreground_opacity` is how solid the text, cursor, selection and dialogs are — text you
+  cannot read is worse than a desktop you cannot see. Per-pixel alpha on a translucent
+  surface, not `setWindowOpacity`, which is an X11 `_NET_WM_WINDOW_OPACITY` request: it does
+  nothing on a Wayland compositor (the bug Kaida hit — "no matter the setting it's fully
+  opaque") and where it works it fades the glyphs along with the background. Both are
+  editable in the picker as `1..100` (100 = solid) and are saved to the behaviour file,
+  which is where the rest of them live.
 - **System defaults in `/etc/kai-term/`, deferred** — Kaida's call on 2026-11-19: the
   same two names under `/etc/kai-term/` as system defaults, read first and overridden
   by the user's files, "later, when we do a way to install it down the line". The path
