@@ -375,6 +375,18 @@ Needed:
   moves the digits out from under the cursor. Three settings came with it
   (`scrollback`, `padding`, `cursor_style`), the scrollback one honoured in the daemon
   as well as the window because that is where the history a snapshot reads from lives.
+- **The colour mixer, built 2026-11-20** (Enter on a colour row). Six bars — red, green,
+  blue, hue, saturation, lightness — a preview the width of the panel with real text on
+  it, and the six hex digits for when you already know. `src/config/colormixer.hpp` is
+  Qt-free and keeps the wheel in tenths so the bars and the wheel stay one colour
+  (`rgb → hsl → rgb` is exact for every colour); the app-window test drives a bar with the
+  pointer and reads the mixed colour off the disk afterwards.
+- **A window holds its theme, a session does not, closed 2026-11-20.** An attached window
+  used to apply its theme only to its chrome and leave the screen's ink and ground to
+  whatever the snapshot re-sent, so every colour the theme file had not *named* came back
+  from the session — and came back again on every resize. `applyTheme` now sets the
+  defaults either way, and an attached view locks the whole theme rather than only the
+  named lines. Kaida's rule: "anyway windows hold the theme, not sessions".
 - **System defaults in `/etc/kai-term/`, deferred** — Kaida's call on 2026-11-19: the
   same two names under `/etc/kai-term/` as system defaults, read first and overridden
   by the user's files, "later, when we do a way to install it down the line". The path

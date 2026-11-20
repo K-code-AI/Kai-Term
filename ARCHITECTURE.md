@@ -366,6 +366,28 @@ is `Screen`'s *default* cursor shape, which DECSCUSR may override per program an
 `CSI 0 q` / `CSI 9 q` ("user default") returns to; a reset restores the person's answer
 rather than a constant.
 
+The mixer behind Enter on a colour row (`src/config/colormixer.hpp`, Qt-free like the
+other two models) holds one colour in two descriptions at once: RGB, because that is what
+a terminal stores, and HSL, because that is how a person says "less purple". Which one is
+authoritative follows the last edit — pushing saturation keeps the hue exactly where it was
+put rather than re-deriving it from a rounding of the previous frame — and the wheel is
+kept in *tenths* of a degree and percent while the rows show whole units. The tenths are
+not tidiness: a hue rounded to a whole degree is worth as much as six units of a byte at
+the saturated end of the wheel (measured worst case over every colour: 248,10,11 is hue
+359.6°, and 359° is 248,4,0), so a picker running on the numbers it displays would repaint
+the colour every time a red bar was pushed. At tenths, `rgb → hsl → rgb` is exact for all
+16.7 million colours, which is what lets the bars and the wheel be two readings of one
+thing rather than two colours.
+
+A colour you configured outranks a session, and now outranks it on an attached window too.
+It used to be that `applyTheme` set the screen's default ink and ground only when the
+window had started the shell, on the grounds that the session had carried its own colours
+across a process boundary on purpose — but a snapshot's OSC 10/11 is a stored opinion from
+some other moment, and it re-arrives on every resize, so any colour your theme file had
+not named came back from the session. A window holds the theme; a session does not. The
+locks that make it hold against *live* output are built from the colours the config names,
+and for a window looking at somebody else's session, from the whole theme.
+
 ## Multiplexer subsystem
 
 The multiplexer is a layout tree owned by session metadata:

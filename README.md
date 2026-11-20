@@ -373,9 +373,11 @@ nothing can be kept.
 - **Ctrl+Shift+K** opens the settings menu over the grid — font size, the two
   transparencies, padding, scrollback, cursor style and when closing asks — walked
   with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, and one
-  more step down from the last row landing on the words `save` and `cancel` — Enter
-  answers whichever one the keys are standing on, so both are reachable without a mouse.
-  Cancelling puts the window back exactly as it was; saving writes `kai-term.conf`. The
+  more step down from the last row landing on the words `save` and `cancel`. Enter opens
+  whatever the keys are standing on and answers the word when the keys are on a word;
+  there is no shortcut for saving, on purpose — a key that both saves a panel and dives
+  into a row of it is a key you have to remember the mood of. Cancelling puts the window
+  back exactly as it was; saving writes `kai-term.conf`. The
   preview is the window, so a font you are choosing is a font you are looking at. A
   row cannot be driven outside the values its setting accepts: numbers stop at their
   edges, and a row like `confirm quit` only steps between the three words the file
@@ -519,6 +521,29 @@ picker is colours and nothing else — how solid the window is belongs to the se
 next to the font. Saving colours never resizes the window: the grid and font you have now
 are the ones you keep.
 
+**Enter on a colour opens the mixer** for it: the colour across the top of the window with
+text sitting on it in the ink you actually read, six bars you can push — red, green, blue,
+and the hue, saturation and lightness the same colour is on the wheel — and the six hex
+digits, still typeable when you already know what you want. Each bar is painted as what
+pushing it *does*: its left end is that channel at zero and its right end at full, so the
+bar shows the colours you are choosing between rather than how full a number is — the hue
+bar is the whole wheel laid flat, and the lightness bar runs black through your colour to
+white rather than black to white, because either one without its middle stops is a ramp
+lying about where the colour goes. A knob sits where the value is, so the bar reads as
+something you can push. Pushing
+one changes the window while the button is down, because a preview you have to accept
+before you can judge is not a preview. Enter hands the colour back into the row it came
+from; Esc leaves it as it was; the list's `save` is what writes the file.
+
+One thing is lit at a time. The highlight sits on the row the keys are standing on and
+nowhere else, so walking down to `save` takes it off the last row instead of leaving two
+answers on the panel.
+
+The panels paint themselves at full strength whatever the transparency settings say.
+Transparency is a decision about the terminal — how much of the desktop shows through the
+ground the cells sit on — and never about the menus, which you opened in order to read
+them.
+
 Both panels take the mouse as well as the keyboard: the wheel walks the list, a click
 picks a row, a click inside a value puts the cursor on the digit you clicked, a row's
 `-` and `+` step it by one, and `save` and `cancel` at the bottom are the two words Enter
@@ -527,6 +552,24 @@ are on filled in so the keys have somewhere visible to have moved to. Walking is
 gesture that moves the keys, in the rows and past the end of them alike. Percentages are shown three
 digits wide — `100`, `075`, `005` — so the highlighted digit sits over the digit it is
 editing instead of sliding along when a number loses a place.
+
+A colour you configure is the colour the window uses. A shell painting its own colours
+with escape sequences is stating an opinion about your desktop, and it loses: the theme's
+colours are locked into the screen, and a fresh session starting in the same window
+inherits that lock rather than starting clean. What a program may still do is colour the
+text it prints, which happens inside the theme rather than in place of it.
+
+### Where a theme comes from
+
+**A window holds its theme; a session does not.** The colours are decided by what launched
+the window — the config in `~/.config/kai-term/`, or the files `KAI_TERM_CONFIG` and
+`KAI_TERM_THEME` point this particular window at — and by nothing the session
+carries. A snapshot of a running
+session re-sends that session's colours as escape sequences, and a resize re-sends them
+again; those used to win over the theme's own defaults for any colour your file had not
+named, which is what a lost theme looked like. They cannot now: an attached window wears
+its theme, and a program inside the session can still recolour a colour your theme leaves
+unlocked while it is running.
 
 ### Transparency
 

@@ -174,6 +174,15 @@ public:
 
     const std::vector<ThemeField>& fields() const { return fields_; }
     int row() const { return row_; }
+
+    // Put a colour into a row, from the mixer or anywhere else. A row the picker
+    // does not have is refused rather than wrapped: a caller that has lost track
+    // of which row it opened is better off loud than silent.
+    void setRowColour(int row, const Rgb& colour) {
+        if (row < 0 || row >= static_cast<int>(fields_.size()))
+            return;
+        fields_[static_cast<std::size_t>(row)].value = colour;
+    }
     int digit() const { return digit_; }
 
     // The lines worth writing back: a colour picked is not a colour typed, so

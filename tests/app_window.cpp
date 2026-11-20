@@ -15,6 +15,7 @@
 
 #include <QApplication>
 #include <QCloseEvent>
+#include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QTimer>
@@ -827,9 +828,19 @@ int main(int argc, char** argv) {
         const int kept_rows = window.rows();
         const int kept_cols = window.cols();
         const int kept_height = window.height();
-        press(Qt::Key_Return);
+        // Saving is the word at the bottom of the panel, reached by walking; Enter
+        // on a colour now opens the mixer instead (see the mixer block below).
+        {
+            const QPointF save = window.pickerSavePoint();
+            QMouseEvent ev(QEvent::MouseButtonPress, save, window.mapToGlobal(save.toPoint()),
+                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+            QMouseEvent up(QEvent::MouseButtonRelease, save, window.mapToGlobal(save.toPoint()),
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &up);
+        }
         pump(60);
-        expect("Enter closes the picker", !window.pickerActive());
+        expect("`save` closes the picker", !window.pickerActive());
         expect("saving colours does not resize the window",
                window.rows() == kept_rows && window.cols() == kept_cols);
         expect("and does not resize the window's pixels either",
@@ -899,7 +910,12 @@ int main(int argc, char** argv) {
             press(Qt::Key_Down); // foreground … accent, and then black
         type_hex("ff0000");
         pump(40);
-        press(Qt::Key_Return);
+        {
+            const QPointF save = window.pickerSavePoint();
+            QMouseEvent ev(QEvent::MouseButtonPress, save, window.mapToGlobal(save.toPoint()),
+                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        }
         pump(60);
         {
             std::ifstream in(theme);
@@ -955,6 +971,15 @@ int main(int argc, char** argv) {
             QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
             QCoreApplication::sendEvent(&window, &ev);
         };
+        const auto click = [&window](const QPointF& at) {
+            const QPointF global = window.mapToGlobal(at.toPoint());
+            QMouseEvent down(QEvent::MouseButtonPress, at, global, Qt::LeftButton,
+                             Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &down);
+            QMouseEvent up(QEvent::MouseButtonRelease, at, global, Qt::LeftButton,
+                           Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &up);
+        };
         // Transparency is a setting, not a colour, so it is edited in the settings
         // menu — the second row there, under the font size.
         const auto open_picker = [&window] {
@@ -977,7 +1002,7 @@ int main(int argc, char** argv) {
 
         const int rows_before = window.rows();
         const int cols_before = window.cols();
-        press_key(Qt::Key_Return);
+        click(window.settingsSavePoint());
         pump(80);
         expect("saving transparency does not resize the window",
                window.rows() == rows_before && window.cols() == cols_before);
@@ -1078,7 +1103,7 @@ int main(int argc, char** argv) {
         press_key(Qt::Key_1, "1");
         press_key(Qt::Key_6, "6");
         pump(60);
-        press_key(Qt::Key_Return);
+        click(window.settingsSavePoint());
         pump(100);
         expect("saving writes the font size to the settings file",
                fileText().find("font_size = 16") != std::string::npos);
@@ -1118,6 +1143,29 @@ int main(int argc, char** argv) {
         const auto to_word = [row_count, padding_row](int word) {
             return row_count - 1 - padding_row + word;
         };
+
+        open_menu();
+        pump(120);
+        // Only one thing is lit at a time. Walking down to `save` used to leave the
+        // last row wearing the highlight as well, and a panel with two things lit is
+        // a panel with two answers to the same question. (Kaida, 2026-11-20: "the
+        // last options of Colors and settings should not stay highlighted when we go
+        // down to save".) The pixel is taken just inside the top of the row, where
+        // the highlight is and the glyphs are not.
+        for (int i = 0; i < 3; ++i) { // the first row back to `cancel`, `save`, the last row
+            press_key(Qt::Key_Up);
+            pump(20);
+        }
+        expect("the keys are standing on the last row", window.settingsCursor().second == 0 &&
+                                                           window.settingsCursor().first ==
+                                                               row_count - 1);
+        const QRectF last_row = window.settingsRowRect(row_count - 1);
+        const QPoint band(static_cast<int>(last_row.center().x()),
+                          static_cast<int>(last_row.top()) + 2);
+        const QColor lit = window.grab().toImage().pixelColor(band);
+        walk(1); // and one step down, onto `save`
+        const QColor dim = window.grab().toImage().pixelColor(band);
+        expect("walking onto `save` takes the highlight off the last row", lit != dim);
 
         open_menu();
         pump(120);
@@ -1220,6 +1268,136 @@ int main(int argc, char** argv) {
         std::remove(menu_cfg.c_str());
         ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
     }
+
+    {
+        // The colour mixer, end to end. Space on a row of the picker opens it over
+        // that one colour; pushing a bar changes the window while it is being
+        // pushed; Enter hands the colour back to the row it came from and leaves you
+        // in the list you were in; and Esc at either step puts the colour back where
+        // it started. The arithmetic is checked headless in tests/color_mixer.cpp —
+        // this is the path from a keystroke and a pointer to a file on disk.
+        const std::string cfg = root + "/mixer-config";
+        const std::string theme = root + "/mixer-theme";
+        std::ofstream(cfg) << "font_size = 12\n";
+        std::ofstream(theme) << "foreground = #dcdcdc\nbackground = #1e1e1e\n";
+        ::setenv("KAI_TERM_CONFIG", cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", theme.c_str(), 1);
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(200);
+
+        const auto press = [&window](int key, const QString& text = QString()) {
+            QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const auto open_picker = [&window] {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const auto mouse = [&window](QEvent::Type type, const QPointF& at,
+                                    Qt::MouseButtons held) {
+            QMouseEvent ev(type, at, window.mapToGlobal(at.toPoint()), Qt::LeftButton,
+                           held, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+
+        open_picker();
+        pump(60);
+        expect("the picker is open before the mixer is asked for", window.pickerActive());
+        press(Qt::Key_Return);
+        pump(60);
+        expect("Enter opens the mixer for the colour under the highlight",
+               window.mixerActive());
+        expect("and the list stays behind it, because mixing is a detour",
+               window.pickerActive());
+
+        // Push the red channel along its bar with the pointer, and watch the window's
+        // own ink change while the button is still down.
+        const QRectF red = window.mixerBarRect(0);
+        expect("the mixer painted a bar for the red channel", red.width() > 1.0);
+        const Color ink_before = window.theme().foreground;
+        mouse(QEvent::MouseButtonPress, QPointF(red.center().x(), red.center().y()),
+              Qt::LeftButton);
+        pump(40);
+        mouse(QEvent::MouseMove, QPointF(red.right() - 1.0, red.center().y()),
+              Qt::LeftButton);
+        pump(40);
+        mouse(QEvent::MouseButtonRelease, QPointF(red.right() - 1.0, red.center().y()),
+              Qt::NoButton);
+        pump(60);
+        expect("pushing the red bar to its end lifts the window's red to full",
+               window.theme().foreground.r >= 250);
+        expect("while the other channels stay where they were",
+               window.theme().foreground.g == ink_before.g &&
+                   window.theme().foreground.b == ink_before.b);
+
+        // `save` is the mixer's answer: the colour goes back into the row, and the
+        // keys are handed to the list, which is where the next colour is.
+        {
+            const QPointF save = window.mixerSavePoint();
+            QMouseEvent ev(QEvent::MouseButtonPress, save, window.mapToGlobal(save.toPoint()),
+                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        }
+        pump(60);
+        expect("`save` hands the colour back and closes the mixer", !window.mixerActive());
+        expect("with the list still open underneath", window.pickerActive());
+        expect("and the window still showing the mixed colour",
+               window.theme().foreground.r >= 250);
+
+        // Coming back and leaving with Esc must not keep the second colour.
+        const Color mixed = window.theme().foreground;
+        press(Qt::Key_Return);
+        pump(60);
+        expect("Enter opens the mixer again", window.mixerActive());
+        press(Qt::Key_Minus); // one step down the red channel, live
+        pump(40);
+        expect("and a nudge is live, as everything in this program is",
+               window.theme().foreground.r == mixed.r - 1);
+        press(Qt::Key_Escape);
+        pump(60);
+        expect("Esc goes back without keeping it",
+               !window.mixerActive() && window.theme().foreground.r == mixed.r);
+
+        // The list's own `save` is still the thing that writes a file.
+        {
+            const QPointF save = window.pickerSavePoint();
+            QMouseEvent ev(QEvent::MouseButtonPress, save, window.mapToGlobal(save.toPoint()),
+                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        }
+        pump(120);
+        expect("the list's `save` writes and closes", !window.pickerActive());
+        std::ifstream theme_in(theme);
+        const std::string theme_text((std::istreambuf_iterator<char>(theme_in)),
+                                     std::istreambuf_iterator<char>());
+        const Color ink = window.theme().foreground;
+        const std::string want = "foreground = " + kai::colourText(Rgb{ink.r, ink.g, ink.b});
+        expect("and the theme file says the colour the window is showing",
+               theme_text.find(want) != std::string::npos);
+        expect("leaving the background line alone",
+               theme_text.find("background = #1e1e1e") != std::string::npos);
+
+        // A fresh window reads the mixed colour off the disk, which is the only
+        // proof that what was previewed is what was written.
+        kai::AppWindow reopened(kai::startWindowBackend(24, 80));
+        expect("a window opened afterwards reads the mixed colour back",
+               reopened.theme().foreground.r == mixed.r &&
+                   reopened.theme().foreground.g == mixed.g &&
+                   reopened.theme().foreground.b == mixed.b);
+        reopened.discardOnClose();
+        reopened.shutdown();
+        pump(200);
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        std::remove(cfg.c_str());
+        std::remove(theme.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    }
+
 
     {
         // The menu and the listing used to disagree. `session list` showed the shells a
@@ -1353,6 +1531,145 @@ int main(int argc, char** argv) {
         window.shutdown();
         for (const SessionInfo& info : daemon.list())
             static_cast<void>(daemon.kill(info.name, elsewhere_error));
+    }
+
+    {
+        // The same rule, met the way it is met in practice: a shell painting over the
+        // window's colours, and then a new shell starting in the same window. (Kaida,
+        // 2026-11-20: "a session spawn still gets rid of our theming".) Starting a
+        // fresh session builds a brand-new screen, and a new screen starts with the
+        // built-in colours and no locks — so the theme went out with the old one and
+        // whatever the new shell said came in.
+        const std::string hold_cfg = root + "/hold-config";
+        const std::string hold_theme = root + "/hold-theme";
+        std::ofstream(hold_cfg) << "font_size = 12\n";
+        std::ofstream(hold_theme)
+            << "foreground = #22cc55\nbackground = #05100a\ncolor1 = #ff7700\n";
+        ::setenv("KAI_TERM_CONFIG", hold_cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", hold_theme.c_str(), 1);
+
+        kai::AppWindow holding(kai::startWindowBackend(24, 80));
+        holding.resize(900, 600);
+        holding.show();
+        pump(300);
+        expect("a window with a theme to hold", holding.screenDefaultBackground().r == 0x05 &&
+                                                   holding.screenDefaultForeground().g == 0xcc);
+
+        runLine(&holding, "printf '\\033]11;#ff0000\\007\\033]10;#ff0000\\007\\033]4;1;#ff0000\\007'");
+        pump(400);
+        expect("a shell repainting its own colours does not move the window's theme",
+               holding.screenDefaultBackground().r == 0x05 &&
+                   holding.screenDefaultForeground().r == 0x22 &&
+                   holding.screenPaletteColour(1).g == 0x77 &&
+                   holding.screenPaletteColour(1).b == 0x00);
+
+        holding.saveCurrentSession(); // keep this shell, start a fresh one here
+        pump(400);
+        expect("the fresh shell arrives in a window that still has its theme",
+               holding.screenDefaultBackground().r == 0x05 &&
+                   holding.screenDefaultBackground().g == 0x10 &&
+                   holding.screenDefaultForeground().g == 0xcc);
+        expect("and the colours that outrank a shell still outrank it",
+               holding.screenPaletteColour(1).r == 0xff &&
+                   holding.screenPaletteColour(1).g == 0x77);
+
+        runLine(&holding, "printf '\\033]11;#00ff00\\007'");
+        pump(400);
+        expect("the new shell cannot paint over it either",
+               holding.screenDefaultBackground().r == 0x05);
+
+        holding.discardOnClose();
+        holding.shutdown();
+        pump(200);
+        std::remove(hold_cfg.c_str());
+        std::remove(hold_theme.c_str());
+    }
+
+    {
+        // A window holds its theme; a session does not. (Kaida, 2026-11-20: "Theme
+        // is lost when attaching a session, which should not happen, a session
+        // doesn't hold theme value a windows should … anyway windows hold the
+        // theme, not sessions".) The session came up wearing whatever the daemon's
+        // screen starts with, and its snapshot re-sends those colours as OSC 10/11 —
+        // and re-sends them again on every resize. The window that attaches reads
+        // its own config, and that is what its grid wears.
+        const std::string wear_cfg = root + "/wear-config";
+        const std::string wear_theme = root + "/wear-theme";
+        std::ofstream(wear_cfg) << "font_size = 12\n";
+        // Only one colour is named. The rest of the theme is whatever the built-in
+        // colours are, which is the part that used to be lost: a colour the file did
+        // not name was not a lock, and an attached window never applied its theme's
+        // defaults at all, so the session's red-on-green came back through the
+        // snapshot and stayed.
+        std::ofstream(wear_theme) << "color1 = #ff7700\n";
+        ::setenv("KAI_TERM_CONFIG", wear_cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", wear_theme.c_str(), 1);
+
+        // A session whose shell paints over its own colours before anybody looks:
+        // red ink, a green ground, a blue `color1`. Those travel in its snapshot, and
+        // they are deliberately nothing like the theme this window is about to read.
+        // (Whether the script gets as far as painting is a property of this harness,
+        // not of the rule; what the checks below pin down is the rule — the window's
+        // theme is what its screen wears, attached or not. Kaida saw the colours go
+        // missing on a real attach, 2026-11-20, and the asymmetry that let that
+        // happen was `applyTheme` refusing to touch a screen the window had not
+        // started. That refusal is gone; see applyTheme.)
+        const std::string painter = root + "/paint-colours.sh";
+        {
+            std::ofstream script(painter);
+            script << "#!/bin/sh\n"
+                   << "printf '\\033]10;#ff0000\\033\\\\\\n'\n"
+                   << "printf '\\033]11;#00ff00\\033\\\\\\n'\n"
+                   << "printf '\\033]4;1;#0000ff\\033\\\\\\n'\n"
+                   << "exec sleep 60\n";
+        }
+        ::chmod(painter.c_str(), 0755);
+
+        SessionSpec worn;
+        worn.name = "worn";
+        worn.shell = painter;
+        worn.rows = 24;
+        worn.cols = 80;
+        worn.saved = false;
+        std::string worn_error;
+        expect("a session is running to attach to", daemon.create(worn, worn_error));
+        pump(600); // long enough for the shell to have painted and gone to sleep
+
+        kai::AppWindow attached(std::string("worn"));
+        attached.show();
+        pump(300);
+        expect("an attached window reads its own theme",
+               attached.theme().foreground.r != 0xff);
+        // The theme names only `color1`, so the ink and the ground are the theme's
+        // own defaults, and those are what the screen must be wearing.
+        expect("the screen it is looking at wears the window's theme, not the session's",
+               attached.screenDefaultForeground().r == attached.theme().foreground.r &&
+                   attached.screenDefaultForeground().g == attached.theme().foreground.g &&
+                   attached.screenDefaultBackground().r == attached.theme().background.r &&
+                   attached.screenDefaultBackground().g == attached.theme().background.g);
+        expect("so the session's red ink did not survive the attach",
+               attached.screenDefaultForeground().r != 0xff &&
+                   attached.screenDefaultBackground().g != 0xff);
+        expect("and a palette entry the theme names outranks the one the session painted",
+               attached.screenPaletteColour(1).r == 0xff &&
+                   attached.screenPaletteColour(1).g == 0x77);
+
+        // A resize is the second way a theme used to wash out: the session answers a
+        // new geometry with a whole new snapshot, colours and all.
+        attached.resize(560, 300);
+        pump(300);
+        expect("a resize does not hand the colours back to the session",
+               attached.screenDefaultForeground().r == attached.theme().foreground.r &&
+                   attached.screenDefaultBackground().g != 0xff &&
+                   attached.screenPaletteColour(1).g == 0x77);
+
+        attached.discardOnClose();
+        attached.shutdown();
+        pump(200);
+        std::remove(wear_cfg.c_str());
+        std::remove(wear_theme.c_str());
+        std::remove(painter.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
     }
 
     daemon.stop();

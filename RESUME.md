@@ -35,7 +35,13 @@ so a saved theme is not washed back to defaults by a shell that recolours at sta
 colour the config left unnamed stays the session's to set, and the built-in palette answers
 beneath both. And all twenty-one can be chosen inside the window itself —
 **Ctrl+Shift+P** opens the picker over the grid, previews on the window as you type,
-and writes the changed lines back to `theme.conf`. It is colours and nothing else; how
+and writes the changed lines back to `theme.conf`. **Enter on a colour opens the mixer** —
+the colour across the panel with text on it, six bars (red, green, blue, hue, saturation,
+lightness) you can push or click, and the hex digits for when you already know what you
+want; the window changes while you push, and the list's `save` is what writes the file.
+Saving is the word at the bottom of every one of these panels, reached by walking: Enter
+opens what it is standing on and answers a word when it is on one, and Esc cancels from
+anywhere. It is colours and nothing else; how
 solid the window is — `background_opacity` for the ground the cells sit on and
 `foreground_opacity` for the text, cursor and dialogs, typed `1` to `100` — belongs to the
 settings menu with the rest of how the window behaves. That menu is **Ctrl+Shift+K**, opening font size, the two

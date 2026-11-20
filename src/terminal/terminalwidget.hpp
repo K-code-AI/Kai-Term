@@ -7,6 +7,7 @@
 #include "selection.hpp"
 #include "text.hpp"
 #include "backend.hpp"
+#include "../config/colormixer.hpp"
 #include "../config/settingspicker.hpp"
 #include "../config/themepicker.hpp"
 
@@ -122,29 +123,37 @@ public:
     // were written with, and the window repaints what it has. That is the
     // same rule an escape-sequence recolour follows, which is why a theme
     // that painted existing cells would be two authorities over one grid.
-    //
-    // `owns_screen` says whether the window may set those defaults at all. A
-    // window that started a fresh shell owns the blank screen and colours it
-    // from the theme; a window that attached to a running session does not —
-    // that session arrived with its own colours, including any it set with
-    // OSC 10/11, and stamping over them would undo the very state the snapshot
-    // crossed a process boundary to bring. The cursor, selection and accent
-    // are this window's own chrome and follow the theme either way.
+    // The theme travels whether or not this window started the shell. A window
+    // holds the theme; a session does not (Kaida, 2026-11-20: "Theme is lost when
+    // attaching a session, which should not happen, a session doesn't hold theme
+    // value a windows should… anyway windows hold the theme, not sessions"). It
+    // used to be that a window which attached left the screen's own defaults
+    // alone, on the grounds that the session had carried them across a process
+    // boundary on purpose. But a snapshot's OSC 10/11 is a stored opinion from
+    // some other moment, and the colours were chosen by whoever launched this
+    // window. What the session painted into the cells still stands: a theme is a
+    // decision about the next screen, not a rewrite of the last one. The palette
+    // follows the same rule, and the locks a window puts on its own colours (see
+    // `setColourLocks`) are what make it hold against live output as well as
+    // against a snapshot.
     void applyTheme(const Theme& theme, bool owns_screen) {
         theme_ = theme;
         owns_screen_ = owns_screen;
-        if (owns_screen)
-            screen_.setDefaults(theme.foreground, theme.background);
-        // The palette travels even when the screen's own colours do not:
-        // entries the session recoloured itself (OSC 4) keep winning inside
-        // the screen, and the theme answers only for the colours the session
-        // never touched. A window may colour what a session ignored; it may
-        // not erase what a session said.
+        screen_.setDefaults(theme.foreground, theme.background);
         screen_.setThemePalette(theme.palette);
         setTransparency(theme.background_opacity, theme.foreground_opacity);
         update();
     }
     const Theme& theme() const { return theme_; }
+
+    // What the screen underneath the theme is actually wearing. A window's theme
+    // and a screen's defaults are two different things, and "the theme is lost" is
+    // a complaint about the second one, so a test has to be able to ask it.
+    Color screenDefaultForeground() const { return screen_.defaultForeground(); }
+    Color screenDefaultBackground() const { return screen_.defaultBackground(); }
+    Color screenPaletteColour(int index) const {
+        return screen_.paletteColor(index < 0 ? 0 : (index > 15 ? 15 : index));
+    }
 
     // ---------------------------------------------------------------------
     // Transparency, the real kind.
@@ -205,6 +214,26 @@ public:
         return QColor(r, g, b, scaleAlpha(alpha, foreground_opacity_));
     }
 
+    // The overlay panels paint everything at full strength: their box, their text,
+    // their buttons. Transparency is a decision about the terminal — how much of
+    // the desktop shows through the ground the cells sit on — and it was never a
+    // decision about the menus. A panel that fades with the window is a panel you
+    // end up reading through your wallpaper, which is the one thing a panel is not
+    // allowed to be. (Kaida, 2026-11-20: "oppacity shouldn't affect the menu for
+    // better readability".)
+    static QColor panel_ground(const Color& c, int alpha = 255) {
+        return QColor(c.r, c.g, c.b, alpha);
+    }
+    static QColor panel_ground(int r, int g, int b, int alpha = 255) {
+        return QColor(r, g, b, alpha);
+    }
+    static QColor panel_ink(const Color& c, int alpha = 255) {
+        return QColor(c.r, c.g, c.b, alpha);
+    }
+    static QColor panel_ink(int r, int g, int b, int alpha = 255) {
+        return QColor(r, g, b, alpha);
+    }
+
   private:
     static int scaleAlpha(int alpha, double opacity) {
         if (opacity >= 1.0)
@@ -224,6 +253,13 @@ public:
                         const std::array<std::optional<Color>, 16>& palette) {
         screen_.lockDefaults(foreground, background);
         screen_.lockPalette(palette);
+        // Held here as well as in the screen, because the screen is not permanent:
+        // starting a fresh shell in this window builds a new one, and locks that
+        // lived only in the old screen went away with it. That is how a session
+        // spawn was able to get rid of the theming — the window still had its
+        // theme, and the colours that outrank the session were not in the screen
+        // the session had just arrived in.
+        colour_locks_ = ColourLocks{foreground, background, palette, true};
         update();
     }
     // Whether this window may set the screen's own colours (it started the
@@ -290,12 +326,38 @@ public:
     }
     bool settingsActive() const { return settings_ != nullptr; }
 
+    // The colour mixer, opened over one colour of the picker with Space or a click
+    // on its swatch. It is a detour, not a new screen: the list stays underneath,
+    // and the colour comes back into the row it came from.
+    bool mixerActive() const { return mixer_ != nullptr; }
+    void mixColour(Rgb start, std::function<void(Rgb, bool)> finish,
+                   std::function<void(Rgb)> preview) {
+        mixer_ = std::make_unique<ColorMixer>(start);
+        mixer_focus_ = 0;
+        mixer_drag_ = -1;
+        mixer_finish_ = std::move(finish);
+        mixer_preview_ = std::move(preview);
+        update();
+    }
+
     // Which line of an open overlay the keys are on, as a pair of (row, stop) where
     // stop 0 is the rows, 1 is `save` and 2 is `cancel`. The panel shows this; a test
     // should read it rather than infer it from which setting happened to move.
     std::pair<int, int> settingsCursor() const {
         return settings_ ? std::pair<int, int>{settings_->row(), settings_focus_}
                          : std::pair<int, int>{-1, -1};
+    }
+    std::pair<int, int> mixerCursor() const {
+        return mixer_ ? std::pair<int, int>{mixer_->row(), mixer_focus_}
+                      : std::pair<int, int>{-1, -1};
+    }
+    // Where a channel's bar was last painted, for a click that means "put the
+    // value where the pointer was".
+    QRectF mixerBarRect(int channel_row) const {
+        if (!mixer_ || channel_row < 0 ||
+            channel_row >= static_cast<int>(mixer_hit_.bars.size()))
+            return QRectF();
+        return mixer_hit_.bars[static_cast<std::size_t>(channel_row)];
     }
     std::pair<int, int> pickerCursor() const {
         return picker_ ? std::pair<int, int>{picker_->row(), picker_focus_}
@@ -326,6 +388,7 @@ public:
     }
     QPointF settingsSavePoint() const { return settings_hit_.save.center(); }
     QPointF pickerSavePoint() const { return picker_hit_.save.center(); }
+    QPointF mixerSavePoint() const { return mixer_hit_.save.center(); }
 
     // The window's body, as the config or the settings menu asked for it. Padding
     // re-derives the grid because it changes how many cells the same window holds;
@@ -340,11 +403,16 @@ public:
     void setHistoryLimit(int lines) {
         if (lines < 0)
             lines = 0;
-        screen_.setHistoryLimit(static_cast<std::size_t>(lines));
+        history_limit_for_new_screen_ = static_cast<std::size_t>(lines);
+        screen_.setHistoryLimit(history_limit_for_new_screen_);
         update();
     }
     int historyLimit() const { return static_cast<int>(screen_.historyLimit()); }
     void setCursorStyle(CursorStyle style) {
+        default_cursor_shape_for_new_screen_ =
+            style == CursorStyle::Block    ? Screen::CursorShape::Block
+            : style == CursorStyle::Bar    ? Screen::CursorShape::Bar
+                                           : Screen::CursorShape::Underline;
         screen_.setDefaultCursorShape(style == CursorStyle::Block    ? Screen::CursorShape::Block
                                         : style == CursorStyle::Bar  ? Screen::CursorShape::Bar
                                                                       : Screen::CursorShape::Underline);
@@ -489,7 +557,24 @@ public:
 
         backend_ = std::move(next);
         ++generation_;
+        // A brand-new screen, for a session that may be brand-new or may be one this
+        // window is going back to. It starts with the built-in colours and no locks,
+        // which is the wrong starting point twice over: the theme would have to be
+        // re-read from the file to survive a session switch, and until it was, the
+        // new shell's own OSC 10/11 could paint over it. So the window dresses the
+        // screen it is about to show — its theme first, then the colours that outrank
+        // whatever the session says. (Kaida, 2026-11-20: "a session spawn still gets
+        // rid of our theming". It did, because this line replaced the screen and
+        // nobody re-applied anything afterwards.)
         screen_ = Screen(rows_, cols_);
+        screen_.setDefaults(theme_.foreground, theme_.background);
+        screen_.setThemePalette(theme_.palette);
+        screen_.setHistoryLimit(history_limit_for_new_screen_);
+        if (colour_locks_.set) {
+            screen_.lockDefaults(colour_locks_.foreground, colour_locks_.background);
+            screen_.lockPalette(colour_locks_.palette);
+        }
+        screen_.setDefaultCursorShape(default_cursor_shape_for_new_screen_);
         scroll_offset_ = 0;
         clearSelection();
         status_.clear();
@@ -512,6 +597,14 @@ public:
         if (repaint_timer_ == 0)
             repaint_timer_ = startTimer(kRepaintPollMs);
     }
+
+    // The colours this window has told its screen are not the session's to move.
+    struct ColourLocks {
+        std::optional<Color> foreground;
+        std::optional<Color> background;
+        std::array<std::optional<Color>, 16> palette{};
+        bool set = false;
+    };
 
     // What the window's own keybinds mean, set by whoever owns the window. The widget
     // does not know what a session is, does not draw a menu and has never heard of the
@@ -908,6 +1001,12 @@ public:
         // before the copy/save/menu chords below: while you are typing hex
         // digits a `c` or an `s` is a colour, not the start of a keystroke the
         // shell would see.
+        // The mixer is on top of the picker, so it is asked first: a digit belongs
+        // to whichever panel is frontmost, and to nothing else.
+        if (mixer_) {
+            mixerKeyPress(key, mods, ev->text());
+            return;
+        }
         if (picker_) {
             pickerKeyPress(key, mods, ev->text());
             return;
@@ -1003,6 +1102,10 @@ public:
             overlayPress(ev->position());
             return;
         }
+        if (mixer_) {
+            mixerPress(ev->position());
+            return;
+        }
         if (settings_) {
             settingsPress(ev->position());
             return;
@@ -1066,6 +1169,14 @@ public:
     }
 
     void mouseMoveEvent(QMouseEvent* ev) override {
+        // A bar being pushed along: the value follows the pointer for as long as
+        // the button is down, which is what makes a colour you are hunting for
+        // pass by on the way to the one you meant.
+        if (mixer_ && mixer_drag_ >= 0 && (ev->buttons() & Qt::LeftButton)) {
+            mixerBarPress(mixer_drag_, ev->position());
+            ev->accept();
+            return;
+        }
         if (overlay_.active) {
             overlayHover(ev->position());
             return;
@@ -1168,6 +1279,7 @@ public:
     }
 
     void mouseReleaseEvent(QMouseEvent* ev) override {
+        mixer_drag_ = -1;
         stopEdgeScroll();
         if (scrollbar_drag_) {
             endScrollBarDrag();
@@ -1212,13 +1324,19 @@ public:
         // the arrows do. A picker is usually taller than the window holding it, and
         // a wheel that scrolled the terminal behind it would move text nobody is
         // looking at while leaving the row you meant to click off screen.
-        if (picker_ || settings_) {
+        if (mixer_ || picker_ || settings_) {
             const int steps = ev->angleDelta().y() / 120;
             if (steps != 0) {
-                if (picker_)
-                    picker_->step(steps > 0 ? -1 : 1);
-                else
-                    settings_->step(steps > 0 ? -1 : 1);
+                const int direction = steps > 0 ? -1 : 1;
+                if (mixer_) {
+                    if (overlayWalk(mixer_focus_, mixer_->row(), kMixChannelCount,
+                                    direction) == OverlayMove::MoveRow)
+                        mixer_->step(direction);
+                } else if (picker_) {
+                    picker_->step(direction);
+                } else {
+                    settings_->step(direction);
+                }
                 update();
             }
             ev->accept();
@@ -1497,6 +1615,7 @@ public:
         paintOverlay(p);
         paintPicker(p);
         paintSettings(p);
+        paintMixer(p); // on top of the list it was opened from
     }
 
 private:
@@ -1760,14 +1879,24 @@ private:
             return;
         }
         if (key == Qt::Key_Return || key == Qt::Key_Enter) {
-            // Enter answers whatever the keys are standing on: `cancel` cancels,
-            // and the list or `save` saves.
+            // Enter opens the thing the keys are standing on. On a colour that is
+            // the mixer; on the two words at the bottom it is save and cancel,
+            // which are reached by walking — there is no shortcut for saving,
+            // because a panel where Enter both saves and dives into a row is a
+            // panel where you have to remember which mood Enter is in.
+            // (Kaida, 2026-11-20: "The color picker should open when pressing
+            // Enter on a color"; "to save we go down to the save button, no need
+            // for a direct key, but we keep Esc for quick cancel".)
             if (picker_focus_ == 2) {
                 finishPicker(false);
                 return;
             }
-            picker_->confirm();
-            finishPicker(true);
+            if (picker_focus_ == 1) {
+                picker_->confirm();
+                finishPicker(true);
+                return;
+            }
+            openMixerForRow(picker_->row());
             return;
         }
         if (overlayWordSwitch(key, mods, picker_focus_)) {
@@ -1817,6 +1946,379 @@ private:
     // or k/j for the lines, h/l along the value — with `+` and `-` added, because
     // a row of numbers is as often nudged as it is typed, and a choice row has no
     // digits to type into at all.
+
+    // --- the colour mixer ------------------------------------------------------
+
+    // Space on a colour row, or a click on its swatch: open the mixer for that one
+    // colour. The picker stays behind it, because mixing is a detour into a colour
+    // and the next thing you want is the list you came from, with the colour
+    // changed in the row it belongs to.
+    void openMixerForRow(int row) {
+        if (!picker_ || row < 0 || row >= static_cast<int>(picker_->fields().size()))
+            return;
+        const Rgb start = picker_->fields()[static_cast<std::size_t>(row)].value;
+        // Both the live preview and the result go through the picker's own field,
+        // so the mixer needs nothing of its own to apply colours: the window is
+        // already showing what the fields say, and saving is still the list's
+        // business. Cancelling hands the original colour back the same way, which
+        // is also why a mix and an unmix leave the file untouched.
+        mixColour(
+            start,
+            [this, row](Rgb colour, bool) {
+                if (picker_ && row < static_cast<int>(picker_->fields().size())) {
+                    picker_->setRowColour(row, colour);
+                    previewPicker();
+                }
+                update();
+            },
+            [this, row](Rgb colour) {
+                if (picker_ && row < static_cast<int>(picker_->fields().size())) {
+                    picker_->setRowColour(row, colour);
+                    previewPicker();
+                }
+            });
+    }
+
+    void mixerKeyPress(int key, Qt::KeyboardModifiers mods, const QString& text) {
+        const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
+        if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
+            finishMixer(false);
+            return;
+        }
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            // A channel has nothing to open, so Enter on one does nothing; saving
+            // is the word at the bottom, reached by walking, as everywhere else.
+            if (mixer_focus_ == 1)
+                finishMixer(true);
+            else if (mixer_focus_ == 2)
+                finishMixer(false);
+            return;
+        }
+        if (overlayWordSwitch(key, mods, mixer_focus_)) {
+            mixer_focus_ = mixer_focus_ == 1 ? 2 : 1;
+            update();
+            return;
+        }
+        if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
+            if (overlayWalk(mixer_focus_, mixer_->row(), kMixChannelCount, -1) ==
+                OverlayMove::MoveRow)
+                mixer_->step(-1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
+            if (overlayWalk(mixer_focus_, mixer_->row(), kMixChannelCount, 1) ==
+                OverlayMove::MoveRow)
+                mixer_->step(1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
+            mixer_->digitStep(-1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Right || (plain && key == Qt::Key_L)) {
+            mixer_->digitStep(1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Plus || key == Qt::Key_Equal || key == Qt::Key_Minus ||
+            key == Qt::Key_Underscore) {
+            if (mixer_->nudge(key == Qt::Key_Plus || key == Qt::Key_Equal ? 1 : -1)) {
+                mixer_focus_ = 0;
+                previewMixer();
+            }
+            update();
+            return;
+        }
+        if (plain && text.size() == 1) {
+            const char c = text.at(0).toLatin1();
+            const bool typed = mixer_->channel() == MixChannel::Hex
+                                   ? mixer_->typeHex(c)
+                                   : mixer_->typeDigit(c);
+            if (typed) {
+                mixer_focus_ = 0;
+                previewMixer();
+            }
+            update();
+        }
+    }
+
+    void previewMixer() {
+        if (!mixer_ || !mixer_preview_)
+            return;
+        mixer_preview_(mixer_->colour());
+    }
+
+    // Saved hands back the mixed colour, cancelled hands back the one the mixer
+    // opened with. Either way the caller gets a colour rather than a flag, because
+    // the row it came from needs a colour either way.
+    void finishMixer(bool saved) {
+        if (!mixer_)
+            return;
+        const Rgb colour = saved ? mixer_->colour() : mixer_->startingColour();
+        auto finish = std::move(mixer_finish_);
+        mixer_finish_ = nullptr;
+        mixer_preview_ = nullptr;
+        mixer_drag_ = -1;
+        mixer_.reset();
+        update();
+        if (finish)
+            finish(colour, saved);
+    }
+
+    void mixerPress(const QPointF& where) {
+        if (!mixer_)
+            return;
+        const OverlayHit& hit = mixer_hit_;
+        if (!hit.panel.isValid() || !hit.panel.contains(where))
+            return;
+        if (hit.save.isValid() && hit.save.contains(where)) {
+            finishMixer(true);
+            return;
+        }
+        if (hit.cancel.isValid() && hit.cancel.contains(where)) {
+            finishMixer(false);
+            return;
+        }
+        for (std::size_t i = 0; i < hit.bars.size(); ++i) {
+            if (!hit.bars[i].contains(where))
+                continue;
+            mixer_focus_ = 0;
+            mixer_->setRow(static_cast<int>(i));
+            mixer_drag_ = static_cast<int>(i);
+            mixerBarPress(static_cast<int>(i), where);
+            return;
+        }
+        for (std::size_t i = 0; i < hit.rows.size(); ++i) {
+            if (!hit.rows[i].contains(where))
+                continue;
+            mixer_focus_ = 0;
+            mixer_->setRow(hit.row_index[i]);
+            update();
+            return;
+        }
+    }
+
+    // A bar is pushed as a fraction of its own width, which is the same
+    // calculation the paint used to fill it — so the value lands where the pointer
+    // is, whatever size the window happens to be.
+    void mixerBarPress(int channel_row, const QPointF& where) {
+        if (!mixer_ || channel_row < 0 ||
+            channel_row >= static_cast<int>(mixer_hit_.bars.size()))
+            return;
+        const QRectF& bar = mixer_hit_.bars[static_cast<std::size_t>(channel_row)];
+        if (bar.width() <= 0.0)
+            return;
+        mixer_->setRow(channel_row);
+        if (mixer_->setFromFraction((where.x() - bar.left()) / bar.width()))
+            previewMixer();
+        update();
+    }
+
+    void paintMixer(QPainter& p) const {
+        if (!mixer_)
+            return;
+        const double cw = cellWidth();
+        const double ch = cellHeight();
+        const Color bg = screen_.defaultBackground();
+        const Color fg = screen_.defaultForeground();
+        const QString hint = QStringLiteral(
+            "arrows walk · type or push a bar · down to save/cancel");
+
+        const int label_w = 12;    // `saturation` is the longest name
+        const int bar_cells = 20;  // a bar wide enough to push with a pointer
+        const int value_cells = 4; // `359` and a space
+        const double table_w = (label_w + bar_cells + value_cells + 1) * cw;
+        const double pad = 1.5 * ch;
+        QFontMetricsF fm(font_);
+        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
+        const double panel_w = inner_w + 2 * pad;
+        // title, two rows of preview, the channels, the two words, a gap, the hint.
+        const double needed_h = (3 + 2 + kMixChannelCount + 3) * ch + 2 * pad;
+        const double max_h = std::max(6.0 * ch, height() - ch);
+        const double panel_h = std::min(needed_h, max_h);
+        const QRectF panel((width() - panel_w) / 2.0, (height() - panel_h) / 2.0, panel_w,
+                           panel_h);
+
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(panel_ink(fg, 80), 1));
+        p.setBrush(panel_ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                         std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                         std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
+        p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setFont(font_);
+
+        double y = panel.y() + pad + fm.ascent();
+        p.setPen(panel_ink(fg));
+        p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Mix colour"));
+        y += ch + kTitleGap;
+
+        const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
+        const Rgb mixed = mixer_->colour();
+
+        // The preview is the whole point of a mixer: the colour at full width, with
+        // text sitting on it in the ink the window actually uses. A patch two cells
+        // wide tells you the hue and nothing about whether you can read a terminal
+        // through it, which is the question you were really asking.
+        const QRectF preview(table_x, y - ch + fm.ascent() * 0.15, inner_w, 2 * ch);
+        p.fillRect(preview, QColor(mixed.r, mixed.g, mixed.b));
+        p.setPen(QPen(panel_ink(fg, 120), 1));
+        p.drawRect(preview);
+        p.setPen(panel_ink(fg));
+        p.drawText(preview.adjusted(cw, 0, -cw, 0), Qt::AlignLeft | Qt::AlignVCenter,
+                   QStringLiteral("Aa Bb Cc 0123 #$%&  the quick brown fox"));
+        y += 2 * ch;
+
+        mixer_hit_ = OverlayHit{};
+        mixer_hit_.panel = panel;
+        mixer_hit_.table_x = table_x;
+        mixer_hit_.label_w = label_w;
+        mixer_hit_.cw = cw;
+        for (int i = 0; i < kMixChannelCount; ++i) {
+            const MixChannel c = mixChannelAt(i);
+            const bool focused = mixer_focus_ == 0 && i == mixer_->row();
+            const QRectF row(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
+                             inner_w + pad, ch);
+            mixer_hit_.rows.push_back(row);
+            mixer_hit_.row_index.push_back(i);
+            if (focused) {
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.setPen(Qt::NoPen);
+                p.setBrush(panel_ground(theme_.selection));
+                p.drawRoundedRect(row, kScrollBarRadius, kScrollBarRadius);
+                p.setRenderHint(QPainter::Antialiasing, false);
+            }
+            p.setPen(panel_ink(fg));
+            p.drawText(QPointF(table_x, y),
+                       QString::fromUtf8(channelKey(c)).leftJustified(label_w, QLatin1Char(' ')));
+
+            const QRectF bar(table_x + label_w * cw, row.top() + 2,
+                             bar_cells * cw, ch - 4);
+            mixer_hit_.bars.push_back(bar);
+            if (c == MixChannel::Hex) {
+                // No bar along a string. The six digits are the row, with the
+                // cursor under the pair the next keystroke changes.
+                p.setPen(panel_ink(fg));
+                p.drawText(QPointF(bar.left(), y),
+                           QStringLiteral("#") + QString::fromStdString(mixer_->text(c)));
+                if (focused && mixer_focus_ == 0) {
+                    const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+                    p.setPen(QPen(accent, 1));
+                    const double dx = bar.left() + (1 + mixer_->digit() * 0.5) * cw;
+                    p.drawLine(QPointF(dx, y + fm.descent() * 0.4),
+                               QPointF(dx + cw * 0.5 - 1, y + fm.descent() * 0.4));
+                }
+                y += ch;
+                continue;
+            }
+
+            // The bar is the range you are pushing, painted as what pushing it
+            // does: the left end is this channel at zero and the right end at
+            // full, the other channels held where they are. A plain filled
+            // proportion would show how full a bar is rather than what the colour
+            // becomes, and the colour is the thing being chosen.
+            // The bar is the range you are pushing, painted as what pushing it
+            // does: the left end is this channel at nothing, the right end at
+            // everything, the others held where they are. Hue is the whole wheel
+            // laid flat rather than a slide from the current colour back to red;
+            // lightness runs black through the colour to white rather than black to
+            // white. Either one without its middle stops is a ramp lying about where
+            // the colour goes.
+            const auto paint_at = [&](double f) {
+                const Rgb e = channelAt(*mixer_, c, f);
+                return QColor::fromRgb(e.r, e.g, e.b);
+            };
+            QLinearGradient ramp(bar.left(), 0.0, bar.right(), 0.0);
+            if (c == MixChannel::Hue) {
+                for (int k = 0; k <= 6; ++k)
+                    ramp.setColorAt(k / 6.0, paint_at(k / 6.0));
+            } else if (c == MixChannel::Lightness) {
+                ramp.setColorAt(0.0, paint_at(0.0));
+                ramp.setColorAt(0.5, paint_at(0.5));
+                ramp.setColorAt(1.0, paint_at(1.0));
+            } else {
+                ramp.setColorAt(0.0, paint_at(0.0));
+                ramp.setColorAt(1.0, paint_at(1.0));
+            }
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QBrush(ramp));
+            p.drawRoundedRect(bar, kMixerBarRadius, kMixerBarRadius);
+            p.setPen(QPen(panel_ink(fg, focused ? 160 : 80), 1));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(bar, kMixerBarRadius, kMixerBarRadius);
+
+            // Where the value sits along that range, drawn as something you could get
+            // a finger on: a knob the height of the bar, the panel's own ground under
+            // a light edge, so it reads at the dark end of a ramp and the bright one.
+            const double mark = bar.left() + channelFraction(c, mixer_->value(c)) * bar.width();
+            const double knob_x = qBound(bar.left() + kMixerBarRadius, mark,
+                                         bar.right() - kMixerBarRadius);
+            const QRectF knob(knob_x - kMixerKnobWidth / 2.0, bar.top() - 1.5,
+                              kMixerKnobWidth, bar.height() + 3.0);
+            p.setPen(QPen(panel_ink(fg, 230), 1));
+            p.setBrush(panel_ground(theme_.background, 235));
+            p.drawRoundedRect(knob, 2.0, 2.0);
+            p.setRenderHint(QPainter::Antialiasing, false);
+
+            p.setPen(panel_ink(fg));
+            p.drawText(QRectF(bar.right() + cw, y - ch + fm.ascent() * 0.15,
+                              value_cells * cw, ch),
+                       Qt::AlignRight | Qt::AlignVCenter,
+                       QString::fromStdString(mixer_->text(c)));
+            if (focused && mixer_focus_ == 0) {
+                const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+                p.setPen(QPen(accent, 1));
+                const int digits = channelDigits(c);
+                const double digits_left = bar.right() + cw + (value_cells - digits) * cw;
+                const double dx = digits_left + mixer_->digit() * cw;
+                p.drawLine(QPointF(dx, y + fm.descent() * 0.4),
+                           QPointF(dx + cw - 1, y + fm.descent() * 0.4));
+            }
+            y += ch;
+        }
+
+        paintOverlayButtons(p, panel, pad, fm, fg, mixer_hit_.save, mixer_hit_.cancel,
+                            mixer_focus_);
+        p.setPen(panel_ink(fg, 140));
+        p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
+                          fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, hint);
+    }
+
+    // The colour of a bar at one point along it: this channel set to `fraction` of
+    // its own range, everything else left exactly where the mixer holds it — at the
+    // precise wheel, not the rounded numbers the rows display, or the ramp would be
+    // painted from a colour that is not the one on the screen.
+    static Rgb channelAt(const ColorMixer& mixer, MixChannel c, double fraction) {
+        if (fraction < 0.0)
+            fraction = 0.0;
+        if (fraction > 1.0)
+            fraction = 1.0;
+        const Rgb colour = mixer.colour();
+        const Hsl10 wheel = mixer.hsl10();
+        const auto tenth = [](double whole) {
+            return static_cast<int>(whole * 1000.0 + 0.5);
+        };
+        switch (c) {
+            case MixChannel::Red: return Rgb{static_cast<std::uint8_t>(fraction * 255.0 + 0.5), colour.g, colour.b};
+            case MixChannel::Green: return Rgb{colour.r, static_cast<std::uint8_t>(fraction * 255.0 + 0.5), colour.b};
+            case MixChannel::Blue: return Rgb{colour.r, colour.g, static_cast<std::uint8_t>(fraction * 255.0 + 0.5)};
+            case MixChannel::Hue:
+                return hsl10ToRgb(Hsl10{static_cast<int>(fraction * 3599.0 + 0.5), wheel.s, wheel.l});
+            case MixChannel::Saturation:
+                return hsl10ToRgb(Hsl10{wheel.h, tenth(fraction), wheel.l});
+            case MixChannel::Lightness:
+                return hsl10ToRgb(Hsl10{wheel.h, wheel.s, tenth(fraction)});
+            case MixChannel::Hex: return colour;
+        }
+        return colour;
+    }
+
     void settingsKeyPress(int key, Qt::KeyboardModifiers mods, const QString& text) {
         const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
         if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
@@ -1824,12 +2326,15 @@ private:
             return;
         }
         if (key == Qt::Key_Return || key == Qt::Key_Enter) {
-            if (settings_focus_ == 2) {
+            // As in the other panels: Enter answers the word the keys are on, and
+            // a row has no word in it. Walking down past the last setting reaches
+            // `save` and `cancel`; Esc still leaves from anywhere.
+            if (settings_focus_ == 1) {
+                settings_->confirm();
+                finishSettings(true);
+            } else if (settings_focus_ == 2) {
                 finishSettings(false);
-                return;
             }
-            settings_->confirm();
-            finishSettings(true);
             return;
         }
         if (overlayWordSwitch(key, mods, settings_focus_)) {
@@ -2024,8 +2529,14 @@ private:
     // have thrown away colours you were still deciding on, which is why the same
     // click on the question dialog means "no" and this one means nothing.
     void pickerPress(const QPointF& where) {
+        if (!picker_)
+            return;
+        // The swatch is checked before the row it sits in, because the swatch is
+        // inside the row's rect and the more specific thing has to answer first.
+        if (pickerSwatchPress(where))
+            return;
         const OverlayPress hit = overlayPressAt(picker_hit_, where);
-        if (!picker_ || !hit.hit)
+        if (!hit.hit)
             return;
         if (hit.save) {
             picker_->confirm();
@@ -2043,6 +2554,25 @@ private:
         if (hit.digit >= 0)
             picker_->setDigit(hit.digit);
         update();
+    }
+
+    // A press on one of the picker's colour boxes: which row it belongs to is read
+    // back from the geometry the paint recorded, not guessed from the y the click
+    // happened to arrive at.
+    bool pickerSwatchPress(const QPointF& where) {
+        if (!picker_)
+            return false;
+        for (std::size_t i = 0; i < picker_hit_.swatches.size(); ++i) {
+            if (!picker_hit_.swatches[i].contains(where))
+                continue;
+            const int index = i < picker_hit_.row_index.size()
+                                  ? picker_hit_.row_index[i]
+                                  : static_cast<int>(i);
+            picker_->setRow(index);
+            openMixerForRow(index);
+            return true;
+        }
+        return false;
     }
 
     // A press on the settings menu answers with the same three moves the keyboard
@@ -2179,6 +2709,12 @@ private:
     // painting writes these on its way to the screen and a press only reads them;
     // computed twice, the two would drift and a click would land on the line above
     // the one you aimed at.
+    // Air between a panel's title and the first line under it, so the title
+    // reads as the name of the panel and not as the first row's label.
+    static constexpr double kTitleGap = 6.0;
+    static constexpr double kMixerBarRadius = 3.0;
+    static constexpr double kMixerKnobWidth = 7.0;
+
     struct OverlayHit {
         QRectF panel;
         std::vector<QRectF> rows;    // the visible rows, top to bottom
@@ -2189,7 +2725,9 @@ private:
         int lead = 0;                // cells before the first editable digit
         QRectF save;                 // the two words at the bottom of the panel
         QRectF cancel;
-        std::vector<QRectF> minus;   // the two arrows of each row, for a mouse
+        std::vector<QRectF> bars;     // the mixer's channels, one bar per row
+        std::vector<QRectF> swatches; // the picker's colour boxes, per row
+        std::vector<QRectF> minus;    // the two arrows of each row, for a mouse
         std::vector<QRectF> plus;
     };
 
@@ -2208,7 +2746,7 @@ private:
         const Color fg = screen_.defaultForeground();
 
         const QString hint =
-            QStringLiteral("arrows walk · hex edits · down to save/cancel · esc quits");
+            QStringLiteral("arrows walk · hex edits · enter mixes · down to save/cancel");
         const auto& fields = picker_->fields();
 
         // The label column is as wide as the longest name plus a space —
@@ -2233,10 +2771,10 @@ private:
         // always on screen, because a picker that walks its selection off the
         // top edge has lost the one line you were editing.
         const int total = static_cast<int>(fields.size());
-        const double needed_h = (4 + total + 2) * ch + 2 * pad; // title, rows, words, hint
+        const double needed_h = (5 + total + 2) * ch + 2 * pad; // title, gap, rows, words, hint
         const double max_h = std::max(6.0 * ch, height() - ch);
         const double panel_h = std::min(needed_h, max_h);
-        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 4 * ch) / ch));
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 5 * ch) / ch));
         int first = 0;
         if (total > visible)
             first = std::clamp(picker_->row() - visible + 1, 0, total - visible);
@@ -2245,8 +2783,8 @@ private:
                            panel_h);
 
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(ink(fg, 80), 1));
-        p.setBrush(ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+        p.setPen(QPen(panel_ink(fg, 80), 1));
+        p.setBrush(panel_ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
         p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
@@ -2254,10 +2792,10 @@ private:
         p.setFont(font_);
 
         double y = panel.y() + pad + fm.ascent();
-        p.setPen(ink(fg));
+        p.setPen(panel_ink(fg));
         p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("colours"));
-        y += ch;
+                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Colours"));
+        y += ch + kTitleGap;
 
         const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
         const int last = std::min(first + visible, total);
@@ -2268,7 +2806,7 @@ private:
         picker_hit_.cw = cw;
         for (int i = first; i < last; ++i) {
             const ThemeField& field = fields[static_cast<std::size_t>(i)];
-            const bool focused = i == picker_->row();
+            const bool focused = picker_focus_ == 0 && i == picker_->row();
             const QRectF row(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
                              inner_w + pad, ch);
             picker_hit_.rows.push_back(row);
@@ -2276,11 +2814,11 @@ private:
             if (focused) {
                 p.setRenderHint(QPainter::Antialiasing, true);
                 p.setPen(Qt::NoPen);
-                p.setBrush(ground(theme_.selection));
+                p.setBrush(panel_ground(theme_.selection));
                 p.drawRoundedRect(row, kScrollBarRadius, kScrollBarRadius);
                 p.setRenderHint(QPainter::Antialiasing, false);
             }
-            p.setPen(ink(fg));
+            p.setPen(panel_ink(fg));
             // The label sits in its column so every hex value starts at the
             // same x; a table that jaggeds is harder to read than one with a
             // column nobody asked for.
@@ -2310,10 +2848,15 @@ private:
             // number is a faint rectangle and 100 is solid.
             const QRectF swatch(table_x + (label_w + 7 + 2) * cw,
                                 y - ch + fm.ascent() * 0.15 + 2, 2 * cw, ch - 4);
-            p.setPen(QPen(ink(fg, 120), 1));
+            p.setPen(QPen(panel_ink(fg, 120), 1));
             const Rgb& c = field.value;
             p.setBrush(QColor(c.r, c.g, c.b));
             p.drawRect(swatch);
+            // Recorded so a press on the colour box means "mix this colour": the
+            // swatch is the one part of the row that is the colour rather than a
+            // description of it, so it is where a pointer lands when somebody wants
+            // to change it.
+            picker_hit_.swatches.push_back(swatch);
             y += ch;
         }
 
@@ -2323,7 +2866,7 @@ private:
         // The hint is anchored to the bottom of the panel, because the panel
         // may be shorter than the list: a hint that scrolls away with the
         // rows would be the one line the picker always had and never kept.
-        p.setPen(ink(fg, 140));
+        p.setPen(panel_ink(fg, 140));
         p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
                           fm.height()),
                    Qt::AlignHCenter | Qt::AlignVCenter, hint);
@@ -2361,10 +2904,10 @@ private:
         const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
         const double panel_w = inner_w + 2 * pad;
         const int total = static_cast<int>(rows.size());
-        const double needed_h = (4 + total + 2) * ch + 2 * pad;
+        const double needed_h = (5 + total + 2) * ch + 2 * pad;
         const double max_h = std::max(6.0 * ch, height() - ch);
         const double panel_h = std::min(needed_h, max_h);
-        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 4 * ch) / ch));
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 5 * ch) / ch));
         int first = 0;
         if (total > visible)
             first = std::clamp(settings_->row() - visible + 1, 0, total - visible);
@@ -2372,8 +2915,8 @@ private:
                            panel_h);
 
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(ink(fg, 80), 1));
-        p.setBrush(ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+        p.setPen(QPen(panel_ink(fg, 80), 1));
+        p.setBrush(panel_ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
         p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
@@ -2381,10 +2924,10 @@ private:
         p.setFont(font_);
 
         double y = panel.y() + pad + fm.ascent();
-        p.setPen(ink(fg));
+        p.setPen(panel_ink(fg));
         p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("settings"));
-        y += ch;
+                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Settings"));
+        y += ch + kTitleGap;
 
         const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
         const int last = std::min(first + visible, total);
@@ -2395,7 +2938,7 @@ private:
         settings_hit_.cw = cw;
         for (int i = first; i < last; ++i) {
             const SettingRow& row = rows[static_cast<std::size_t>(i)];
-            const bool focused = i == settings_->row();
+            const bool focused = settings_focus_ == 0 && i == settings_->row();
             const QRectF box(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
                              inner_w + pad, ch);
             settings_hit_.rows.push_back(box);
@@ -2403,11 +2946,11 @@ private:
             if (focused) {
                 p.setRenderHint(QPainter::Antialiasing, true);
                 p.setPen(Qt::NoPen);
-                p.setBrush(ground(theme_.selection));
+                p.setBrush(panel_ground(theme_.selection));
                 p.drawRoundedRect(box, kScrollBarRadius, kScrollBarRadius);
                 p.setRenderHint(QPainter::Antialiasing, false);
             }
-            p.setPen(ink(fg));
+            p.setPen(panel_ink(fg));
             const QString label =
                 QString::fromStdString(row.label.empty() ? row.key : row.label);
             p.drawText(QPointF(table_x, y), label.leftJustified(label_w, QLatin1Char(' ')));
@@ -2423,7 +2966,7 @@ private:
                               cw * 1.5, ch);
             settings_hit_.minus.push_back(minus);
             settings_hit_.plus.push_back(plus);
-            p.setPen(ink(fg, focused ? 255 : 150));
+            p.setPen(panel_ink(fg, focused ? 255 : 150));
             p.drawText(minus, Qt::AlignCenter, QStringLiteral("-"));
             p.drawText(plus, Qt::AlignCenter, QStringLiteral("+"));
 
@@ -2442,7 +2985,7 @@ private:
 
         paintOverlayButtons(p, panel, pad, fm, fg, settings_hit_.save,
                             settings_hit_.cancel, settings_focus_);
-        p.setPen(ink(fg, 140));
+        p.setPen(panel_ink(fg, 140));
         p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
                           fm.height()),
                    Qt::AlignHCenter | Qt::AlignVCenter, hint);
@@ -2481,15 +3024,15 @@ private:
             // The word the keyboard is on is filled the way a focused row is, so
             // `tab` has something visible to move on to instead of appearing to do
             // nothing at the bottom of the panel.
-            p.setPen(QPen(ink(button.colour.red(), button.colour.green(),
+            p.setPen(QPen(panel_ink(button.colour.red(), button.colour.green(),
                               button.colour.blue(), lit ? 255 : 150), 1));
-            p.setBrush(lit ? ground(theme_.selection) : QColor());
+            p.setBrush(lit ? panel_ground(theme_.selection) : QColor());
             if (lit)
                 p.setBrush(QColor(theme_.selection.r, theme_.selection.g,
                                   theme_.selection.b, scaleAlpha(220, background_opacity_)));
             p.drawRoundedRect(*button.box, kScrollBarRadius, kScrollBarRadius);
             p.setRenderHint(QPainter::Antialiasing, false);
-            p.setPen(ink(button.colour.red(), button.colour.green(), button.colour.blue()));
+            p.setPen(panel_ink(button.colour.red(), button.colour.green(), button.colour.blue()));
             p.drawText(*button.box, Qt::AlignCenter, *button.word);
         }
     }
@@ -2624,9 +3167,18 @@ private:
     // or `leave`. Tab walks them, and Enter answers the one you are standing on.
     int picker_focus_ = 0;
     int settings_focus_ = 0;
+    std::unique_ptr<ColorMixer> mixer_;
+    std::function<void(Rgb, bool)> mixer_finish_;
+    std::function<void(Rgb)> mixer_preview_;
+    int mixer_focus_ = 0;
+    int mixer_drag_ = -1; // the bar a mouse is currently pushing along
+    mutable OverlayHit mixer_hit_;
     mutable OverlayHit picker_hit_;
     mutable OverlayHit settings_hit_;
     bool owns_screen_ = true;
+    ColourLocks colour_locks_;
+    std::size_t history_limit_for_new_screen_ = Screen::kMaxHistory;
+    Screen::CursorShape default_cursor_shape_for_new_screen_ = Screen::CursorShape::Block;
     bool closing_on_close_ = false;
     double padding_ = 10.0;
     // The colours this window wears. Defaults until a config file says

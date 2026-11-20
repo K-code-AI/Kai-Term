@@ -7,7 +7,7 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
 ## Current Status
 
 - Build: `cmake --build build -- -j4` succeeds.
-- Tests: all 28 `build/tests/kai-term-*` binaries pass after the changes below (two clean
+- Tests: all 29 `build/tests/kai-term-*` binaries pass after the changes below (two clean
   back-to-back runs on an idle machine, run under a fork cap and a watchdog — see Next
   Steps on the daemon fork-storm).
 - Everything through the 2026-11-19 documentation audit is committed and pushed to
@@ -352,6 +352,46 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   which setting happened to move is how a test agrees with a wrong implementation.
   (That accessor earned its keep immediately: clicking a row's centre hit the `-` arrow
   painted left of centre, which is correct behaviour and a test that had been guessing.)
+- 2026-11-20: **the colour mixer (Enter on a colour), and the panels stopped being
+  translucent.** `src/config/colormixer.hpp` is the third Qt-free model: one colour held as
+  RGB and as HSL, with the last edit deciding which is authoritative and the wheel kept in
+  tenths of a degree because a whole degree is worth up to six units of a byte at the
+  saturated end (measured: 248,10,11 is 359.6°; 359° is 248,4,0). At tenths, the round trip
+  is exact for all 16.7 million colours, so `hsl10ToRgb(mixer.hsl10()) == mixer.colour()`
+  holds at every moment — the bars and the wheel are two readings of one thing. The widget
+  paints bars as *what pushing them does* (left end that channel at zero, right end at
+  full) and drags them with the pointer. Kaida also asked that Enter open the mixer, that
+  saving be the word at the bottom rather than a key ("to save we go down to the save
+  button, no need for a direct key, but we keep Esc for quick cancel"), that the panels be
+  opaque whatever the transparency says ("oppacity shouldn't affect the menu for better
+  readability"), and that the titles sit higher and start with a capital.
+- 2026-11-20: **a window holds the theme; a session does not.** `applyTheme` set the
+  screen's ink and ground only for a window that had started its own shell, so an attached
+  window left them to whatever the snapshot re-sent — and a snapshot re-sends them on every
+  resize. Any colour the theme file had not *named* therefore came back from the session,
+  which is what "theme is lost when attaching a session" was. It applies them either way
+  now, and an attached view locks the whole theme, not only the named lines. **Honest note:
+  the headless harness could not reproduce the loss** (a session's painted colours did not
+  reach the attached view in the test, whatever the code did), so the checks added pin down
+  the rule rather than the old failure, and the real confirmation is Kaida's on niri.
+- 2026-11-20: **a session spawn was eating the theme, and it was one line.** Starting a
+  fresh shell in a window (`saveCurrentSession` → `showSession`) does `screen_ = Screen(...)`
+  and a new screen starts with built-in colours and **no locks**, so the theme went out with
+  the old screen and the new shell's OSC 10/11 walked in. `showSession` now dresses the new
+  screen itself: theme defaults, theme palette, the scrollback and cursor style the window was
+  configured with, and the colour locks — which is why the widget keeps its own copy of the
+  locks (`colour_locks_`) instead of leaving them only in the screen. Locks are now the whole
+  theme for every window, not the named lines for owned windows and the whole theme for
+  attached ones; a program colouring its own cells is untouched by that. The test types
+  `printf '\033]11;#ff0000\007'` into a real shell and then spawns a fresh one, and it fails
+  without the fix (3 checks).
+- 2026-11-20: **one thing lit at a time; bars that show where they go.** The row highlight
+  followed the *model's* row, so with the keys on `save` the last row stayed lit too — two
+  answers on one panel (Kaida). It now requires `focus == 0`; guarded by a check that samples
+  a pixel of the row band before and after walking onto `save`, which fails without the fix.
+  The mixer's bars are painted from `channelAt(mixer, channel, fraction)` — the channel at a
+  fraction with the others at the *precise* wheel — with 7 stops for hue (the wheel laid
+  flat) and 3 for lightness (black → colour → white), plus rounded ends and a knob.
 
 ## Next Steps
 
@@ -387,6 +427,7 @@ stale-socket start path is hardened so a daemon can never start another daemon.
 - `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow, and the colour authority stack: config lock > session `OSC 4/10/11` > theme > built-in (`paletteColor`, `setThemePalette`, `lockDefaults`, `lockPalette`). A cell also carries the palette index its colour was asked for (`fg_role`/`bg_role`, `kRgbColour` when no index answers), which is what lets a snapshot send `38;5;n` and keep a lock outrank a re-sent screen.
 - `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`), the theme picker (which moves the colour lock on preview), the two transparency alphas (`setTransparency`, and every paint going through `ground()`/`ink()` on a translucent surface), the two overlay panels (colour picker and settings menu) with their shared click hit-testing against painted geometry, and the reader that hands a whole buffered run to the model at once.
 - `src/config/config.hpp` — the two key=value files (`kai-term.conf`, `theme.conf`): their path rules incl. `--config-dir` (`setConfigDir`), colours, palette, body settings (font, grid, the two transparencies), complaints (no Qt).
+- `src/config/colormixer.hpp` — the colour mixer's Qt-free model: one colour as RGB and as HSL in tenths, bars as fractions, clamped and wrapped so no channel leaves its range (no Qt).
 - `src/config/settingspicker.hpp` — the settings menu's Qt-free state machine (Ctrl+Shift+K): rows with ranges or choice lists, digit walking, clamping so no keystroke or click can reach an invalid value, and which rows changed (no Qt).
 - `src/config/themepicker.hpp` — the picker's Qt-free state machine: rows, digit stepping, hex editing and percentage editing (`FieldKind`, `percentFromFraction`/`fractionText`), and which fields changed.
 - `src/session/sessionbackend.hpp` — a window's view of a daemon-owned session.

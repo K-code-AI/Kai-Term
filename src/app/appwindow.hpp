@@ -146,7 +146,20 @@ public:
         std::array<std::optional<Color>, 16> palette_locks;
         for (std::size_t i = 0; i < palette_locks.size(); ++i)
             palette_locks[i] = liftOpt(config_.palette[i]);
-        setColourLocks(liftOpt(config_.foreground), liftOpt(config_.background), palette_locks);
+        // The whole theme is the lock, named or not. A colour the file did not name
+        // is still this window's colour — the theme's own default beneath the names —
+        // and a program painting over it with OSC 10/11 is stating an opinion about
+        // the person's desktop. Kaida's rule is flat: "a name in my config should
+        // supersede everything … anyway windows hold the theme, not sessions". What
+        // a program may still do is colour the cells it prints, which happens
+        // inside the theme rather than in place of it. The same rule is what makes
+        // the picker's preview honest for a palette entry: the row you are moving is
+        // the colour the window actually uses.
+        for (std::size_t i = 0; i < palette_locks.size(); ++i)
+            palette_locks[i] = Color{theme.palette[i].r, theme.palette[i].g, theme.palette[i].b};
+        setColourLocks(Color{theme.foreground.r, theme.foreground.g, theme.foreground.b},
+                       Color{theme.background.r, theme.background.g, theme.background.b},
+                       palette_locks);
         // The window's body, not just its colours: a config that says
         // `font_size = 14` means the cells are 14 pixels tall now, and a
         // config that says `cols = 100` means the opening window is as wide

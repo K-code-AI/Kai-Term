@@ -200,6 +200,9 @@ add_test(NAME theme-picker COMMAND kai-term-theme-picker)
 add_executable(kai-term-settings-picker tests/settings_picker.cpp)
 add_test(NAME settings-picker COMMAND kai-term-settings-picker)
 
+add_executable(kai-term-color-mixer tests/color_mixer.cpp)
+add_test(NAME color-mixer COMMAND kai-term-color-mixer)
+
 # Closing the real binary under a real compositor. The close prompt was once "verified" by
 # calling the window's close from a test, while the terminal sat inside a QMainWindow and
 # never received a close from anything. This asks sway, with no display, to close the
@@ -260,6 +263,7 @@ set(KAI_TEST_TARGETS
     kai-term-config
     kai-term-theme-picker
     kai-term-settings-picker
+    kai-term-color-mixer
     kai-term-widget-panes
     kai-term-mouse-app)
 foreach(kai_test ${KAI_TEST_TARGETS})

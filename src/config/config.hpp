@@ -75,6 +75,12 @@ struct Rgb {
     int r = 0;
     int g = 0;
     int b = 0;
+
+    // Two colours are the same colour when all three bytes agree. Worth saying in
+    // one place: the question "did this colour move?" comes up wherever a picker
+    // or a mixer decides whether anything is worth writing to a file, and asking
+    // it a channel at a time is how one channel gets left out.
+    friend bool operator==(const Rgb&, const Rgb&) = default;
 };
 
 // The shape the cursor has until a program asks for a different one. Three
