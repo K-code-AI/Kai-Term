@@ -230,11 +230,29 @@ void run() {
 }
 
 {
-    // The `hex` row has no next colour along it, so `-` and `+` say so rather
-    // than doing something mysterious to a string.
-    ColorMixer mixer{Rgb{1, 2, 3}};
-    mixer.setRow(6);
-    expect("the hex row does not nudge", !mixer.nudge(1) && !mixer.nudge(-1));
+    // The `hex` row is editable with the same keys as every other row. There is
+    // no next colour along a string, but the pair of digits the cursor is on has
+    // a next value like any other, and a row the arrows do not reach is a row
+    // somebody has to know to type in. (Kaida, 2026-11-20: "everything else
+    // should be adjustable with the left right arrows".)
+    ColorMixer mixer{Rgb{0x12, 0x34, 0x56}};
+    mixer.setRow(6); // hex, the cursor on the first pair
+    expect("the hex row nudges the pair the cursor is on",
+           mixer.nudge(1) && mixer.colour().r == 0x22);
+    expect("and a second step moves the same pair again",
+           mixer.nudge(1) && mixer.colour().r == 0x32);
+    mixer.setDigit(5); // the low nibble of blue
+    expect("stepping the last digit down takes the colour down with it",
+           mixer.nudge(-1) && mixer.colour().b == 0x55);
+    for (int i = 0; i < 20; ++i)
+        static_cast<void>(mixer.nudge(1));
+    expect("a hex pair stops at f instead of rolling the colour somewhere strange",
+           mixer.colour().b == 0x5f);
+    for (int i = 0; i < 30; ++i)
+        static_cast<void>(mixer.nudge(-1));
+    expect("and it stops at 0 the same way", mixer.colour().b == 0x50);
+    expect("while the pairs nobody nudged stayed put",
+           mixer.colour().r == 0x32 && mixer.colour().g == 0x34);
 }
 
 // --- the mouse: a bar's fraction is a channel's value -----------------------

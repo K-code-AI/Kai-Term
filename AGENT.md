@@ -34,6 +34,11 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
   the live window, puts it back on Esc and writes the file on Enter; its rows clamp to
   their ranges under 200 clicks of `+`; and its mouse clicks — a row, an arrow, `save` —
   land where they were painted (`tests/app_window.cpp`, the settings-menu block).
+- Verified offscreen: a menu fits a window far smaller than it wants to be — panel, rows,
+  bars and the two words all inside it, none of them painted over the others — and the
+  mixer's sample sentence is painted in the colour being mixed while the strip under it is
+  not (`tests/app_window.cpp`, the small-panel block; `build/kai-term-panelview` writes the
+  pictures at four window sizes).
 - Verified offscreen: the two transparency settings reach the window's alpha, the picker
   previews them as they are typed, and they save to `kai-term.conf` as fractions
   (`tests/app_window.cpp`, the transparency block). Not verified on a live compositor —
@@ -406,6 +411,31 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   which left the right side empty); the mixer's preview sentence picks black or white when
   the mixed colour is too close to the ink to read; and the colour list is hidden while the
   mixer is up, because two panels stacked read as one crowded panel.
+
+- 2026-11-20: **the preview is the sentence, the arrows reach every row, and a menu fits
+  its window.** Three things out of one screenshot. (1) The mixer's preview was a strip
+  flooded with the mixed colour and the sample sentence written over it in black or white,
+  which painted the menu that colour twice over and the sentence not at all (Kaida: "the
+  Quick brown fox line didn't get paint in red when it should be the only thing getting
+  painted red on this menu, since it's the preview"). The sentence is painted *in* the
+  colour now, on the panel's own ground; when that ground is within a fifth of the scale of
+  the colour — mixing the window's own background, which is what the screenshot showed — the
+  ground steps away from the sentence rather than the sentence away from the colour. (2)
+  Left/Right change the value on every mixer row, the `hex` row included: `nudgeNibble()`
+  steps the pair under the cursor, so the row is adjustable rather than only typeable, and
+  the cursor a typed number wants moved to Shift+Left/Right. The colour *list* keeps the
+  plain arrows for its six digits, per the same message. (3) The panels were laid out from
+  their own content with no idea of the window's size — at 430x320 the mixer ran off both
+  edges with its hint under its rows and its words on top of them. `panelFont()` hands a
+  panel a smaller drawing font until it fits (floor 8px; the terminal's own font is never
+  touched), a list shrinks only to a dozen rows and then scrolls as it always did, the hint
+  elides instead of overflowing, and `paintOverlayButtons` takes the panel's font — it had
+  been measuring itself against the *window's*, which is how its words landed on the last
+  row. `tests/tools/panelview.cpp` photographs all three panels at 960x540, 620x460, 430x320
+  and 330x220, because pictures are how this machine sees. The new checks read the painted
+  pixels — the sentence is the pixel furthest from the strip's own ground — and ask whether
+  the last row sits above the two words; the pixel ones fail without the fix, and the
+  row-and-word one fails with the fallback font switched off.
 
 ## Next Steps
 

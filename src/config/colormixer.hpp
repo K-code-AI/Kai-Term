@@ -287,12 +287,18 @@ public:
     // One step of `-` or `+`. Hue steps by one degree, which is slow across a
     // wheel but never skips past the colour you were aiming at; the mouse and a
     // typed number are how you cross it quickly.
+    //
+    // The `hex` row steps too. There is no next colour along a string, but the
+    // pair of digits the cursor is sitting on has a next value like any other,
+    // and a row that can only be edited by typing is a row the arrows of this
+    // program do not reach. (Kaida, 2026-11-20: "everything else should be
+    // adjustable with the left right arrows".)
     bool nudge(int delta) {
         if (delta == 0)
             return false;
         const MixChannel c = channel();
         if (c == MixChannel::Hex)
-            return false; // there is no next colour along a string
+            return nudgeNibble(delta);
         const int max = channelMaximum(c);
         int next = value(c) + (delta > 0 ? 1 : -1);
         if (channelWraps(c)) {
@@ -303,6 +309,22 @@ public:
                 return false; // stopped at the edge rather than wrapping
         }
         apply(c, next);
+        return true;
+    }
+
+    // The two hex digits under the cursor, one step. They stop at `0` and `f`
+    // rather than rolling over, because rolling a digit is how a colour you were
+    // nudging turns into a colour you have never seen.
+    bool nudgeNibble(int delta) {
+        int digits[6] = {rgb_.r >> 4, rgb_.r & 15, rgb_.g >> 4,
+                         rgb_.g & 15, rgb_.b >> 4, rgb_.b & 15};
+        const std::size_t at = static_cast<std::size_t>(digit_);
+        const int next = std::clamp(digits[at] + (delta > 0 ? 1 : -1), 0, 15);
+        if (next == digits[at])
+            return false;
+        digits[at] = next;
+        applyRgb(Rgb{(digits[0] << 4) | digits[1], (digits[2] << 4) | digits[3],
+                     (digits[4] << 4) | digits[5]});
         return true;
     }
 

@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <string>
 #include <thread>
 #include <utility>
@@ -359,6 +360,10 @@ public:
             return QRectF();
         return mixer_hit_.bars[static_cast<std::size_t>(channel_row)];
     }
+    // Which digit of the mixer's row the next keystroke lands on — the one
+    // thing about a row the keys can be on without the colour moving.
+    int mixerDigit() const { return mixer_ ? mixer_->digit() : -1; }
+
     std::pair<int, int> pickerCursor() const {
         return picker_ ? std::pair<int, int>{picker_->row(), picker_focus_}
                        : std::pair<int, int>{-1, -1};
@@ -390,6 +395,27 @@ public:
     QPointF pickerSavePoint() const { return picker_hit_.save.center(); }
     QPointF mixerSavePoint() const { return mixer_hit_.save.center(); }
 
+    // Where a panel was last painted, so a check can ask whether it fits the
+    // window it is painted in. The answer is the geometry the pixels used, which
+    // is the only one worth asking for: a second layout worked out beside the
+    // first is a second opinion, and the two drift.
+    QRectF mixerPanelRect() const { return mixer_hit_.panel; }
+    QRectF pickerPanelRect() const { return picker_hit_.panel; }
+    QRectF settingsPanelRect() const { return settings_hit_.panel; }
+    QRectF mixerPreviewRect() const { return mixer_hit_.preview; }
+
+    // The lowest row each panel painted. A panel that is too tall for its window
+    // does not say so in its own rectangle — it says so by painting its last rows
+    // underneath its two words, which is the mangling worth asking about.
+    QRectF mixerBottomRowRect() const {
+        return mixer_hit_.rows.empty() ? QRectF() : mixer_hit_.rows.back();
+    }
+    QRectF pickerBottomRowRect() const {
+        return picker_hit_.rows.empty() ? QRectF() : picker_hit_.rows.back();
+    }
+    QRectF settingsBottomRowRect() const {
+        return settings_hit_.rows.empty() ? QRectF() : settings_hit_.rows.back();
+    }
     // The window's body, as the config or the settings menu asked for it. Padding
     // re-derives the grid because it changes how many cells the same window holds;
     // the scrollback depth and the cursor shape are the model's business and are
@@ -2037,13 +2063,32 @@ private:
             update();
             return;
         }
+        // Left and Right change the value, as they do on every other row of this
+        // program: the row is already chosen and the question is what colour it
+        // should be. That includes the `hex` row, where the pair of digits the
+        // cursor is on steps by one — a row that can only be edited by typing is
+        // a row the arrows do not reach. The cursor a typed number wants is
+        // Shift+Left and Shift+Right, and the colour *list* keeps the plain
+        // arrows for the cursor, because there the whole row is one string.
+        // (Kaida, 2026-11-20: "everything else should be adjustable with the left
+        // right arrows".)
         if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
-            mixer_->digitStep(-1);
+            if (mods.testFlag(Qt::ShiftModifier))
+                mixer_->digitStep(-1);
+            else if (mixer_->nudge(-1)) {
+                mixer_focus_ = 0;
+                previewMixer();
+            }
             update();
             return;
         }
         if (key == Qt::Key_Right || (plain && key == Qt::Key_L)) {
-            mixer_->digitStep(1);
+            if (mods.testFlag(Qt::ShiftModifier))
+                mixer_->digitStep(1);
+            else if (mixer_->nudge(1)) {
+                mixer_focus_ = 0;
+                previewMixer();
+            }
             update();
             return;
         }
@@ -2144,8 +2189,6 @@ private:
     void paintMixer(QPainter& p) const {
         if (!mixer_)
             return;
-        const double cw = cellWidth();
-        const double ch = cellHeight();
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
         const QString hint = QStringLiteral("Arrows to Navigate - Enter to Select - Escape to Cancel");
@@ -2153,26 +2196,33 @@ private:
         const int label_w = 12;    // `saturation` is the longest name
         const int bar_cells = 20;  // a bar wide enough to push with a pointer
         const int value_cells = 4; // `359` and a space
-        const double table_w = (label_w + bar_cells + value_cells + 1) * cw;
-        const double pad = 1.5 * ch;
-        QFontMetricsF fm(font_);
-        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
-        const double panel_w = inner_w + 2 * pad;
+        const int table_cells = label_w + bar_cells + value_cells + 1;
         // title, two rows of preview, the channels, the two words, a gap, the hint.
-        const double needed_h = (3 + 2 + kMixChannelCount + 3) * ch + 2 * pad;
-        const double max_h = std::max(6.0 * ch, height() - ch);
-        const double panel_h = std::min(needed_h, max_h);
+        const double table_rows = 3 + 2 + kMixChannelCount + 3;
+
+        // The panel is measured in cells and then fitted to the window, so a
+        // small window gets a small panel rather than one whose edges, hint line
+        // and two words are painted off the screen.
+        const PanelFont pf = panelFont(std::max(table_cells, hintCells(hint)), table_rows);
+        const double cw = pf.cw;
+        const double ch = pf.ch;
+        const QFontMetricsF& fm = pf.fm;
+        const double pad = 1.5 * ch;
+        const double table_w = table_cells * cw;
+        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
+        const double panel_w = std::min(inner_w + 2 * pad, std::max(2.0, width() - 2.0));
+        const double panel_h = std::min(table_rows * ch + 2 * pad,
+                                        std::max(2.0, height() - 2.0));
         const QRectF panel((width() - panel_w) / 2.0, (height() - panel_h) / 2.0, panel_w,
                            panel_h);
+        const QColor ground = panelGroundColour(bg);
 
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(QPen(panel_ink(fg, 80), 1));
-        p.setBrush(panel_ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
-                         std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
-                         std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
+        p.setBrush(ground);
         p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
         p.setRenderHint(QPainter::Antialiasing, false);
-        p.setFont(font_);
+        p.setFont(pf.font);
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
@@ -2180,51 +2230,49 @@ private:
                    Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Mix colour"));
         y += ch + kTitleGap;
 
-        // The rows are centred in the panel rather than hung off its left edge.
-        // The panel is as wide as the widest thing in it, which is the line at the
-        // bottom, and a table starting at the padding left all the extra width as
-        // dead space on the right. (Kaida, 2026-11-20: "text should be centenred in
-        // the interface, lots of empty space on the right as it is now".)
-        const double table_x = panel.x() + pad + (inner_w - table_w) / 2.0;
+        // Everything the mixer paints is centred in the panel: the panel is as
+        // wide as the widest thing in it, and a table hung off the left padding
+        // leaves all the rest of the width as dead space on the right.
+        // (Kaida, 2026-11-20: "text should be centenred in the interface, lots of
+        // empty space on the right as it is now".)
+        const double table_x = panel.x() + (panel_w - table_w) / 2.0;
         const Rgb mixed = mixer_->colour();
 
-        // The preview is the whole point of a mixer: the colour at full width, with
-        // text sitting on it in the ink the window actually uses. A patch two cells
-        // wide tells you the hue and nothing about whether you can read a terminal
-        // through it, which is the question you were really asking.
-        const QRectF preview(table_x, y - ch + fm.ascent() * 0.15, inner_w, 2 * ch);
-        p.fillRect(preview, QColor(mixed.r, mixed.g, mixed.b));
-        p.setPen(QPen(panel_ink(fg, 120), 1));
-        p.drawRect(preview);
-        // The ink is chosen against the colour, not out of the theme. The window's
-        // own foreground is the first choice because that is the text the person
-        // reads all day; when the mixed colour leaves less than a readable step
-        // between them, black or white takes over by how light the ground is. A
-        // sentence you cannot see is not a preview of anything. (Kaida, 2026-11-20:
-        // "the sentence with the quick brown fox doesn't get updated … it should
-        // serve as a proper preview".)
-        {
-            const double ground = (0.299 * mixed.r + 0.587 * mixed.g + 0.114 * mixed.b) / 255.0;
-            const double ink = (0.299 * fg.r + 0.587 * fg.g + 0.114 * fg.b) / 255.0;
-            QColor text(fg.r, fg.g, fg.b);
-            if ((ink > ground ? ink - ground : ground - ink) < 0.25)
-                text = ground > 0.55 ? QColor(0, 0, 0) : QColor(255, 255, 255);
-            p.setPen(text);
-            p.drawText(preview.adjusted(cw, 0, -cw, 0), Qt::AlignLeft | Qt::AlignVCenter,
-                       QStringLiteral("Aa Bb Cc 0123 #$%&  the quick brown fox"));
-        }
-        y += 2 * ch;
+        // The preview is the sentence, and the sentence is the colour. Flooding a
+        // strip with the mixed colour and writing the sample over it in black or
+        // white gave a wall of the colour with a caption on it, and painted the
+        // menu the same colour twice over; what is being chosen is a colour to
+        // read *through*, so it goes on the letters and nowhere else. The strip
+        // borrows a ground of its own only when the panel's is too near the
+        // colour to read against. (Kaida, 2026-11-20: "the Quick brown fox line
+        // didn't get paint in red when it should be the only thing getting
+        // painted red on this menu, since it's the preview".)
+        const QRectF preview(panel.x() + pad, y - ch + fm.ascent() * 0.15,
+                             panel_w - 2 * pad, 2 * ch);
 
         mixer_hit_ = OverlayHit{};
         mixer_hit_.panel = panel;
+        mixer_hit_.preview = preview;
         mixer_hit_.table_x = table_x;
         mixer_hit_.label_w = label_w;
         mixer_hit_.cw = cw;
+
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(panel_ink(fg, 70), 1));
+        p.setBrush(previewGround(mixed, ground));
+        p.drawRoundedRect(preview, kMixerBarRadius, kMixerBarRadius);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setPen(QColor(mixed.r, mixed.g, mixed.b));
+        p.drawText(preview.adjusted(cw, 0, -cw, 0),
+                   Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine,
+                   QStringLiteral("Aa Bb Cc 0123 #$%&  the quick brown fox"));
+        y += 2 * ch;
+
         for (int i = 0; i < kMixChannelCount; ++i) {
             const MixChannel c = mixChannelAt(i);
             const bool focused = mixer_focus_ == 0 && i == mixer_->row();
             const QRectF row(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
-                             inner_w + pad, ch);
+                             panel_w - pad, ch);
             mixer_hit_.rows.push_back(row);
             mixer_hit_.row_index.push_back(i);
             if (focused) {
@@ -2324,12 +2372,13 @@ private:
             y += ch;
         }
 
-        paintOverlayButtons(p, panel, pad, fm, fg, mixer_hit_.save, mixer_hit_.cancel,
+        paintOverlayButtons(p, panel, pf, fg, mixer_hit_.save, mixer_hit_.cancel,
                             mixer_focus_);
         p.setPen(panel_ink(fg, 140));
-        p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
-                          fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, hint);
+        p.drawText(QRectF(panel.x() + pad / 2, panel.bottom() - pad - fm.height(),
+                          panel_w - pad, fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine | Qt::ElideRight,
+                   hint);
     }
 
     // The colour of a bar at one point along it: this channel set to `fraction` of
@@ -2776,6 +2825,116 @@ private:
     static constexpr double kTitleGap = 6.0;
     static constexpr double kMixerBarRadius = 3.0;
     static constexpr double kMixerKnobWidth = 7.0;
+    // How small a panel may go before it stops being a panel. Below this the
+    // words turn into marks, and a menu you cannot read is not one you can
+    // answer — better that it lose an edge than lose its letters.
+    static constexpr int kPanelMinFontPixels = 8;
+    // A list scrolls, so it is not allowed to demand a font: this is how many
+    // rows of a long panel the fallback shrinks to fit, and beyond it the rows
+    // walk off the bottom and come back the way they always have.
+    static constexpr double kPanelListRows = 12.0;
+
+    // What a panel is painted in: a font, its metrics, and the cell that font
+    // makes. The panels measure themselves in cells, so these three are the
+    // whole of their geometry.
+    struct PanelFont {
+        QFont font;
+        QFontMetricsF fm;
+        double cw = 1.0;
+        double ch = 1.0;
+    };
+
+    // The font a panel of this many cells across and tall is drawn in.
+    //
+    // A panel is laid out from its own content — a title, a table, a line of
+    // keys at the bottom — and none of that content knows how big the window is.
+    // Put one in a window smaller than it wants to be and it used to be painted
+    // anyway, off both edges, with the hint running underneath the rows and the
+    // two words landing on top of them. So the panel takes a smaller drawing
+    // font until it fits. The terminal's own font is untouched: the window got
+    // smaller, not the person's type, and a grid is not a menu.
+    // (Kaida, 2026-11-20: "maybe a fallback max font size depending on the
+    // windows size, to make sure our menu can fit properly without getting
+    // mangled".)
+    PanelFont panelFont(double cells_w, double cells_h) const {
+        PanelFont out{font_, QFontMetricsF(font_), cellWidth(), cellHeight()};
+        if (out.font.pixelSize() <= 0) // a point-sized font still has to shrink
+            out.font.setPixelSize(14);
+        const double room_w = std::max(1.0, static_cast<double>(width()) - 2.0);
+        const double room_h = std::max(1.0, static_cast<double>(height()) - 2.0);
+        for (int guard = 0; guard < 32; ++guard) {
+            // A panel's padding is one and a half rows on each side, whatever
+            // the font, so it shrinks with it rather than eating a small panel.
+            const double want_w = cells_w * out.cw + 3.0 * out.ch;
+            const double want_h = cells_h * out.ch + 3.0 * out.ch;
+            if (want_w <= room_w && want_h <= room_h)
+                break;
+            if (out.font.pixelSize() <= kPanelMinFontPixels)
+                break; // nothing smaller is still readable; let it clip a little
+            const double scale = std::min(room_w / want_w, room_h / want_h);
+            int px = static_cast<int>(out.font.pixelSize() * scale);
+            if (px >= out.font.pixelSize())
+                px = out.font.pixelSize() - 1; // the ratio rounded up; step anyway
+            px = std::max(kPanelMinFontPixels, px);
+            out.font.setPixelSize(px);
+            out.fm = QFontMetricsF(out.font);
+            out.cw = cellAdvance(out.fm);
+            out.ch = out.fm.height();
+        }
+        return out;
+    }
+
+    // How wide the line of keys at the bottom of a panel is, in cells. That
+    // line, not the table, is usually what makes a panel wide, so it is what the
+    // panel is fitted against. Measured at the window's own font: the line and
+    // the cells shrink together, so the ratio holds as the panel does.
+    int hintCells(const QString& hint) const {
+        const QFontMetricsF fm(font_);
+        const double cw = cellAdvance(fm);
+        if (cw <= 0.0)
+            return 0;
+        return static_cast<int>(std::ceil(fm.horizontalAdvance(hint) / cw));
+    }
+
+    // The surface every panel is painted on: the window's own background, dimmed
+    // and with a little blue lifted, so it reads as a thing sitting over the
+    // grid rather than a hole in it.
+    static QColor panelGroundColour(const Color& bg) {
+        return panel_ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                            std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                            std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255));
+    }
+
+    // The colour the preview sentence sits on: the panel's own ground, unless
+    // the colour being mixed is so close to it that the sentence would vanish
+    // into the panel — in which case the ground steps away from the sentence
+    // rather than the sentence stepping away from the colour, toward white under
+    // a dark one and black under a light one. The letters keep the mixed colour
+    // either way; that is the whole point of the row.
+    static double inkLuminance(int r, int g, int b) {
+        return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
+    }
+
+    static QColor blendToward(const QColor& from, const QColor& toward, double t) {
+        const auto part = [t](int a, int b) {
+            return static_cast<int>(a + (b - a) * t + 0.5);
+        };
+        return QColor(std::clamp(part(from.red(), toward.red()), 0, 255),
+                      std::clamp(part(from.green(), toward.green()), 0, 255),
+                      std::clamp(part(from.blue(), toward.blue()), 0, 255));
+    }
+
+    static QColor previewGround(const Rgb& mixed, const QColor& panel_ground) {
+        const double ground = inkLuminance(panel_ground.red(), panel_ground.green(),
+                                           panel_ground.blue());
+        const double ink = inkLuminance(mixed.r, mixed.g, mixed.b);
+        // A fifth of the scale is roughly where two flat colours stop reading as
+        // two flat colours, which is as small a step as a preview may ask for.
+        if (std::fabs(ink - ground) >= 0.2)
+            return panel_ground;
+        return blendToward(panel_ground, ink < 0.5 ? QColor(255, 255, 255) : QColor(0, 0, 0),
+                           0.62);
+    }
 
     struct OverlayHit {
         QRectF panel;
@@ -2787,6 +2946,7 @@ private:
         int lead = 0;                // cells before the first editable digit
         QRectF save;                 // the two words at the bottom of the panel
         QRectF cancel;
+        QRectF preview;    // the mixer's sentence, which is the colour being mixed
         std::vector<QRectF> bars;     // the mixer's channels, one bar per row
         std::vector<QRectF> swatches; // the picker's colour boxes, per row
         std::vector<QRectF> minus;    // the two arrows of each row, for a mouse
@@ -2802,8 +2962,6 @@ private:
     void paintPicker(QPainter& p) const {
         if (!picker_)
             return;
-        const double cw = cellWidth();
-        const double ch = cellHeight();
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
 
@@ -2821,11 +2979,7 @@ private:
             label_w = std::max(label_w, static_cast<int>(name.size()) + 2);
         }
         // label column, hex 7, a two-cell gap, a two-cell swatch.
-        const double table_w = (label_w + 7 + 2 + 2) * cw;
-        const double pad = 1.5 * ch;
-        QFontMetricsF fm(font_);
-        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
-        const double panel_w = inner_w + 2 * pad;
+        const int table_cells = label_w + 7 + 2 + 2;
 
         // Twenty-one rows — five window colours and sixteen palette entries —
         // do not fit a short window, so the panel caps at the window's height
@@ -2833,9 +2987,20 @@ private:
         // always on screen, because a picker that walks its selection off the
         // top edge has lost the one line you were editing.
         const int total = static_cast<int>(fields.size());
-        const double needed_h = (5 + total + 2) * ch + 2 * pad; // title, gap, rows, words, hint
-        const double max_h = std::max(6.0 * ch, height() - ch);
-        const double panel_h = std::min(needed_h, max_h);
+        // A list has an answer for running out of room already, so the fallback
+        // font is asked only to fit a panel of a dozen rows and the rest scrolls.
+        const PanelFont pf =
+            panelFont(std::max(table_cells, hintCells(hint)),
+                      std::min(5.0 + total + 2.0, kPanelListRows));
+        const double cw = pf.cw;
+        const double ch = pf.ch;
+        const QFontMetricsF& fm = pf.fm;
+        const double pad = 1.5 * ch;
+        const double table_w = table_cells * cw;
+        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
+        const double panel_w = std::min(inner_w + 2 * pad, std::max(2.0, width() - 2.0));
+        const double panel_h =
+            std::min((5 + total + 2) * ch + 2 * pad, std::max(2.0, height() - 2.0));
         const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 5 * ch) / ch));
         int first = 0;
         if (total > visible)
@@ -2846,12 +3011,10 @@ private:
 
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(QPen(panel_ink(fg, 80), 1));
-        p.setBrush(panel_ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
-                         std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
-                         std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
+        p.setBrush(panelGroundColour(bg));
         p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
         p.setRenderHint(QPainter::Antialiasing, false);
-        p.setFont(font_);
+        p.setFont(pf.font);
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
@@ -2864,7 +3027,7 @@ private:
         // bottom, and a table starting at the padding left all the extra width as
         // dead space on the right. (Kaida, 2026-11-20: "text should be centenred in
         // the interface, lots of empty space on the right as it is now".)
-        const double table_x = panel.x() + pad + (inner_w - table_w) / 2.0;
+        const double table_x = panel.x() + (panel_w - table_w) / 2.0;
         const int last = std::min(first + visible, total);
         picker_hit_ = OverlayHit{};
         picker_hit_.panel = panel;
@@ -2875,7 +3038,7 @@ private:
             const ThemeField& field = fields[static_cast<std::size_t>(i)];
             const bool focused = picker_focus_ == 0 && i == picker_->row();
             const QRectF row(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
-                             inner_w + pad, ch);
+                             panel_w - pad, ch);
             picker_hit_.rows.push_back(row);
             picker_hit_.row_index.push_back(i);
             if (focused) {
@@ -2927,16 +3090,17 @@ private:
             y += ch;
         }
 
-        paintOverlayButtons(p, panel, pad, fm, fg, picker_hit_.save, picker_hit_.cancel,
+        paintOverlayButtons(p, panel, pf, fg, picker_hit_.save, picker_hit_.cancel,
                             picker_focus_);
 
         // The hint is anchored to the bottom of the panel, because the panel
         // may be shorter than the list: a hint that scrolls away with the
         // rows would be the one line the picker always had and never kept.
         p.setPen(panel_ink(fg, 140));
-        p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
-                          fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, hint);
+        p.drawText(QRectF(panel.x() + pad / 2, panel.bottom() - pad - fm.height(),
+                          panel_w - pad, fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine | Qt::ElideRight,
+                   hint);
     }
 
     // The settings menu, in the picker's voice: the same dimmed panel, the same
@@ -2950,8 +3114,6 @@ private:
     void paintSettings(QPainter& p) const {
         if (!settings_)
             return;
-        const double cw = cellWidth();
-        const double ch = cellHeight();
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
         const QString hint =
@@ -2965,15 +3127,22 @@ private:
             label_w = std::max(label_w, static_cast<int>(name.size()) + 2);
             value_w = std::max(value_w, static_cast<int>(settingValueText(row).size()));
         }
-        const double table_w = (label_w + value_w + 4) * cw; // label, value, gap, two arrows
-        const double pad = 1.5 * ch;
-        QFontMetricsF fm(font_);
-        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
-        const double panel_w = inner_w + 2 * pad;
+        const int table_cells = label_w + value_w + 4; // label, value, gap, two arrows
         const int total = static_cast<int>(rows.size());
-        const double needed_h = (5 + total + 2) * ch + 2 * pad;
-        const double max_h = std::max(6.0 * ch, height() - ch);
-        const double panel_h = std::min(needed_h, max_h);
+        // As in the picker: the fallback font fits a panel of a dozen rows and
+        // the list scrolls, because a list already has an answer for height.
+        const PanelFont pf =
+            panelFont(std::max(table_cells, hintCells(hint)),
+                      std::min(5.0 + total + 2.0, kPanelListRows));
+        const double cw = pf.cw;
+        const double ch = pf.ch;
+        const QFontMetricsF& fm = pf.fm;
+        const double pad = 1.5 * ch;
+        const double table_w = table_cells * cw;
+        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
+        const double panel_w = std::min(inner_w + 2 * pad, std::max(2.0, width() - 2.0));
+        const double panel_h =
+            std::min((5 + total + 2) * ch + 2 * pad, std::max(2.0, height() - 2.0));
         const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 5 * ch) / ch));
         int first = 0;
         if (total > visible)
@@ -2983,12 +3152,10 @@ private:
 
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(QPen(panel_ink(fg, 80), 1));
-        p.setBrush(panel_ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
-                         std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
-                         std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
+        p.setBrush(panelGroundColour(bg));
         p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
         p.setRenderHint(QPainter::Antialiasing, false);
-        p.setFont(font_);
+        p.setFont(pf.font);
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
@@ -3001,7 +3168,7 @@ private:
         // bottom, and a table starting at the padding left all the extra width as
         // dead space on the right. (Kaida, 2026-11-20: "text should be centenred in
         // the interface, lots of empty space on the right as it is now".)
-        const double table_x = panel.x() + pad + (inner_w - table_w) / 2.0;
+        const double table_x = panel.x() + (panel_w - table_w) / 2.0;
         const int last = std::min(first + visible, total);
         settings_hit_ = OverlayHit{};
         settings_hit_.panel = panel;
@@ -3012,7 +3179,7 @@ private:
             const SettingRow& row = rows[static_cast<std::size_t>(i)];
             const bool focused = settings_focus_ == 0 && i == settings_->row();
             const QRectF box(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
-                             inner_w + pad, ch);
+                             panel_w - pad, ch);
             settings_hit_.rows.push_back(box);
             settings_hit_.row_index.push_back(i);
             if (focused) {
@@ -3055,12 +3222,13 @@ private:
             y += ch;
         }
 
-        paintOverlayButtons(p, panel, pad, fm, fg, settings_hit_.save,
+        paintOverlayButtons(p, panel, pf, fg, settings_hit_.save,
                             settings_hit_.cancel, settings_focus_);
         p.setPen(panel_ink(fg, 140));
-        p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
-                          fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, hint);
+        p.drawText(QRectF(panel.x() + pad / 2, panel.bottom() - pad - fm.height(),
+                          panel_w - pad, fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine | Qt::ElideRight,
+                   hint);
     }
 
     // The two words at the bottom of an overlay: `save` and `leave`. A panel that
@@ -3069,16 +3237,21 @@ private:
     // They are painted in the panel's own voice, and both stay live whatever row
     // the highlight is on, because clicking `leave` should never depend on where
     // you were editing.
-    void paintOverlayButtons(QPainter& p, const QRectF& panel, double pad,
-                             const QFontMetricsF& fm, const Color& fg, QRectF& save,
-                             QRectF& cancel, int focus) const {
-        const double ch = cellHeight();
-        const double cw = cellWidth();
+    //
+    // They are measured in the panel's font, not the window's. Sized from the
+    // terminal's cells they kept their full height in a panel that had shrunk to
+    // fit a small window, and landed on the last row of the list.
+    void paintOverlayButtons(QPainter& p, const QRectF& panel, const PanelFont& pf,
+                             const Color& fg, QRectF& save, QRectF& cancel,
+                             int focus) const {
+        const double ch = pf.ch;
+        const double cw = pf.cw;
+        const double pad = 1.5 * ch;
         const QString save_word = QStringLiteral("save");
         const QString cancel_word = QStringLiteral("cancel");
         const double gap = 3 * cw;
-        const double save_w = fm.horizontalAdvance(save_word) + cw;
-        const double cancel_w = fm.horizontalAdvance(cancel_word) + cw;
+        const double save_w = pf.fm.horizontalAdvance(save_word) + cw;
+        const double cancel_w = pf.fm.horizontalAdvance(cancel_word) + cw;
         // A row of air between the words and the hint below them. Painted flush,
         // the two read as one line of small text, and the words are the part you
         // are meant to be able to hit. (Kaida, 2026-11-20: "they are a bit too close
@@ -3393,17 +3566,19 @@ private:
 
     // Cell size, derived the way the painter derives it, so hit testing and
     // painting agree about which character is under the cursor.
-    double cellWidth() const {
-        QFontMetricsF fm(font_);
+    //
+    // One function answers "how wide is a cell in this font", because the grid,
+    // the hit testing and the three panels all measure the same cell, and two
+    // answers is how a panel gets painted at a width its own rows deny.
+    static double cellAdvance(const QFontMetricsF& fm) {
         double cw = fm.horizontalAdvance(QChar('M'));
         if (cw <= 0.0)
             cw = fm.maxWidth();
         return cw;
     }
-    double cellHeight() const {
-        QFontMetricsF fm(font_);
-        return fm.height();
-    }
+
+    double cellWidth() const { return cellAdvance(QFontMetricsF(font_)); }
+    double cellHeight() const { return QFontMetricsF(font_).height(); }
 
     // Pixel position to grid cell, in display coordinates: the same row index
     // the painter used, so a selection made while scrolled up stays on the text

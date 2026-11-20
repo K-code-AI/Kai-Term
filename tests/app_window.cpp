@@ -1400,6 +1400,168 @@ int main(int argc, char** argv) {
 
 
     {
+        // A menu in a window too small for it, and the colour a preview is
+        // painted in.
+        //
+        // A panel is laid out from its own content — a title, a table of rows, a
+        // line of keys along the bottom — and none of that content knows how big
+        // the window is. In a window smaller than it wants to be, a panel used to
+        // be painted anyway: its edges, its hint line and its two words running
+        // off the screen and over each other. It now takes a smaller drawing font
+        // until it fits, and everything in it — the buttons included, which used
+        // to measure themselves against the window's font rather than the panel's
+        // — is measured in that font. (Kaida, 2026-11-20: "make sure the ui
+        // doesn't break when the size change" and "maybe a fallback max font size
+        // depending on the windows size, to make sure our menu can fit properly
+        // without getting mangled".)
+        //
+        // And the mixer's preview: the sentence is the colour. Flooding a strip
+        // with the mixed colour and writing the sample over it in black or white
+        // painted the menu that colour twice over and the sentence not at all.
+        // (Kaida, 2026-11-20: "the Quick brown fox line didn't get paint in red
+        // when it should be the only thing getting painted red on this menu, since
+        // it's the preview".)
+        const std::string cfg = root + "/small-panel-config";
+        const std::string theme = root + "/small-panel-theme";
+        std::ofstream(cfg) << "font_size = 16\n";
+        std::ofstream(theme) << "foreground = #ff5ce1\nbackground = #7b101b\n";
+        ::setenv("KAI_TERM_CONFIG", cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", theme.c_str(), 1);
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(200);
+
+        const auto press = [&window](int key, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            QKeyEvent ev(QEvent::KeyPress, key, mods);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const auto room = [&window] {
+            return QRectF(0.0, 0.0, window.width(), window.height());
+        };
+
+        // The colour list, in a window less than half the width it would ask for.
+        press(Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
+        pump(80);
+        window.resize(420, 300);
+        pump(150);
+        expect("the colour list fits a window far smaller than it wants to be",
+               room().contains(window.pickerPanelRect()));
+        expect("and its two words are inside it, not under the rows",
+               window.pickerPanelRect().contains(window.pickerSavePoint()));
+        expect("and sit below its rows rather than across them",
+               window.pickerSavePoint().y() > window.pickerBottomRowRect().bottom());
+
+        // The mixer, opened on the window's own background — the case a coloured
+        // strip gets wrong, because the colour being mixed is nearly the colour
+        // of the panel it is being mixed in.
+        press(Qt::Key_Down);
+        pump(60);
+        press(Qt::Key_Return);
+        pump(100);
+        const Color mixed = window.theme().background; // the colour being mixed
+        const QRectF strip = window.mixerPreviewRect();
+        expect("the mixer's preview strip is inside the panel",
+               window.mixerPanelRect().contains(strip));
+
+        const QImage painted = window.grab().toImage();
+        const QColor want(mixed.r, mixed.g, mixed.b);
+        const auto step = [](const QColor& a, const QColor& b) {
+            return std::max({std::abs(a.red() - b.red()), std::abs(a.green() - b.green()),
+                             std::abs(a.blue() - b.blue())});
+        };
+        // The sentence is centred, so the strip's own ground is what sits at its
+        // left edge; the sentence is then whatever pixel stands furthest from it.
+        const QColor ground = painted.pixelColor(static_cast<int>(strip.left()) + 3,
+                                                 static_cast<int>(strip.center().y()));
+        QColor ink = ground;
+        int ink_step = 0;
+        for (int y = static_cast<int>(strip.top()); y < static_cast<int>(strip.bottom()); ++y) {
+            for (int x = static_cast<int>(strip.left()); x < static_cast<int>(strip.right()); ++x) {
+                const QColor got = painted.pixelColor(x, y);
+                if (step(got, ground) > ink_step) {
+                    ink_step = step(got, ground);
+                    ink = got;
+                }
+            }
+        }
+        expect("the quick brown fox is painted in the colour being mixed",
+               step(ink, want) <= 70);
+        expect("while the ground under it is not, so the sentence is the only thing wearing it",
+               step(ground, want) >= 100);
+
+        // The arrows edit the colour, as they do on every other row of this
+        // program; the cursor a typed number wants has moved to Shift+arrows.
+        press(Qt::Key_Left);
+        pump(60);
+        expect("Left takes the channel the mixer is standing on down one, live",
+               window.theme().background.r == mixed.r - 1);
+        press(Qt::Key_Right);
+        pump(60);
+        expect("and Right puts it back", window.theme().background.r == mixed.r);
+        const int digit_before = window.mixerDigit();
+        press(Qt::Key_Right, Qt::ShiftModifier);
+        pump(60);
+        expect("while Shift+Right moves the digit cursor instead of the colour",
+               window.mixerDigit() != digit_before &&
+                   window.theme().background.r == mixed.r);
+        press(Qt::Key_Left, Qt::ShiftModifier);
+        pump(60);
+        expect("and Shift+Left takes the cursor back", window.mixerDigit() == digit_before);
+        for (int i = 0; i < 6; ++i)
+            press(Qt::Key_Down); // down to the `hex` row
+        pump(80);
+        press(Qt::Key_Left);
+        pump(60);
+        expect("the hex row takes an arrow too, because typing is not the only way in",
+               window.theme().background.r == 0x6b);
+
+        // And the same two panels in a window smaller again.
+        window.resize(360, 240);
+        pump(150);
+        const QRectF panel = window.mixerPanelRect();
+        expect("the mixer fits a window much smaller than it wants to be",
+               room().contains(panel));
+        bool bars_inside = true;
+        for (int i = 0; i < kMixChannelCount; ++i) {
+            const QRectF bar = window.mixerBarRect(i);
+            if (bar.isEmpty() || !panel.contains(bar))
+                bars_inside = false;
+        }
+        expect("every bar is inside it", bars_inside);
+        expect("and so are its two words", panel.contains(window.mixerSavePoint()));
+        expect("with the last channel above them, not underneath",
+               window.mixerSavePoint().y() > window.mixerBottomRowRect().bottom());
+        expect("and its hint below the words rather than through them",
+               window.mixerPanelRect().bottom() > window.mixerSavePoint().y());
+
+        press(Qt::Key_Escape); // out of the mixer
+        pump(60);
+        expect("leaving the mixer puts the colour back where it was",
+               window.theme().background.r == mixed.r);
+        press(Qt::Key_Escape); // out of the list
+        pump(60);
+        press(Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
+        pump(150);
+        expect("the settings menu fits the same small window",
+               room().contains(window.settingsPanelRect()));
+        expect("and so does the row it is standing on",
+               room().contains(window.settingsRowRect(0)));
+        expect("with its two words under its last row, not over it",
+               window.settingsSavePoint().y() > window.settingsBottomRowRect().bottom());
+        press(Qt::Key_Escape);
+        pump(80);
+
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        std::remove(cfg.c_str());
+        std::remove(theme.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    }
+
+
+    {
         // The menu and the listing used to disagree. `session list` showed the shells a
         // window had left behind; Ctrl+Shift+A offered only the ones somebody had saved.
         // The one you were hunting for was the one the menu could not see, which is the

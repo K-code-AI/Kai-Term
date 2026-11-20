@@ -36,9 +36,16 @@ colour the config left unnamed stays the session's to set, and the built-in pale
 beneath both. And all twenty-one can be chosen inside the window itself —
 **Ctrl+Shift+P** opens the picker over the grid, previews on the window as you type,
 and writes the changed lines back to `theme.conf`. **Enter on a colour opens the mixer** —
-the colour across the panel with text on it, six bars (red, green, blue, hue, saturation,
+the sample sentence painted in the colour you are mixing (the only thing on that menu
+wearing it), six bars (red, green, blue, hue, saturation,
 lightness) you can push or click, and the hex digits for when you already know what you
 want; the window changes while you push, and the list's `save` is what writes the file.
+Left and right change the value on every row of the mixer and the settings menu, the `hex`
+row included — the pair under the cursor steps by one — and `Shift+Left`/`Shift+Right` move
+that cursor when a typed number wants one; the colour list is the one panel where the plain
+arrows still choose between six digits. Each panel takes a smaller drawing font until it
+fits the window it is opened in, so a small window gets a whole menu rather than one painted
+off its edges; the terminal's own font is never part of that.
 Saving is the word at the bottom of every one of these panels, reached by walking: Enter
 opens what it is standing on and answers a word when it is on one, and Esc cancels from
 anywhere. It is colours and nothing else; how

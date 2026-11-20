@@ -522,8 +522,10 @@ picker is colours and nothing else — how solid the window is belongs to the se
 next to the font. Saving colours never resizes the window: the grid and font you have now
 are the ones you keep.
 
-**Enter on a colour opens the mixer** for it: the colour across the top of the window with
-text sitting on it in the ink you actually read, six bars you can push — red, green, blue,
+**Enter on a colour opens the mixer** for it: the sample sentence across the top of the
+window painted in the colour you are mixing — the only thing on that menu wearing it, so
+what you are looking at is the colour read *through*, not a wall of it — six bars you can
+push — red, green, blue,
 and the hue, saturation and lightness the same colour is on the wheel — and the six hex
 digits, still typeable when you already know what you want. Each bar is painted as what
 pushing it *does*: its left end is that channel at zero and its right end at full, so the
@@ -536,13 +538,22 @@ one changes the window while the button is down, because a preview you have to a
 before you can judge is not a preview. Enter hands the colour back into the row it came
 from; Esc leaves it as it was; the list's `save` is what writes the file.
 
-In the settings menu, the left and right arrows change the value — the row is already
-chosen and the question is what it should say. The colour menu is the one place they mean
-something else: six hex digits to choose between.
+In the settings menu and the mixer, the left and right arrows change the value — the row is
+already chosen and the question is what it should say. In the mixer that includes the `hex`
+row, where the pair of digits the cursor is on steps by one. The colour menu is the one
+place they mean something else: six hex digits to choose between. Where a typed number does
+want a cursor, `Shift+Left` and `Shift+Right` move it.
 
 One thing is lit at a time. The highlight sits on the row the keys are standing on and
 nowhere else, so walking down to `save` takes it off the last row instead of leaving two
 answers on the panel.
+
+A menu is laid out from its own content — a title, a table, a line of keys along the bottom
+— and none of that content knows how big the window is. So a panel takes a smaller drawing
+font until it fits the window it is in, down to a size below which words stop being words,
+and everything in it is measured in that font. The terminal's own font is never part of
+that: the window got smaller, not your type. A short list still scrolls, and the hint line
+at the bottom gives up its middle before it gives up its place.
 
 The panels paint themselves at full strength whatever the transparency settings say.
 Transparency is a decision about the terminal — how much of the desktop shows through the

@@ -281,3 +281,11 @@ target_link_libraries(kai-term-grabview PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core 
 if(UTIL_LIBRARY)
     target_link_libraries(kai-term-grabview PRIVATE ${UTIL_LIBRARY})
 endif()
+
+# The same idea pointed at the three panels: each one photographed in a window narrower
+# and shorter than it wants to be, which is the size where a menu starts losing parts.
+add_executable(kai-term-panelview tests/tools/panelview.cpp src/terminal/vtparser.cpp)
+target_link_libraries(kai-term-panelview PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core Threads::Threads)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-panelview PRIVATE ${UTIL_LIBRARY})
+endif()

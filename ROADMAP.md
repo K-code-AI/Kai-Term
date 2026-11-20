@@ -376,11 +376,20 @@ Needed:
   (`scrollback`, `padding`, `cursor_style`), the scrollback one honoured in the daemon
   as well as the window because that is where the history a snapshot reads from lives.
 - **The colour mixer, built 2026-11-20** (Enter on a colour row). Six bars — red, green,
-  blue, hue, saturation, lightness — a preview the width of the panel with real text on
-  it, and the six hex digits for when you already know. `src/config/colormixer.hpp` is
+  blue, hue, saturation, lightness — the sample sentence painted in the colour being mixed,
+  and the six hex digits for when you already know. Left and right change the value on
+  every row, the hex row included; `Shift+Left`/`Shift+Right` move the digit cursor.
+  `src/config/colormixer.hpp` is
   Qt-free and keeps the wheel in tenths so the bars and the wheel stay one colour
   (`rgb → hsl → rgb` is exact for every colour); the app-window test drives a bar with the
   pointer and reads the mixed colour off the disk afterwards.
+- **A menu fits the window it is in, built 2026-11-20.** A panel is measured in cells from
+  its own content and knew nothing about the window's size, so a small window got a panel
+  painted off both its edges, its hint under its rows and its two words on top of them.
+  `panelFont()` gives a panel a smaller drawing font until it fits — the terminal's own
+  font is never touched — and the buttons stopped sizing themselves from the window's font,
+  which is what had them landing on the last row. `tests/tools/panelview.cpp` photographs
+  all three panels at four window sizes, because this machine has no screen to look at.
 - **A window holds its theme, a session does not, closed 2026-11-20.** An attached window
   used to apply its theme only to its chrome and leave the screen's ink and ground to
   whatever the snapshot re-sent, so every colour the theme file had not *named* came back
