@@ -542,6 +542,119 @@ int main(int argc, char** argv) {
     }
 
     {
+        // A colour in the config is a LOCK, and a lock outranks the session — the
+        // thing Kaida reported: the theme washed back to defaults "when starting
+        // fresh, when starting a new session, and even when attaching an old
+        // session that was previously themed," because fish and prompt tools write
+        // OSC 10/11 at startup and a session's snapshot carries its own colours.
+        // The config now wins over both, and a session that wrote a colour the
+        // config never named is still heard.
+        const std::string cfg = root + "/authoritative";
+        {
+            std::ofstream out(cfg);
+            out << "background = #022223\nforeground = #00f0a0\ncolor1 = #af0f0f\n";
+        }
+        ::setenv("KAI_TERM_CONFIG", cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
+
+        // One window, whose shell paints its OWN background magenta and re-colours
+        // red green — the session's real colours, deliberately different from the
+        // theme so the checks below cannot pass by accident.
+        kai::AppWindow authoring(kai::startWindowBackend(24, 80));
+        authoring.show();
+        static_cast<void>(waitFor([&authoring] { return !authoring.sessionName().empty(); }));
+        const std::string shared = authoring.sessionName();
+        runLine(&authoring,
+                "printf '\\033]11;rgb:ff/00/ff\\007\\033]4;1;rgb:00/ff/00\\007'; sleep 40");
+        pump(500);
+
+        // The window that ran those bytes still wears the theme: the lock held.
+        expect("the config background survives the shell writing OSC 11",
+               authoring.screen().defaultBackground().r == 0x02 &&
+                   authoring.screen().defaultBackground().g == 0x22 &&
+                   authoring.screen().defaultBackground().b == 0x23);
+        expect("and the config palette survives the shell writing OSC 4",
+               authoring.screen().paletteColor(1).r == 0xAF &&
+                   authoring.screen().paletteColor(1).g == 0x0F &&
+                   authoring.screen().paletteColor(1).b == 0x0F);
+
+        // Control: the session really is magenta underneath. Read its snapshot into a
+        // plain, unlocked screen — exactly what an attaching window would show without
+        // the lock — so the checks above are known to be about the lock and not about
+        // a shell that never wrote anything.
+        const bool session_is_magenta = [&shared] {
+            DaemonClient client;
+            std::string err;
+            if (!client.connect(err))
+                return false;
+            if (!client.request({{"command", "attach"},
+                                 {"name", shared},
+                                 {"rows", "24"},
+                                 {"cols", "80"}}))
+                return false;
+            Frame welcome;
+            if (!client.nextFrame(welcome, err))
+                return false;
+            Frame snapshot;
+            std::string raw;
+            if (client.nextFrame(snapshot, err) &&
+                (snapshot.kind == MsgKind::Snapshot || snapshot.kind == MsgKind::Data))
+                raw = snapshot.body;
+            client.close();
+            Screen plain(24, 80); // no lock: this is the session's own colour
+            plain.feed(raw);
+            const Color bg = plain.defaultBackground();
+            return bg.r == 0xFF && bg.g == 0x00 && bg.b == 0xFF;
+        }();
+        expect("the session really did paint itself magenta (so the lock is what hides it)",
+               session_is_magenta);
+
+        // Attaching a second window to that same session shows the theme, not the
+        // session's magenta — Kaida's "attaching an old session" case.
+        kai::AppWindow attaching(shared);
+        attaching.show();
+        pump(300);
+        expect("an attached window wears the config theme, not the session's colours",
+               attaching.screen().defaultBackground().r == 0x02 &&
+                   attaching.screen().defaultBackground().g == 0x22 &&
+                   attaching.screen().defaultBackground().b == 0x23);
+        expect("and the config palette there too",
+               attaching.screen().paletteColor(1).r == 0xAF &&
+                   attaching.screen().paletteColor(1).b == 0x0F);
+
+        attaching.discardOnClose();
+        attaching.shutdown();
+        authoring.discardOnClose();
+        authoring.shutdown();
+        pump(200);
+        std::remove(cfg.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    }
+
+    {
+        // A colour the config did NOT name is still the session's to set — the lock
+        // is only over what the person actually chose, so a program that legitimately
+        // recolours is not silenced. With an empty config, the shell's own OSC 11
+        // moves the background, exactly as it always did.
+        const std::string empty = root + "/empty-config";
+        std::ofstream(empty) << "# nothing here\n";
+        ::setenv("KAI_TERM_CONFIG", empty.c_str(), 1);
+        kai::AppWindow unlocked(kai::startWindowBackend(24, 80));
+        unlocked.show();
+        static_cast<void>(waitFor([&unlocked] { return !unlocked.sessionName().empty(); }));
+        runLine(&unlocked, "printf '\\033]11;rgb:1e/1e/1e\\007'; sleep 20");
+        pump(400);
+        expect("a colour the config left alone still follows the session",
+               unlocked.screen().defaultBackground().r == 0x1E &&
+                   unlocked.screen().defaultBackground().g == 0x1E);
+        unlocked.discardOnClose();
+        unlocked.shutdown();
+        pump(200);
+        std::remove(empty.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    }
+
+    {
         // The theme picker end to end, driven by keys through a real window:
         // Ctrl+Shift+P opens it over the grid, hex typed at it changes the
         // window as you go (the preview is the window), Enter writes the

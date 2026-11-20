@@ -161,6 +161,19 @@ inline std::string configRoot() {
     return "";
 }
 
+// `--config-dir DIR` names a directory to read BOTH files from, directly
+// (`DIR/kai-term.conf` and `DIR/theme.conf`). It is the escape hatch Kaida asked
+// for: the saved theme supersedes everything by default, and the one way to run
+// against a different set of settings is to point the terminal at another
+// directory when you launch it. Set once at startup by main.cpp, before anything
+// reads a config. An explicit KAI_TERM_CONFIG / KAI_TERM_THEME still wins for the
+// single file it names, so tests and one-off single-file overrides keep working.
+inline std::string& configDirOverride() {
+    static std::string dir;
+    return dir;
+}
+inline void setConfigDir(const std::string& dir) { configDirOverride() = dir; }
+
 // Two files, because two kinds of thing get set. `kai-term.conf` is how the
 // program behaves; `theme.conf` is how it looks. The split is not tidiness
 // for its own sake: it is what lets the theme picker save colours without
@@ -176,6 +189,8 @@ inline std::string configRoot() {
 inline std::string settingsFilePath() {
     if (const char* override_path = std::getenv("KAI_TERM_CONFIG"))
         return override_path;
+    if (!configDirOverride().empty())
+        return configDirOverride() + "/kai-term.conf";
     const std::string root = configRoot();
     return root.empty() ? "" : root + "/kai-term/kai-term.conf";
 }
@@ -187,6 +202,8 @@ inline std::string settingsFilePath() {
 inline std::string themeFilePath() {
     if (const char* override_path = std::getenv("KAI_TERM_THEME"))
         return override_path;
+    if (!configDirOverride().empty())
+        return configDirOverride() + "/theme.conf";
     const std::string root = configRoot();
     return root.empty() ? "" : root + "/kai-term/theme.conf";
 }

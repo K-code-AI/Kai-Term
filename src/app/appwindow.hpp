@@ -88,8 +88,11 @@ public:
           // this window is now responsible for it, and only a save from here keeps it.
           session_kept_(false) {
         bindKeybinds();
-        // The theme's chrome applies; its screen colours do not. The session's
-        // own colours are part of the state this window came to show.
+        // The person's own colours win here too. A window that attached to a
+        // running session still reads the config and locks whatever colours it
+        // names, so a previously-themed session comes back wearing the theme
+        // rather than the colours it happened to save (Kaida, 2026-11-19: the
+        // theme in the config "should supersede everything when existing").
         adoptConfig(false);
     }
 
@@ -115,6 +118,23 @@ public:
         for (std::size_t i = 0; i < theme.palette.size(); ++i)
             lift(theme.palette[i], config_.palette[i]);
         applyTheme(theme, owns_screen);
+        // A colour the person put in their config is now a LOCK in the screen: it
+        // outranks whatever the session paints (OSC 4/10/11) and survives a
+        // program's reset. This is the whole reason a saved theme used to wash out
+        // — fish and prompt tools write OSC 10/11 at startup, and a snapshot of a
+        // session carries its own colours — and it is why an attached window now
+        // wears the person's colours instead of the session's. Colours the config
+        // left unnamed are not locked and stay the session's to recolour.
+        const auto liftOpt = [](const std::optional<Rgb>& from) -> std::optional<Color> {
+            if (!from)
+                return std::nullopt;
+            return Color{static_cast<std::uint8_t>(from->r), static_cast<std::uint8_t>(from->g),
+                         static_cast<std::uint8_t>(from->b)};
+        };
+        std::array<std::optional<Color>, 16> palette_locks;
+        for (std::size_t i = 0; i < palette_locks.size(); ++i)
+            palette_locks[i] = liftOpt(config_.palette[i]);
+        setColourLocks(liftOpt(config_.foreground), liftOpt(config_.background), palette_locks);
         // The window's body, not just its colours: a config that says
         // `font_size = 14` means the cells are 14 pixels tall now, and a
         // config that says `cols = 100` means the opening window is as wide
@@ -526,15 +546,15 @@ private:
     // Ctrl+Shift+P: choose the colours inside the terminal, with the terminal
     // itself as the preview, and write what you chose back to the config file.
     //
-    // The picker opens on the colours this window wears now, so what you see
-    // is a starting point and not a lie. The widget hands back only the
-    // colours that actually moved, so a save rewrites those lines and leaves
-    // the rest of somebody's file — comments, alignment, settings the picker
-    // has never heard of — exactly as they were. On a window attached to a
-    // running session the file still gets the new colours, because they are
-    // the person's own settings for the next window; the live preview there
-    // moves only the window's chrome, since a session's screen colours are the
-    // session's business and not this picker's to correct.
+    // The picker opens on the colours this window wears now, so what you see is
+    // a starting point and not a lie. The widget hands back only the colours
+    // that actually moved, so a save rewrites those lines and leaves the rest of
+    // somebody's file — comments, alignment, settings the picker has never heard
+    // of — exactly as they were. The preview is authoritative while you edit: it
+    // moves the same colour LOCK a config file sets, so a colour you are choosing
+    // is shown over the session rather than washed out by it, whether this window
+    // owns its screen or attached to one. After a save the config is re-read, so
+    // the locked set becomes exactly the colours the file now names.
     void showThemePicker() {
         const Theme current = theme();
         const std::vector<ThemeField> fields = fieldsForTheme(current);
@@ -546,9 +566,13 @@ private:
                 updates.emplace_back(field.key, colourText(field.value));
             std::string error;
             if (saveConfigValues(config_.theme_path, updates, error,
-                                 "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n"))
+                                 "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n")) {
                 setStatusText("colours saved to " + config_.theme_path, 6000);
-            else
+                // Re-read so the locks match the file that is now on disk: the
+                // colours just written become locked, and any colour the preview
+                // had locked but not saved goes back to the session's authority.
+                adoptConfig(ownsScreen());
+            } else
                 setStatusText("could not save colours: " + error, 8000);
         });
     }

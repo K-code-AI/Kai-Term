@@ -13,11 +13,14 @@
 static void print_help()
 {
     std::cout << "Kai-Term " << KAI_TERM_VERSION << "\n"
-              << "Usage: kai-term                                    a window\n"
+              << "Usage: kai-term [--config-dir DIR]        a window\n"
               << "       kai-term list | new [NAME] | attach ID [--window]\n"
               << "                | detach | save [ID] [NAME] | send ID TEXT [--enter]\n"
               << "                | kill ID | start | shutdown | serve\n"
               << "A native terminal emulator and PTY-backed shell.\n"
+              << "Settings are read from ~/.config/kai-term/ (kai-term.conf and\n"
+              << "theme.conf) and win over a session's own colours; --config-dir DIR\n"
+              << "reads both files from DIR instead.\n"
               << "Inside a window, Ctrl+Shift+S keeps this shell and starts a fresh one;\n"
               << "Ctrl+Shift+A brings back one that was kept. From any terminal,\n"
               << "`kai-term list` shows the shells a daemon is keeping and\n"
@@ -40,6 +43,22 @@ static bool is_session_verb(std::string_view word)
 
 int main(int argc, char **argv)
 {
+    // `--config-dir DIR` is taken out of argv here, before anything reads a
+    // config and before Qt sees the arguments (Qt would reject an option it does
+    // not know). It points the terminal at a different directory for BOTH config
+    // files — the escape hatch for running with a second set of settings — and
+    // because it is stripped first, the saved theme in the default directory
+    // supersedes everything by default with no flag at all.
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string_view(argv[i]) == "--config-dir") {
+            kai::setConfigDir(argv[i + 1]);
+            for (int j = i + 1; j + 1 < argc; ++j)
+                argv[j] = argv[j + 1];
+            --argc;
+            break; // one directory per launch
+        }
+    }
+
     std::string_view first;
     if (argc > 1)
         first = argv[1];

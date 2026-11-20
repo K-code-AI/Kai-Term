@@ -333,6 +333,36 @@ int main() {
            settingsFilePath() == "/home/somebody/.config/kai-term/kai-term.conf" &&
                themeFilePath() == "/home/somebody/.config/kai-term/theme.conf");
 
+    // `--config-dir DIR` reads BOTH files from DIR directly — the escape hatch for
+    // running against a second set of settings. It loses to an explicit per-file
+    // override (so tests and one-off single-file overrides keep working) and beats
+    // the default directory.
+    {
+        const std::string alt = dir;
+        writeFile(alt + "/kai-term.conf", "background = #102030\n");
+        writeFile(alt + "/theme.conf", "color5 = #0a0b0c\n");
+        ::unsetenv("KAI_TERM_CONFIG");
+        ::unsetenv("KAI_TERM_THEME");
+        setConfigDir(alt);
+        expect("--config-dir sends the settings file into DIR",
+               settingsFilePath() == alt + "/kai-term.conf");
+        expect("and the theme file into that same DIR",
+               themeFilePath() == alt + "/theme.conf");
+        const Config via_dir = loadConfig();
+        expect("and the file in DIR is the one actually read",
+               isColour(via_dir.background, 0x10, 0x20, 0x30) &&
+                   isColour(via_dir.palette[5], 0x0A, 0x0B, 0x0C));
+        ::setenv("KAI_TERM_CONFIG", path.c_str(), 1);
+        expect("but KAI_TERM_CONFIG still wins for the single file it names",
+               settingsFilePath() == path && themeFilePath() == alt + "/theme.conf");
+        ::unsetenv("KAI_TERM_CONFIG");
+        setConfigDir(""); // back to the usual place
+        expect("and clearing it returns to the default directory",
+               themeFilePath().find("/kai-term/theme.conf") != std::string::npos);
+        std::remove((alt + "/kai-term.conf").c_str());
+        std::remove((alt + "/theme.conf").c_str());
+    }
+
     std::remove(path.c_str());
     std::remove(kept.c_str());
     std::remove(fresh.c_str());

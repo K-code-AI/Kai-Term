@@ -449,7 +449,9 @@ Two files, because two kinds of thing get set:
 
 Both live under `$XDG_CONFIG_HOME` when it is set, else `~/.config`; `KAI_TERM_CONFIG`
 and `KAI_TERM_THEME` point either one at a different file, which is how a test gets a
-config without touching anybody's home directory. Both files are plain `key = value` —
+config without touching anybody's home directory. To run the whole program against a
+different set of settings, launch it with `--config-dir DIR` and both files are read from
+`DIR` directly. Both files are plain `key = value` —
 the shape Old-Term's config has always had — with `#` comments, one setting per line,
 and whitespace around the `=` free. A setting nobody recognizes is not skipped in
 silence: startup says which line of which file said what, and carries on with the rest.
@@ -482,10 +484,12 @@ the file — `KAI_CONFIRM_QUIT=never ./kai-term` is the setting you are holding 
 hand right now, and a decision you made months ago should not outrank it.
 
 A theme colours the screen a window *starts*: cells already on screen keep the colours
-they were written with, exactly like an escape-sequence recolour, and a window attached
-to a running session leaves that session's own colours standing — it came to show them,
-not to correct them. The palette rule matches: an OSC 4 that the session set itself
-always outranks the theme; the theme colours the entries the session never touched.
+they were written with, exactly like an escape-sequence recolour. **A colour you put in
+your config wins over the session** — it holds when the shell writes its own background at
+startup (`OSC 10/11`), and it holds on a window attached to a running session, so an old
+session comes back wearing your theme rather than the colours it happened to save. A
+colour you did *not* name stays the session's to recolour, so a program that legitimately
+changes a colour is still heard, and the built-in palette answers beneath both.
 
 Everything in `theme.conf` — all twenty-one colours — is also editable from inside the
 window with **Ctrl+Shift+P**, which writes back only the lines that actually changed and

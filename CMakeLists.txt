@@ -79,6 +79,14 @@ add_executable(kai-term-selection
     src/terminal/vtparser.cpp
 )
 
+# Who wins a colour — the person's config file or the session's own bytes. The
+# lock authority lives in the model, so it is tested there, with no Qt.
+add_executable(kai-term-colour-authority
+    tests/colour_authority.cpp
+    src/terminal/vtparser.cpp
+)
+add_test(NAME colour-authority COMMAND kai-term-colour-authority)
+
 # Offscreen widget exercise: real widget, real shell, no display server.
 add_executable(kai-term-widget-smoke
     tests/widget_smoke.cpp
@@ -233,6 +241,7 @@ set(KAI_TEST_TARGETS
     kai-term-scrollback
     kai-term-mouse
     kai-term-selection
+    kai-term-colour-authority
     kai-term-widget-smoke
     kai-term-scrollbar
     kai-term-process

@@ -254,8 +254,15 @@ public:
         cell_px_h_ = std::max(1, height);
     }
 
-    Color defaultForeground() const { return default_fg_; }
-    Color defaultBackground() const { return default_bg_; }
+    // A colour the person put in their own config file is a LOCK, and a lock is
+    // the top authority: it outranks what a session paints (OSC 10/11, OSC 4) and
+    // the built-in table, and it survives a program's full reset. The reason is
+    // concrete — fish, starship and prompt tools write OSC 10/11 at startup, so a
+    // theme applied first would be washed back to defaults by the shell's own
+    // opening bytes. A colour the person did NOT name stays unlocked and behaves
+    // the old way, so a program that legitimately recolours is still heard.
+    Color defaultForeground() const { return locked_fg_ ? *locked_fg_ : default_fg_; }
+    Color defaultBackground() const { return locked_bg_ ? *locked_bg_ : default_bg_; }
     // The colours a blank screen and unstyled text wear. Set from the config
     // file before the first byte arrives, which is why no existing cell
     // changes: a cell stores what it looked like when it was written, and a
@@ -265,6 +272,38 @@ public:
         default_fg_ = fg;
         default_bg_ = bg;
     }
+    // Name the colours that came from the config file, so nothing a session
+    // writes can move them. A field left as nullopt is not locked and stays
+    // under the session's authority.
+    void lockDefaults(const std::optional<Color>& fg, const std::optional<Color>& bg) {
+        locked_fg_ = fg;
+        locked_bg_ = bg;
+    }
+    void lockPalette(const std::array<std::optional<Color>, 16>& locks) {
+        locked_palette_ = locks;
+    }
+    // Give the whole lock set back to the session. Used when a config names no
+    // colours at all, so an attached window shows exactly what it attached to.
+    void clearColourLocks() {
+        locked_fg_.reset();
+        locked_bg_.reset();
+        for (auto& slot : locked_palette_)
+            slot.reset();
+    }
+
+    // The whole lock set as one value, so a caller (the picker preview) can put
+    // the current locks aside and hand them back unchanged when it is done.
+    struct ColourLocks {
+        std::optional<Color> foreground;
+        std::optional<Color> background;
+        std::array<std::optional<Color>, 16> palette{};
+    };
+    ColourLocks colourLocks() const { return ColourLocks{locked_fg_, locked_bg_, locked_palette_}; }
+    void setColourLocks(const ColourLocks& locks) {
+        locked_fg_ = locks.foreground;
+        locked_bg_ = locks.background;
+        locked_palette_ = locks.palette;
+    }
     // Whether an OSC 4 has changed this entry from the built-in palette. A session
     // being attached to has to hand its recolours over, or a theme that repaints the
     // palette arrives at the new window as the defaults.
@@ -273,6 +312,8 @@ public:
     }
 
     Color paletteColor(int index) const {
+        if (index >= 0 && index < 16 && locked_palette_[static_cast<std::size_t>(index)])
+            return *locked_palette_[static_cast<std::size_t>(index)];
         if (index >= 0 && index < 256 && palette_custom_[static_cast<std::size_t>(index)])
             return palette_custom_color_[static_cast<std::size_t>(index)];
         if (index >= 0 && index < 16)
@@ -281,13 +322,14 @@ public:
     }
 
     // The sixteen ANSI colours as this window's theme knows them. Three
-    // authorities answer for one colour here, in order: an OSC 4 the session
-    // itself set always wins, because the session wrote it and it is part of
-    // the state a window came to show; a colour the session never touched
-    // belongs to the window showing it, and that is what the theme's palette
-    // supplies; and the built-in table below answers for both. Like every
-    // other colour rule here, this one decides the next characters written —
-    // cells already on the grid keep what they were written with.
+    // authorities answer for one colour here, in order: a colour the person
+    // named in their config file is a LOCK and wins, because their saved theme
+    // should supersede a session's own colours (they chose it, the program did
+    // not); below it an OSC 4 the session wrote is heard for any colour the
+    // person left alone, because that is part of the state a window came to
+    // show; and the built-in table answers for both. Like every other colour
+    // rule here, this one decides the next characters written — cells already on
+    // the grid keep what they were written with.
     void setThemePalette(const std::array<Color, 16>& colours) { theme_palette_ = colours; }
 
     // The built-in sixteen, the single source of truth: a theme palette
@@ -698,6 +740,11 @@ private:
     std::array<Color, 16> theme_palette_ = basePalette();
     Color default_fg_{220, 220, 220};
     Color default_bg_{30, 30, 30};
+    // Colours named in the config file, which outrank every session's own bytes.
+    // See `lockDefaults()` and `lockPalette()`.
+    std::optional<Color> locked_fg_;
+    std::optional<Color> locked_bg_;
+    std::array<std::optional<Color>, 16> locked_palette_{};
     int cell_px_w_ = 8;
     int cell_px_h_ = 16;
     // xterm keeps ten; more is a program that forgot to pop, and the oldest

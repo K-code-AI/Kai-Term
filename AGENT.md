@@ -7,16 +7,22 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
 ## Current Status
 
 - Build: `cmake --build build -- -j4` succeeds.
-- Tests: all 25 `build/tests/kai-term-*` binaries pass after the changes below (two clean
-  back-to-back runs on an idle machine).
+- Tests: all 26 `build/tests/kai-term-*` binaries pass after the changes below (two clean
+  back-to-back runs on an idle machine, run under a fork cap and a watchdog — see Next
+  Steps on the daemon fork-storm).
 - Everything through the 2026-11-19 documentation audit is committed and pushed to
-  `origin/main`. The 2026-11-19 config split, colour picker, body settings and the
-  full-screen resize-loop fix are done here and committed at the end of this session.
+  `origin/main`. The 2026-11-19 config split, colour picker, body settings, the
+  full-screen resize-loop fix, and the config-wins colour authority are done here and
+  committed at the end of this session.
 - Verified: a view built around a session now takes the session's screen before it is shown, so the black window is gone without a keypress.
 - Verified: snapshots carry scrollback history, including the primary screen and history behind an alternate-screen program.
 - Verified: a full-screen program (btop, tmux) no longer hangs when there is scrollback to
   scroll back to — the resize loop that reflowed the whole history on every frame is broken
   by feeding a restored screen to the model in one piece (`tests/snapshot_resize.cpp`).
+- Verified: a colour named in the config now wins over the session on every window — fresh,
+  new, and attached — so fish's startup `OSC 10/11` and a session's own colours no longer
+  wash the theme back to defaults (`tests/colour_authority.cpp`, and the attach +
+  OSC-override cases in `tests/app_window.cpp`).
 - Not verified: visual inspection on a live Wayland/X11 session; this machine has no X server.
 
 ## Current Task
@@ -30,10 +36,21 @@ resize loop and fixed. The picker's cursor sat one glyph left of the digit it ed
 `'a'+v` instead of `'a'+(v-10)`, so a saved colour with a letter in it came back unreadable
 — both fixed, with tests that use letters, not just digits.
 
+The latest piece (Kaida, 2026-11-19, after the above): a saved theme was being washed back
+to defaults on a fresh window, a new session, and an attached old session, because fish and
+prompt tools write `OSC 10/11` at startup and a session's snapshot carries its own colours.
+Now **a colour named in the config is a lock in the `Screen`** that outranks `OSC 4/10/11`
+and holds on every window including an attached one; a colour the config left unnamed stays
+the session's to recolour. The picker preview moves that lock too (so it stays live and
+beat the session), and re-reads the config after a save so the locked set matches the file.
+`--config-dir DIR` was added as the one way to run against a different set of settings.
+
 A separate, unfixed finding is recorded under Next Steps: a fork-exec loop of session
-daemons was observed while stress-testing with throwaway probes that shared one hardcoded
-private runtime directory; it did not reproduce under the test suite or normal use, but the
-daemon's stale-socket start path is worth hardening.
+daemons was observed again on 2026-11-19, this time while running the test suite repeatedly
+(not only throwaway probes), and it reached ~577 `kai-term serve` processes at load 47 before
+being frozen and killed. It does not happen in normal single-window use, but it is reachable
+and dangerous, and the suite is now run under a fork cap and a watchdog until the daemon's
+stale-socket start path is hardened so a daemon can never start another daemon.
 
 ## Progress Journal
 
@@ -203,6 +220,36 @@ daemon's stale-socket start path is worth hardening.
   cleared by freezing and killing the group; but tests can leave a daemon running on the
   default runtime dir, and the daemon's stale-socket start path (`ensureDaemon` →
   `startDaemon`) is the thing to harden. Recorded under Next Steps.
+- 2026-11-19: **a saved theme was being washed back to defaults.** Kaida reported the
+  config colours not applying "when starting fresh, when starting a new session, and even
+  when attaching an old session that was previously themed." The config was being read all
+  along — an isolated probe proved it — but the theme was applied *first* and then washed
+  out: fish, starship and prompt tools write `OSC 10/11` at startup, a session's snapshot
+  carries its own colours, and the attach path (`adoptConfig(false)`) deliberately skipped
+  screen colours. The fix makes **a colour the config named a LOCK in the `Screen`**
+  (`lockDefaults`, `lockPalette`, `colourLocks`/`setColourLocks`) that outranks `OSC 4/10/11`
+  and the built-ins on every window including an attached one; a colour the config left
+  unnamed stays unlocked so a program that legitimately recolours is still heard. The
+  palette authority is now config-lock > session `OSC 4` > theme > built-in.
+  `tests/colour_authority.cpp` checks the rule headless; `tests/app_window.cpp` checks a
+  session painting itself magenta over a locked theme (with a control that reads the raw
+  snapshot to prove the session really did change) and that an attached window wears the
+  theme; and an empty-config case checks an unnamed colour still follows the session.
+- 2026-11-19: the picker preview had to move the lock too. Locking the config colours made
+  `applyTheme`'s `setDefaults` a no-op against a locked field, which would have frozen the
+  preview on the saved value; `previewPicker` now locks the whole previewed theme and hands
+  the saved lock set back untouched on a cancel, and a save re-reads the config so the
+  locked set becomes exactly the colours the file now names.
+- 2026-11-19: `--config-dir DIR` added to `main.cpp` (stripped before Qt sees argv) and to
+  `config.hpp` (`setConfigDir`/`configDirOverride`, consulted by both file paths after the
+  per-file env override). It is the escape hatch Kaida asked for: the saved theme supersedes
+  everything by default, and pointing at another directory is the one way to override that.
+- 2026-11-19: the daemon fork-storm recurred — ~577 `kai-term serve` at load 47 — this time
+  while running the test suite repeatedly, not only throwaway probes. Cleared by freezing
+  (a frozen process cannot fork) then killing; the `comm` of a `serve` is `exe` because it
+  execs `/proc/self/exe`, so `pkill -x exe` is the fast, correct target. The suite is now
+  run under `ulimit -u` plus a watchdog; hardening the daemon so it can never start another
+  daemon is now a required Next Step, not a maybe.
 
 - 2026-11-18: `src/process/pty.hpp` gained a `cwd` argument and calls `chdir(cwd)` in the child before `execl`, so a shell starts in the requested directory without a typed `cd` command.
 - 2026-11-18: `src/session/daemon.hpp` passes `spec.cwd` to `Pty` instead of writing `cd ...` into the shell.
@@ -219,12 +266,22 @@ daemon's stale-socket start path is worth hardening.
   real one means the view keeps a Screen model and repaints it a row down, the way the
   Qt widget does. That is a renderer for the CLI, a milestone of its own, and the
   tmux_e2e test is proof of how much care terminal repainting wants; do not fake it.
-- **Harden the daemon's start path against a stale socket.** A fork-exec storm of
-  `kai-term serve` was seen under throwaway probes that shared one runtime directory; the
-  `ensureDaemon` → `startDaemon` path should not be able to pile up daemons when the socket
-  is stale or a launch races itself, and a test that spawns a daemon should shut it down so
-  runs do not accumulate them on the default runtime dir. Not reproduced under the suite or
-  normal use, so this is hardening, not a proven live defect.
+- **Harden the daemon's start path against a stale socket — now a required fix.** The
+  `kai-term serve` fork-exec storm recurred on 2026-11-19 while running the test suite
+  repeatedly (~577 daemons, load 47), so it is reachable, not theoretical. The concrete
+  invariant to enforce: **a process that is a daemon must never start another daemon** — set
+  an environment marker when `startDaemon` execs `serve` and have `ensureDaemon`/`startDaemon`
+  refuse when it is set, which caps the storm at one generation whatever makes a `serve` want
+  to connect. Also: `startDaemon` should not let a launch pile up when the socket is stale or
+  races itself, and a test that spawns a detached daemon should shut it down so runs do not
+  accumulate them. Until this lands, run the suite under a fork cap (`ulimit -u`) and a
+  watchdog; the storm is cleared with `pkill -STOP -x exe` then `pkill -9 -x exe` (a `serve`'s
+  `comm` is `exe` because it execs `/proc/self/exe`).
+- **Add a transparency (opacity) row to the theme picker** (Ctrl+Shift+P), which Kaida asked
+  for. `opacity` already works from the config file and is honoured at startup; it is not yet
+  a picker row because `ThemePicker` edits six-hex colours only. Adding it means a non-hex
+  field kind (a percentage), a different row painting and digit handling in the widget, and a
+  save that writes `opacity = 0.8`.
 - Visually verify the two dialogs on a live Wayland/X11 session: the question over a
   real build, and the session list with four or five sessions in it.
 - Visually verify the attached window and its coloured scrollback on a live Wayland/X11 session.
@@ -236,14 +293,15 @@ daemon's stale-socket start path is worth hardening.
 
 ## Project Files
 
-- `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow, and the palette authority stack (`paletteColor`, `setThemePalette`).
-- `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`), the theme picker, and the reader that hands a whole buffered run to the model at once.
-- `src/config/config.hpp` — the two key=value files (`kai-term.conf`, `theme.conf`): their path rules, colours, palette, body settings (font, size, opacity), complaints (no Qt).
+- `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow, and the colour authority stack: config lock > session `OSC 4/10/11` > theme > built-in (`paletteColor`, `setThemePalette`, `lockDefaults`, `lockPalette`).
+- `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`), the theme picker (which moves the colour lock on preview), and the reader that hands a whole buffered run to the model at once.
+- `src/config/config.hpp` — the two key=value files (`kai-term.conf`, `theme.conf`): their path rules incl. `--config-dir` (`setConfigDir`), colours, palette, body settings (font, size, opacity), complaints (no Qt).
 - `src/config/themepicker.hpp` — the picker's Qt-free state machine: rows, digit stepping, hex editing, and which fields changed.
 - `src/session/sessionbackend.hpp` — a window's view of a daemon-owned session.
 - `src/session/snapshot.hpp` — bytes that rebuild a screen and its history.
 - `src/session/daemon.hpp` — session daemon, PTY ownership, attach/resize/snapshot handling.
 - `tests/snapshot.cpp` — snapshot round-trip checks, now including history.
+- `tests/colour_authority.cpp` — the colour authority itself, headless: a config lock outranks `OSC 4/10/11` and survives the session handing its colours back (`OSC 104`); an unnamed colour still follows the session.
 - `tests/snapshot_resize.cpp` — a large alternate-screen snapshot applied through the reader must not resize the window or drop the program (the full-screen hang regression test).
 - `tests/attach_state.cpp` — attach-state checks, including hidden-window delivery.
 - Other source and test files remain as before.
@@ -275,3 +333,5 @@ daemon's stale-socket start path is worth hardening.
 - A session inside an alternate-screen program has two buffers. The snapshot carries both so the primary screen and its history survive when the program exits.
 - A restored screen must reach the model in one piece. A snapshot that leaves and re-enters the alternate screen is only safe if the window never sees the gap between the two, because the window gives a full-screen program the whole window and a transient primary buffer would make it resize — and a resize makes the daemon send another snapshot, which is a loop that reflows the whole scrollback every turn. The reader therefore hands the whole buffered run over as a single event. A local shell has nothing buffered between reads, so this is only about snapshots.
 - Behaviour and colours live in separate files — `kai-term.conf` and `theme.conf` — because they are edited for different reasons and the colour file is what the picker rewrites on every keystroke. The reader is lenient about which key is in which file and reads the theme last, so a person editing either by hand gets the answer they meant.
+- A colour the config names is a LOCK and is the top authority, above a session's own `OSC 4/10/11` and the built-ins, on every window including one attached to a running session. The person chose it; the program did not. A colour the config left unnamed is not locked and stays the session's to recolour, so a program that legitimately changes a colour is still heard. The lock lives in the `Screen`, not the widget, so the authority is one rule in the model, and it is deliberately untouched by a program's colour writes — only the config and the picker move it. (Kaida, 2026-11-19: "the theme saved in the user config should supersede everything when existing.")
+- The one way to run against a different set of settings is `--config-dir DIR`, read for both files from `DIR` directly. It beats the default directory but loses to an explicit `KAI_TERM_CONFIG`/`KAI_TERM_THEME` for the single file it names, so tests and one-off overrides keep working.

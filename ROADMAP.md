@@ -371,9 +371,18 @@ Needed:
   `applyTheme` a file goes through. Saving rewrites only the lines that moved, in
   place, through a temp file and a rename — comments, alignment, and settings it has
   never heard of survive byte for byte. The palette rows ride the authority rule that
-  already governs themes: an OSC 4 the session set outranks the window's palette, the
-  palette colours only what the session never touched, and cells keep what they were
-  written with.
+  already governs themes: a colour the config named is a lock above the session's
+  `OSC 4/10/11`, the palette colours the entries the config left unnamed, and cells keep
+  what they were written with.
+
+- **A saved theme supersedes the session, and `--config-dir` overrides the config** —
+  built 2026-11-19, at Kaida's report that the theme "goes back to default colour when
+  starting fresh, when starting a new session, and even when attaching an old session."
+  The config was read but washed out: fish and prompt tools write `OSC 10/11` at startup
+  and a session's snapshot carries its own colours. Now a colour the config names is a
+  lock in the `Screen` that outranks the session on every window including an attached
+  one, while an unnamed colour stays the session's to recolour. `--config-dir DIR` reads
+  both files from `DIR` — the one escape hatch for a different set of settings.
 
 ## M5 — File manager
 

@@ -265,18 +265,30 @@ call and not a rethink.
 
 The files reach the widget whole: `font_size`, `cols`, `rows` and `opacity` shape the
 window's body before the first frame, and the colours reach it as a `Theme` — the five
-window colours plus the sixteen ANSI palette entries — with the same authority rule an
-escape-sequence recolour follows: a theme decides the *next* screen, cells already
-written keep what they were written with, and a window attached to a running session
-takes the chrome but never the session's own colours — those crossed a process boundary
-to be here. The palette sits inside that rule the same way: an OSC 4 the session set
-outranks the theme palette, which colours only the entries the session never touched,
-and the built-in table answers beneath both.
+window colours plus the sixteen ANSI palette entries — deciding the *next* screen, so
+cells already written keep what they were written with, the same rule an escape-sequence
+recolour follows.
+
+**A colour the config file named is a lock, and a lock is the top authority.** It
+outranks everything a session writes — `OSC 10/11` for the defaults, `OSC 4` for a palette
+entry — and it holds on every window, including one attached to a running session. The
+reason is concrete: fish, starship and prompt tools write `OSC 10/11` at startup, and a
+session's snapshot carries its own colours, so a theme applied first was washed back to
+defaults the moment the shell's opening bytes arrived — which is exactly what Kaida
+reported ("it goes back to default colour when starting fresh… and even when attaching an
+old session"). The saved theme supersedes the session because the person chose it and the
+program did not. A colour the config left *unnamed* is not locked and stays the session's
+to recolour, so a program that legitimately changes a colour is still heard; the built-in
+table answers beneath both. The lock lives in the `Screen` (`lockDefaults`, `lockPalette`)
+rather than the widget so the authority is one rule in the model, and it is deliberately
+*not* touched by a program's colour writes — only by the config and the picker.
 
 Choosing the colours without a text editor is the picker (Ctrl+Shift+P): the state
 machine in `src/config/themepicker.hpp` has no Qt in it and is tested headless, the
 widget paints what the model says and routes the keys, and the preview is the window
-itself — every keystroke goes through the same `applyTheme` a file goes through. Saving
+itself — every keystroke goes through the same `applyTheme` a file goes through, and moves
+the same lock so a colour you are choosing is shown over the session rather than washed
+out by it. Saving
 writes back only the colours that actually moved, in place: a line being set keeps its
 alignment and its trailing comment, comments and settings the picker has never heard of
 are copied byte for byte, and the file is replaced through a temp file and a rename so

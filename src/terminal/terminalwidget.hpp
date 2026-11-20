@@ -135,6 +135,22 @@ public:
     }
     const Theme& theme() const { return theme_; }
 
+    // Name the colours the config file supplied, so they outrank the session.
+    // A field left as nullopt stays unlocked and the session may still set it.
+    // This is what makes a saved theme survive a shell that writes OSC 10/11 at
+    // startup, and what makes an attached window wear the person's colours
+    // rather than the session's.
+    void setColourLocks(const std::optional<Color>& foreground,
+                        const std::optional<Color>& background,
+                        const std::array<std::optional<Color>, 16>& palette) {
+        screen_.lockDefaults(foreground, background);
+        screen_.lockPalette(palette);
+        update();
+    }
+    // Whether this window may set the screen's own colours (it started the
+    // shell) or only its chrome (it attached). Read by the picker after a save.
+    bool ownsScreen() const { return owns_screen_; }
+
     // The font the config asked for, taken before the first frame. Cells are
     // squares of pixels, not wishes: the grid is worked out again from the
     // window's pixels afterwards, because a bigger font genuinely means
@@ -171,6 +187,7 @@ public:
             return; // a dialog and a picker do not stack; one is always the wrong one
         picker_ = std::make_unique<ThemePicker>(std::move(fields));
         picker_before_ = theme_;
+        picker_saved_locks_ = screen_.colourLocks(); // handed back untouched on a cancel
         picker_finish_ = std::move(finish);
         update();
     }
@@ -1460,7 +1477,21 @@ private:
     void previewPicker() {
         if (!picker_)
             return;
-        applyTheme(themeWithFields(picker_before_, picker_->fields()), owns_screen_);
+        const Theme preview = themeWithFields(picker_before_, picker_->fields());
+        applyTheme(preview, owns_screen_);
+        // The preview has to move the LOCK as well as the defaults. A colour the
+        // config locked would ignore `setDefaults` and the preview would be frozen
+        // on the saved value, so what you watched choosing would never change.
+        // Locking the whole previewed theme is the honest "this is what you would
+        // get"; a cancel hands the saved locks straight back, and a save lets the
+        // caller re-derive them from the file it just wrote, down to only the
+        // colours that were actually named.
+        std::array<std::optional<Color>, 16> palette;
+        for (std::size_t i = 0; i < palette.size(); ++i)
+            palette[i] = preview.palette[i];
+        screen_.lockDefaults(preview.foreground, preview.background);
+        screen_.lockPalette(palette);
+        update();
     }
 
     void finishPicker(bool saved) {
@@ -1473,8 +1504,10 @@ private:
         const std::vector<ThemeField> result = saved ? picker_->changes() : std::vector<ThemeField>{};
         const std::function<void(std::vector<ThemeField>, bool)> finish =
             std::move(picker_finish_);
-        if (!saved)
+        if (!saved) {
             applyTheme(picker_before_, owns_screen_); // the preview was a maybe
+            screen_.setColourLocks(picker_saved_locks_); // and so were the locks
+        }
         picker_.reset();
         picker_finish_ = nullptr;
         update();
@@ -1913,6 +1946,7 @@ private:
     // window is entitled to.
     std::unique_ptr<ThemePicker> picker_;
     Theme picker_before_;
+    Screen::ColourLocks picker_saved_locks_; // the config's locks, restored on a cancel
     std::function<void(std::vector<ThemeField>, bool saved)> picker_finish_;
     bool owns_screen_ = true;
     bool closing_on_close_ = false;
