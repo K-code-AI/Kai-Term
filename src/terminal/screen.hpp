@@ -37,12 +37,30 @@ struct Attr {
     bool overline = false;
 };
 
+// A colour asked for by palette index says which index here, for as long as the
+// cell lives. `kRgbColour` means the cell wears an exact colour — a truecolour a
+// program chose, or the screen's own default — and nothing downstream is
+// entitled to reinterpret it.
+//
+// The colour itself is kept as RGB, because that is what painting needs; the
+// role is kept beside it because RGB alone cannot say which of the two a colour
+// was, and the difference matters the moment a cell crosses a boundary. A
+// session's screen and the window looking at it may hold different colours for
+// the same index — the window's config file locks some of them — and a snapshot
+// that sends the RGB it resolved has quietly decided the argument in favour of
+// the session. Sending the index lets each view answer for itself, which is what
+// a person means when they say their theme should win.
+inline constexpr std::uint8_t kRgbColour = 0xFF;
+
 struct Cell {
     std::string text;
     int width = 0;
     Color fg{220, 220, 220};
     Color bg{30, 30, 30};
     Attr attr{};
+    // 0..15 for a palette entry, `kRgbColour` for an exact colour.
+    std::uint8_t fg_role = kRgbColour;
+    std::uint8_t bg_role = kRgbColour;
 };
 
 inline bool operator==(const Color& a, const Color& b) {
@@ -269,15 +287,34 @@ public:
     // person changing their theme is deciding what the next screen looks like,
     // not asking for archaeology on the old one.
     void setDefaults(const Color& fg, const Color& bg) {
+        const Color old_fg = defaultForeground();
+        const Color old_bg = defaultBackground();
         default_fg_ = fg;
         default_bg_ = bg;
+        // Text still sitting on the default follows it to wherever it moved — the
+        // snapshot's OSC 10/11 lands here, and the lock has to be what the current
+        // colour resolves to, not the raw default the session just wrote. Text an
+        // application put an explicit colour on is left alone.
+        if (current_fg_ == old_fg)
+            current_fg_ = defaultForeground();
+        if (current_bg_ == old_bg)
+            current_bg_ = defaultBackground();
     }
     // Name the colours that came from the config file, so nothing a session
     // writes can move them. A field left as nullopt is not locked and stays
     // under the session's authority.
     void lockDefaults(const std::optional<Color>& fg, const std::optional<Color>& bg) {
+        const Color old_fg = defaultForeground();
+        const Color old_bg = defaultBackground();
         locked_fg_ = fg;
         locked_bg_ = bg;
+        // Same rule as setDefaults: text on the default follows the lock onto the
+        // config colour; this is what makes command output wear the theme from the
+        // first byte, before the picker has ever run.
+        if (current_fg_ == old_fg)
+            current_fg_ = defaultForeground();
+        if (current_bg_ == old_bg)
+            current_bg_ = defaultBackground();
     }
     void lockPalette(const std::array<std::optional<Color>, 16>& locks) {
         locked_palette_ = locks;
@@ -493,6 +530,8 @@ public:
                         cont.width = 0;
                         cont.fg = cell.fg;
                         cont.bg = cell.bg;
+                        cont.fg_role = cell.fg_role;
+                        cont.bg_role = cell.bg_role;
                         cur[col + 1] = cont;
                     }
                     col += 2;
@@ -571,8 +610,14 @@ public:
     void clearCell(Cell& c) {
         c.text.clear();
         c.width = 0;
-        c.fg = default_fg_;
-        c.bg = default_bg_;
+        // The effective defaults, which include a config lock — a blank cell
+        // must wear the same colours unstyled text will, or the grid would be
+        // two shades where the theme says one.
+        c.fg = defaultForeground();
+        c.bg = defaultBackground();
+        // A blank wears the default, which is not a palette entry — see SGR 39.
+        c.fg_role = kRgbColour;
+        c.bg_role = kRgbColour;
         c.attr = Attr{};
     }
 
@@ -627,6 +672,8 @@ public:
         saved_y_ = cursor_y_;
         saved_fg_ = current_fg_;
         saved_bg_ = current_bg_;
+        saved_fg_role_ = current_fg_role_;
+        saved_bg_role_ = current_bg_role_;
         saved_attr_ = current_attr_;
         saved_autowrap_ = autowrap_;
         saved_valid_ = true;
@@ -641,6 +688,8 @@ public:
             cursor_y_ = std::min(saved_y_, rows_ - 1);
             current_fg_ = saved_fg_;
             current_bg_ = saved_bg_;
+            current_fg_role_ = saved_fg_role_;
+            current_bg_role_ = saved_bg_role_;
             current_attr_ = saved_attr_;
             autowrap_ = saved_autowrap_;
         }
@@ -753,6 +802,10 @@ private:
     std::vector<std::string> title_stack_;
     Color current_fg_{220, 220, 220};
     Color current_bg_{30, 30, 30};
+    // Which palette entry the current colour was asked for, or `kRgbColour`.
+    // Travels with the colour into every cell it paints.
+    std::uint8_t current_fg_role_ = kRgbColour;
+    std::uint8_t current_bg_role_ = kRgbColour;
     Attr current_attr_{};
     bool cursor_visible_ = true;
     bool application_cursor_keys_ = false;
@@ -767,6 +820,8 @@ private:
     bool bracketed_paste_ = false;
     Color saved_fg_{220, 220, 220};
     Color saved_bg_{30, 30, 30};
+    std::uint8_t saved_fg_role_ = kRgbColour;
+    std::uint8_t saved_bg_role_ = kRgbColour;
     Attr saved_attr_{};
     bool saved_autowrap_ = true;
     CursorShape cursor_shape_ = CursorShape::Underline;
@@ -1056,6 +1111,8 @@ private:
         c.width = w;
         c.fg = current_fg_;
         c.bg = current_bg_;
+        c.fg_role = current_fg_role_;
+        c.bg_role = current_bg_role_;
         c.attr = current_attr_;
 
         if (w == 2 && cursor_x_ + 1 < cols_) {
@@ -1064,6 +1121,8 @@ private:
             cont.width = 0;
             cont.fg = current_fg_;
             cont.bg = current_bg_;
+            cont.fg_role = current_fg_role_;
+            cont.bg_role = current_bg_role_;
             cont.attr = Attr{};
         }
 
@@ -1213,18 +1272,25 @@ private:
     int applyExtendedColour(const std::vector<SgrParam>& p, std::size_t k, bool foreground) {
         const SgrParam& here = p[k];
         Color& slot = foreground ? current_fg_ : current_bg_;
+        // The extended form says whether this is an index or a triple, so it is
+        // where a role is decided rather than guessed at later from an RGB.
+        std::uint8_t& role = foreground ? current_fg_role_ : current_bg_role_;
 
         if (here.parts.size() > 1) { // the colon form carries it all in one field
             const int kind = here.part(1);
             if (kind == 5) {
                 const int index = here.part(2);
-                if (index >= 0 && index < 256)
+                if (index >= 0 && index < 256) {
                     slot = paletteColor(index);
+                    role = index < 16 ? static_cast<std::uint8_t>(index) : kRgbColour;
+                }
             } else if (kind == 2) {
                 const int off = here.parts.size() >= 6 ? 3 : 2; // colour space id or not
-                if (static_cast<int>(here.parts.size()) >= off + 3)
+                if (static_cast<int>(here.parts.size()) >= off + 3) {
                     slot = Color{clamp255(here.part(off)), clamp255(here.part(off + 1)),
                                  clamp255(here.part(off + 2))};
+                    role = kRgbColour; // an exact colour is exactly what it says
+                }
             }
             return 0;
         }
@@ -1239,15 +1305,19 @@ private:
         if (kind == 5) {
             if (k + 2 < p.size()) {
                 const int index = p[k + 2].value();
-                if (index >= 0 && index < 256)
+                if (index >= 0 && index < 256) {
                     slot = paletteColor(index);
+                    role = index < 16 ? static_cast<std::uint8_t>(index) : kRgbColour;
+                }
             }
             return 2;
         }
         if (kind == 2) {
-            if (k + 4 < p.size())
+            if (k + 4 < p.size()) {
                 slot = Color{clamp255(p[k + 2].value()), clamp255(p[k + 3].value()),
                              clamp255(p[k + 4].value())};
+                role = kRgbColour;
+            }
             return 4;
         }
         return 0;
@@ -1263,8 +1333,13 @@ private:
         for (std::size_t k = 0; k < p.size(); ++k) {
             const int v = p[k].value();
             if (v == 0) {
-                current_fg_ = default_fg_;
-                current_bg_ = default_bg_;
+                current_fg_ = defaultForeground();
+                current_bg_ = defaultBackground();
+                // Back to the default is not a palette entry. The default is the
+                // screen's own colour and every view has its own answer for it,
+                // so it travels as no role at all and is resolved on arrival.
+                current_fg_role_ = kRgbColour;
+                current_bg_role_ = kRgbColour;
                 current_attr_ = Attr{};
             } else if (v == 1) {
                 current_attr_.bold = true;
@@ -1311,17 +1386,23 @@ private:
             } else if (v == 55) {
                 current_attr_.overline = false;
             } else if (v == 39) {
-                current_fg_ = default_fg_;
+                current_fg_ = defaultForeground();
+                current_fg_role_ = kRgbColour;
             } else if (v == 49) {
-                current_bg_ = default_bg_;
+                current_bg_ = defaultBackground();
+                current_bg_role_ = kRgbColour;
             } else if (v >= 30 && v <= 37) {
                 current_fg_ = paletteColor(v - 30);
+                current_fg_role_ = static_cast<std::uint8_t>(v - 30);
             } else if (v >= 40 && v <= 47) {
                 current_bg_ = paletteColor(v - 40);
+                current_bg_role_ = static_cast<std::uint8_t>(v - 40);
             } else if (v >= 90 && v <= 97) {
                 current_fg_ = paletteColor(v - 90 + 8);
+                current_fg_role_ = static_cast<std::uint8_t>(v - 90 + 8);
             } else if (v >= 100 && v <= 107) {
                 current_bg_ = paletteColor(v - 100 + 8);
+                current_bg_role_ = static_cast<std::uint8_t>(v - 100 + 8);
             } else if (v == 38) {
                 k += static_cast<std::size_t>(applyExtendedColour(p, k, true));
             } else if (v == 48) {
@@ -1398,8 +1479,19 @@ private:
         clear();
         scroll_top_ = 0;
         scroll_bottom_ = rows_ - 1;
-        current_fg_ = Color{220, 220, 220};
-        current_bg_ = Color{30, 30, 30};
+        // The raw defaults genuinely go back to the built-in answer — that is what
+        // a reset is. The CURRENT colour does not: it goes to whatever this
+        // terminal answers with now, which includes a colour the person locked in
+        // their config file. Writing the built-in here was how a shell's startup
+        // reset made the first text on screen un-themed (Kaida, 2026-11-19: command
+        // output "doesn't affect ... until the theme menu is opened"), because a
+        // lock is meant to outrank a program's reset, not lose to it.
+        default_fg_ = Color{220, 220, 220};
+        default_bg_ = Color{30, 30, 30};
+        current_fg_ = defaultForeground();
+        current_bg_ = defaultBackground();
+        current_fg_role_ = kRgbColour;
+        current_bg_role_ = kRgbColour;
         current_attr_ = Attr{};
         cursor_visible_ = true;
         application_cursor_keys_ = false;
@@ -1416,8 +1508,6 @@ private:
         pending_wrap_ = false;
         origin_mode_ = false;
         cursor_shape_ = CursorShape::Underline;
-        default_fg_ = Color{220, 220, 220};
-        default_bg_ = Color{30, 30, 30};
         resetPalette(std::string_view{}); // every custom palette entry goes back
         g0_charset_ = 0;
         g1_charset_ = 0;
@@ -1430,6 +1520,8 @@ private:
         probe.width = 1;
         probe.fg = current_fg_;
         probe.bg = current_bg_;
+        probe.fg_role = current_fg_role_;
+        probe.bg_role = current_bg_role_;
         probe.attr = current_attr_;
         for (auto& r : grid_)
             std::fill(r.begin(), r.end(), probe);
@@ -1782,6 +1874,10 @@ private:
                              "\x07";
             return;
         }
+        // Captured before the raw default moves: this is what a rendition sitting
+        // on the default is sitting on *now*, which with a config lock is the lock
+        // rather than the raw value the session is about to overwrite.
+        const Color previous_effective = foreground ? defaultForeground() : defaultBackground();
         const Color previous = slot;
         if (spec.empty()) {
             slot = foreground ? Color{220, 220, 220} : Color{30, 30, 30};
@@ -1797,16 +1893,24 @@ private:
         // application that sets its colours and then prints gets the colours it
         // replaced. A rendition holding an explicit colour is left alone: `ESC[31m`
         // asked for red and stays red.
+        //
+        // It follows the EFFECTIVE default, not the raw one the session just wrote.
+        // A locked colour did not move — the session's OSC 10 only moved the raw
+        // value underneath it — and following the raw value is how a snapshot's
+        // OSC 10/11 dragged the ink of everything written after it off the theme and
+        // onto the session's colours (Kaida, 2026-11-19: theming "doesn't affect
+        // command output until the theme menu is opened").
+        const Color now_effective = foreground ? defaultForeground() : defaultBackground();
         if (foreground) {
-            if (current_fg_ == previous)
-                current_fg_ = slot;
-            if (saved_fg_ == previous)
-                saved_fg_ = slot;
+            if (current_fg_ == previous_effective)
+                current_fg_ = now_effective;
+            if (saved_fg_ == previous_effective)
+                saved_fg_ = now_effective;
         } else {
-            if (current_bg_ == previous)
-                current_bg_ = slot;
-            if (saved_bg_ == previous)
-                saved_bg_ = slot;
+            if (current_bg_ == previous_effective)
+                current_bg_ = now_effective;
+            if (saved_bg_ == previous_effective)
+                saved_bg_ = now_effective;
         }
     }
 

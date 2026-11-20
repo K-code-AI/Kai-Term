@@ -34,8 +34,56 @@ inline std::string colourHex(const Color& c) {
     return out;
 }
 
+// The palette entry to name for a cell's colour, or -1 when the exact triple
+// should travel instead.
+//
+// A snapshot has to say which colour a cell wears, and there are two different
+// answers it could give. The RGB is the sending screen's opinion of that colour;
+// the index is what the program asked for. The index is the one that survives
+// the trip, because the view on the other side resolves it again through its own
+// authorities — a colour the person locked in their config file outranks the
+// session there, exactly as it does for live output. An explicit RGB is a colour
+// no lock can touch, so a snapshot that sent RGB was the one path that outran a
+// saved theme: a resize re-sends the whole screen, and every palette-coloured
+// cell came back wearing the session's colours (Kaida, 2026-11-19: "the color
+// with the bug are the 16 default colors, those are the one getting resetted
+// when resizing").
+//
+// The cell itself says which of the two it is, in `Cell::fg_role`, because an RGB
+// cannot say it: a program that asked for palette entry 1 and a program that
+// asked for #800000 leave the same three bytes behind, and only the first of them
+// is the view's to recolour. A cell that asked for an exact colour sends the
+// exact colour, and is painted that colour in every view, which is what the
+// program asked for.
+//
+// The remembered index is checked against the colour the sending screen actually
+// resolved. Where they disagree — a cell written by a path that had no role to
+// remember, say — the RGB on the screen is the truth and travels.
+inline int colourRole(const Screen& screen, const Color& colour, std::uint8_t role) {
+    if (role >= 16)
+        return -1; // an exact colour, or the default: no index answers for it
+    return screen.paletteColor(role) == colour ? static_cast<int>(role) : -1;
+}
+
+// The SGR that puts one colour on, in the form that keeps it a role: an index
+// when the program asked for one, the exact triple when it did not. `group` is 38
+// for a foreground and 48 for a background.
+inline std::string colourSgr(const Screen& screen, int group, const Color& colour,
+                             std::uint8_t role) {
+    const int index = colourRole(screen, colour, role);
+    if (index >= 0)
+        return std::to_string(group) + ";5;" + std::to_string(index);
+    return std::to_string(group) + ";2;" + std::to_string(colour.r) + ";" +
+           std::to_string(colour.g) + ";" + std::to_string(colour.b);
+}
+
 // One CSI parameter list, built from the codes that make up one cell's rendition.
-inline std::string rendition(const Cell& cell, const Color& default_fg, const Color& default_bg) {
+//
+// `screen` is the one the snapshot is leaving from, and it is asked what a cell's
+// palette index resolves to there so the index can travel instead of the RGB. See
+// `colourRole()`.
+inline std::string rendition(const Screen& screen, const Cell& cell,
+                             const Color& default_fg, const Color& default_bg) {
     std::string codes;
     auto add = [&codes](std::string_view code) {
         if (!codes.empty())
@@ -60,12 +108,13 @@ inline std::string rendition(const Cell& cell, const Color& default_fg, const Co
         add("9");
     if (cell.attr.overline)
         add("53");
+    // A cell wearing the default colour says nothing here, which is the point:
+    // the `CSI 0` below leaves the receiver on its own default, and its own
+    // default is the colour its config file locked.
     if (cell.fg != default_fg)
-        add("38;2;" + std::to_string(cell.fg.r) + ";" + std::to_string(cell.fg.g) + ";" +
-            std::to_string(cell.fg.b));
+        add(colourSgr(screen, 38, cell.fg, cell.fg_role));
     if (cell.bg != default_bg)
-        add("48;2;" + std::to_string(cell.bg.r) + ";" + std::to_string(cell.bg.g) + ";" +
-            std::to_string(cell.bg.b));
+        add(colourSgr(screen, 48, cell.bg, cell.bg_role));
     if (codes.empty())
         return "\x1b[0m";
     // Two complete sequences rather than one reset folded into the parameter list:
@@ -75,7 +124,13 @@ inline std::string rendition(const Cell& cell, const Color& default_fg, const Co
 }
 
 inline bool sameRendition(const Cell& a, const Cell& b) {
-    return a.attr == b.attr && a.fg == b.fg && a.bg == b.bg;
+    // The roles are part of the rendition, not a detail of how it was spelled:
+    // a cell painted with palette entry 1 next to one painted with the identical
+    // #800000 look the same here and mean different things to a view that recolours
+    // entry 1. Comparing the RGBs alone would let the second cell ride on the first
+    // cell's sequence and arrive as the wrong kind of colour.
+    return a.attr == b.attr && a.fg == b.fg && a.bg == b.bg && a.fg_role == b.fg_role &&
+           a.bg_role == b.bg_role;
 }
 
 // The text of one history row, with blank columns kept as spaces so a gap in
@@ -208,7 +263,7 @@ inline std::string paintGrid(const Screen& screen, bool primary) {
             if (col != next_col)
                 out += "\x1b[" + std::to_string(row + 1) + ";" + std::to_string(col + 1) + "H";
             if (!have_current || !sameRendition(current, cell)) {
-                out += rendition(cell, default_fg, default_bg);
+                out += rendition(screen, cell, default_fg, default_bg);
                 current = cell;
                 have_current = true;
             }
@@ -224,7 +279,7 @@ inline std::string paintGrid(const Screen& screen, bool primary) {
 // a warning printed in red is red in the scrollback too, and the same is true of
 // bold, underline and reverse. The row is written with absolute cursor addresses
 // for gaps, so blank columns stay where they were.
-inline std::string paintHistoryRow(const Row* row, int cols,
+inline std::string paintHistoryRow(const Screen& screen, const Row* row, int cols,
                              const Color& default_fg, const Color& default_bg) {
     std::string out = "[1;1H";
     if (!row)
@@ -246,7 +301,7 @@ inline std::string paintHistoryRow(const Row* row, int cols,
         if (col != next_col)
             out += "[1;" + std::to_string(col + 1) + "H";
         if (!have_current || !sameRendition(current, cell)) {
-            out += rendition(cell, default_fg, default_bg);
+            out += rendition(screen, cell, default_fg, default_bg);
             current = cell;
             have_current = true;
         }
@@ -308,7 +363,7 @@ inline std::string screenSnapshot(const Screen& screen) {
         if (!row)
             continue;
         out += "\x1b[1;1H";
-        out += paintHistoryRow(row, cols, default_fg, default_bg);
+        out += paintHistoryRow(screen, row, cols, default_fg, default_bg);
         out += "\x1b[" + std::to_string(rows) + ";1H";
         out += "\r\n";
     }
