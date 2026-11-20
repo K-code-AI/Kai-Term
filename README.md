@@ -372,8 +372,11 @@ nothing can be kept.
 
 - **Ctrl+Shift+K** opens the settings menu over the grid — font size, the two
   transparencies, padding, scrollback, cursor style and when closing asks — walked
-  with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, Enter
-  saving to `kai-term.conf` and Esc leaving with the window put back as it was. The
+  with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, and
+  **Tab** walking from the list to the words `save` and `leave` at the bottom — Enter
+  answers whichever one the keys are standing on, so saving and leaving are both
+  reachable without a mouse. Leaving puts the window back exactly as it was; saving
+  writes `kai-term.conf`. The
   preview is the window, so a font you are choosing is a font you are looking at. A
   row cannot be driven outside the values its setting accepts: numbers stop at their
   edges, and a row like `confirm quit` only steps between the three words the file
@@ -458,7 +461,8 @@ Two files, because two kinds of thing get set:
 - **`~/.config/kai-term/theme.conf`** is how it looks: the five window colours and the
   sixteen palette entries. It is the file Ctrl+Shift+P writes colours to, so saving
   colours never rewrites the file holding your other decisions. (The picker's two
-  transparency rows are not colours, and go back to `kai-term.conf`.)
+  transparency is not a colour, so it is edited in the settings menu and goes to
+  `kai-term.conf` instead.)
 
 Both live under `$XDG_CONFIG_HOME` when it is set, else `~/.config`; `KAI_TERM_CONFIG`
 and `KAI_TERM_THEME` point either one at a different file, which is how a test gets a
@@ -512,17 +516,17 @@ changes a colour is still heard, and the built-in palette answers beneath both.
 Everything in `theme.conf` — all twenty-one colours — is also editable from inside the
 window with **Ctrl+Shift+P**, which writes back only the lines that actually changed and
 leaves comments, alignment, and settings it has never heard of exactly as they were. The
-picker has two more rows below the colours, `background opacity` and `foreground opacity`,
-typed as `1` to `100` where 100 is fully solid; those two are saved to `kai-term.conf`,
-because they are not colours. Saving never resizes the window — the grid and font you have
-now are the ones you keep.
+picker is colours and nothing else — how solid the window is belongs to the settings menu,
+next to the font. Saving colours never resizes the window: the grid and font you have now
+are the ones you keep.
 
 Both panels take the mouse as well as the keyboard: the wheel walks the list, a click
 picks a row, a click inside a value puts the cursor on the digit you clicked, a row's
 `-` and `+` step it by one, and `save` and `leave` at the bottom are the two words Enter
-and Esc already were. Percentages are shown three digits wide — `100`, `075`, `005` — so
-the highlighted digit sits over the digit it is editing instead of sliding along when a
-number loses a place.
+and Esc already were — and Tab reaches them from the keyboard, with the one you are on
+filled in so the keys have somewhere visible to have moved to. Percentages are shown three
+digits wide — `100`, `075`, `005` — so the highlighted digit sits over the digit it is
+editing instead of sliding along when a number loses a place.
 
 ### Transparency
 

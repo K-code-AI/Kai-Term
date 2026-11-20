@@ -327,6 +327,21 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   have the cursor in the right spot when it keep change from a 3 digit to 2 digit to 1
   digit value … keep it at 100% 075% 005% so the cursor is always accurate" — a value
   that changes width moves the digits out from under a cursor that stayed put.
+- 2026-11-20: **the two words at the bottom of an overlay are keyboard stops now.** Tab
+  walks list → `save` → `leave`, the arrows step between the two words, Up goes back to the
+  rows, and Enter answers whichever one the keys are on. Enter and Esc always did their
+  work, but nothing on screen could be moved to, which left them decoration for anyone with
+  their hands on the keys. The focused word is filled the way a focused row is, and any
+  accepted edit — typed digit, `+`, walking the rows, clicking a row — takes the keys back
+  to the list. They also moved a row clear of the hint under them ("a bit too close to the
+  control indication written under them").
+- 2026-11-20: **transparency left the colour menu.** `background_opacity` and
+  `foreground_opacity` are settings, not colours, and the settings menu has both; the
+  colour picker is 21 colour rows again, `FieldKind` and the percent row editing are gone
+  from `themepicker.hpp` with it, and the picker's save no longer splits two kinds of row
+  across two files. The shared numeric helpers (`percentText`, `fractionText`,
+  `percentFromFraction`, `fractionFromPercent`) stay where both panels and the file reader
+  can use them.
 
 ## Next Steps
 

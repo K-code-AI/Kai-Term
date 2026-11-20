@@ -588,36 +588,15 @@ private:
         pickThemeInTerminal(fields, [this](std::vector<ThemeField> changed, bool saved) {
             if (!saved || changed.empty())
                 return; // cancel already put the old colours back; nothing changed
-            // Two files, because two kinds of thing live in them. Colours are how the
-            // window looks and go to the theme file; the transparency settings are
-            // how the window behaves on the desktop and go to the settings file,
-            // next to `font_size` and `cols` where the rest of them are. Writing a
-            // percentage into the colours file would be a number nothing there reads.
             std::vector<std::pair<std::string, std::string>> colours;
-            std::vector<std::pair<std::string, std::string>> body;
-            for (const ThemeField& field : changed) {
-                if (field.kind == FieldKind::Percent)
-                    body.emplace_back(field.key, fractionText(field.value.r));
-                else
-                    colours.emplace_back(field.key, colourText(field.value));
-            }
+            for (const ThemeField& field : changed)
+                colours.emplace_back(field.key, colourText(field.value));
             std::string error;
-            bool wrote = true;
-            std::string where;
-            if (wrote && !colours.empty()) {
-                wrote = saveConfigValues(
-                    config_.theme_path, colours, error,
-                    "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n");
-                where = config_.theme_path;
-            }
-            if (wrote && !body.empty()) {
-                wrote = saveConfigValues(config_.settings_path, body, error);
-                if (!where.empty())
-                    where += " and ";
-                where += config_.settings_path;
-            }
+            const bool wrote = saveConfigValues(
+                config_.theme_path, colours, error,
+                "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n");
             if (wrote) {
-                setStatusText("saved to " + where, 6000);
+                setStatusText("colours saved to " + config_.theme_path, 6000);
                 // Re-read so the locks match the file that is now on disk: the
                 // colours just written become locked, and any colour the preview
                 // had locked but not saved goes back to the session's authority.
@@ -633,7 +612,7 @@ private:
                 // because that is a colour decision, not a body one.
                 adoptConfig(ownsScreen(), false);
             } else
-                setStatusText("could not save: " + error, 8000);
+                setStatusText("could not save colours: " + error, 8000);
         });
     }
 
@@ -658,18 +637,6 @@ private:
         for (std::size_t i = 0; i < theme.palette.size(); ++i)
             fields.push_back({"color" + std::to_string(i), rgbOf(theme.palette[i]),
                               kPaletteNames[i]});
-        // Last, and on their own terms: these two are not colours. They are
-        // percentages, they are edited as three decimal digits instead of six hex
-        // ones, and they are written to the settings file rather than the colours
-        // file. 100 means fully solid, which is what a window whose file says
-        // nothing is, so opening the picker and saving without touching them cannot
-        // change the window by a single pixel.
-        fields.push_back({"background_opacity",
-                          Rgb{percentFromFraction(theme.background_opacity), 0, 0},
-                          "background opacity", FieldKind::Percent});
-        fields.push_back({"foreground_opacity",
-                          Rgb{percentFromFraction(theme.foreground_opacity), 0, 0},
-                          "foreground opacity", FieldKind::Percent});
         return fields;
     }
 

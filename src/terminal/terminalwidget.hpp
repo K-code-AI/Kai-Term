@@ -1656,14 +1656,6 @@ private:
                 theme.selection = colour;
             else if (field.key == "accent")
                 theme.accent = colour;
-            // The two transparency rows are percentages, not colours, and they fold
-            // onto the theme for the same reason the colours do: the preview IS the
-            // window, so typing a digit has to move the real alpha and not just the
-            // number in the list.
-            else if (field.key == "background_opacity")
-                theme.background_opacity = fractionFromPercent(field.value.r);
-            else if (field.key == "foreground_opacity")
-                theme.foreground_opacity = fractionFromPercent(field.value.r);
             else if (field.key.rfind("color", 0) == 0 && field.key.size() > 5) {
                 int index = -1;
                 if (numberFromText(field.key.substr(5), 0, 15, index))
@@ -1714,6 +1706,58 @@ private:
             finish(result, saved);
     }
 
+    // Tab walks an overlay's three keyboard stops — the list, then `save`, then
+    // `leave` — and the arrows step between the two words once you are on them.
+    // Before this, the two words at the bottom were mouse-only, which made them
+    // decorative to anyone keeping their hands on the keys: Enter and Esc already
+    // did their work, but nothing on screen said so or could be moved to.
+    static bool overlayEditKey(int key, Qt::KeyboardModifiers mods) {
+        const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
+        if (!plain)
+            return false;
+        switch (key) {
+            case Qt::Key_Up: case Qt::Key_Down: case Qt::Key_Left: case Qt::Key_Right:
+            case Qt::Key_Plus: case Qt::Key_Equal: case Qt::Key_Minus:
+            case Qt::Key_Underscore:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    bool pickerFocusStep(int key, Qt::KeyboardModifiers mods) {
+        return overlayFocusStep(key, mods, picker_focus_, [&] { update(); });
+    }
+    bool settingsFocusStep(int key, Qt::KeyboardModifiers mods) {
+        return overlayFocusStep(key, mods, settings_focus_, [&] { update(); });
+    }
+    static bool overlayFocusStep(int key, Qt::KeyboardModifiers mods, int& focus,
+                                 const std::function<void()>& repaint) {
+        if (key == Qt::Key_Tab || key == Qt::Key_Backtab) {
+            const int back = key == Qt::Key_Backtab ? 2 : 1;
+            focus = (focus + back) % 3;
+            repaint();
+            return true;
+        }
+        if (focus == 0)
+            return false;
+        const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
+        const bool left = key == Qt::Key_Left || (plain && key == Qt::Key_H);
+        const bool right = key == Qt::Key_Right || (plain && key == Qt::Key_L);
+        const bool up = key == Qt::Key_Up || (plain && key == Qt::Key_K);
+        if (left || right) {
+            focus = focus == 1 ? 2 : 1; // the two words are each other's neighbour
+            repaint();
+            return true;
+        }
+        if (up) {
+            focus = 0; // and one step up is back among the rows
+            repaint();
+            return true;
+        }
+        return false;
+    }
+
     void pickerKeyPress(int key, Qt::KeyboardModifiers mods, const QString& text) {
         const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
         if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
@@ -1721,16 +1765,31 @@ private:
             return;
         }
         if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            // Enter answers whatever the keys are standing on: `leave` leaves, and
+            // the list or `save` saves.
+            if (picker_focus_ == 2) {
+                finishPicker(false);
+                return;
+            }
             picker_->confirm();
             finishPicker(true);
             return;
         }
+        if (pickerFocusStep(key, mods))
+            return;
+        if (picker_focus_ != 0 && overlayEditKey(key, mods)) {
+            // Typing a colour takes the keys back to the row. Nobody means to be
+            // editing a colour with the keyboard parked on a word.
+            picker_focus_ = 0;
+        }
         if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
+            picker_focus_ = 0;
             picker_->step(-1);
             update();
             return;
         }
         if (key == Qt::Key_Down || (plain && key == Qt::Key_J)) {
+            picker_focus_ = 0;
             picker_->step(1);
             update();
             return;
@@ -1745,11 +1804,6 @@ private:
             update();
             return;
         }
-        if (key == Qt::Key_Tab) {
-            picker_->step(1);
-            update();
-            return;
-        }
         // A hex digit is the whole point: it edits the focused colour and the
         // window changes under the keystroke. Anything that is not hex and was
         // not a navigation key above is simply not the picker's business, and
@@ -1757,8 +1811,10 @@ private:
         // keyboard while it is up.
         if (plain && text.size() == 1) {
             const char c = text.at(0).toLatin1();
-            if (picker_->typeHex(c))
+            if (picker_->typeHex(c)) {
+                picker_focus_ = 0; // you are editing a colour again, not a word
                 previewPicker();
+            }
             update();
         }
     }
@@ -1774,16 +1830,25 @@ private:
             return;
         }
         if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            if (settings_focus_ == 2) {
+                finishSettings(false);
+                return;
+            }
             settings_->confirm();
             finishSettings(true);
             return;
         }
+        if (settingsFocusStep(key, mods))
+            return;
+        if (settings_focus_ != 0 && overlayEditKey(key, mods))
+            settings_focus_ = 0; // typing a value is an edit, not a walk of words
         if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
             settings_->step(-1);
             update();
             return;
         }
-        if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
+        if (key == Qt::Key_Down || (plain && key == Qt::Key_J)) {
+            settings_focus_ = 0;
             settings_->step(1);
             update();
             return;
@@ -1806,15 +1871,13 @@ private:
             update();
             return;
         }
-        if (key == Qt::Key_Plus || key == Qt::Key_Equal) {
-            if (settings_->cycle(1))
+        if (key == Qt::Key_Plus || key == Qt::Key_Equal || key == Qt::Key_Minus ||
+            key == Qt::Key_Underscore) {
+            const bool up = key == Qt::Key_Plus || key == Qt::Key_Equal;
+            if (settings_->cycle(up ? 1 : -1)) {
+                settings_focus_ = 0;
                 previewSetting();
-            update();
-            return;
-        }
-        if (key == Qt::Key_Minus || key == Qt::Key_Underscore) {
-            if (settings_->cycle(-1))
-                previewSetting();
+            }
             update();
             return;
         }
@@ -1826,8 +1889,10 @@ private:
             const bool typed = settings_->current().kind == SettingKind::Choice
                                    ? settings_->typeLetter(c)
                                    : settings_->typeDigit(c);
-            if (typed)
+            if (typed) {
+                settings_focus_ = 0;
                 previewSetting();
+            }
             update();
         }
     }
@@ -1974,6 +2039,7 @@ private:
         }
         if (hit.row < 0)
             return;
+        picker_focus_ = 0; // a click on a row takes the keys back to the rows
         picker_->setRow(hit.row);
         if (hit.digit >= 0)
             picker_->setDigit(hit.digit);
@@ -1999,6 +2065,7 @@ private:
         }
         if (hit.row < 0)
             return;
+        settings_focus_ = 0; // as above: a click on a row means you are editing rows
         settings_->setRow(hit.row);
         if (hit.step_down || hit.step_up) {
             if (settings_->cycle(hit.step_up ? 1 : -1))
@@ -2141,7 +2208,8 @@ private:
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
 
-        const QString hint = QStringLiteral("arrows walk · hex edits · enter saves · esc leaves");
+        const QString hint =
+            QStringLiteral("arrows walk · hex edits · tab to save/leave · enter confirms");
         const auto& fields = picker_->fields();
 
         // The label column is as wide as the longest name plus a space —
@@ -2166,10 +2234,10 @@ private:
         // always on screen, because a picker that walks its selection off the
         // top edge has lost the one line you were editing.
         const int total = static_cast<int>(fields.size());
-        const double needed_h = (3 + total + 2) * ch + 2 * pad; // title, rows, buttons, hint
+        const double needed_h = (4 + total + 2) * ch + 2 * pad; // title, rows, words, hint
         const double max_h = std::max(6.0 * ch, height() - ch);
         const double panel_h = std::min(needed_h, max_h);
-        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 3 * ch) / ch));
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 4 * ch) / ch));
         int first = 0;
         if (total > visible)
             first = std::clamp(picker_->row() - visible + 1, 0, total - visible);
@@ -2220,9 +2288,7 @@ private:
             const QString label =
                 QString::fromStdString(field.label.empty() ? field.key : field.label);
             p.drawText(QPointF(table_x, y), label.leftJustified(label_w, QLatin1Char(' ')));
-            const std::string hex = field.kind == FieldKind::Percent
-                                        ? percentText(field.value.r) + "%"
-                                        : colourText(field.value);
+            const std::string hex = colourText(field.value);
             p.drawText(QPointF(table_x + label_w * cw, y), QString::fromStdString(hex));
 
             // The digit the next keystroke will replace, lit with the same
@@ -2230,11 +2296,10 @@ private:
             // is `#rrggbb`, so its first editable digit sits one cell in from where
             // the text starts — skip that cell or every cursor lands one digit
             // early. A percentage has no leading cell, so its first digit is first.
-            if (focused) {
+            if (focused && picker_focus_ == 0) {
                 const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
                 p.setPen(QPen(accent, 1));
-                const int lead = field.kind == FieldKind::Percent ? 0 : 1;
-                const double dx = table_x + (label_w + lead + picker_->digit()) * cw;
+                const double dx = table_x + (label_w + 1 + picker_->digit()) * cw;
                 p.drawLine(QPointF(dx, y + fm.descent() * 0.4),
                            QPointF(dx + cw - 1, y + fm.descent() * 0.4));
             }
@@ -2247,18 +2312,14 @@ private:
             const QRectF swatch(table_x + (label_w + 7 + 2) * cw,
                                 y - ch + fm.ascent() * 0.15 + 2, 2 * cw, ch - 4);
             p.setPen(QPen(ink(fg, 120), 1));
-            if (field.kind == FieldKind::Percent) {
-                const int alpha = std::clamp(field.value.r, 0, 100) * 255 / 100;
-                p.setBrush(ink(fg, alpha));
-            } else {
-                const Rgb& c = field.value;
-                p.setBrush(QColor(c.r, c.g, c.b));
-            }
+            const Rgb& c = field.value;
+            p.setBrush(QColor(c.r, c.g, c.b));
             p.drawRect(swatch);
             y += ch;
         }
 
-        paintOverlayButtons(p, panel, pad, fm, fg, picker_hit_.save, picker_hit_.cancel);
+        paintOverlayButtons(p, panel, pad, fm, fg, picker_hit_.save, picker_hit_.cancel,
+                            picker_focus_);
 
         // The hint is anchored to the bottom of the panel, because the panel
         // may be shorter than the list: a hint that scrolls away with the
@@ -2285,7 +2346,7 @@ private:
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
         const QString hint =
-            QStringLiteral("arrows walk · type or click · - + nudge · enter saves");
+            QStringLiteral("arrows walk · type or click · - + nudge · tab to save/leave");
         const auto& rows = settings_->rows();
 
         int label_w = 16;
@@ -2301,10 +2362,10 @@ private:
         const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
         const double panel_w = inner_w + 2 * pad;
         const int total = static_cast<int>(rows.size());
-        const double needed_h = (3 + total + 2) * ch + 2 * pad;
+        const double needed_h = (4 + total + 2) * ch + 2 * pad;
         const double max_h = std::max(6.0 * ch, height() - ch);
         const double panel_h = std::min(needed_h, max_h);
-        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 3 * ch) / ch));
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 4 * ch) / ch));
         int first = 0;
         if (total > visible)
             first = std::clamp(settings_->row() - visible + 1, 0, total - visible);
@@ -2370,7 +2431,7 @@ private:
             // The digit the next keystroke or the next click will replace. A choice
             // row gets no cursor: its value is one of a few whole answers, and half
             // of an answer is not a thing.
-            if (focused && row.kind != SettingKind::Choice) {
+            if (focused && settings_focus_ == 0 && row.kind != SettingKind::Choice) {
                 const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
                 p.setPen(QPen(accent, 1));
                 const double dx = table_x + (label_w + settings_->digit()) * cw;
@@ -2381,7 +2442,7 @@ private:
         }
 
         paintOverlayButtons(p, panel, pad, fm, fg, settings_hit_.save,
-                            settings_hit_.cancel);
+                            settings_hit_.cancel, settings_focus_);
         p.setPen(ink(fg, 140));
         p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
                           fm.height()),
@@ -2396,7 +2457,7 @@ private:
     // you were editing.
     void paintOverlayButtons(QPainter& p, const QRectF& panel, double pad,
                              const QFontMetricsF& fm, const Color& fg, QRectF& save,
-                             QRectF& cancel) const {
+                             QRectF& cancel, int focus) const {
         const double ch = cellHeight();
         const double cw = cellWidth();
         const QString save_word = QStringLiteral("save");
@@ -2404,17 +2465,29 @@ private:
         const double gap = 3 * cw;
         const double save_w = fm.horizontalAdvance(save_word) + cw;
         const double leave_w = fm.horizontalAdvance(leave_word) + cw;
-        const double y = panel.bottom() - pad - 2 * ch;
+        // A row of air between the words and the hint below them. Painted flush,
+        // the two read as one line of small text, and the words are the part you
+        // are meant to be able to hit. (Kaida, 2026-11-20: "they are a bit too close
+        // to the control indication written under them".)
+        const double y = panel.bottom() - pad - 3 * ch;
         const double left = panel.x() + (panel.width() - (save_w + gap + leave_w)) / 2.0;
         save = QRectF(left, y, save_w, ch);
         cancel = QRectF(left + save_w + gap, y, leave_w, ch);
-        struct { const QString* word; const QRectF* box; QColor colour; } buttons[2] = {
-            {&save_word, &save, QColor(theme_.accent.r, theme_.accent.g, theme_.accent.b)},
-            {&leave_word, &cancel, QColor(fg.r, fg.g, fg.b)}};
+        struct { const QString* word; const QRectF* box; QColor colour; int index; } buttons[2] = {
+            {&save_word, &save, QColor(theme_.accent.r, theme_.accent.g, theme_.accent.b), 1},
+            {&leave_word, &cancel, QColor(fg.r, fg.g, fg.b), 2}};
         for (const auto& button : buttons) {
+            const bool lit = focus == button.index;
             p.setRenderHint(QPainter::Antialiasing, true);
-            p.setPen(QPen(ink(button.colour.red(), button.colour.green(), button.colour.blue(), 150), 1));
-            p.setBrush(Qt::NoBrush);
+            // The word the keyboard is on is filled the way a focused row is, so
+            // `tab` has something visible to move on to instead of appearing to do
+            // nothing at the bottom of the panel.
+            p.setPen(QPen(ink(button.colour.red(), button.colour.green(),
+                              button.colour.blue(), lit ? 255 : 150), 1));
+            p.setBrush(lit ? ground(theme_.selection) : QColor());
+            if (lit)
+                p.setBrush(QColor(theme_.selection.r, theme_.selection.g,
+                                  theme_.selection.b, scaleAlpha(220, background_opacity_)));
             p.drawRoundedRect(*button.box, kScrollBarRadius, kScrollBarRadius);
             p.setRenderHint(QPainter::Antialiasing, false);
             p.setPen(ink(button.colour.red(), button.colour.green(), button.colour.blue()));
@@ -2548,6 +2621,10 @@ private:
     std::unique_ptr<SettingsPicker> settings_;
     std::function<void(std::vector<SettingRow>, bool saved)> settings_finish_;
     std::function<void(const SettingRow&)> settings_preview_;
+    // Which of an overlay's three keyboard stops the keys are on: the list, `save`,
+    // or `leave`. Tab walks them, and Enter answers the one you are standing on.
+    int picker_focus_ = 0;
+    int settings_focus_ = 0;
     mutable OverlayHit picker_hit_;
     mutable OverlayHit settings_hit_;
     bool owns_screen_ = true;

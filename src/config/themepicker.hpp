@@ -25,8 +25,6 @@
 
 namespace kai {
 
-enum class FieldKind { Colour, Percent };
-
 // A percentage row holds an integer 1..100 in `value.r`, and the file holds the
 // same thing as a fraction 0..1. One place converts the two, so the picker can
 // never write a number its own reader would refuse, and 100 always means exactly
@@ -95,15 +93,13 @@ inline std::string percentText(int percent) {
 // shares while the screen owes the person plain language instead. A field
 // with no label is labelled by its key.
 //
-// A Colour field spells `value` as r,g,b. A Percent field (transparency) uses
-// only `value.r`, the integer percent 0..100, because the picker is one list of
-// editable rows and a percentage edits like a colour does — digit by digit —
-// just over three digits instead of six and in decimal instead of hex.
+// `value` is the colour as three bytes. The picker edits colours and nothing
+// else: transparency is a setting rather than a colour, and it has a menu of
+// its own (see `settingspicker.hpp`).
 struct ThemeField {
     std::string key;
     Rgb value;
     std::string label;
-    FieldKind kind = FieldKind::Colour;
 };
 
 enum class PickerOutcome { Still, Saved, Cancelled };
@@ -143,8 +139,6 @@ public:
         if (fields_.empty())
             return false;
         ThemeField& field = fields_[static_cast<std::size_t>(row_)];
-        if (field.kind == FieldKind::Percent)
-            return typePercent(c);
         const int nibble = hexValue(c);
         if (nibble < 0)
             return false;
@@ -197,31 +191,8 @@ public:
 private:
     static constexpr int kDigits = 6;
 
-    // A colour row has six hex digits; a percentage row has three decimal ones.
-    int digitsOnRow() const {
-        if (fields_.empty())
-            return kDigits;
-        return fields_[static_cast<std::size_t>(row_)].kind == FieldKind::Percent ? 3 : kDigits;
-    }
-
-    // A percentage is a 1..100 integer held in value.r, edited as three digits
-    // (hundreds, tens, ones) so "8", "0" lands on 080 and 100 is the ceiling — the
-    // value can never read as more than fully solid, and never as nothing at all.
-    bool typePercent(char c) {
-        if (c < '0' || c > '9')
-            return false;
-        int v = fields_[static_cast<std::size_t>(row_)].value.r;
-        int d[3] = {v / 100, (v / 10) % 10, v % 10};
-        d[digit_] = c - '0';
-        int nv = d[0] * 100 + d[1] * 10 + d[2];
-        if (nv > 100)
-            nv = 100;
-        if (nv < 1)
-            nv = 1;
-        fields_[static_cast<std::size_t>(row_)].value.r = nv;
-        digitStep(1);
-        return true;
-    }
+    // Six hex digits, and nothing else: a colour is what this picker edits.
+    int digitsOnRow() const { return kDigits; }
 
     static int hexValue(char c) {
         if (c >= '0' && c <= '9')

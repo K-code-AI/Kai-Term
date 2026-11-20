@@ -193,60 +193,9 @@ int main() {
                picker.fields()[13].label == "name8");
     }
 
-    // The two transparency rows. They are not colours: three decimal digits
-    // instead of six hex ones, a ceiling of 100 (fully solid) and a floor of 1,
-    // and a file spelling that is a fraction rather than a triple. Somebody
-    // choosing how much of the desktop to let through is thinking in 80, not in
-    // the `0.8` the file happens to store.
-    {
-        std::vector<ThemeField> board = sample();
-        board.push_back({"background_opacity", Rgb{80, 0, 0}, "background opacity",
-                         FieldKind::Percent});
-        ThemePicker picker(std::move(board));
-        picker.step(5); // to the percent row
-        expect("the percentage row is the last row", picker.row() == 5);
-
-        // Left/Right walks three digits, not six.
-        const int start = picker.digit();
-        picker.digitStep(1);
-        picker.digitStep(1);
-        picker.digitStep(1);
-        expect("a percentage has three digits to walk", picker.digit() == start);
-
-        // 80 is 0-8-0: the first keystroke replaces the hundreds digit (already
-        // zero) and the second replaces the tens, which would be 000 — nothing at
-        // all — so the row stops at 1. A terminal you cannot see is not a setting
-        // anybody meant to type.
-        expect("decimal digits type on a percentage row",
-               picker.typeHex('0') && picker.typeHex('0'));
-        expect("and a percentage cannot be typed down to nothing",
-               picker.fields()[5].value.r == 1);
-        expect("a hex letter is not a decimal digit: the keystroke stays free",
-               !picker.typeHex('f'));
-
-        // 999 is more than fully solid, and the row says so.
-        picker.digitStep(-1);
-        picker.digitStep(-1);
-        static_cast<void>(picker.typeHex('9'));
-        static_cast<void>(picker.typeHex('9'));
-        static_cast<void>(picker.typeHex('9'));
-        expect("a percentage cannot be typed past fully solid",
-               picker.fields()[5].value.r == 100);
-
-        const auto changed = picker.changes();
-        expect("the transparency change is reported under its own key",
-               changed.size() == 1 && changed[0].key == "background_opacity" &&
-                   changed[0].kind == FieldKind::Percent);
-    }
-    {
-        // A row nobody touched writes nothing, so opening the picker and pressing
-        // Enter cannot quietly change how transparent the window is.
-        std::vector<ThemeField> board = sample();
-        board.push_back({"background_opacity", Rgb{100, 0, 0}, "background opacity",
-                         FieldKind::Percent});
-        ThemePicker picker(std::move(board));
-        expect("an untouched percentage is not a change", picker.changes().empty());
-    }
+    // Transparency is no longer a row in this picker — it is a setting, with a menu
+    // of its own — but the two spellings of a percentage still live here, because
+    // both panels and the config file read them through the same helpers.
     {
         // The two spellings of one number, both ways round. The file says 0.8, the
         // picker says 80, and 100 is exactly 1 — so a window that saves without

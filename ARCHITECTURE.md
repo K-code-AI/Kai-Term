@@ -338,6 +338,13 @@ in the menu is a line startup would complain about tomorrow, and what the menu w
 back is the file's own spelling — `font_size = 16`, `background_opacity = 0.7`,
 `cursor_style = bar`.
 
+Both panels have three keyboard stops — the list, then `save`, then `leave` — walked with
+Tab, and Enter answers the one you are on. Those two words were always what Enter and Esc
+did, but nothing on screen could be moved to, which made them mouse-only decoration; now
+the focused word is filled the way a focused row is, and any accepted edit (a typed digit,
+a `+`, a walk of the rows, a click on a row) takes the keys back to the list, because
+nobody means to be editing a value with the keyboard parked on a word.
+
 Both panels take the mouse, and both answer to the geometry they **last painted**: the
 painting records its row rects, its arrows and its two buttons, and a press reads that
 record. Laying a click out a second time would be a second opinion about where the

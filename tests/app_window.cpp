@@ -955,19 +955,18 @@ int main(int argc, char** argv) {
             QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
             QCoreApplication::sendEvent(&window, &ev);
         };
+        // Transparency is a setting, not a colour, so it is edited in the settings
+        // menu — the second row there, under the font size.
         const auto open_picker = [&window] {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
                          Qt::ControlModifier | Qt::ShiftModifier);
             QCoreApplication::sendEvent(&window, &ev);
         };
 
         open_picker();
         pump(60);
-        expect("the picker opens", window.pickerActive());
-        // Rows: five window colours, then sixteen palette entries, then the two
-        // transparency settings.
-        for (int i = 0; i < 21; ++i)
-            press_key(Qt::Key_Down);
+        expect("the settings menu opens", window.settingsActive());
+        press_key(Qt::Key_Down); // font size, then background opacity
         pump(40);
         press_key(Qt::Key_0, "0");
         press_key(Qt::Key_4, "4");
@@ -1101,6 +1100,51 @@ int main(int argc, char** argv) {
         expect("clicking save writes it", fileText().find("padding = 7") != std::string::npos);
         expect("and the menu closes when you click it", !window.settingsActive());
 
+        // The two words at the bottom are on the keyboard too. Tab walks the list,
+        // `save` and `leave`, and Enter answers whichever one the keys are standing
+        // on — before, Enter and Esc did their work but nothing on screen could be
+        // moved to, which made them decorations for anyone keeping their hands on
+        // the keys.
+        open_menu();
+        pump(120);
+        click(window.settingsStepPoint(padding_row, true)); // 7 -> 8, live
+        pump(80);
+        expect("a nudge shows in the window before it is saved", window.padding() == 8.0);
+        press_key(Qt::Key_Tab);
+        pump(40);
+        press_key(Qt::Key_Tab);
+        pump(40);
+        press_key(Qt::Key_Return);
+        pump(100);
+        expect("tabbing to `leave` and pressing Enter leaves without writing",
+               !window.settingsActive() && window.padding() == 7.0 &&
+                   fileText().find("padding = 7") != std::string::npos);
+
+        open_menu();
+        pump(120);
+        click(window.settingsStepPoint(padding_row, true)); // 7 -> 8 again
+        pump(80);
+        press_key(Qt::Key_Tab); // one stop: `save`
+        pump(40);
+        press_key(Qt::Key_Return);
+        pump(100);
+        expect("tabbing to `save` and pressing Enter writes the same file the click does",
+               fileText().find("padding = 8") != std::string::npos);
+
+        // Typing takes the keys back to the rows: nobody means to edit a value with
+        // the keyboard parked on a word.
+        open_menu();
+        pump(120);
+        press_key(Qt::Key_Tab);
+        pump(40);
+        press_key(Qt::Key_2, "2"); // the first row is the font: 16 -> 26
+        pump(80);
+        expect("typing while on a word edits the row and takes the keys back to it",
+               window.fontPixelSize() == 26);
+        press_key(Qt::Key_Escape);
+        pump(80);
+        expect("and leaving that off puts the font back", window.fontPixelSize() == 16);
+
         // A value the setting would refuse cannot be arrived at: the arrows stop at
         // the edges rather than wrapping into an absurd number.
         open_menu();
@@ -1117,7 +1161,7 @@ int main(int argc, char** argv) {
 
         kai::AppWindow reopened(kai::startWindowBackend(24, 80));
         expect("the next window reads the saved settings back",
-               reopened.fontPixelSize() == 16 && reopened.padding() == 7.0);
+               reopened.fontPixelSize() == 16 && reopened.padding() == 8.0);
         reopened.discardOnClose();
         reopened.shutdown();
         pump(200);
