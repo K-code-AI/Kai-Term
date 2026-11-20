@@ -22,11 +22,18 @@ command line was flattened to what Kaida agreed verb by verb: the words come str
 after `kai-term`, a number from the listing is the handle, and a shell started by the
 daemon carries its number in `KAI_SESSION`, which is what lets `save` and `detach` be
 argument-free inside a session and lets `list` star the session you are standing in. A window can be pointed at
-another shell while it stays open, which is what restoring means. There is a config file now —
-key=value in `~/.config/kai-term/config`, environment beating it, unknown keys announced
-with their line — carrying `confirm_quit` and the first colours, which reach the window as a
-theme: a window's own colours are its own, and a window attached to a running session shows
-that session's colours rather than correcting them.
+another shell while it stays open, which is what restoring means. There are config
+files now — key=value in `~/.config/kai-term/kai-term.conf` for behaviour and
+`theme.conf` for colours, environment beating them, unknown keys announced with their
+line — carrying `confirm_quit`, the window's body (`font_size`, `cols`, `rows`,
+`opacity`, all followed by the real window at startup) and twenty-one colours: the five
+window colours and the sixteen ANSI palette entries. The colours reach the window as a
+theme: a window's own colours are its own, and a window attached to a running session
+shows that session's colours rather than correcting them — in the palette too, where an
+OSC 4 the session set outranks the window's palette, which colours only what the
+session never touched. And all twenty-one can be chosen inside the window itself —
+**Ctrl+Shift+P** opens the picker over the grid, previews on the window as you type,
+and writes the changed lines back to `theme.conf` and nowhere else.
 
 **The keep-this-shell keybind and the close question in M4 have been used at a live
 Wayland session, on niri, by Kaida, who reports they work.** (The keybind was

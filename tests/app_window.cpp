@@ -146,10 +146,12 @@ int main(int argc, char** argv) {
     ::mkdir(root.c_str(), 0700);
     ::setenv("XDG_RUNTIME_DIR", root.c_str(), 1);
     ::setenv("KAI_SHELL", "/bin/sh", 1);
-    // The window reads a config file now, and a test must not be at the mercy
-    // of whoever runs it having opinions about their colours. Point it at a
-    // file that is not there; the blocks that want a config set it themselves.
+    // The window reads its settings and its theme from files now, and a test
+    // must not be at the mercy of whoever runs it having opinions about their
+    // colours. Point both at files that are not there; the blocks that want a
+    // file set it themselves.
     ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
 
     Daemon daemon;
     std::string error;
@@ -510,6 +512,182 @@ int main(int argc, char** argv) {
         std::remove(note_file.c_str());
         // Back to isolation, for every window built after this one.
         ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+        ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
+    }
+
+    {
+        // The window's body follows the file too, not just its colours:
+        // `font_size`, `cols`, `rows`, `opacity` are the settings a person
+        // writes by hand, and a file that is read but not obeyed is worse
+        // than one that is refused — it teaches people that config files lie.
+        const std::string body = root + "/body-config";
+        {
+            std::ofstream out(body);
+            out << "font_size = 12\ncols = 100\nrows = 30\nopacity = 0.8\n";
+        }
+        ::setenv("KAI_TERM_CONFIG", body.c_str(), 1);
+        kai::AppWindow shaped(kai::startWindowBackend(24, 80));
+        shaped.show();
+        pump(150);
+        expect("the config's font size is the window's font", shaped.fontPixelSize() == 12);
+        expect("and the window opens at the config's grid, not the built-in one",
+               shaped.cols() == 100 && shaped.rows() == 30);
+        expect("and the config's opacity is the window's opacity",
+               shaped.windowOpacity() > 0.79 && shaped.windowOpacity() < 0.81);
+        shaped.discardOnClose();
+        shaped.shutdown();
+        pump(200);
+        std::remove(body.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    }
+
+    {
+        // The theme picker end to end, driven by keys through a real window:
+        // Ctrl+Shift+P opens it over the grid, hex typed at it changes the
+        // window as you go (the preview is the window), Enter writes the
+        // changed colours to the theme file and leaves the settings file
+        // alone, and Esc puts the window back with nothing written. What the
+        // picker decides is checked headless in tests/theme_picker.cpp; this
+        // is the path from the keystroke to the disk.
+        const std::string cfg = root + "/picker-config";
+        const std::string theme = root + "/picker-theme";
+        ::setenv("KAI_TERM_CONFIG", cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", theme.c_str(), 1);
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+
+        const auto press = [&window](int key, const QString& text = QString()) {
+            QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const auto type_hex = [&press](const std::string& digits) {
+            for (char c : digits) {
+                const int key = (c >= '0' && c <= '9')
+                                    ? (Qt::Key_0 + (c - '0'))
+                                    : (Qt::Key_A + (c - 'a'));
+                press(key, QString(QChar(c)));
+            }
+        };
+
+        // Open the picker with Ctrl+Shift+P.
+        {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        }
+        pump(60);
+        expect("Ctrl+Shift+P opens the theme picker", window.pickerActive());
+
+        // The picker owns the keyboard: a keystroke that is not a colour or a
+        // navigation key is swallowed, not sent to the shell. (We check the
+        // picker is still up and the shell got nothing it could echo.)
+        press(Qt::Key_Q, "q");
+        expect("the picker is still up after a stray letter", window.pickerActive());
+
+        // Type a colour into the focused setting (foreground, the first row)
+        // and watch the window change under the keystroke.
+        const Color before = window.theme().foreground;
+        type_hex("11ff00");
+        pump(40);
+        expect("typing hex repaints the live window (the preview is the window)",
+               window.theme().foreground.r == 0x11 && window.theme().foreground.g == 0xFF &&
+                   window.theme().foreground.b == 0x00);
+
+        // Enter saves: the theme file gets the new colour, and the settings
+        // file — a different file — is not created, because saving colours
+        // has no business touching how-the-program-behaves settings.
+        press(Qt::Key_Return);
+        pump(60);
+        expect("Enter closes the picker", !window.pickerActive());
+        {
+            std::ifstream in(theme);
+            const std::string written((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+            expect("the saved colour is in the theme file: " + written,
+                   written.find("foreground = #11ff00") != std::string::npos);
+            std::ifstream settings(cfg);
+            expect("and the settings file was not written by a colour save",
+                   !settings.good());
+        }
+
+        // A fresh window reads that colour back from the theme file.
+        kai::AppWindow reopened(kai::startWindowBackend(24, 80));
+        expect("the next window reads the chosen colour from the theme file",
+               reopened.theme().foreground.r == 0x11 &&
+                   reopened.theme().foreground.g == 0xFF &&
+                   reopened.theme().foreground.b == 0x00);
+        reopened.discardOnClose();
+        reopened.shutdown();
+        pump(200);
+
+        // Cancel writes nothing and leaves the colours as they were.
+        const Color as_they_were = window.theme().background;
+        {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        }
+        pump(60);
+        press(Qt::Key_Down); // move to background
+        type_hex("000000");
+        pump(40);
+        expect("the cancel path previews too (the window changed)",
+               window.theme().background.r == 0 && window.theme().background.g == 0);
+        press(Qt::Key_Escape);
+        pump(60);
+        expect("Esc closes the picker", !window.pickerActive());
+        expect("and puts the window's colours back",
+               window.theme().background.r == as_they_were.r &&
+                   window.theme().background.g == as_they_were.g &&
+                   window.theme().background.b == as_they_were.b);
+        {
+            std::ifstream in(theme);
+            const std::string written((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+            expect("and the theme file never heard about the colour that was left",
+                   written.find("background = #000000") == std::string::npos);
+        }
+
+        // A palette row is a row like any other: walk down past the five
+        // window colours to `black`, the first palette entry, and the same
+        // six digits edit it, save it under its file spelling (`color0`),
+        // and hand it to the next window.
+        {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        }
+        pump(60);
+        for (int i = 0; i < 5; ++i)
+            press(Qt::Key_Down); // foreground … accent, and then black
+        type_hex("ff0000");
+        pump(40);
+        press(Qt::Key_Return);
+        pump(60);
+        {
+            std::ifstream in(theme);
+            const std::string written((std::istreambuf_iterator<char>(in)),
+                                      std::istreambuf_iterator<char>());
+            expect("the palette entry saves under its file spelling: " + written,
+                   written.find("color0 = #ff0000") != std::string::npos);
+        }
+        kai::AppWindow repainted(kai::startWindowBackend(24, 80));
+        expect("and the next window carries the re-coloured black into its palette",
+               repainted.theme().palette[0].r == 0xFF &&
+                   repainted.theme().palette[0].g == 0 &&
+                   repainted.theme().palette[0].b == 0);
+        repainted.discardOnClose();
+        repainted.shutdown();
+        pump(200);
+
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        std::remove(cfg.c_str());
+        std::remove(theme.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+        ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
     }
 
     {

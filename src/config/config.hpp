@@ -24,12 +24,16 @@
 
 #include <array>
 #include <cctype>
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace kai {
@@ -79,51 +83,130 @@ inline std::optional<Rgb> colourSetting(const std::optional<std::array<int, 3>>&
     return Rgb{(*value)[0], (*value)[1], (*value)[2]};
 }
 
+// A whole number in range, or nothing. Every character has to be a digit —
+// "14px" is a font size somebody meant, and it gets the same one-line
+// complaint as any other value the program cannot honour, rather than a
+// silent read of the 14 and a shrug.
+inline bool numberFromText(const std::string& text, int low, int high, int& out) {
+    if (text.empty())
+        return false;
+    long long value = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9')
+            return false;
+        value = value * 10 + (c - '0');
+        if (value > high)
+            return false; // stop before a billion columns overflow anything
+    }
+    if (value < low || value > high)
+        return false;
+    out = static_cast<int>(value);
+    return true;
+}
+
+// A fraction in range, spelled the ways people spell fractions: 0.8, .8, 1.
+// Signed or trailing junk is refused for the same reason "14px" is.
+inline bool fractionFromText(const std::string& text, double low, double high, double& out) {
+    if (text.empty())
+        return false;
+    const char* begin = text.c_str();
+    char* end = nullptr;
+    const double value = std::strtod(begin, &end);
+    if (end != begin + text.size())
+        return false; // something was left over
+    if (!(value >= low && value <= high))
+        return false;
+    out = value;
+    return true;
+}
+
 struct Config {
-    // Empty means the file said nothing, which is not the same as a value of
+    // Empty means the files said nothing, which is not the same as a value of
     // "never": a setting nobody wrote leaves the built-in answer standing.
     std::string confirm_quit;
+    // How the window presents itself, when the files have opinions: a font
+    // size in pixels, an opening grid, and how solid the window is against
+    // whatever is behind it.
+    std::optional<int> font_size;
+    std::optional<int> cols;
+    std::optional<int> rows;
+    std::optional<double> opacity;
     std::optional<Rgb> foreground;
     std::optional<Rgb> background;
     std::optional<Rgb> cursor;
     std::optional<Rgb> selection;
     std::optional<Rgb> accent;
-    // One line per oddity, each naming the file and line, for stderr at
-    // startup. A file nobody commented on is a file that said only things it
+    // The sixteen ANSI colours, written `color0` through `color15` the way
+    // every terminal program that has a config has spelled them. A person
+    // who has never heard the name "SGR" can still say what `red` means to
+    // them, and the picker edits these same sixteen by their plain names.
+    std::array<std::optional<Rgb>, 16> palette;
+    // One line per oddity, each naming its file and line, for stderr at
+    // startup. Files nobody commented on are files that said only things they
     // understood.
     std::vector<std::string> problems;
-    std::string path; // where it was read from; empty when there was no file
+    std::string settings_path; // where behaviour lives: kai-term.conf
+    std::string theme_path;    // where colours live: theme.conf
 };
 
-// KAI_TERM_CONFIG says which file, which is how a test gets a config without
-// touching anybody's home directory, and how a person keeps a second setup for
-// a second machine. Otherwise the usual place: $XDG_CONFIG_HOME, falling back
-// to ~/.config, then the file every other program with a config has been using
-// since then.
-inline std::string configFilePath() {
-    if (const char* override_path = std::getenv("KAI_TERM_CONFIG"))
-        return override_path;
-    std::string root;
+// Where the person's own files go: $XDG_CONFIG_HOME if set, else ~/.config —
+// the place every other program with a config has been using since then.
+// Empty only when the machine cannot say where home is, which is a container
+// quirk rather than a desktop.
+inline std::string configRoot() {
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
-        root = xdg;
-    else if (const char* home = std::getenv("HOME"); home && *home)
-        root = std::string(home) + "/.config";
-    if (root.empty())
-        return "";
-    return root + "/kai-term/config";
+        return xdg;
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return std::string(home) + "/.config";
+    return "";
 }
 
-inline Config loadConfig() {
-    Config config;
-    config.path = configFilePath();
-    if (config.path.empty())
-        return config;
-    std::ifstream file(config.path);
-    if (!file)
-        return config; // no file is the ordinary case, not a complaint
+// Two files, because two kinds of thing get set. `kai-term.conf` is how the
+// program behaves; `theme.conf` is how it looks. The split is not tidiness
+// for its own sake: it is what lets the theme picker save colours without
+// ever rewriting the file that holds somebody's other decisions — the two
+// writers never touch each other's file.
+//
+// The layering these names aim at is the one every packaged program uses:
+// /etc/kai-term/<same names> holding system defaults, read first and
+// overridden by the user's files. That layer waits until there is an
+// installer with a place to put it (Kaida, 2026-11-19: "later, when we do a
+// way to install it"); the names, the order and the per-file parsing are
+// chosen now so adding it is a call to parseConfigFile, not a rethink.
+inline std::string settingsFilePath() {
+    if (const char* override_path = std::getenv("KAI_TERM_CONFIG"))
+        return override_path;
+    const std::string root = configRoot();
+    return root.empty() ? "" : root + "/kai-term/kai-term.conf";
+}
 
-    auto note = [&config](int line, const std::string& what) {
-        config.problems.push_back(config.path + ":" + std::to_string(line) + ": " + what);
+// KAI_TERM_THEME points at a different theme file, the same way
+// KAI_TERM_CONFIG points at a different settings file: tests get a theme
+// without touching anybody's home directory, and a person can keep a second
+// palette for a second machine.
+inline std::string themeFilePath() {
+    if (const char* override_path = std::getenv("KAI_TERM_THEME"))
+        return override_path;
+    const std::string root = configRoot();
+    return root.empty() ? "" : root + "/kai-term/theme.conf";
+}
+
+// Read one file into the config. Both files speak the same key=value, and
+// the reader is deliberately lenient about which key appears in which file —
+// a colour written in kai-term.conf still works — because refusing to read
+// what somebody clearly typed is a worse service than the untidiness. What
+// the files say later overrides what they said earlier, which is why
+// `loadConfig` reads the theme last: it is the file the picker writes, and
+// the thing you picked most recently is the thing you meant.
+inline void parseConfigFile(const std::string& path, Config& config) {
+    if (path.empty())
+        return;
+    std::ifstream file(path);
+    if (!file)
+        return; // no file is the ordinary case, not a complaint
+
+    auto note = [&path, &config](int line, const std::string& what) {
+        config.problems.push_back(path + ":" + std::to_string(line) + ": " + what);
     };
 
     std::string line;
@@ -177,6 +260,30 @@ inline Config loadConfig() {
                 continue;
             }
             config.confirm_quit = lowerWord(value);
+        } else if (key == "font_size") {
+            int got = 0;
+            if (!numberFromText(value, 6, 72, got))
+                note(line_no, "font_size wants a pixel size from 6 to 72, got '" + value + "'");
+            else
+                config.font_size = got;
+        } else if (key == "cols") {
+            int got = 0;
+            if (!numberFromText(value, 2, 1000, got))
+                note(line_no, "cols wants a number from 2 to 1000, got '" + value + "'");
+            else
+                config.cols = got;
+        } else if (key == "rows") {
+            int got = 0;
+            if (!numberFromText(value, 2, 1000, got))
+                note(line_no, "rows wants a number from 2 to 1000, got '" + value + "'");
+            else
+                config.rows = got;
+        } else if (key == "opacity") {
+            double got = 0.0;
+            if (!fractionFromText(value, 0.1, 1.0, got))
+                note(line_no, "opacity wants a number from 0.1 to 1, got '" + value + "'");
+            else
+                config.opacity = got;
         } else if (key == "foreground") {
             colour(config.foreground);
         } else if (key == "background") {
@@ -187,11 +294,182 @@ inline Config loadConfig() {
             colour(config.selection);
         } else if (key == "accent") {
             colour(config.accent);
+        } else if (key.rfind("color", 0) == 0 && key.size() > 5) {
+            // color0 through color15, and nothing beyond: `color16` is a
+            // number out of range, which is a different sentence from
+            // "no such setting", but the same fifteen-second fix.
+            int index = -1;
+            if (!numberFromText(key.substr(5), 0, 15, index))
+                note(line_no, "no setting is called '" + key + "'");
+            else
+                colour(config.palette[static_cast<std::size_t>(index)]);
         } else {
             note(line_no, "no setting is called '" + key + "'");
         }
     }
+}
+
+// Read the person's settings, then the person's theme. The theme is read
+// last so it wins where a colour somehow appears in both: the file the
+// picker writes is the more recent intention, and the most recent intention
+// is the one to keep.
+inline Config loadConfig() {
+    Config config;
+    config.settings_path = settingsFilePath();
+    config.theme_path = themeFilePath();
+    parseConfigFile(config.settings_path, config);
+    parseConfigFile(config.theme_path, config);
     return config;
+}
+
+// The way a colour is written, so the picker and any other writer spell it the
+// same way the reader wants: lowercase, six digits, leading `#`.
+inline std::string colourText(const Rgb& colour) {
+    const auto nibble = [](int v) -> char {
+        v &= 0xf;
+        // Below ten a digit is spelled as itself; ten and up borrow the
+        // first six letters, so the letter is `a` plus how far past ten the
+        // value is — fifteen is `a`+5=`f`, not `a`+15, which spells `p`.
+        return v < 10 ? static_cast<char>('0' + v) : static_cast<char>('a' + (v - 10));
+    };
+    const int parts[3] = {colour.r, colour.g, colour.b};
+    std::string out = "#";
+    for (int part : parts) {
+        out.push_back(nibble(part >> 4));
+        out.push_back(nibble(part));
+    }
+    return out;
+}
+
+// The comment sitting at the end of a value line, if there is one. A value
+// that begins with `#` is a colour and not a comment, so the hunt for a
+// comment starts after the colour token — the same distinction the reader
+// makes, made here so editing a value does not quietly eat the note somebody
+// left beside it.
+inline std::string trailingComment(const std::string& after_equals) {
+    std::size_t i = after_equals.find_first_not_of(" \t");
+    if (i == std::string::npos)
+        return "";
+    if (after_equals[i] == '#') {
+        const std::size_t space = after_equals.find_first_of(" \t", i);
+        if (space == std::string::npos)
+            return "";
+        i = space;
+    }
+    const std::size_t hash = after_equals.find('#', i);
+    return hash == std::string::npos ? "" : after_equals.substr(hash);
+}
+
+// Make the directory a config file lives in, and its parents if those are
+// missing too — the first save from a fresh machine has to create
+// ~/.config/kai-term, not just the file inside it.
+inline bool ensureParentDirectory(const std::string& path) {
+    const std::size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos || slash == 0)
+        return true;
+    const std::string parent = path.substr(0, slash);
+    std::string built;
+    for (std::size_t i = 0; i <= parent.size(); ++i) {
+        if (i != parent.size() && parent[i] != '/')
+            continue;
+        built = parent.substr(0, i);
+        if (built.empty() || built == "/")
+            continue;
+        if (::mkdir(built.c_str(), 0755) != 0 && errno != EEXIST)
+            return false;
+    }
+    return true;
+}
+
+// Write settings back to the file a person edited by hand, which means
+// respecting everything this function was not asked to change. Comment lines
+// and settings it does not touch are copied byte for byte; a line whose key it
+// is setting keeps its leading text and its trailing comment and changes only
+// the value, so the alignment somebody lined up by hand survives; keys that
+// were not in the file are added at the end. A file that did not exist gets a
+// short header so the next person to open it knows what it is. Everything is
+// written to a sibling temp file and renamed over the original, because a save
+// interrupted halfway should leave the old config standing, not a half-written
+// one that the reader will then complain about at startup.
+inline bool saveConfigValues(const std::string& path,
+                             const std::vector<std::pair<std::string, std::string>>& values,
+                             std::string& error,
+                             const std::string& new_file_header =
+                                 "# kai-term settings — edit here or from inside the window\n") {
+    if (path.empty()) {
+        error = "no config file path is set";
+        return false;
+    }
+    if (!ensureParentDirectory(path)) {
+        error = "could not create the directory for " + path;
+        return false;
+    }
+
+    std::vector<std::string> lines;
+    bool had_file = false;
+    {
+        std::ifstream in(path);
+        if (in) {
+            had_file = true;
+            std::string line;
+            while (std::getline(in, line))
+                lines.push_back(line);
+        }
+    }
+
+    std::vector<bool> placed(values.size(), false);
+    for (std::string& line : lines) {
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos && line.find_first_not_of(" \t") >= hash)
+            continue; // a comment line, not a setting
+        const std::size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        const std::string key = lowerWord(trimSpace(line.substr(0, eq)));
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            if (placed[i] || values[i].first != key)
+                continue;
+            const std::string comment = trailingComment(line.substr(eq + 1));
+            line = line.substr(0, eq + 1) + " " + values[i].second;
+            if (!comment.empty())
+                line += " " + comment;
+            placed[i] = true;
+            break;
+        }
+    }
+
+    std::string body;
+    if (!had_file && lines.empty())
+        body = new_file_header;
+    for (const std::string& line : lines)
+        body += line + "\n";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (!placed[i])
+            body += values[i].first + " = " + values[i].second + "\n";
+    }
+
+    const std::string temp = path + ".tmp";
+    {
+        std::ofstream out(temp, std::ios::binary);
+        if (!out) {
+            error = "could not write " + temp;
+            return false;
+        }
+        out << body;
+        out.flush();
+        if (!out) {
+            error = "could not finish writing " + temp;
+            out.close();
+            std::remove(temp.c_str());
+            return false;
+        }
+    }
+    if (std::rename(temp.c_str(), path.c_str()) != 0) {
+        error = "could not replace " + path;
+        std::remove(temp.c_str());
+        return false;
+    }
+    return true;
 }
 
 } // namespace kai

@@ -10,6 +10,7 @@
 
 #include "closeprompt.hpp"
 #include "../config/config.hpp"
+#include "../config/themepicker.hpp"
 #include "../session/cli.hpp"
 #include "../session/sessionbackend.hpp"
 #include "sessionmenu.hpp"
@@ -111,7 +112,23 @@ public:
         lift(theme.cursor, config_.cursor);
         lift(theme.selection, config_.selection);
         lift(theme.accent, config_.accent);
+        for (std::size_t i = 0; i < theme.palette.size(); ++i)
+            lift(theme.palette[i], config_.palette[i]);
         applyTheme(theme, owns_screen);
+        // The window's body, not just its colours: a config that says
+        // `font_size = 14` means the cells are 14 pixels tall now, and a
+        // config that says `cols = 100` means the opening window is as wide
+        // as a hundred of them at that font. Font first, size second — the
+        // other order would measure the hundred columns with the old ruler.
+        if (config_.font_size)
+            setFontPixelSize(*config_.font_size);
+        if (config_.cols || config_.rows)
+            resize(sizeForGrid(config_.rows.value_or(rows()), config_.cols.value_or(cols())));
+        // A window you can half-see through is a window with the desktop
+        // behind it; Qt asks the compositor, and without one the number is
+        // simply ignored, which is the honest answer rather than a fake.
+        if (config_.opacity)
+            setWindowOpacity(*config_.opacity);
     }
 
     const std::string& sessionName() const { return session_; }
@@ -503,6 +520,65 @@ private:
     void bindKeybinds() {
         on_save_session = [this] { saveCurrentSession(); };
         on_session_menu = [this] { showSessionMenu(); };
+        on_theme_picker = [this] { showThemePicker(); };
+    }
+
+    // Ctrl+Shift+P: choose the colours inside the terminal, with the terminal
+    // itself as the preview, and write what you chose back to the config file.
+    //
+    // The picker opens on the colours this window wears now, so what you see
+    // is a starting point and not a lie. The widget hands back only the
+    // colours that actually moved, so a save rewrites those lines and leaves
+    // the rest of somebody's file — comments, alignment, settings the picker
+    // has never heard of — exactly as they were. On a window attached to a
+    // running session the file still gets the new colours, because they are
+    // the person's own settings for the next window; the live preview there
+    // moves only the window's chrome, since a session's screen colours are the
+    // session's business and not this picker's to correct.
+    void showThemePicker() {
+        const Theme current = theme();
+        const std::vector<ThemeField> fields = fieldsForTheme(current);
+        pickThemeInTerminal(fields, [this](std::vector<ThemeField> changed, bool saved) {
+            if (!saved || changed.empty())
+                return; // cancel already put the old colours back; nothing changed
+            std::vector<std::pair<std::string, std::string>> updates;
+            for (const ThemeField& field : changed)
+                updates.emplace_back(field.key, colourText(field.value));
+            std::string error;
+            if (saveConfigValues(config_.theme_path, updates, error,
+                                 "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n"))
+                setStatusText("colours saved to " + config_.theme_path, 6000);
+            else
+                setStatusText("could not save colours: " + error, 8000);
+        });
+    }
+
+    // The picker's rows, in the order it shows them: the five window colours
+    // first because they are what you look at most, then the sixteen ANSI
+    // palette entries in index order, which is the order every terminal
+    // program that lists colours uses. The palette rows carry a plain-English
+    // label (`bright magenta`) while their key stays the file's `color13` —
+    // the person reads names, the file keeps the convention.
+    static std::vector<ThemeField> fieldsForTheme(const Theme& theme) {
+        std::vector<ThemeField> fields = {
+            {"foreground", rgbOf(theme.foreground), "foreground"},
+            {"background", rgbOf(theme.background), "background"},
+            {"cursor", rgbOf(theme.cursor), "cursor"},
+            {"selection", rgbOf(theme.selection), "selection"},
+            {"accent", rgbOf(theme.accent), "accent"},
+        };
+        static const char* const kPaletteNames[16] = {
+            "black",  "red",    "green",  "yellow", "blue",   "magenta", "cyan",  "white",
+            "bright black", "bright red", "bright green", "bright yellow",
+            "bright blue",  "bright magenta", "bright cyan", "bright white"};
+        for (std::size_t i = 0; i < theme.palette.size(); ++i)
+            fields.push_back({"color" + std::to_string(i), rgbOf(theme.palette[i]),
+                              kPaletteNames[i]});
+        return fields;
+    }
+
+    static Rgb rgbOf(const Color& colour) {
+        return Rgb{colour.r, colour.g, colour.b};
     }
 
     std::string session_;

@@ -370,6 +370,16 @@ nothing can be kept.
   with it; a session that was kept is asked about by nobody, since its work goes
   on whether or not this window is looking at it.
 
+- **Ctrl+Shift+P** opens the colour picker over the grid: the five window colours
+  and the sixteen ANSI palette entries, walked with Up/Down or k/j, digits walked
+  with Left/Right or h/l, a hex digit typed replaces the one under the cursor and
+  the cursor steps along, Enter saves, Esc leaves with nothing written. The
+  preview is not a preview: it is the window. Each keystroke recolours the real
+  screen, so what you watch choosing is what you get — on a window attached to a
+  running session the preview moves only the window's chrome, because a session's
+  screen colours are the session's own business, and the save is still for the
+  next window.
+
 - Plain **Ctrl+S** is left alone and goes to the shell, where it stops and starts
   output the way it always has. That is why the key above has Shift in it: a terminal
   cannot tell Ctrl+S from Ctrl+Shift+S — a control letter arrives as one byte and Shift
@@ -429,20 +439,41 @@ decides and what it would show, not what it looks like to a person mid-build.
 
 ## Configuration
 
-The file is `~/.config/kai-term/config` (`$XDG_CONFIG_HOME` first if it is set, and
-`KAI_TERM_CONFIG=<file>` points at a different file entirely). It is plain `key = value`
-— the shape Old-Term's config has always had — with `#` comments, one setting per line,
+Two files, because two kinds of thing get set:
+
+- **`~/.config/kai-term/kai-term.conf`** is how the program behaves and presents:
+  `confirm_quit`, `font_size`, the opening grid, opacity — whatever joins them later.
+- **`~/.config/kai-term/theme.conf`** is how it looks: the five window colours and the
+  sixteen palette entries. It is the file Ctrl+Shift+P writes, so saving colours never
+  rewrites the file holding your other decisions.
+
+Both live under `$XDG_CONFIG_HOME` when it is set, else `~/.config`; `KAI_TERM_CONFIG`
+and `KAI_TERM_THEME` point either one at a different file, which is how a test gets a
+config without touching anybody's home directory. Both files are plain `key = value` —
+the shape Old-Term's config has always had — with `#` comments, one setting per line,
 and whitespace around the `=` free. A setting nobody recognizes is not skipped in
 silence: startup says which line of which file said what, and carries on with the rest.
+The reader is lenient about which file a key appears in — a colour in `kai-term.conf`
+still works — but the theme file is read last, so the file the picker writes wins where
+a colour somehow appears in both.
 
 ```
-# ~/.config/kai-term/config
+# ~/.config/kai-term/kai-term.conf
 confirm_quit = running          # never | running | always
+font_size    = 14               # the cells are this many pixels tall
+cols         = 100              # the grid a new window opens with
+rows         = 30
+opacity      = 0.8              # how solid the window is; needs a compositor
+
+# ~/.config/kai-term/theme.conf
 foreground   = #dcdcdc          # the ink of unstyled text
 background   = #1e1e1e          # the blank screen
 cursor       = #dcdcdc
 selection    = #3e60a8          # the highlight under a dragged selection
 accent       = #6ea0ff          # what a dialog puts on the answer its focus is on
+color0       = #000000          # the sixteen ANSI colours, black through bright white
+color1       = #800000
+color9       = #ff0000          # ... any of color0 through color15
 ```
 
 Colours are `#rrggbb` (the `#` is optional); names are refused, because a wrongly
@@ -453,8 +484,16 @@ hand right now, and a decision you made months ago should not outrank it.
 A theme colours the screen a window *starts*: cells already on screen keep the colours
 they were written with, exactly like an escape-sequence recolour, and a window attached
 to a running session leaves that session's own colours standing — it came to show them,
-not to correct them. More settings will join these as the surfaces that need them are
-built; the plan for choosing them without a text editor is on the M4 list.
+not to correct them. The palette rule matches: an OSC 4 that the session set itself
+always outranks the theme; the theme colours the entries the session never touched.
+
+Everything in `theme.conf` — all twenty-one colours — is also editable from inside the
+window with **Ctrl+Shift+P**, which writes back only the lines that actually changed and
+leaves comments, alignment, and settings it has never heard of exactly as they were.
+
+Later, when there is an installer with somewhere to put it, `/etc/kai-term/` will hold
+the same two names as system defaults, read first and overridden by the user's files —
+the names and the read order are chosen so that layer is a few lines and not a rethink.
 
 ## Layout
 

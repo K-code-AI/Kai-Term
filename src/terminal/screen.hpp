@@ -275,7 +275,32 @@ public:
     Color paletteColor(int index) const {
         if (index >= 0 && index < 256 && palette_custom_[static_cast<std::size_t>(index)])
             return palette_custom_color_[static_cast<std::size_t>(index)];
+        if (index >= 0 && index < 16)
+            return theme_palette_[static_cast<std::size_t>(index)];
         return palette(index);
+    }
+
+    // The sixteen ANSI colours as this window's theme knows them. Three
+    // authorities answer for one colour here, in order: an OSC 4 the session
+    // itself set always wins, because the session wrote it and it is part of
+    // the state a window came to show; a colour the session never touched
+    // belongs to the window showing it, and that is what the theme's palette
+    // supplies; and the built-in table below answers for both. Like every
+    // other colour rule here, this one decides the next characters written —
+    // cells already on the grid keep what they were written with.
+    void setThemePalette(const std::array<Color, 16>& colours) { theme_palette_ = colours; }
+
+    // The built-in sixteen, the single source of truth: a theme palette
+    // starts here, and so does the built-in answer for anybody who changed
+    // nothing.
+    static const std::array<Color, 16>& basePalette() {
+        static const std::array<Color, 16> base{{
+            {0, 0, 0}, {128, 0, 0}, {0, 128, 0}, {128, 128, 0},
+            {0, 0, 128}, {128, 0, 128}, {0, 128, 128}, {192, 192, 192},
+            {128, 128, 128}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0},
+            {0, 0, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255}
+        }};
+        return base;
     }
 
     void resize(int new_rows, int new_cols) {
@@ -668,6 +693,9 @@ private:
     std::vector<ClipboardRequest> clipboard_requests_;
     std::array<Color, 256> palette_custom_color_{};
     std::bitset<256> palette_custom_{};
+    // The window's theme palette, the authority between an OSC 4 the session
+    // wrote and the built-in table; see `setThemePalette()`.
+    std::array<Color, 16> theme_palette_ = basePalette();
     Color default_fg_{220, 220, 220};
     Color default_bg_{30, 30, 30};
     int cell_px_w_ = 8;
@@ -1409,14 +1437,8 @@ private:
     }
 
     static Color palette(int index) {
-        static const Color base[16] = {
-            {0, 0, 0}, {128, 0, 0}, {0, 128, 0}, {128, 128, 0},
-            {0, 0, 128}, {128, 0, 128}, {0, 128, 128}, {192, 192, 192},
-            {128, 128, 128}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0},
-            {0, 0, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255}
-        };
         if (index < 0) index = 0;
-        if (index < 16) return base[index];
+        if (index < 16) return basePalette()[static_cast<std::size_t>(index)];
         if (index < 232) {
             int n = index - 16;
             int r = n / 36;

@@ -7,6 +7,7 @@
 #include "selection.hpp"
 #include "text.hpp"
 #include "backend.hpp"
+#include "../config/themepicker.hpp"
 
 #include <poll.h>
 
@@ -100,6 +101,10 @@ public:
         Color cursor{220, 220, 220};
         Color selection{62, 96, 168};
         Color accent{110, 160, 255};
+        // The sixteen ANSI colours as this window reads them. The built-in
+        // answer is the built-in palette — a theme that says nothing about
+        // `red` leaves red the colour every program expects.
+        std::array<Color, 16> palette = Screen::basePalette();
     };
 
     // Applying a theme is a decision about the next screen, not a rewrite of
@@ -117,11 +122,59 @@ public:
     // are this window's own chrome and follow the theme either way.
     void applyTheme(const Theme& theme, bool owns_screen) {
         theme_ = theme;
+        owns_screen_ = owns_screen;
         if (owns_screen)
             screen_.setDefaults(theme.foreground, theme.background);
+        // The palette travels even when the screen's own colours do not:
+        // entries the session recoloured itself (OSC 4) keep winning inside
+        // the screen, and the theme answers only for the colours the session
+        // never touched. A window may colour what a session ignored; it may
+        // not erase what a session said.
+        screen_.setThemePalette(theme.palette);
         update();
     }
     const Theme& theme() const { return theme_; }
+
+    // The font the config asked for, taken before the first frame. Cells are
+    // squares of pixels, not wishes: the grid is worked out again from the
+    // window's pixels afterwards, because a bigger font genuinely means
+    // fewer columns in the same window, which is what a bigger font means
+    // in every terminal that ever was.
+    void setFontPixelSize(int pixels) {
+        font_.setPixelSize(pixels);
+        applyGridGeometry();
+        update();
+    }
+    int fontPixelSize() const { return font_.pixelSize(); }
+
+    // The window size that shows exactly `want_rows` by `want_cols` cells at
+    // the current font — the size to ask for when the config says the window
+    // opens at 100 columns by 30 rows and means it. The extra pixel is floor
+    // division insurance: a column lost to rounding is a column the config
+    // promised and the window did not deliver.
+    QSize sizeForGrid(int want_rows, int want_cols) const {
+        const double pad = activePadding();
+        return QSize(static_cast<int>(want_cols * cellWidth() + 2 * pad) + 1,
+                     static_cast<int>(want_rows * cellHeight() + 2 * pad) + 1);
+    }
+
+    // The third shape the terminal draws over its own grid: the theme
+    // picker. Every decision in it lives in `ThemePicker`, which has no Qt in
+    // it and is tested headless; the widget only paints what the model says
+    // and hands it the keys. The preview is not a picture of the terminal —
+    // it is the terminal: each keystroke reapplies the theme through the same
+    // `applyTheme` a config file goes through, with the same ownership rule,
+    // so what you watch choosing is exactly what you would get.
+    void pickThemeInTerminal(std::vector<ThemeField> fields,
+                             std::function<void(std::vector<ThemeField>, bool saved)> finish) {
+        if (overlay_.active || picker_)
+            return; // a dialog and a picker do not stack; one is always the wrong one
+        picker_ = std::make_unique<ThemePicker>(std::move(fields));
+        picker_before_ = theme_;
+        picker_finish_ = std::move(finish);
+        update();
+    }
+    bool pickerActive() const { return picker_ != nullptr; }
 
     // The thread that turns bytes from the far end into events for this window. Its own
     // method because a window can be shown a different shell, and the new one needs a
@@ -175,6 +228,22 @@ public:
                     QCoreApplication::postEvent(this, new TerminalExitEvent(generation));
                     break;
                 }
+                // Take the whole run the backend is already holding, not just one
+                // bufferful. A restored screen arrives as a single snapshot that the
+                // backend holds end to end, and that snapshot has to reach the model in
+                // one piece: it begins by leaving whatever alternate screen the view was
+                // on and re-enters it at the end, so a window fed only the first half
+                // sees, between the halves, a screen that has dropped to the primary
+                // buffer. A full-screen application wants the whole window, so the
+                // geometry follows that transient down — the window resizes, the session
+                // resizes to match, the session answers with another snapshot, and the
+                // two chase each other through an endless resize loop that reflows the
+                // entire scrollback on every turn. That is why a full-screen program
+                // hung once there was anything to scroll back to and ran fine when there
+                // was not: a small snapshot lands in one read, a large one does not.
+                // Feeding the whole buffered run at once hides the transient, and the
+                // loop never starts. A local shell holds nothing between reads, so it is
+                // unaffected.
                 QCoreApplication::postEvent(
                     this, new TerminalOutputEvent(std::string(buf, static_cast<size_t>(n)),
                                                   generation));
@@ -260,6 +329,9 @@ public:
     // daemon; it knows Ctrl+Shift+S was pressed and that somebody asked to be told.
     std::function<void()> on_save_session;
     std::function<void()> on_session_menu;
+    // Ctrl+Shift+P: the theme picker, owned by whoever runs the window. P is
+    // for palette, and it was free — the held-free list (F, N, H) is untouched.
+    std::function<void()> on_theme_picker;
 
     // One line the window says for itself, shown in the corner for a moment and then
     // gone. A keybind that keeps your work and says nothing is a keybind that gets
@@ -639,6 +711,15 @@ public:
             return;
         }
 
+        // The theme picker likewise owns the keyboard, and it is checked
+        // before the copy/save/menu chords below: while you are typing hex
+        // digits a `c` or an `s` is a colour, not the start of a keystroke the
+        // shell would see.
+        if (picker_) {
+            pickerKeyPress(key, mods, ev->text());
+            return;
+        }
+
         // Ctrl+Shift+C and Ctrl+Shift+V are the terminal's own, handled before
         // anything else and never written to the PTY. Without the early return
         // Ctrl+Shift+C would encode as Ctrl+C and interrupt whatever is running.
@@ -670,6 +751,10 @@ public:
             }
             if (key == Qt::Key_A && on_session_menu) {
                 on_session_menu();
+                return;
+            }
+            if (key == Qt::Key_P && on_theme_picker) {
+                on_theme_picker();
                 return;
             }
         }
@@ -714,6 +799,8 @@ public:
             overlayPress(ev->position());
             return;
         }
+        if (picker_)
+            return; // a picker is driven by keys; a stray tap does nothing, least of all quit
         stopEdgeScroll();
         if (scrollBarPress(ev->position()))
             return;
@@ -773,6 +860,8 @@ public:
             overlayHover(ev->position());
             return;
         }
+        if (picker_)
+            return;
         if (scrollbar_drag_) {
             scrollBarDragTo(ev->position());
             return;
@@ -905,7 +994,7 @@ public:
         // The view does not scroll out from under a dialog: while one is up
         // the wheel has nothing to do, and saying so is better than letting
         // the question float away from the text behind it.
-        if (overlay_.active) {
+        if (overlay_.active || picker_) {
             ev->accept();
             return;
         }
@@ -1181,6 +1270,7 @@ public:
         // read at this moment, and it belongs to this terminal rather than to
         // the desktop around it.
         paintOverlay(p);
+        paintPicker(p);
     }
 
 private:
@@ -1319,6 +1409,120 @@ private:
         update();
         if (answer)
             answer(which);
+    }
+
+    // -----------------------------------------------------------------------
+    // The theme picker: keys, the live preview, and leaving.
+    //
+    // The model decides everything — which setting is highlighted, which
+    // digit the next keystroke lands on, what the colours now are. The widget
+    // maps key codes onto it, repaints the whole window through `applyTheme`
+    // after each change so the preview is the real thing, and on the way out
+    // either keeps the previewed theme (save) or puts back the one that was up
+    // when the picker opened (cancel). Which colours actually get written to
+    // the file is the caller's decision, made from the fields handed back.
+    // -----------------------------------------------------------------------
+
+    // Fold the picker's five fields over a base theme. The keys are the
+    // config-file names, so this switch is the one place the picker's rows and
+    // the theme's members are tied together.
+    static Theme themeWithFields(const Theme& base, const std::vector<ThemeField>& fields) {
+        Theme theme = base;
+        for (const ThemeField& field : fields) {
+            const Color colour{static_cast<std::uint8_t>(field.value.r),
+                               static_cast<std::uint8_t>(field.value.g),
+                               static_cast<std::uint8_t>(field.value.b)};
+            if (field.key == "foreground")
+                theme.foreground = colour;
+            else if (field.key == "background")
+                theme.background = colour;
+            else if (field.key == "cursor")
+                theme.cursor = colour;
+            else if (field.key == "selection")
+                theme.selection = colour;
+            else if (field.key == "accent")
+                theme.accent = colour;
+            else if (field.key.rfind("color", 0) == 0 && field.key.size() > 5) {
+                int index = -1;
+                if (numberFromText(field.key.substr(5), 0, 15, index))
+                    theme.palette[static_cast<std::size_t>(index)] = colour;
+            }
+        }
+        return theme;
+    }
+
+    void previewPicker() {
+        if (!picker_)
+            return;
+        applyTheme(themeWithFields(picker_before_, picker_->fields()), owns_screen_);
+    }
+
+    void finishPicker(bool saved) {
+        if (!picker_)
+            return;
+        // A save hands back only the colours that actually moved — the model
+        // remembers what they were on opening — so writing them touches the
+        // lines the person changed and no others. A cancel hands back nothing;
+        // the old colours are already being put back.
+        const std::vector<ThemeField> result = saved ? picker_->changes() : std::vector<ThemeField>{};
+        const std::function<void(std::vector<ThemeField>, bool)> finish =
+            std::move(picker_finish_);
+        if (!saved)
+            applyTheme(picker_before_, owns_screen_); // the preview was a maybe
+        picker_.reset();
+        picker_finish_ = nullptr;
+        update();
+        if (finish)
+            finish(result, saved);
+    }
+
+    void pickerKeyPress(int key, Qt::KeyboardModifiers mods, const QString& text) {
+        const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
+        if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
+            finishPicker(false);
+            return;
+        }
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            picker_->confirm();
+            finishPicker(true);
+            return;
+        }
+        if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
+            picker_->step(-1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Down || (plain && key == Qt::Key_J)) {
+            picker_->step(1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
+            picker_->digitStep(-1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Right || (plain && key == Qt::Key_L)) {
+            picker_->digitStep(1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Tab) {
+            picker_->step(1);
+            update();
+            return;
+        }
+        // A hex digit is the whole point: it edits the focused colour and the
+        // window changes under the keystroke. Anything that is not hex and was
+        // not a navigation key above is simply not the picker's business, and
+        // it is swallowed rather than sent to the shell — a dialog owns the
+        // keyboard while it is up.
+        if (plain && text.size() == 1) {
+            const char c = text.at(0).toLatin1();
+            if (picker_->typeHex(c))
+                previewPicker();
+            update();
+        }
     }
 
     void overlayKeyPress(int key, Qt::KeyboardModifiers mods) {
@@ -1506,6 +1710,129 @@ private:
         }
     }
 
+    // The picker, painted in the same voice as the dialogs: the terminal's
+    // dimmed own background, its own font, its own selection band under the
+    // row you are on. Two things the other dialogs never needed: a swatch,
+    // because a colour spelled in hex is a colour described and not shown;
+    // and a cursor inside the hex text, because the next keystroke lands on
+    // one specific digit and that has to be as visible as the digit itself.
+    void paintPicker(QPainter& p) const {
+        if (!picker_)
+            return;
+        const double cw = cellWidth();
+        const double ch = cellHeight();
+        const Color bg = screen_.defaultBackground();
+        const Color fg = screen_.defaultForeground();
+
+        const QString hint = QStringLiteral("arrows walk · hex edits · enter saves · esc leaves");
+        const auto& fields = picker_->fields();
+
+        // The label column is as wide as the longest name plus a space —
+        // `bright magenta` will not squeeze into a column sized for
+        // `cursor` — and never narrower than the twelve cells the window
+        // colours have always had.
+        int label_w = 12;
+        for (const ThemeField& field : fields) {
+            const std::string& name = field.label.empty() ? field.key : field.label;
+            label_w = std::max(label_w, static_cast<int>(name.size()) + 2);
+        }
+        // label column, hex 7, a two-cell gap, a two-cell swatch.
+        const double table_w = (label_w + 7 + 2 + 2) * cw;
+        const double pad = 1.5 * ch;
+        QFontMetricsF fm(font_);
+        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
+        const double panel_w = inner_w + 2 * pad;
+
+        // Twenty-one rows — five window colours and sixteen palette entries —
+        // do not fit a short window, so the panel caps at the window's height
+        // and the list scrolls beneath the highlight. The focused row is
+        // always on screen, because a picker that walks its selection off the
+        // top edge has lost the one line you were editing.
+        const int total = static_cast<int>(fields.size());
+        const double needed_h = (2 + total + 2) * ch + 2 * pad;
+        const double max_h = std::max(6.0 * ch, height() - ch);
+        const double panel_h = std::min(needed_h, max_h);
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 2 * ch) / ch));
+        int first = 0;
+        if (total > visible)
+            first = std::clamp(picker_->row() - visible + 1, 0, total - visible);
+
+        const QRectF panel((width() - panel_w) / 2.0, (height() - panel_h) / 2.0, panel_w,
+                           panel_h);
+
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(fg.r, fg.g, fg.b, 80), 1));
+        p.setBrush(QColor(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255), 255));
+        p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setFont(font_);
+
+        double y = panel.y() + pad + fm.ascent();
+        p.setPen(QColor(fg.r, fg.g, fg.b));
+        p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("colours"));
+        y += ch;
+
+        const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
+        const int last = std::min(first + visible, total);
+        for (int i = first; i < last; ++i) {
+            const ThemeField& field = fields[static_cast<std::size_t>(i)];
+            const bool focused = i == picker_->row();
+            const QRectF row(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
+                             inner_w + pad, ch);
+            if (focused) {
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(theme_.selection.r, theme_.selection.g, theme_.selection.b));
+                p.drawRoundedRect(row, kScrollBarRadius, kScrollBarRadius);
+                p.setRenderHint(QPainter::Antialiasing, false);
+            }
+            p.setPen(QColor(fg.r, fg.g, fg.b));
+            // The label sits in its column so every hex value starts at the
+            // same x; a table that jaggeds is harder to read than one with a
+            // column nobody asked for.
+            const QString label =
+                QString::fromStdString(field.label.empty() ? field.key : field.label);
+            p.drawText(QPointF(table_x, y), label.leftJustified(label_w, QLatin1Char(' ')));
+            const std::string hex = colourText(field.value);
+            p.drawText(QPointF(table_x + label_w * cw, y), QString::fromStdString(hex));
+
+            // The digit the next keystroke will replace, lit with the same
+            // accent a dialog puts on the answer its focus is on. The hex
+            // text is `#rrggbb`, so digit zero sits one cell in from where
+            // the text starts — skip that cell and every cursor lands one
+            // digit early, rightmost digit wearing the second-to-last mark.
+            if (focused) {
+                const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+                p.setPen(QPen(accent, 1));
+                const double dx = table_x + (label_w + 1 + picker_->digit()) * cw;
+                p.drawLine(QPointF(dx, y + fm.descent() * 0.4),
+                           QPointF(dx + cw - 1, y + fm.descent() * 0.4));
+            }
+
+            // The swatch: the colour itself, two cells wide, wearing a thin
+            // rule of the foreground so a near-background colour is still a
+            // rectangle you can see.
+            const QRectF swatch(table_x + (label_w + 7 + 2) * cw,
+                                y - ch + fm.ascent() * 0.15 + 2, 2 * cw, ch - 4);
+            const Rgb& c = field.value;
+            p.setPen(QPen(QColor(fg.r, fg.g, fg.b, 120), 1));
+            p.setBrush(QColor(c.r, c.g, c.b));
+            p.drawRect(swatch);
+            y += ch;
+        }
+
+        // The hint is anchored to the bottom of the panel, because the panel
+        // may be shorter than the list: a hint that scrolls away with the
+        // rows would be the one line the picker always had and never kept.
+        p.setPen(QColor(fg.r, fg.g, fg.b, 140));
+        p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
+                          fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, hint);
+    }
+
     // A press that lands on the indicator belongs to the terminal, not to the
     // application inside it and not to a text selection.
     bool scrollBarPress(const QPointF& where) {
@@ -1573,6 +1900,15 @@ private:
     std::string status_;
     QTimer* status_timer_ = nullptr;
     Overlay overlay_;
+    // The theme picker, when it is up: the model holds the decisions, and the
+    // theme as it was on opening is kept so leaving with Esc puts the window
+    // back exactly as it found it. `owns_screen_` is remembered from the last
+    // `applyTheme` so the live preview colours the blank screen only when the
+    // window is entitled to.
+    std::unique_ptr<ThemePicker> picker_;
+    Theme picker_before_;
+    std::function<void(std::vector<ThemeField>, bool saved)> picker_finish_;
+    bool owns_screen_ = true;
     bool closing_on_close_ = false;
     double padding_ = 10.0;
     // The colours this window wears. Defaults until a config file says

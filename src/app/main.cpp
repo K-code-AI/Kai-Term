@@ -94,9 +94,16 @@ int main(int argc, char **argv)
         // its central widget, the terminal's own `closeEvent` — the one that asks before
         // throwing a running program away — was never called by anything, and every
         // window closed silently whatever was happening inside it.
+        // The grid a new shell starts with is decided here, before the window
+        // exists: the PTY has to open at the size the config asked for,
+        // because a shell born at 80 columns has already drawn its first
+        // prompt at eighty, and growing the window afterwards cannot unsay
+        // lines that were wrapped at the wrong width.
+        const kai::Config boot = kai::loadConfig();
         std::unique_ptr<kai::AppWindow> term =
             attach_to.empty()
-                ? std::make_unique<kai::AppWindow>(kai::startWindowBackend(24, 80))
+                ? std::make_unique<kai::AppWindow>(kai::startWindowBackend(
+                      boot.rows.value_or(24), boot.cols.value_or(80)))
                 : std::make_unique<kai::AppWindow>(std::string(attach_to));
         auto title = [term = term.get()] {
             return term->sessionName().empty()
@@ -108,7 +115,12 @@ int main(int argc, char **argv)
             term->setWindowTitle(QString::fromStdString(title()));
         };
         term->setFocus();
-        term->resize(1000, 700);
+        // The opening size the program has always had, unless the config
+        // named a grid — in which case the window is already the size that
+        // fits it, measured at the configured font, and resizing over the
+        // top would only prove the config was read and then ignored.
+        if (!boot.cols && !boot.rows)
+            term->resize(1000, 700);
         term->show();
 
         app.exec();

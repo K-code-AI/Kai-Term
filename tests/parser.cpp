@@ -1,5 +1,6 @@
 #include "../src/terminal/screen.hpp"
 
+#include <array>
 #include <iostream>
 #include <string>
 
@@ -890,6 +891,31 @@ int main() {
             lok &= (s.cursorShape() == Shape::Underline);
         }
         if (!lok) fail("DECSCUSR cursor shape");
+        ok &= lok;
+    }
+
+    {
+        // The theme palette sits between the session's own OSC 4 and the
+        // built-in table. A window colours the next characters written in a
+        // colour the session never touched; a colour the session set itself
+        // keeps speaking for the session; and the 256-colour table past
+        // index 15 is nobody's palette to override here.
+        bool lok = true;
+        kai::Screen s(4, 20);
+        std::array<kai::Color, 16> palette = kai::Screen::basePalette();
+        palette[1] = kai::Color{255, 17, 0}; // this window's idea of red
+        s.setThemePalette(palette);
+        s.feed("\x1b[31mR");
+        lok &= (s.at(0, 0).fg.r == 255 && s.at(0, 0).fg.g == 17 && s.at(0, 0).fg.b == 0);
+        // OSC 4 outranks the theme: the session said this red, so this red
+        // is what the next `31` means, whatever the window thinks.
+        s.feed("\x1b]4;1;rgb:00/cc/00\x07");
+        s.feed("\x1b[31mS");
+        lok &= (s.at(0, 1).fg.r == 0 && s.at(0, 1).fg.g == 204 && s.at(0, 1).fg.b == 0);
+        // Past sixteen, the built-in table answers as it always has.
+        s.feed("\x1b[38;5;196mX");
+        lok &= (s.at(0, 2).fg.r == 255 && s.at(0, 2).fg.g == 0 && s.at(0, 2).fg.b == 0);
+        if (!lok) fail("theme palette under OSC 4");
         ok &= lok;
     }
 

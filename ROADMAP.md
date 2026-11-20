@@ -348,23 +348,32 @@ Needed:
   to exist first — today a window holds exactly one shell, and asking about all of them
   and asking about this one are the same question.
 - **A config file, built 2026-11-19** (`src/config/config.hpp`, tested headless in
-  `tests/config.cpp` and wired in `tests/app_window.cpp`). key=value in
-  `~/.config/kai-term/config`, comments allowed, unknown keys announced with their line
-  rather than skipped, environment beats file. It carries `confirm_quit` and the first
-  colours — foreground, background, cursor, selection, accent — which is the base the
-  item below builds on; each later setting joins it when the surface that needs it
-  exists.
-- **The theme picker: a TUI inside the terminal, with a live preview** — agreed with
-  Kaida on 2026-11-19, and half-founded: the config file above is built and already
-  carries the first five colours (foreground, background, cursor, selection and the
-  accent the dialogs' focused button wears, once fixed blue), which reach the widget
-  as a theme that can be reapplied to a live window. What is left is the choosing:
-  a small TUI, drawn by the widget the way the dialogs are, editing those settings
-  **with a live preview** — the window's own grid, cursor and selection, plus a sample
-  dialog, repainted as each choice moves — writing back to the config file on leaving.
-  The palette and cell spacing join its fields as those surfaces grow settings. The
-  preview is the window itself, which is the argument for drawing the picker in the
-  window's own overlay rather than shipping a separate program.
+  `tests/config.cpp` and wired in `tests/app_window.cpp`). key=value, comments allowed,
+  unknown keys announced with their line rather than skipped, environment beats file —
+  and split into two files the same day Kaida asked for it: `~/.config/kai-term/kai-term.conf`
+  for behaviour (`confirm_quit`, and now the window's body: `font_size`, `cols`, `rows`,
+  `opacity`, all followed by the real window) and `~/.config/kai-term/theme.conf` for
+  colours (the five window colours and the sixteen ANSI palette entries, `color0`
+  through `color15`). The theme file is read last, so the file the picker writes wins
+  where the two overlap.
+- **System defaults in `/etc/kai-term/`, deferred** — Kaida's call on 2026-11-19: the
+  same two names under `/etc/kai-term/` as system defaults, read first and overridden
+  by the user's files, "later, when we do a way to install it down the line". The path
+  functions, the per-file parsing and the read order are already shaped for it, so it
+  will be a call to `parseConfigFile` and not a rethink.
+- **The theme picker: a TUI inside the terminal, with a live preview — built
+  2026-11-19**, agreed with Kaida the same day. Ctrl+Shift+P opens it over the grid:
+  twenty-one rows — the five window colours and the sixteen palette entries under plain
+  names — walked with the arrows or hjkl, a hex digit replacing the one under the
+  cursor, Enter saving, Esc leaving nothing written. The state machine is
+  `src/config/themepicker.hpp`, Qt-free and tested headless; the widget paints what it
+  says and the preview is the window itself, every keystroke going through the same
+  `applyTheme` a file goes through. Saving rewrites only the lines that moved, in
+  place, through a temp file and a rename — comments, alignment, and settings it has
+  never heard of survive byte for byte. The palette rows ride the authority rule that
+  already governs themes: an OSC 4 the session set outranks the window's palette, the
+  palette colours only what the session never touched, and cells keep what they were
+  written with.
 
 ## M5 — File manager
 

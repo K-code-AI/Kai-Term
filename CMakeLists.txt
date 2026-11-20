@@ -146,6 +146,7 @@ if(UTIL_LIBRARY)
 endif()
 add_test(NAME widget-session COMMAND kai-term-widget-session)
 
+
 # What a second view of a session arrives knowing — the modes the program asked for, not
 # only the glyphs on the grid. Each of these was found by Kaida from btop in a
 # re-attached session: a snapshot that replays only text is a picture of a terminal
@@ -174,6 +175,8 @@ add_executable(kai-term-close-prompt tests/close_prompt.cpp)
 add_test(NAME close-prompt COMMAND kai-term-close-prompt)
 add_executable(kai-term-config tests/config.cpp)
 add_test(NAME config COMMAND kai-term-config)
+add_executable(kai-term-theme-picker tests/theme_picker.cpp)
+add_test(NAME theme-picker COMMAND kai-term-theme-picker)
 
 # Closing the real binary under a real compositor. The close prompt was once "verified" by
 # calling the window's close from a test, while the terminal sat inside a QMainWindow and
@@ -231,6 +234,7 @@ set(KAI_TEST_TARGETS
     kai-term-app-window
     kai-term-close-prompt
     kai-term-config
+    kai-term-theme-picker
     kai-term-widget-panes
     kai-term-mouse-app)
 foreach(kai_test ${KAI_TEST_TARGETS})
