@@ -342,6 +342,16 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   across two files. The shared numeric helpers (`percentText`, `fractionText`,
   `percentFromFraction`, `fractionFromPercent`) stay where both panels and the file reader
   can use them.
+- 2026-11-20: **the overlay's keyboard stops are one ring, and the second word is
+  `cancel`.** The first cut put Tab between the list and the two words; Kaida turned it
+  down — "no tab to reach save and leave, they should be reachable when going down. the
+  interfaces must be Cohesive" — so walking down past the last row now lands on `save`,
+  then `cancel`, then the first row, and Up runs it backwards. One gesture moves the keys
+  everywhere, which is also why Tab is simply Down here as it is in the rows. `tests/app_window.cpp`
+  asserts the ring directly through a cursor accessor: inferring where the keys are from
+  which setting happened to move is how a test agrees with a wrong implementation.
+  (That accessor earned its keep immediately: clicking a row's centre hit the `-` arrow
+  painted left of centre, which is correct behaviour and a test that had been guessing.)
 
 ## Next Steps
 

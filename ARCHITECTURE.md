@@ -338,12 +338,16 @@ in the menu is a line startup would complain about tomorrow, and what the menu w
 back is the file's own spelling — `font_size = 16`, `background_opacity = 0.7`,
 `cursor_style = bar`.
 
-Both panels have three keyboard stops — the list, then `save`, then `leave` — walked with
-Tab, and Enter answers the one you are on. Those two words were always what Enter and Esc
-did, but nothing on screen could be moved to, which made them mouse-only decoration; now
-the focused word is filled the way a focused row is, and any accepted edit (a typed digit,
-a `+`, a walk of the rows, a click on a row) takes the keys back to the list, because
-nobody means to be editing a value with the keyboard parked on a word.
+Both panels are one ring of keyboard stops rather than a list with two buttons bolted on:
+walking down past the last row arrives at `save`, past that at `cancel`, and past that back
+at the first row, and Up runs the same ring backwards. Enter answers the stop the keys are
+on. Those two words were always what Enter and Esc did, but nothing on screen could be
+moved to, which left them mouse-only decoration; now the stop the keys are on is filled the
+way a focused row is, and any accepted edit (a typed digit, a `+`, a walk of the rows, a
+click on a row) takes the keys back to the list, because nobody means to be editing a value
+with the keyboard parked on a word. A separate chord for the two words was the obvious
+design and was rejected: it would have been a second rule to remember for the downward
+motion you were already making.
 
 Both panels take the mouse, and both answer to the geometry they **last painted**: the
 painting records its row rects, its arrows and its two buttons, and a press reads that

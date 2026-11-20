@@ -42,8 +42,9 @@ settings menu with the rest of how the window behaves. That menu is **Ctrl+Shift
 transparencies, padding, scrollback, cursor style and when closing asks over the grid,
 previewing on the window as you go and writing `kai-term.conf` when you say save. A row there cannot be driven outside the values
 its setting accepts, and both panels answer the mouse: the wheel walks the list, a click
-picks a row or the digit inside a value, each row has its `-` and `+`, and `save`/`leave`
-are the two words Enter and Esc already were. The ground is transparent by painting
+picks a row or the digit inside a value, each row has its `-` and `+`, and `save`/`cancel`
+are the two words Enter and Esc already were — reached by walking one step past the last
+row, because one gesture should move the keys everywhere. The ground is transparent by painting
 it at its own alpha on a surface that has one, so the desktop shows through while the
 text stays as solid as it was made; the X11 whole-window fade was tried first and does
 nothing on a Wayland compositor, and would have dimmed the glyphs along with the

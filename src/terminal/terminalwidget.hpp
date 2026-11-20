@@ -290,6 +290,18 @@ public:
     }
     bool settingsActive() const { return settings_ != nullptr; }
 
+    // Which line of an open overlay the keys are on, as a pair of (row, stop) where
+    // stop 0 is the rows, 1 is `save` and 2 is `cancel`. The panel shows this; a test
+    // should read it rather than infer it from which setting happened to move.
+    std::pair<int, int> settingsCursor() const {
+        return settings_ ? std::pair<int, int>{settings_->row(), settings_focus_}
+                         : std::pair<int, int>{-1, -1};
+    }
+    std::pair<int, int> pickerCursor() const {
+        return picker_ ? std::pair<int, int>{picker_->row(), picker_focus_}
+                       : std::pair<int, int>{-1, -1};
+    }
+
     // Where the settings menu put its rows and arrows, as they were last painted.
     // A test that wants to click a line asks here rather than redoing the layout
     // arithmetic, because the only honest answer is the geometry the pixels used —
@@ -1706,56 +1718,39 @@ private:
             finish(result, saved);
     }
 
-    // Tab walks an overlay's three keyboard stops — the list, then `save`, then
-    // `leave` — and the arrows step between the two words once you are on them.
-    // Before this, the two words at the bottom were mouse-only, which made them
-    // decorative to anyone keeping their hands on the keys: Enter and Esc already
-    // did their work, but nothing on screen said so or could be moved to.
-    static bool overlayEditKey(int key, Qt::KeyboardModifiers mods) {
-        const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
-        if (!plain)
-            return false;
-        switch (key) {
-            case Qt::Key_Up: case Qt::Key_Down: case Qt::Key_Left: case Qt::Key_Right:
-            case Qt::Key_Plus: case Qt::Key_Equal: case Qt::Key_Minus:
-            case Qt::Key_Underscore:
-                return true;
-            default:
-                return false;
+    // One ring, not two modes: walking down past the last row arrives at `save`,
+    // past that at `cancel`, and past that back at the first row — the same
+    // gesture that walks the rows, carrying on. (Kaida, 2026-11-20: "no tab to
+    // reach save and leave, they should be reachable when going down. the
+    // interfaces must be Cohesive.") A chord of its own for the two words would
+    // have been a second rule to remember for the motion you are already doing.
+    enum class OverlayMove { MoveRow, Stay };
+
+    static OverlayMove overlayWalk(int& focus, int row, int rows, int direction) {
+        if (direction > 0) {
+            if (focus == 0 && row + 1 < rows)
+                return OverlayMove::MoveRow;
+            focus = focus == 0 ? 1 : (focus == 1 ? 2 : 0);
+        } else {
+            if (focus == 0 && row > 0)
+                return OverlayMove::MoveRow;
+            focus = focus == 0 ? 2 : (focus == 2 ? 1 : 0);
         }
+        // Wrapping past the words lands among the rows again — the first going
+        // down, the last going up, which is what the model's own wrap does.
+        return focus == 0 ? OverlayMove::MoveRow : OverlayMove::Stay;
     }
 
-    bool pickerFocusStep(int key, Qt::KeyboardModifiers mods) {
-        return overlayFocusStep(key, mods, picker_focus_, [&] { update(); });
-    }
-    bool settingsFocusStep(int key, Qt::KeyboardModifiers mods) {
-        return overlayFocusStep(key, mods, settings_focus_, [&] { update(); });
-    }
-    static bool overlayFocusStep(int key, Qt::KeyboardModifiers mods, int& focus,
-                                 const std::function<void()>& repaint) {
-        if (key == Qt::Key_Tab || key == Qt::Key_Backtab) {
-            const int back = key == Qt::Key_Backtab ? 2 : 1;
-            focus = (focus + back) % 3;
-            repaint();
-            return true;
-        }
+    // Left and Right switch between the two words while the keys are on them,
+    // instead of walking digits that are no longer on screen. Tab is deliberately
+    // not here: Tab is Down, here as everywhere else, and reaching the words by
+    // walking is the whole point.
+    static bool overlayWordSwitch(int key, Qt::KeyboardModifiers mods, int focus) {
         if (focus == 0)
             return false;
         const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
-        const bool left = key == Qt::Key_Left || (plain && key == Qt::Key_H);
-        const bool right = key == Qt::Key_Right || (plain && key == Qt::Key_L);
-        const bool up = key == Qt::Key_Up || (plain && key == Qt::Key_K);
-        if (left || right) {
-            focus = focus == 1 ? 2 : 1; // the two words are each other's neighbour
-            repaint();
-            return true;
-        }
-        if (up) {
-            focus = 0; // and one step up is back among the rows
-            repaint();
-            return true;
-        }
-        return false;
+        return key == Qt::Key_Left || key == Qt::Key_Right ||
+               (plain && (key == Qt::Key_H || key == Qt::Key_L));
     }
 
     void pickerKeyPress(int key, Qt::KeyboardModifiers mods, const QString& text) {
@@ -1765,8 +1760,8 @@ private:
             return;
         }
         if (key == Qt::Key_Return || key == Qt::Key_Enter) {
-            // Enter answers whatever the keys are standing on: `leave` leaves, and
-            // the list or `save` saves.
+            // Enter answers whatever the keys are standing on: `cancel` cancels,
+            // and the list or `save` saves.
             if (picker_focus_ == 2) {
                 finishPicker(false);
                 return;
@@ -1775,22 +1770,21 @@ private:
             finishPicker(true);
             return;
         }
-        if (pickerFocusStep(key, mods))
-            return;
-        if (picker_focus_ != 0 && overlayEditKey(key, mods)) {
-            // Typing a colour takes the keys back to the row. Nobody means to be
-            // editing a colour with the keyboard parked on a word.
-            picker_focus_ = 0;
-        }
-        if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
-            picker_focus_ = 0;
-            picker_->step(-1);
+        if (overlayWordSwitch(key, mods, picker_focus_)) {
+            picker_focus_ = picker_focus_ == 1 ? 2 : 1;
             update();
             return;
         }
-        if (key == Qt::Key_Down || (plain && key == Qt::Key_J)) {
-            picker_focus_ = 0;
-            picker_->step(1);
+        const int rows = static_cast<int>(picker_->fields().size());
+        if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
+            if (overlayWalk(picker_focus_, picker_->row(), rows, -1) == OverlayMove::MoveRow)
+                picker_->step(-1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
+            if (overlayWalk(picker_focus_, picker_->row(), rows, 1) == OverlayMove::MoveRow)
+                picker_->step(1);
             update();
             return;
         }
@@ -1838,18 +1832,23 @@ private:
             finishSettings(true);
             return;
         }
-        if (settingsFocusStep(key, mods))
-            return;
-        if (settings_focus_ != 0 && overlayEditKey(key, mods))
-            settings_focus_ = 0; // typing a value is an edit, not a walk of words
-        if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
-            settings_->step(-1);
+        if (overlayWordSwitch(key, mods, settings_focus_)) {
+            settings_focus_ = settings_focus_ == 1 ? 2 : 1;
             update();
             return;
         }
-        if (key == Qt::Key_Down || (plain && key == Qt::Key_J)) {
-            settings_focus_ = 0;
-            settings_->step(1);
+        const int rows = static_cast<int>(settings_->rows().size());
+        if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
+            if (overlayWalk(settings_focus_, settings_->row(), rows, -1) ==
+                OverlayMove::MoveRow)
+                settings_->step(-1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
+            if (overlayWalk(settings_focus_, settings_->row(), rows, 1) ==
+                OverlayMove::MoveRow)
+                settings_->step(1);
             update();
             return;
         }
@@ -2209,7 +2208,7 @@ private:
         const Color fg = screen_.defaultForeground();
 
         const QString hint =
-            QStringLiteral("arrows walk · hex edits · tab to save/leave · enter confirms");
+            QStringLiteral("arrows walk · hex edits · down to save/cancel · esc quits");
         const auto& fields = picker_->fields();
 
         // The label column is as wide as the longest name plus a space —
@@ -2346,7 +2345,7 @@ private:
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
         const QString hint =
-            QStringLiteral("arrows walk · type or click · - + nudge · tab to save/leave");
+            QStringLiteral("arrows walk · type or click · - + nudge · down to save/cancel");
         const auto& rows = settings_->rows();
 
         int label_w = 16;
@@ -2461,21 +2460,21 @@ private:
         const double ch = cellHeight();
         const double cw = cellWidth();
         const QString save_word = QStringLiteral("save");
-        const QString leave_word = QStringLiteral("leave");
+        const QString cancel_word = QStringLiteral("cancel");
         const double gap = 3 * cw;
         const double save_w = fm.horizontalAdvance(save_word) + cw;
-        const double leave_w = fm.horizontalAdvance(leave_word) + cw;
+        const double cancel_w = fm.horizontalAdvance(cancel_word) + cw;
         // A row of air between the words and the hint below them. Painted flush,
         // the two read as one line of small text, and the words are the part you
         // are meant to be able to hit. (Kaida, 2026-11-20: "they are a bit too close
         // to the control indication written under them".)
         const double y = panel.bottom() - pad - 3 * ch;
-        const double left = panel.x() + (panel.width() - (save_w + gap + leave_w)) / 2.0;
+        const double left = panel.x() + (panel.width() - (save_w + gap + cancel_w)) / 2.0;
         save = QRectF(left, y, save_w, ch);
-        cancel = QRectF(left + save_w + gap, y, leave_w, ch);
+        cancel = QRectF(left + save_w + gap, y, cancel_w, ch);
         struct { const QString* word; const QRectF* box; QColor colour; int index; } buttons[2] = {
             {&save_word, &save, QColor(theme_.accent.r, theme_.accent.g, theme_.accent.b), 1},
-            {&leave_word, &cancel, QColor(fg.r, fg.g, fg.b), 2}};
+            {&cancel_word, &cancel, QColor(fg.r, fg.g, fg.b), 2}};
         for (const auto& button : buttons) {
             const bool lit = focus == button.index;
             p.setRenderHint(QPainter::Antialiasing, true);

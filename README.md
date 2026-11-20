@@ -372,11 +372,10 @@ nothing can be kept.
 
 - **Ctrl+Shift+K** opens the settings menu over the grid — font size, the two
   transparencies, padding, scrollback, cursor style and when closing asks — walked
-  with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, and
-  **Tab** walking from the list to the words `save` and `leave` at the bottom — Enter
-  answers whichever one the keys are standing on, so saving and leaving are both
-  reachable without a mouse. Leaving puts the window back exactly as it was; saving
-  writes `kai-term.conf`. The
+  with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, and one
+  more step down from the last row landing on the words `save` and `cancel` — Enter
+  answers whichever one the keys are standing on, so both are reachable without a mouse.
+  Cancelling puts the window back exactly as it was; saving writes `kai-term.conf`. The
   preview is the window, so a font you are choosing is a font you are looking at. A
   row cannot be driven outside the values its setting accepts: numbers stop at their
   edges, and a row like `confirm quit` only steps between the three words the file
@@ -522,9 +521,10 @@ are the ones you keep.
 
 Both panels take the mouse as well as the keyboard: the wheel walks the list, a click
 picks a row, a click inside a value puts the cursor on the digit you clicked, a row's
-`-` and `+` step it by one, and `save` and `leave` at the bottom are the two words Enter
-and Esc already were — and Tab reaches them from the keyboard, with the one you are on
-filled in so the keys have somewhere visible to have moved to. Percentages are shown three
+`-` and `+` step it by one, and `save` and `cancel` at the bottom are the two words Enter
+and Esc already were — and one more press of the down arrow reaches them, with the one you
+are on filled in so the keys have somewhere visible to have moved to. Walking is the only
+gesture that moves the keys, in the rows and past the end of them alike. Percentages are shown three
 digits wide — `100`, `075`, `005` — so the highlighted digit sits over the digit it is
 editing instead of sliding along when a number loses a place.
 

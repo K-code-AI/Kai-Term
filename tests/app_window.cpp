@@ -1100,23 +1100,34 @@ int main(int argc, char** argv) {
         expect("clicking save writes it", fileText().find("padding = 7") != std::string::npos);
         expect("and the menu closes when you click it", !window.settingsActive());
 
-        // The two words at the bottom are on the keyboard too. Tab walks the list,
-        // `save` and `leave`, and Enter answers whichever one the keys are standing
-        // on — before, Enter and Esc did their work but nothing on screen could be
-        // moved to, which made them decorations for anyone keeping their hands on
-        // the keys.
+        // The two words at the bottom are reachable by walking down: past the last
+        // row is `save`, past that `cancel`, past that the first row again. One ring
+        // rather than a chord to remember, so the gesture that walks the rows is the
+        // same gesture that reaches the words. (Kaida, 2026-11-20: "no tab to reach
+        // save and leave, they should be reachable when going down. the interfaces
+        // must be Cohesive.")
+        const int row_count = 7; // font, 2 opacities, padding, scrollback, cursor, confirm
+        const auto walk = [&window, &press_key](int steps) {
+            for (int i = 0; i < steps; ++i) {
+                press_key(Qt::Key_Down);
+                pump(20);
+            }
+        };
+        // Steps from the padding row down to one of the two words: the rows below
+        // it first, then one step per word.
+        const auto to_word = [row_count, padding_row](int word) {
+            return row_count - 1 - padding_row + word;
+        };
+
         open_menu();
         pump(120);
         click(window.settingsStepPoint(padding_row, true)); // 7 -> 8, live
         pump(80);
         expect("a nudge shows in the window before it is saved", window.padding() == 8.0);
-        press_key(Qt::Key_Tab);
-        pump(40);
-        press_key(Qt::Key_Tab);
-        pump(40);
+        walk(to_word(2)); // the rows below, then `save`, then `cancel`
         press_key(Qt::Key_Return);
         pump(100);
-        expect("tabbing to `leave` and pressing Enter leaves without writing",
+        expect("walking down to `cancel` and pressing Enter leaves without writing",
                !window.settingsActive() && window.padding() == 7.0 &&
                    fileText().find("padding = 7") != std::string::npos);
 
@@ -1124,28 +1135,65 @@ int main(int argc, char** argv) {
         pump(120);
         click(window.settingsStepPoint(padding_row, true)); // 7 -> 8 again
         pump(80);
-        press_key(Qt::Key_Tab); // one stop: `save`
-        pump(40);
+        walk(to_word(1)); // the rows below, then `save`
         press_key(Qt::Key_Return);
         pump(100);
-        expect("tabbing to `save` and pressing Enter writes the same file the click does",
+        expect("walking down to `save` and pressing Enter writes the file the click writes",
                fileText().find("padding = 8") != std::string::npos);
 
-        // Typing takes the keys back to the rows: nobody means to edit a value with
-        // the keyboard parked on a word.
+        // The ring runs both ways. Walking down past the last row reaches the two
+        // words and then the top of the list again, and Up comes back over them —
+        // which is only worth believing if you can see where the keys are, so the
+        // widget says. (Kaida, 2026-11-20: "no tab to reach save and leave, they
+        // should be reachable when going down. the interfaces must be Cohesive.")
+        const auto cursor = [&window] { return window.settingsCursor(); };
+        const auto at = [&cursor](int row, int stop) {
+            const auto where = cursor();
+            expect(("the keys are on row " + std::to_string(row) + ", stop " +
+                    std::to_string(stop))
+                       .c_str(),
+                   where.first == row && where.second == stop);
+        };
         open_menu();
         pump(120);
-        press_key(Qt::Key_Tab);
-        pump(40);
-        press_key(Qt::Key_2, "2"); // the first row is the font: 16 -> 26
-        pump(80);
-        expect("typing while on a word edits the row and takes the keys back to it",
-               window.fontPixelSize() == 26);
+        const int scrollback_row = 4; // font, 2 opacities, padding, then scrollback
+        { // on the words, where nothing else is painted
+            const QRectF row = window.settingsRowRect(scrollback_row);
+            click(QPointF(row.left() + 4.0, row.center().y()));
+        }
+        pump(60);
+        at(scrollback_row, 0);
+        walk(1);
+        at(5, 0);
+        walk(1);
+        at(6, 0); // the last row
+        walk(1);
+        at(6, 1); // one step past it is `save`
+        walk(1);
+        at(6, 2); // and another is `cancel`
+        walk(1);
+        at(0, 0); // and another is the top of the list
+        press_key(Qt::Key_Up);
+        pump(30);
+        at(0, 2); // up from the top is `cancel` again
+        press_key(Qt::Key_Up);
+        pump(30);
+        at(0, 1);
+        press_key(Qt::Key_Up);
+        pump(30);
+        at(6, 0); // and up from `save` is the bottom of the list
+        for (int i = 0; i < 2; ++i) {
+            press_key(Qt::Key_Up);
+            pump(30);
+        }
+        at(scrollback_row, 0);
+        press_key(Qt::Key_Plus);
+        pump(60);
+        expect("so the keys that walked back into the rows edit the row they landed on",
+               window.historyLimit() == 1001);
         press_key(Qt::Key_Escape);
         pump(80);
-        expect("and leaving that off puts the font back", window.fontPixelSize() == 16);
-
-        // A value the setting would refuse cannot be arrived at: the arrows stop at
+        expect("while leaving off puts the scrollback back", window.historyLimit() == 1000);        // A value the setting would refuse cannot be arrived at: the arrows stop at
         // the edges rather than wrapping into an absurd number.
         open_menu();
         pump(120);
