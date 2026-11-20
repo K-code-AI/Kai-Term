@@ -7,7 +7,7 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
 ## Current Status
 
 - Build: `cmake --build build -- -j4` succeeds.
-- Tests: all 27 `build/tests/kai-term-*` binaries pass after the changes below (two clean
+- Tests: all 28 `build/tests/kai-term-*` binaries pass after the changes below (two clean
   back-to-back runs on an idle machine, run under a fork cap and a watchdog — see Next
   Steps on the daemon fork-storm).
 - Everything through the 2026-11-19 documentation audit is committed and pushed to
@@ -30,6 +30,10 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
   (`tests/app_window.cpp`, the token-wears-the-locked-colour-after-resize case).
 - Verified: saving colours in the picker does not resize the window (`tests/app_window.cpp`,
   which moves a window off its configured grid, saves, and requires the grid to stay).
+- Verified offscreen: the settings menu opens on Ctrl+Shift+K, previews a font change on
+  the live window, puts it back on Esc and writes the file on Enter; its rows clamp to
+  their ranges under 200 clicks of `+`; and its mouse clicks — a row, an arrow, `save` —
+  land where they were painted (`tests/app_window.cpp`, the settings-menu block).
 - Verified offscreen: the two transparency settings reach the window's alpha, the picker
   previews them as they are typed, and they save to `kai-term.conf` as fractions
   (`tests/app_window.cpp`, the transparency block). Not verified on a live compositor —
@@ -300,6 +304,29 @@ stale-socket start path is hardened so a daemon can never start another daemon.
   the text stays as solid as chosen. Both are picker rows too, typed `1..100` (100 = 1.0),
   written as a fraction to `kai-term.conf` — not to `theme.conf`, where a number nothing
   reads would have gone.
+- 2026-11-19: **the settings menu (Ctrl+Shift+K), and the rule that an invalid value
+  cannot be reached.** `src/config/settingspicker.hpp` is the Qt-free model — rows that
+  know their range or their short list of answers — with the widget painting them and the
+  window as the preview, the same shape as the colour picker. Clamping happens in every
+  mutator rather than at save time, because the preview is live: a padding of 4000 pixels
+  would spend the window's pixels long before a file was written. Ranges are the config
+  parser's own, so nothing the menu can reach is a line startup would refuse, and
+  `tests/settings_picker.cpp` hammers every row with every digit, every step and both
+  arrows and asserts the value stays inside its range the whole time. Three settings came
+  with it: `scrollback` (`Screen::setHistoryLimit`, honoured in the **daemon** as well as
+  the window — the daemon holds the history a snapshot is built from, so a view asking
+  for more than the daemon keeps would silently get less), `padding`, and `cursor_style`,
+  which is `Screen`'s *default* shape: DECSCUSR still lets a program pick its own, and
+  `CSI 0 q` / `CSI 9 q` come back to the person's answer instead of a constant.
+- 2026-11-19: **both overlay panels take the mouse.** A press answers to the geometry the
+  painting **last used** — the paint records its row rects, arrows and buttons and the
+  press reads that record, because laying a click out a second time is a second opinion
+  about where the pixels went and the two drift into clicks landing on the wrong line.
+  The wheel walks the list rather than scrolling the terminal behind it. Percentages are
+  drawn three digits wide (`100`, `075`, `005`) at Kaida's request: "it's quite hard to
+  have the cursor in the right spot when it keep change from a 3 digit to 2 digit to 1
+  digit value … keep it at 100% 075% 005% so the cursor is always accurate" — a value
+  that changes width moves the digits out from under a cursor that stayed put.
 
 ## Next Steps
 
@@ -333,8 +360,9 @@ stale-socket start path is hardened so a daemon can never start another daemon.
 ## Project Files
 
 - `src/terminal/screen.hpp` — cell grid, colours, attributes, cursor, scrollback, alternate screen, resize, reflow, and the colour authority stack: config lock > session `OSC 4/10/11` > theme > built-in (`paletteColor`, `setThemePalette`, `lockDefaults`, `lockPalette`). A cell also carries the palette index its colour was asked for (`fg_role`/`bg_role`, `kRgbColour` when no index answers), which is what lets a snapshot send `38;5;n` and keep a lock outrank a re-sent screen.
-- `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`), the theme picker (which moves the colour lock on preview), the two transparency alphas (`setTransparency`, and every paint going through `ground()`/`ink()` on a translucent surface), and the reader that hands a whole buffered run to the model at once.
+- `src/terminal/terminalwidget.hpp` — Qt widget, rendering, keyboard, mouse, selection, scrollback view, `feedWhatIsHeld()`, the in-terminal overlay (`askInTerminal()`, `chooseInTerminal()`), the theme picker (which moves the colour lock on preview), the two transparency alphas (`setTransparency`, and every paint going through `ground()`/`ink()` on a translucent surface), the two overlay panels (colour picker and settings menu) with their shared click hit-testing against painted geometry, and the reader that hands a whole buffered run to the model at once.
 - `src/config/config.hpp` — the two key=value files (`kai-term.conf`, `theme.conf`): their path rules incl. `--config-dir` (`setConfigDir`), colours, palette, body settings (font, grid, the two transparencies), complaints (no Qt).
+- `src/config/settingspicker.hpp` — the settings menu's Qt-free state machine (Ctrl+Shift+K): rows with ranges or choice lists, digit walking, clamping so no keystroke or click can reach an invalid value, and which rows changed (no Qt).
 - `src/config/themepicker.hpp` — the picker's Qt-free state machine: rows, digit stepping, hex editing and percentage editing (`FieldKind`, `percentFromFraction`/`fractionText`), and which fields changed.
 - `src/session/sessionbackend.hpp` — a window's view of a daemon-owned session.
 - `src/session/snapshot.hpp` — bytes that rebuild a screen and its history.

@@ -136,6 +136,38 @@ int main() {
                    both.foreground_opacity && *both.foreground_opacity == 1.0);
     }
     {
+        // The three settings the config menu also edits. Each has a range or a
+        // short list, and a value outside either is a named refusal rather than a
+        // silent half-read — the same promise the menu keeps by clamping, kept here
+        // for the file somebody edits at 2am.
+        const std::string body_keys = dir + "/body-menu-keys";
+        writeFile(body_keys, "scrollback = 5000\npadding = 14\ncursor_style = bar\n");
+        ::setenv("KAI_TERM_CONFIG", body_keys.c_str(), 1);
+        {
+            const Config keys = loadConfig();
+            expect("the scrollback, the padding and the cursor shape all arrive",
+                   keys.problems.empty() && keys.scrollback && *keys.scrollback == 5000 &&
+                       keys.padding && *keys.padding == 14.0 && keys.cursor_style &&
+                       *keys.cursor_style == CursorStyle::Bar);
+        }
+        const std::string wrong = dir + "/body-menu-wrong";
+        writeFile(wrong, "scrollback = ninety thousand\npadding = 4000\ncursor_style = blok\n");
+        ::setenv("KAI_TERM_CONFIG", wrong.c_str(), 1);
+        {
+            const Config junk = loadConfig();
+            expect("a scrollback spelled in words is refused by name",
+                   !junk.scrollback && mentions(junk.problems, "scrollback"));
+            expect("four thousand pixels of padding is out of range",
+                   !junk.padding && mentions(junk.problems, "padding"));
+            // A misspelled answer is the one mistake worth calling out by its
+            // alternatives: `blok` is a typo, and the person knows both words.
+            expect("a cursor shape that is not one of the three is refused",
+                   !junk.cursor_style && mentions(junk.problems, "cursor_style") &&
+                       mentions(junk.problems, "block"));
+            expect("all three said their piece", junk.problems.size() == 3);
+        }
+    }
+    {
         // A ground of 0 is allowed — an invisible background is a thing a person
         // may genuinely want — and a negative one is not.
         const std::string edges = dir + "/body-glass-edges";

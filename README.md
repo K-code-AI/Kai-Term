@@ -370,6 +370,15 @@ nothing can be kept.
   with it; a session that was kept is asked about by nobody, since its work goes
   on whether or not this window is looking at it.
 
+- **Ctrl+Shift+K** opens the settings menu over the grid — font size, the two
+  transparencies, padding, scrollback, cursor style and when closing asks — walked
+  with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, Enter
+  saving to `kai-term.conf` and Esc leaving with the window put back as it was. The
+  preview is the window, so a font you are choosing is a font you are looking at. A
+  row cannot be driven outside the values its setting accepts: numbers stop at their
+  edges, and a row like `confirm quit` only steps between the three words the file
+  takes.
+
 - **Ctrl+Shift+P** opens the colour picker over the grid: the five window colours
   and the sixteen ANSI palette entries, walked with Up/Down or k/j, digits walked
   with Left/Right or h/l, a hex digit typed replaces the one under the cursor and
@@ -472,6 +481,9 @@ rows         = 30
 background_opacity = 0.8        # how solid the ground is: 0.2 lets the desktop through
 foreground_opacity = 1          # how solid the text, cursor and dialogs are
                                 # (`opacity` is the older name for the ground; it still reads)
+scrollback     = 1000           # lines a screen remembers above its top edge (0-20000)
+padding        = 10             # pixels of air between the grid and the window edge (0-64)
+cursor_style   = underline      # block | bar | underline, until a program picks its own
 
 # ~/.config/kai-term/theme.conf
 foreground   = #dcdcdc          # the ink of unstyled text
@@ -504,6 +516,13 @@ picker has two more rows below the colours, `background opacity` and `foreground
 typed as `1` to `100` where 100 is fully solid; those two are saved to `kai-term.conf`,
 because they are not colours. Saving never resizes the window — the grid and font you have
 now are the ones you keep.
+
+Both panels take the mouse as well as the keyboard: the wheel walks the list, a click
+picks a row, a click inside a value puts the cursor on the digit you clicked, a row's
+`-` and `+` step it by one, and `save` and `leave` at the bottom are the two words Enter
+and Esc already were. Percentages are shown three digits wide — `100`, `075`, `005` — so
+the highlighted digit sits over the digit it is editing instead of sliding along when a
+number loses a place.
 
 ### Transparency
 

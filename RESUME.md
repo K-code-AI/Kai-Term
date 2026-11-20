@@ -38,7 +38,13 @@ beneath both. And all twenty-one can be chosen inside the window itself —
 and writes the changed lines back to `theme.conf`. Two rows below the colours choose how
 solid the window is — `background_opacity` for the ground the cells sit on and
 `foreground_opacity` for the text, cursor and dialogs, typed `1` to `100` — and because
-those are not colours they go to `kai-term.conf`. The ground is transparent by painting
+those are not colours they go to `kai-term.conf`. The rest of the settings have their own
+menu now — **Ctrl+Shift+K** opens font size, the two transparencies, padding, scrollback,
+cursor style and when closing asks, over the grid, previewing on the window as you go and
+writing `kai-term.conf` when you say save. A row there cannot be driven outside the values
+its setting accepts, and both panels answer the mouse: the wheel walks the list, a click
+picks a row or the digit inside a value, each row has its `-` and `+`, and `save`/`leave`
+are the two words Enter and Esc already were. The ground is transparent by painting
 it at its own alpha on a surface that has one, so the desktop shows through while the
 text stays as solid as it was made; the X11 whole-window fade was tried first and does
 nothing on a Wayland compositor, and would have dimmed the glyphs along with the

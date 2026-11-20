@@ -7,6 +7,7 @@
 #include "selection.hpp"
 #include "text.hpp"
 #include "backend.hpp"
+#include "../config/settingspicker.hpp"
 #include "../config/themepicker.hpp"
 
 #include <poll.h>
@@ -271,6 +272,81 @@ public:
     }
     bool pickerActive() const { return picker_ != nullptr; }
 
+    // The fourth shape over the grid: the settings menu. Same shape as the colour
+    // picker and the same rule — the decisions live in `SettingsPicker`, which has
+    // no Qt in it, the pixels live here, and the preview is the window. `preview`
+    // is handed each row the moment it moves, so the window changes while you are
+    // looking at it; `finish` says whether any of it should be written down.
+    void pickSettingsInTerminal(
+        std::vector<SettingRow> rows,
+        std::function<void(std::vector<SettingRow>, bool saved)> finish,
+        std::function<void(const SettingRow&)> preview) {
+        if (overlay_.active || picker_ || settings_)
+            return; // one thing at a time over the grid; a stack is always the wrong one
+        settings_ = std::make_unique<SettingsPicker>(std::move(rows));
+        settings_finish_ = std::move(finish);
+        settings_preview_ = std::move(preview);
+        update();
+    }
+    bool settingsActive() const { return settings_ != nullptr; }
+
+    // Where the settings menu put its rows and arrows, as they were last painted.
+    // A test that wants to click a line asks here rather than redoing the layout
+    // arithmetic, because the only honest answer is the geometry the pixels used —
+    // a second calculation would be a second opinion, and the two would drift.
+    QRectF settingsRowRect(int model_row) const {
+        for (std::size_t i = 0; i < settings_hit_.row_index.size(); ++i) {
+            if (settings_hit_.row_index[i] == model_row && i < settings_hit_.rows.size())
+                return settings_hit_.rows[i];
+        }
+        return QRectF();
+    }
+    QPointF settingsStepPoint(int model_row, bool up) const {
+        for (std::size_t i = 0; i < settings_hit_.row_index.size(); ++i) {
+            if (settings_hit_.row_index[i] != model_row)
+                continue;
+            const std::vector<QRectF>& boxes = up ? settings_hit_.plus : settings_hit_.minus;
+            if (i >= boxes.size())
+                break;
+            return boxes[i].center();
+        }
+        return QPointF();
+    }
+    QPointF settingsSavePoint() const { return settings_hit_.save.center(); }
+    QPointF pickerSavePoint() const { return picker_hit_.save.center(); }
+
+    // The window's body, as the config or the settings menu asked for it. Padding
+    // re-derives the grid because it changes how many cells the same window holds;
+    // the scrollback depth and the cursor shape are the model's business and are
+    // handed straight on to it.
+    void setPadding(double pixels) {
+        padding_ = std::clamp(pixels, 0.0, 64.0);
+        applyGridGeometry();
+        update();
+    }
+    double padding() const { return padding_; }
+    void setHistoryLimit(int lines) {
+        if (lines < 0)
+            lines = 0;
+        screen_.setHistoryLimit(static_cast<std::size_t>(lines));
+        update();
+    }
+    int historyLimit() const { return static_cast<int>(screen_.historyLimit()); }
+    void setCursorStyle(CursorStyle style) {
+        screen_.setDefaultCursorShape(style == CursorStyle::Block    ? Screen::CursorShape::Block
+                                        : style == CursorStyle::Bar  ? Screen::CursorShape::Bar
+                                                                      : Screen::CursorShape::Underline);
+        update();
+    }
+    CursorStyle cursorStyle() const {
+        switch (screen_.defaultCursorShape()) {
+            case Screen::CursorShape::Block: return CursorStyle::Block;
+            case Screen::CursorShape::Bar: return CursorStyle::Bar;
+            case Screen::CursorShape::Underline: return CursorStyle::Underline;
+        }
+        return CursorStyle::Underline;
+    }
+
     // The thread that turns bytes from the far end into events for this window. Its own
     // method because a window can be shown a different shell, and the new one needs a
     // reader of its own. The generation number and the backend are both taken here, at
@@ -433,6 +509,10 @@ public:
     // Ctrl+Shift+P: the theme picker, owned by whoever runs the window. P is
     // for palette, and it was free — the held-free list (F, N, H) is untouched.
     std::function<void()> on_theme_picker;
+    // Ctrl+Shift+K: the settings menu. K is for configuration — the key is free
+    // of the held list (F, N, H) and of the chords the shell and the programs
+    // inside it already answer to.
+    std::function<void()> on_settings_menu;
 
     // One line the window says for itself, shown in the corner for a moment and then
     // gone. A keybind that keeps your work and says nothing is a keybind that gets
@@ -821,6 +901,13 @@ public:
             return;
         }
 
+        // The settings menu owns the keyboard on the same terms: a digit is a
+        // value there, and a letter may be the answer you are choosing.
+        if (settings_) {
+            settingsKeyPress(key, mods, ev->text());
+            return;
+        }
+
         // Ctrl+Shift+C and Ctrl+Shift+V are the terminal's own, handled before
         // anything else and never written to the PTY. Without the early return
         // Ctrl+Shift+C would encode as Ctrl+C and interrupt whatever is running.
@@ -856,6 +943,10 @@ public:
             }
             if (key == Qt::Key_P && on_theme_picker) {
                 on_theme_picker();
+                return;
+            }
+            if (key == Qt::Key_K && on_settings_menu) {
+                on_settings_menu();
                 return;
             }
         }
@@ -900,8 +991,14 @@ public:
             overlayPress(ev->position());
             return;
         }
-        if (picker_)
-            return; // a picker is driven by keys; a stray tap does nothing, least of all quit
+        if (settings_) {
+            settingsPress(ev->position());
+            return;
+        }
+        if (picker_) {
+            pickerPress(ev->position());
+            return;
+        }
         stopEdgeScroll();
         if (scrollBarPress(ev->position()))
             return;
@@ -1095,7 +1192,23 @@ public:
         // The view does not scroll out from under a dialog: while one is up
         // the wheel has nothing to do, and saying so is better than letting
         // the question float away from the text behind it.
-        if (overlay_.active || picker_) {
+        if (overlay_.active) {
+            ev->accept();
+            return;
+        }
+        // Over one of the two lists, the wheel walks the highlight, which is what
+        // the arrows do. A picker is usually taller than the window holding it, and
+        // a wheel that scrolled the terminal behind it would move text nobody is
+        // looking at while leaving the row you meant to click off screen.
+        if (picker_ || settings_) {
+            const int steps = ev->angleDelta().y() / 120;
+            if (steps != 0) {
+                if (picker_)
+                    picker_->step(steps > 0 ? -1 : 1);
+                else
+                    settings_->step(steps > 0 ? -1 : 1);
+                update();
+            }
             ev->accept();
             return;
         }
@@ -1371,6 +1484,7 @@ public:
         // the desktop around it.
         paintOverlay(p);
         paintPicker(p);
+        paintSettings(p);
     }
 
 private:
@@ -1649,6 +1763,100 @@ private:
         }
     }
 
+    // The settings menu's keys. Walking is the colour picker's walking — arrows
+    // or k/j for the lines, h/l along the value — with `+` and `-` added, because
+    // a row of numbers is as often nudged as it is typed, and a choice row has no
+    // digits to type into at all.
+    void settingsKeyPress(int key, Qt::KeyboardModifiers mods, const QString& text) {
+        const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
+        if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
+            finishSettings(false);
+            return;
+        }
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            settings_->confirm();
+            finishSettings(true);
+            return;
+        }
+        if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
+            settings_->step(-1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
+            settings_->step(1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
+            if (settings_->current().kind == SettingKind::Choice) {
+                settings_->digitStep(-1);
+                previewSetting();
+            } else
+                settings_->digitStep(-1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Right || (plain && key == Qt::Key_L)) {
+            if (settings_->current().kind == SettingKind::Choice) {
+                settings_->digitStep(1);
+                previewSetting();
+            } else
+                settings_->digitStep(1);
+            update();
+            return;
+        }
+        if (key == Qt::Key_Plus || key == Qt::Key_Equal) {
+            if (settings_->cycle(1))
+                previewSetting();
+            update();
+            return;
+        }
+        if (key == Qt::Key_Minus || key == Qt::Key_Underscore) {
+            if (settings_->cycle(-1))
+                previewSetting();
+            update();
+            return;
+        }
+        // A digit edits a number; a letter picks an answer on a choice row. Both
+        // clamp inside what the setting accepts, so there is no sequence of
+        // keystrokes that lands a row on a value its own file would refuse.
+        if (plain && text.size() == 1) {
+            const char c = text.at(0).toLatin1();
+            const bool typed = settings_->current().kind == SettingKind::Choice
+                                   ? settings_->typeLetter(c)
+                                   : settings_->typeDigit(c);
+            if (typed)
+                previewSetting();
+            update();
+        }
+    }
+
+    // The preview of one row, handed to whoever owns the window: the widget can
+    // change its own font, padding, scrollback and cursor, but the colours and
+    // the file are the window's business.
+    void previewSetting() {
+        if (!settings_ || !settings_preview_)
+            return;
+        settings_preview_(settings_->current());
+    }
+
+    void finishSettings(bool saved) {
+        if (!settings_)
+            return;
+        const std::vector<SettingRow> result =
+            saved ? settings_->changes() : std::vector<SettingRow>{};
+        const std::function<void(std::vector<SettingRow>, bool)> finish =
+            std::move(settings_finish_);
+        settings_.reset();
+        settings_finish_ = nullptr;
+        settings_preview_ = nullptr;
+        settings_hit_ = OverlayHit{}; // nothing is there to click any more
+        update();
+        if (finish)
+            finish(result, saved);
+    }
+
     void overlayKeyPress(int key, Qt::KeyboardModifiers mods) {
         const int count = static_cast<int>(overlay_.choices.size());
         const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
@@ -1745,6 +1953,72 @@ private:
         finishOverlay(-1); // a click outside it is the same word as Esc
     }
 
+    // A press on the colour picker: the row under the pointer becomes the row you
+    // are editing, a press in its value puts the cursor on the digit it landed on,
+    // and the two words at the bottom do what they say. A press outside the panel
+    // does nothing — a colour menu that closed because you clicked elsewhere would
+    // have thrown away colours you were still deciding on, which is why the same
+    // click on the question dialog means "no" and this one means nothing.
+    void pickerPress(const QPointF& where) {
+        const OverlayPress hit = overlayPressAt(picker_hit_, where);
+        if (!picker_ || !hit.hit)
+            return;
+        if (hit.save) {
+            picker_->confirm();
+            finishPicker(true);
+            return;
+        }
+        if (hit.leave) {
+            finishPicker(false);
+            return;
+        }
+        if (hit.row < 0)
+            return;
+        picker_->setRow(hit.row);
+        if (hit.digit >= 0)
+            picker_->setDigit(hit.digit);
+        update();
+    }
+
+    // A press on the settings menu answers with the same three moves the keyboard
+    // makes: pick the row, put the cursor on a digit, or step the value. The step
+    // arrows and a click on an answer both go through the model, so the mouse
+    // cannot reach a value the keys could not.
+    void settingsPress(const QPointF& where) {
+        const OverlayPress hit = overlayPressAt(settings_hit_, where);
+        if (!settings_ || !hit.hit)
+            return;
+        if (hit.save) {
+            settings_->confirm();
+            finishSettings(true);
+            return;
+        }
+        if (hit.leave) {
+            finishSettings(false);
+            return;
+        }
+        if (hit.row < 0)
+            return;
+        settings_->setRow(hit.row);
+        if (hit.step_down || hit.step_up) {
+            if (settings_->cycle(hit.step_up ? 1 : -1))
+                previewSetting();
+            update();
+            return;
+        }
+        if (hit.digit >= 0) {
+            // Clicking a whole answer moves to the next one; clicking a number
+            // puts the cursor on the digit under the pointer.
+            if (settings_->current().kind == SettingKind::Choice) {
+                settings_->digitStep(1);
+                previewSetting();
+            } else {
+                settings_->setDigit(hit.digit);
+            }
+        }
+        update();
+    }
+
     // Over a list, the pointer is a selector: where it rests is what Enter
     // would choose, the same rule every TUI menu follows.
     void overlayHover(const QPointF& where) {
@@ -1834,6 +2108,25 @@ private:
         }
     }
 
+    // What an overlay last painted, so that a click is answered with the geometry
+    // the pointer was looking at rather than a second guess at the layout. The
+    // painting writes these on its way to the screen and a press only reads them;
+    // computed twice, the two would drift and a click would land on the line above
+    // the one you aimed at.
+    struct OverlayHit {
+        QRectF panel;
+        std::vector<QRectF> rows;    // the visible rows, top to bottom
+        std::vector<int> row_index;  // which line of the model each rect is
+        double table_x = 0.0;        // where the value column starts, in pixels
+        int label_w = 12;            // the label column, in cells
+        double cw = 1.0;             // one cell, in pixels
+        int lead = 0;                // cells before the first editable digit
+        QRectF save;                 // the two words at the bottom of the panel
+        QRectF cancel;
+        std::vector<QRectF> minus;   // the two arrows of each row, for a mouse
+        std::vector<QRectF> plus;
+    };
+
     // The picker, painted in the same voice as the dialogs: the terminal's
     // dimmed own background, its own font, its own selection band under the
     // row you are on. Two things the other dialogs never needed: a swatch,
@@ -1873,10 +2166,10 @@ private:
         // always on screen, because a picker that walks its selection off the
         // top edge has lost the one line you were editing.
         const int total = static_cast<int>(fields.size());
-        const double needed_h = (2 + total + 2) * ch + 2 * pad;
+        const double needed_h = (3 + total + 2) * ch + 2 * pad; // title, rows, buttons, hint
         const double max_h = std::max(6.0 * ch, height() - ch);
         const double panel_h = std::min(needed_h, max_h);
-        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 2 * ch) / ch));
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 3 * ch) / ch));
         int first = 0;
         if (total > visible)
             first = std::clamp(picker_->row() - visible + 1, 0, total - visible);
@@ -1901,11 +2194,18 @@ private:
 
         const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
         const int last = std::min(first + visible, total);
+        picker_hit_ = OverlayHit{};
+        picker_hit_.panel = panel;
+        picker_hit_.table_x = table_x;
+        picker_hit_.label_w = label_w;
+        picker_hit_.cw = cw;
         for (int i = first; i < last; ++i) {
             const ThemeField& field = fields[static_cast<std::size_t>(i)];
             const bool focused = i == picker_->row();
             const QRectF row(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
                              inner_w + pad, ch);
+            picker_hit_.rows.push_back(row);
+            picker_hit_.row_index.push_back(i);
             if (focused) {
                 p.setRenderHint(QPainter::Antialiasing, true);
                 p.setPen(Qt::NoPen);
@@ -1921,7 +2221,7 @@ private:
                 QString::fromStdString(field.label.empty() ? field.key : field.label);
             p.drawText(QPointF(table_x, y), label.leftJustified(label_w, QLatin1Char(' ')));
             const std::string hex = field.kind == FieldKind::Percent
-                                        ? std::to_string(field.value.r) + '%'
+                                        ? percentText(field.value.r) + "%"
                                         : colourText(field.value);
             p.drawText(QPointF(table_x + label_w * cw, y), QString::fromStdString(hex));
 
@@ -1958,6 +2258,8 @@ private:
             y += ch;
         }
 
+        paintOverlayButtons(p, panel, pad, fm, fg, picker_hit_.save, picker_hit_.cancel);
+
         // The hint is anchored to the bottom of the panel, because the panel
         // may be shorter than the list: a hint that scrolls away with the
         // rows would be the one line the picker always had and never kept.
@@ -1965,6 +2267,206 @@ private:
         p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
                           fm.height()),
                    Qt::AlignHCenter | Qt::AlignVCenter, hint);
+    }
+
+    // The settings menu, in the picker's voice: the same dimmed panel, the same
+    // highlight band, the same cursor over one digit. Two things differ, and both
+    // are because a setting is not a colour. A value is padded to the width it can
+    // reach, so `05000` and `01000` line up and the cursor stays over the digit it
+    // names instead of sliding when the number loses a place. And every row carries
+    // a `-` and a `+`: a number you can nudge by one as well as type, and an answer
+    // you can only ever step between the ones it has — which is what makes an
+    // invalid value unreachable with the mouse too, not only with the keys.
+    void paintSettings(QPainter& p) const {
+        if (!settings_)
+            return;
+        const double cw = cellWidth();
+        const double ch = cellHeight();
+        const Color bg = screen_.defaultBackground();
+        const Color fg = screen_.defaultForeground();
+        const QString hint =
+            QStringLiteral("arrows walk · type or click · - + nudge · enter saves");
+        const auto& rows = settings_->rows();
+
+        int label_w = 16;
+        int value_w = 5;
+        for (const SettingRow& row : rows) {
+            const std::string& name = row.label.empty() ? row.key : row.label;
+            label_w = std::max(label_w, static_cast<int>(name.size()) + 2);
+            value_w = std::max(value_w, static_cast<int>(settingValueText(row).size()));
+        }
+        const double table_w = (label_w + value_w + 4) * cw; // label, value, gap, two arrows
+        const double pad = 1.5 * ch;
+        QFontMetricsF fm(font_);
+        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
+        const double panel_w = inner_w + 2 * pad;
+        const int total = static_cast<int>(rows.size());
+        const double needed_h = (3 + total + 2) * ch + 2 * pad;
+        const double max_h = std::max(6.0 * ch, height() - ch);
+        const double panel_h = std::min(needed_h, max_h);
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - 3 * ch) / ch));
+        int first = 0;
+        if (total > visible)
+            first = std::clamp(settings_->row() - visible + 1, 0, total - visible);
+        const QRectF panel((width() - panel_w) / 2.0, (height() - panel_h) / 2.0, panel_w,
+                           panel_h);
+
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(ink(fg, 80), 1));
+        p.setBrush(ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                         std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                         std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
+        p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setFont(font_);
+
+        double y = panel.y() + pad + fm.ascent();
+        p.setPen(ink(fg));
+        p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("settings"));
+        y += ch;
+
+        const double table_x = panel.x() + (panel_w - inner_w) / 2.0;
+        const int last = std::min(first + visible, total);
+        settings_hit_ = OverlayHit{};
+        settings_hit_.panel = panel;
+        settings_hit_.table_x = table_x;
+        settings_hit_.label_w = label_w;
+        settings_hit_.cw = cw;
+        for (int i = first; i < last; ++i) {
+            const SettingRow& row = rows[static_cast<std::size_t>(i)];
+            const bool focused = i == settings_->row();
+            const QRectF box(panel.x() + pad / 2, y - ch + fm.ascent() * 0.15,
+                             inner_w + pad, ch);
+            settings_hit_.rows.push_back(box);
+            settings_hit_.row_index.push_back(i);
+            if (focused) {
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.setPen(Qt::NoPen);
+                p.setBrush(ground(theme_.selection));
+                p.drawRoundedRect(box, kScrollBarRadius, kScrollBarRadius);
+                p.setRenderHint(QPainter::Antialiasing, false);
+            }
+            p.setPen(ink(fg));
+            const QString label =
+                QString::fromStdString(row.label.empty() ? row.key : row.label);
+            p.drawText(QPointF(table_x, y), label.leftJustified(label_w, QLatin1Char(' ')));
+            const QString value = QString::fromStdString(settingValueText(row));
+            p.drawText(QPointF(table_x + label_w * cw, y), value);
+
+            // The row's two arrows: the same two keystrokes, drawn where a pointer
+            // can find them. Both go through the model's own clamps, so clicking
+            // `+` on a font of 72 does what pressing it does, which is nothing.
+            const QRectF minus(table_x + (label_w + value_w + 1) * cw, box.top(),
+                               cw * 1.5, ch);
+            const QRectF plus(table_x + (label_w + value_w + 2.5) * cw, box.top(),
+                              cw * 1.5, ch);
+            settings_hit_.minus.push_back(minus);
+            settings_hit_.plus.push_back(plus);
+            p.setPen(ink(fg, focused ? 255 : 150));
+            p.drawText(minus, Qt::AlignCenter, QStringLiteral("-"));
+            p.drawText(plus, Qt::AlignCenter, QStringLiteral("+"));
+
+            // The digit the next keystroke or the next click will replace. A choice
+            // row gets no cursor: its value is one of a few whole answers, and half
+            // of an answer is not a thing.
+            if (focused && row.kind != SettingKind::Choice) {
+                const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+                p.setPen(QPen(accent, 1));
+                const double dx = table_x + (label_w + settings_->digit()) * cw;
+                p.drawLine(QPointF(dx, y + fm.descent() * 0.4),
+                           QPointF(dx + cw - 1, y + fm.descent() * 0.4));
+            }
+            y += ch;
+        }
+
+        paintOverlayButtons(p, panel, pad, fm, fg, settings_hit_.save,
+                            settings_hit_.cancel);
+        p.setPen(ink(fg, 140));
+        p.drawText(QRectF(panel.x(), panel.bottom() - pad - fm.height(), panel.width(),
+                          fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, hint);
+    }
+
+    // The two words at the bottom of an overlay: `save` and `leave`. A panel that
+    // only the keyboard can answer is a panel a mouse cannot finish, and these are
+    // the two things every dialog has always been click-worthy — do it, or don't.
+    // They are painted in the panel's own voice, and both stay live whatever row
+    // the highlight is on, because clicking `leave` should never depend on where
+    // you were editing.
+    void paintOverlayButtons(QPainter& p, const QRectF& panel, double pad,
+                             const QFontMetricsF& fm, const Color& fg, QRectF& save,
+                             QRectF& cancel) const {
+        const double ch = cellHeight();
+        const double cw = cellWidth();
+        const QString save_word = QStringLiteral("save");
+        const QString leave_word = QStringLiteral("leave");
+        const double gap = 3 * cw;
+        const double save_w = fm.horizontalAdvance(save_word) + cw;
+        const double leave_w = fm.horizontalAdvance(leave_word) + cw;
+        const double y = panel.bottom() - pad - 2 * ch;
+        const double left = panel.x() + (panel.width() - (save_w + gap + leave_w)) / 2.0;
+        save = QRectF(left, y, save_w, ch);
+        cancel = QRectF(left + save_w + gap, y, leave_w, ch);
+        struct { const QString* word; const QRectF* box; QColor colour; } buttons[2] = {
+            {&save_word, &save, QColor(theme_.accent.r, theme_.accent.g, theme_.accent.b)},
+            {&leave_word, &cancel, QColor(fg.r, fg.g, fg.b)}};
+        for (const auto& button : buttons) {
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(ink(button.colour.red(), button.colour.green(), button.colour.blue(), 150), 1));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(*button.box, kScrollBarRadius, kScrollBarRadius);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setPen(ink(button.colour.red(), button.colour.green(), button.colour.blue()));
+            p.drawText(*button.box, Qt::AlignCenter, *button.word);
+        }
+    }
+
+    // Where a press landed inside an overlay. The answer is one of the things the
+    // panel can act on, worked out from the geometry that was actually painted.
+    struct OverlayPress {
+        int row = -1;    // which line of the model, or -1 for none of them
+        int digit = -1;  // which digit of its value, or -1
+        bool save = false;
+        bool leave = false;
+        bool step_down = false; // the row's `-` arrow
+        bool step_up = false;   // and its `+` arrow
+        bool hit = false; // anywhere inside the panel, buttons and rows included
+    };
+    OverlayPress overlayPressAt(const OverlayHit& hit, const QPointF& where) const {
+        OverlayPress out;
+        if (!hit.panel.isValid() || !hit.panel.contains(where))
+            return out;
+        out.hit = true;
+        if (hit.save.contains(where)) {
+            out.save = true;
+            return out;
+        }
+        if (hit.cancel.contains(where)) {
+            out.leave = true;
+            return out;
+        }
+        for (std::size_t i = 0; i < hit.rows.size(); ++i) {
+            if (!hit.rows[i].contains(where))
+                continue;
+            out.row = hit.row_index[i];
+            if (i < hit.minus.size() && hit.minus[i].contains(where)) {
+                out.step_down = true;
+                return out;
+            }
+            if (i < hit.plus.size() && hit.plus[i].contains(where)) {
+                out.step_up = true;
+                return out;
+            }
+            // The value column starts after the labels; a press in it picks the
+            // digit under the pointer, which is the whole point of a cursor you
+            // can put where you want it.
+            const double value_x = hit.table_x + (hit.label_w + hit.lead) * hit.cw;
+            if (hit.cw > 0.0 && where.x() >= value_x)
+                out.digit = static_cast<int>((where.x() - value_x) / hit.cw);
+            return out;
+        }
+        return out;
     }
 
     // A press that lands on the indicator belongs to the terminal, not to the
@@ -2043,6 +2545,11 @@ private:
     Theme picker_before_;
     Screen::ColourLocks picker_saved_locks_; // the config's locks, restored on a cancel
     std::function<void(std::vector<ThemeField>, bool saved)> picker_finish_;
+    std::unique_ptr<SettingsPicker> settings_;
+    std::function<void(std::vector<SettingRow>, bool saved)> settings_finish_;
+    std::function<void(const SettingRow&)> settings_preview_;
+    mutable OverlayHit picker_hit_;
+    mutable OverlayHit settings_hit_;
     bool owns_screen_ = true;
     bool closing_on_close_ = false;
     double padding_ = 10.0;

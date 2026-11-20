@@ -77,6 +77,34 @@ struct Rgb {
     int b = 0;
 };
 
+// The shape the cursor has until a program asks for a different one. Three
+// answers, spelled the way every terminal's config spells them, because a
+// setting with three answers should not accept a fourth: `cursor_style = block`
+// is the setting, and `cursor_style = blok` is a line that says what it wanted.
+enum class CursorStyle { Block, Bar, Underline };
+
+inline bool cursorStyleFromText(const std::string& text, CursorStyle& out) {
+    const std::string word = lowerWord(text);
+    if (word == "block")
+        out = CursorStyle::Block;
+    else if (word == "bar")
+        out = CursorStyle::Bar;
+    else if (word == "underline")
+        out = CursorStyle::Underline;
+    else
+        return false;
+    return true;
+}
+
+inline const char* cursorStyleText(CursorStyle style) {
+    switch (style) {
+        case CursorStyle::Block: return "block";
+        case CursorStyle::Bar: return "bar";
+        case CursorStyle::Underline: return "underline";
+    }
+    return "underline";
+}
+
 inline std::optional<Rgb> colourSetting(const std::optional<std::array<int, 3>>& value) {
     if (!value)
         return std::nullopt;
@@ -140,6 +168,18 @@ struct Config {
     // is what it always meant — the file a person already wrote keeps working.
     std::optional<double> background_opacity;
     std::optional<double> foreground_opacity;
+    // How many lines a screen remembers above its own top edge. A terminal with
+    // no scrollback is a terminal that loses the error you scrolled up to read,
+    // and one with no limit is a slow leak, so the number is a decision rather
+    // than a constant.
+    std::optional<int> scrollback;
+    // The air between the grid and the edge of the window, in pixels. Under a
+    // compositor that rounds its corners this is the difference between glyphs
+    // inside the glass and glyphs clipped by it.
+    std::optional<double> padding;
+    // The cursor's shape before a program picks its own with DECSCUSR — the
+    // default an application may override, not a rule it must obey.
+    std::optional<CursorStyle> cursor_style;
     std::optional<Rgb> foreground;
     std::optional<Rgb> background;
     std::optional<Rgb> cursor;
@@ -318,6 +358,24 @@ inline void parseConfigFile(const std::string& path, Config& config) {
                 note(line_no, "foreground_opacity wants a number from 0 to 1, got '" + value + "'");
             else
                 config.foreground_opacity = got;
+        } else if (key == "scrollback") {
+            int got = 0;
+            if (!numberFromText(value, 0, 20000, got))
+                note(line_no, "scrollback wants a number from 0 to 20000, got '" + value + "'");
+            else
+                config.scrollback = got;
+        } else if (key == "padding") {
+            double got = 0.0;
+            if (!fractionFromText(value, 0.0, 64.0, got))
+                note(line_no, "padding wants a number from 0 to 64, got '" + value + "'");
+            else
+                config.padding = got;
+        } else if (key == "cursor_style") {
+            CursorStyle got = CursorStyle::Underline;
+            if (!cursorStyleFromText(value, got))
+                note(line_no, "cursor_style wants block, bar or underline, got '" + value + "'");
+            else
+                config.cursor_style = got;
         } else if (key == "foreground") {
             colour(config.foreground);
         } else if (key == "background") {

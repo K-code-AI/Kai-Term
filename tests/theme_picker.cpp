@@ -263,6 +263,18 @@ int main() {
         expect("and 100 means exactly solid", fractionFromPercent(100) == 1.0);
     }
 
+    // The on-screen spelling of a percentage is always three digits wide, so the
+    // cursor stays over the digit it names instead of sliding when the number
+    // loses a place. The file keeps its own shorter spelling; this is the row.
+    {
+        expect("100 reads as 100", percentText(100) == "100");
+        expect("75 reads as 075", percentText(75) == "075");
+        expect("5 reads as 005, not 5", percentText(5) == "005");
+        expect("and all three are the same width",
+               percentText(100).size() == percentText(75).size() &&
+                   percentText(75).size() == percentText(5).size());
+    }
+
     if (failures > 0) {
         std::cerr << failures << " of " << checks << " theme picker checks failed\n";
         return 1;

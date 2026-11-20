@@ -197,6 +197,8 @@ add_executable(kai-term-config tests/config.cpp)
 add_test(NAME config COMMAND kai-term-config)
 add_executable(kai-term-theme-picker tests/theme_picker.cpp)
 add_test(NAME theme-picker COMMAND kai-term-theme-picker)
+add_executable(kai-term-settings-picker tests/settings_picker.cpp)
+add_test(NAME settings-picker COMMAND kai-term-settings-picker)
 
 # Closing the real binary under a real compositor. The close prompt was once "verified" by
 # calling the window's close from a test, while the terminal sat inside a QMainWindow and
@@ -257,6 +259,7 @@ set(KAI_TEST_TARGETS
     kai-term-close-prompt
     kai-term-config
     kai-term-theme-picker
+    kai-term-settings-picker
     kai-term-widget-panes
     kai-term-mouse-app)
 foreach(kai_test ${KAI_TEST_TARGETS})

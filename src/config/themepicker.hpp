@@ -19,6 +19,7 @@
 
 #include "config.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,22 @@ inline std::string fractionText(int percent) {
     if (clamped < 10)
         return "0.0" + std::to_string(clamped);
     return "0." + std::to_string(clamped);
+}
+
+// A percentage on screen is always three digits wide: 100, 075, 005. The number
+// is walked one digit at a time, and a value that changes width as it is typed
+// moves the digits out from under a cursor that stayed where it was — the third
+// digit of `5` would be nothing at all, and of `50` the second one. Padded, the
+// cursor is always over the digit it says it is, which is the whole claim a
+// highlighted digit makes. (Kaida, 2026-11-19: "it's quite hard to have the
+// cursor in the right spot when it keep change from a 3 digit to 2 digit to 1
+// digit value … keep it at 100% 075% 005% so the cursor is always accurate".)
+inline std::string percentText(int percent) {
+    const int clamped = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
+    std::string digits = std::to_string(clamped);
+    while (digits.size() < 3)
+        digits.insert(digits.begin(), '0');
+    return digits;
 }
 
 // One line of the picker. The key is the word the file uses; the label is
@@ -136,6 +153,24 @@ public:
         const int shift = (digit_ % 2 == 0) ? 4 : 0;
         *byte = (*byte & ~(0xf << shift)) | (nibble << shift);
         digitStep(1);
+        return true;
+    }
+
+    // For the mouse: land on a row, and on a digit of it. Both clamp to what
+    // exists, so a click below the last line picks the last line rather than
+    // nothing, and a click past the end of a value picks its last digit.
+    bool setRow(int index) {
+        if (fields_.empty())
+            return false;
+        row_ = std::clamp(index, 0, static_cast<int>(fields_.size()) - 1);
+        digit_ = 0;
+        return true;
+    }
+    bool setDigit(int index) {
+        if (fields_.empty())
+            return false;
+        const int count = digitsOnRow();
+        digit_ = std::clamp(index, 0, count - 1);
         return true;
     }
 

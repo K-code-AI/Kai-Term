@@ -139,6 +139,15 @@ public:
         Bar
     };
     CursorShape cursorShape() const { return cursor_shape_; }
+    // The shape the config asked for. A program can pick its own with DECSCUSR —
+    // that is what the escape is for — and `CSI 0 q` / `CSI 9 q`, which the
+    // standard spells "user default", come back to this rather than to a
+    // constant, so a person's answer is the one a program returns to.
+    void setDefaultCursorShape(CursorShape shape) {
+        default_cursor_shape_ = shape;
+        cursor_shape_ = shape;
+    }
+    CursorShape defaultCursorShape() const { return default_cursor_shape_; }
     int cols() const { return cols_; }
     int cursorX() const { return cursor_x_; }
     int cursorY() const { return cursor_y_; }
@@ -158,6 +167,27 @@ public:
     // last entry is the line that scrolled off most recently. Rows keep the
     // width they were written at, so callers must tolerate shorter rows.
     int historySize() const { return static_cast<int>(scrollback_.size()); }
+    // How far back a screen remembers. The built-in depth covers a long build
+    // log without letting a runaway `yes` grow without end; the config and the
+    // settings menu can say otherwise, and setting it lower trims what is
+    // already there rather than waiting to be asked politely.
+    std::size_t historyLimit() const { return history_limit_; }
+    // Scrollback depth when nobody says otherwise. Bounded so a runaway `yes` in a
+    // loop cannot exhaust memory while still covering a long build log. The daemon
+    // names it too: it is where the history a snapshot is built from lives.
+    static constexpr std::size_t kMaxHistory = 1000;
+    void setHistoryLimit(std::size_t lines) {
+        history_limit_ = lines;
+        if (scrollback_.size() > history_limit_)
+            scrollback_.erase(scrollback_.begin(),
+                              scrollback_.begin() + static_cast<std::ptrdiff_t>(
+                                  scrollback_.size() - history_limit_));
+        if (alternate_scrollback_.size() > history_limit_)
+            alternate_scrollback_.erase(
+                alternate_scrollback_.begin(),
+                alternate_scrollback_.begin() + static_cast<std::ptrdiff_t>(
+                    alternate_scrollback_.size() - history_limit_));
+    }
     const Row* historyRow(int i) const {
         if (i < 0 || i >= static_cast<int>(scrollback_.size()))
             return nullptr;
@@ -391,7 +421,8 @@ public:
         if (!alternate_valid_) {
             // The shell screen keeps its history and its text: lines the
             // terminal had broken are re-broken for the new width.
-            reflow(scrollback_, grid_, new_rows, new_cols, cursor_y_, cursor_x_);
+            reflow(scrollback_, grid_, new_rows, new_cols, cursor_y_, cursor_x_,
+                       history_limit_);
         } else {
             // An application on the alternate screen redraws itself when the
             // window changes size, so its screen is only re-fitted. The shell
@@ -402,7 +433,7 @@ public:
             const int offset = fitGrid(grid_, new_rows, new_cols);
             (void)offset; // the alternate screen has no scrollback to keep
             reflow(alternate_scrollback_, alternate_grid_, new_rows, new_cols,
-                   alternate_cursor_y_, alternate_cursor_x_);
+                   alternate_cursor_y_, alternate_cursor_x_, history_limit_);
             cursor_x_ = std::min(cursor_x_, new_cols - 1);
             cursor_y_ = std::min(cursor_y_, new_rows - 1);
         }
@@ -438,7 +469,8 @@ public:
     // The cursor is kept over the same character and, where the geometry allows,
     // on the same row of the window, so a resize does not shove the prompt away.
     static void reflow(std::vector<Row>& history, std::vector<Row>& grid, int new_rows,
-                       int new_cols, int& cursor_y, int& cursor_x) {
+                       int new_cols, int& cursor_y, int& cursor_x,
+                       std::size_t history_limit = kMaxHistory) {
         std::vector<Row> all;
         all.reserve(history.size() + grid.size());
         for (const Row& r : history)
@@ -585,8 +617,9 @@ public:
         int split = cursor_new - target;
         split = std::clamp(split, 0, std::max(0, static_cast<int>(broken.size()) - new_rows));
         history.assign(broken.begin(), broken.begin() + split);
-        if (history.size() > kMaxHistory)
-            history.erase(history.begin(), history.begin() + (history.size() - kMaxHistory));
+        if (history.size() > history_limit)
+            history.erase(history.begin(),
+                          history.begin() + static_cast<std::ptrdiff_t>(history.size() - history_limit));
         grid.assign(broken.begin() + split,
                     broken.begin() + std::min(broken.size(), static_cast<std::size_t>(split + new_rows)));
         while (grid.size() < static_cast<std::size_t>(new_rows))
@@ -825,6 +858,8 @@ private:
     Attr saved_attr_{};
     bool saved_autowrap_ = true;
     CursorShape cursor_shape_ = CursorShape::Underline;
+    CursorShape default_cursor_shape_ = CursorShape::Underline;
+    std::size_t history_limit_ = kMaxHistory;
     bool autowrap_ = true;
     bool pending_wrap_ = false;
     bool origin_mode_ = false;
@@ -836,13 +871,9 @@ private:
         return Row(cols_);
     }
 
-    // Scrollback depth. Bounded so a runaway `yes` in a loop cannot exhaust
-    // memory while still covering a long build log.
-    static constexpr std::size_t kMaxHistory = 1000;
-
-    static void pushHistory(std::vector<Row>& history, Row row) {
+    void pushHistory(std::vector<Row>& history, Row row) {
         history.push_back(std::move(row));
-        if (history.size() > kMaxHistory)
+        if (history.size() > history_limit_)
             history.erase(history.begin());
     }
 
@@ -1507,7 +1538,7 @@ private:
         autowrap_ = true;
         pending_wrap_ = false;
         origin_mode_ = false;
-        cursor_shape_ = CursorShape::Underline;
+        cursor_shape_ = default_cursor_shape_;
         resetPalette(std::string_view{}); // every custom palette entry goes back
         g0_charset_ = 0;
         g1_charset_ = 0;
@@ -2089,7 +2120,7 @@ private:
                     case 1: case 2: cursor_shape_ = CursorShape::Block; break;
                     case 3: case 4: cursor_shape_ = CursorShape::Underline; break;
                     case 5: case 6: cursor_shape_ = CursorShape::Bar; break;
-                    case 0: case 9: cursor_shape_ = CursorShape::Underline; break; // user default
+                    case 0: case 9: cursor_shape_ = default_cursor_shape_; break; // user default
                     default: break; // 7 and up name nothing; leave the shape alone
                 }
                 break;
@@ -2180,7 +2211,7 @@ private:
                     origin_mode_ = false;
                     cursor_visible_ = true;
                     pending_wrap_ = false;
-                    cursor_shape_ = CursorShape::Underline;
+                    cursor_shape_ = default_cursor_shape_;
                 }
                 break;
             default:

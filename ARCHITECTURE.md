@@ -325,6 +325,36 @@ alignment and its trailing comment, comments and settings the picker has never h
 are copied byte for byte, and the file is replaced through a temp file and a rename so
 an interrupted save leaves the old one standing.
 
+Choosing the other settings without a text editor is the settings menu (Ctrl+Shift+K),
+`src/config/settingspicker.hpp`, built the same way: a Qt-free model holding rows, the
+widget painting them and routing both keys and mouse, and the window itself as the
+preview. Its one rule is that **an invalid value cannot be arrived at**. Every row knows
+the range its setting accepts, or the short list of answers it has, and every mutator —
+a typed digit, `-`/`+`, a click on an arrow, a walk past the end — is clamped or wrapped
+inside that. A form that refuses to *save* a bad number is not enough here, because the
+preview is live: a padding of 4000 pixels would spend the window's pixels long before
+anything was written down. The ranges are the config parser's own, so nothing reachable
+in the menu is a line startup would complain about tomorrow, and what the menu writes
+back is the file's own spelling — `font_size = 16`, `background_opacity = 0.7`,
+`cursor_style = bar`.
+
+Both panels take the mouse, and both answer to the geometry they **last painted**: the
+painting records its row rects, its arrows and its two buttons, and a press reads that
+record. Laying a click out a second time would be a second opinion about where the
+pixels went, and the two opinions would drift into clicks landing on the line above the
+one that was aimed at. Values are shown padded to the width they can reach (`075`,
+`01000`) for the same reason the cursor is trusted: a number that changes width as it is
+typed moves the digits out from under a cursor that stayed where it was.
+
+Two settings behind that menu needed the model to hold them rather than the widget:
+`scrollback` is `Screen`'s own history limit (`setHistoryLimit`, default `kMaxHistory`,
+trimming at once when lowered), and the daemon honours the same file when it creates a
+session — the daemon is where the history a snapshot is built from lives, so a view
+asking for more than the daemon keeps would get less with no explanation. `cursor_style`
+is `Screen`'s *default* cursor shape, which DECSCUSR may override per program and which
+`CSI 0 q` / `CSI 9 q` ("user default") returns to; a reset restores the person's answer
+rather than a constant.
+
 ## Multiplexer subsystem
 
 The multiplexer is a layout tree owned by session metadata:

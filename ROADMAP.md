@@ -366,6 +366,15 @@ Needed:
   opaque") and where it works it fades the glyphs along with the background. Both are
   editable in the picker as `1..100` (100 = solid) and are saved to the behaviour file,
   which is where the rest of them live.
+- **The settings menu, built 2026-11-19** (Ctrl+Shift+K). Font size, the two
+  transparencies, padding, scrollback, cursor style and `confirm_quit`, walked in the
+  window with the preview being the window, saved to `kai-term.conf`. Built so an
+  invalid value cannot be reached — rows clamp to their ranges and a choice row only
+  steps between the answers it has — and drivable with the mouse as well as the keys,
+  which is also why percentages are shown `100`/`075`/`005`: a value that changes width
+  moves the digits out from under the cursor. Three settings came with it
+  (`scrollback`, `padding`, `cursor_style`), the scrollback one honoured in the daemon
+  as well as the window because that is where the history a snapshot reads from lives.
 - **System defaults in `/etc/kai-term/`, deferred** — Kaida's call on 2026-11-19: the
   same two names under `/etc/kai-term/` as system defaults, read first and overridden
   by the user's files, "later, when we do a way to install it down the line". The path

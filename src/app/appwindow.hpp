@@ -157,6 +157,15 @@ public:
         if (apply_body) {
             if (config_.font_size)
                 setFontPixelSize(*config_.font_size);
+            // Padding before the grid: it changes how many cells the window holds,
+            // so sizing to `cols`/`rows` after it is the order that lands on the
+            // grid the file asked for rather than one column away from it.
+            if (config_.padding)
+                setPadding(*config_.padding);
+            if (config_.scrollback)
+                setHistoryLimit(*config_.scrollback);
+            if (config_.cursor_style)
+                setCursorStyle(*config_.cursor_style);
             if (config_.cols || config_.rows)
                 resize(sizeForGrid(config_.rows.value_or(rows()), config_.cols.value_or(cols())));
         }
@@ -558,6 +567,7 @@ private:
         on_save_session = [this] { saveCurrentSession(); };
         on_session_menu = [this] { showSessionMenu(); };
         on_theme_picker = [this] { showThemePicker(); };
+        on_settings_menu = [this] { showSettingsMenu(); };
     }
 
     // Ctrl+Shift+P: choose the colours inside the terminal, with the terminal
@@ -661,6 +671,144 @@ private:
                           Rgb{percentFromFraction(theme.foreground_opacity), 0, 0},
                           "foreground opacity", FieldKind::Percent});
         return fields;
+    }
+
+    // Ctrl+Shift+K: the settings the file holds, walked inside the window.
+    //
+    // The same shape as the colour picker, for the same reason: the decisions are
+    // in a Qt-free model, the pixels are the widget's, and the preview is the
+    // window, so changing the font shows you the font. What a menu has over an
+    // editor is that a row cannot hold a value its own setting would refuse. Each
+    // row knows the range it accepts, or the short list of answers it has, and the
+    // keys, the row's `-`/`+`, and a click all go through the same clamps — so
+    // there is no way to leave this menu with a font size of 4000 or a
+    // `confirm_quit` that is not one of the three words the file takes.
+    void showSettingsMenu() {
+        const std::vector<SettingRow> rows = settingsRows();
+        // What the window is doing before anybody touches it, so that leaving
+        // without saving puts every live change back. A preview you cannot undo is
+        // not a preview, it is a commit.
+        const int font_before = fontPixelSize();
+        const double padding_before = padding();
+        const int scrollback_before = historyLimit();
+        const CursorStyle cursor_before = cursorStyle();
+        const double ground_before = theme().background_opacity;
+        const double ink_before = theme().foreground_opacity;
+        const std::string quit_before = config_.confirm_quit;
+
+        pickSettingsInTerminal(
+            rows,
+            [this, font_before, padding_before, scrollback_before, cursor_before, ground_before,
+             ink_before, quit_before](std::vector<SettingRow> changed, bool saved) {
+                if (!saved) {
+                    setFontPixelSize(font_before);
+                    setPadding(padding_before);
+                    setHistoryLimit(scrollback_before);
+                    setCursorStyle(cursor_before);
+                    config_.confirm_quit = quit_before;
+                    applyOpacity(ground_before, ink_before);
+                    return;
+                }
+                if (changed.empty())
+                    return; // nothing moved; the file stays exactly as it was
+                std::vector<std::pair<std::string, std::string>> updates;
+                for (const SettingRow& row : changed)
+                    updates.emplace_back(row.key, settingFileText(row));
+                std::string error;
+                if (!saveConfigValues(config_.settings_path, updates, error)) {
+                    setStatusText("could not save settings: " + error, 8000);
+                    return;
+                }
+                setStatusText("settings saved to " + config_.settings_path, 6000);
+                // Re-read so the window's idea of the settings matches the file
+                // that is now on disk — the close prompt takes `confirm_quit` from
+                // there, for one. The body is deliberately not re-applied: the
+                // values you just chose are the ones the window is already showing,
+                // and saving must not move the window a second time.
+                adoptConfig(ownsScreen(), false);
+            },
+            [this](const SettingRow& row) { applySetting(row); });
+    }
+
+    // The menu's rows, read from the window rather than from the file: what the
+    // person is looking at is the thing they are editing. Ranges are the file's
+    // own — the same numbers the config parser refuses outside of — so a value you
+    // can reach in the menu is a value the reader will accept tomorrow morning.
+    std::vector<SettingRow> settingsRows() const {
+        std::vector<SettingRow> rows;
+        rows.push_back({"font_size", "font size", SettingKind::Integer, fontPixelSize(), 6, 72});
+        rows.push_back({"background_opacity", "background opacity", SettingKind::Percent,
+                        percentFromFraction(theme().background_opacity), 1, 100});
+        rows.push_back({"foreground_opacity", "foreground opacity", SettingKind::Percent,
+                        percentFromFraction(theme().foreground_opacity), 1, 100});
+        rows.push_back({"padding", "padding", SettingKind::Integer,
+                        static_cast<int>(padding() + 0.5), 0, 64});
+        rows.push_back({"scrollback", "scrollback", SettingKind::Integer, historyLimit(), 0,
+                        20000});
+        const int shape = cursorStyle() == CursorStyle::Block
+                              ? 0
+                              : (cursorStyle() == CursorStyle::Bar ? 1 : 2);
+        rows.push_back({"cursor_style", "cursor style", SettingKind::Choice, shape, 0, 0, 0,
+                        {"block", "bar", "underline"}});
+        const std::string policy = policyWord(closePolicy());
+        int quit = 1; // the answer with no file and no environment saying otherwise
+        for (const char* word : {"never", "running", "always"}) {
+            if (policy == word)
+                break;
+            ++quit;
+        }
+        rows.push_back({"confirm_quit", "confirm quit", SettingKind::Choice, quit, 0, 0, 0,
+                        {"never", "running", "always"}});
+        return rows;
+    }
+
+    // One row, applied to the live window. This is what makes the preview real:
+    // the same setters the config file goes through at startup, called on every
+    // keystroke and every click.
+    void applySetting(const SettingRow& row) {
+        if (row.key == "font_size")
+            setFontPixelSize(row.value);
+        else if (row.key == "padding")
+            setPadding(row.value);
+        else if (row.key == "scrollback")
+            setHistoryLimit(row.value);
+        else if (row.key == "cursor_style")
+            setCursorStyle(row.value == 0 ? CursorStyle::Block
+                             : row.value == 1 ? CursorStyle::Bar
+                                              : CursorStyle::Underline);
+        else if (row.key == "confirm_quit")
+            config_.confirm_quit = settingFileText(row);
+        else if (row.key == "background_opacity")
+            applyOpacity(fractionFromPercent(row.value), theme().foreground_opacity);
+        else if (row.key == "foreground_opacity")
+            applyOpacity(theme().background_opacity, fractionFromPercent(row.value));
+    }
+
+    void applyOpacity(double ground, double ink) {
+        Theme next = theme();
+        next.background_opacity = ground;
+        next.foreground_opacity = ink;
+        applyTheme(next, ownsScreen());
+    }
+
+    // The file's spelling of a row: a number for the rows that are numbers, a
+    // fraction for the two percentages, and the word itself for the rows that are
+    // one of a few answers. These are the words `loadConfig` reads back, which is
+    // the test that matters — the menu cannot write a line its own reader would
+    // spend startup complaining about.
+    static std::string settingFileText(const SettingRow& row) {
+        if (row.kind == SettingKind::Percent)
+            return fractionText(row.value);
+        if (row.kind == SettingKind::Choice) {
+            if (row.choices.empty())
+                return std::string();
+            const std::size_t index = static_cast<std::size_t>(
+                ((row.value % static_cast<int>(row.choices.size())) +
+                 static_cast<int>(row.choices.size())) %
+                static_cast<int>(row.choices.size()));
+            return row.choices[index];
+        }
+        return std::to_string(row.value);
     }
 
     static Rgb rgbOf(const Color& colour) {

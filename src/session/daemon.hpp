@@ -40,6 +40,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "../config/config.hpp"
 #include "../ipc/protocol.hpp"
 #include "../ipc/socket.hpp"
 #include "../process/job.hpp"
@@ -424,6 +425,19 @@ public:
         record->name = spec.name;
         record->pty = std::move(pty);
         record->screen = std::make_unique<Screen>(spec.rows, spec.cols);
+        // How far back a session remembers, from the same file the window reads.
+        // The daemon is where the history a snapshot is built from actually lives,
+        // so a deep scrollback means nothing unless it is honoured here too: a view
+        // asking for 20000 lines behind a daemon still trimming at a thousand would
+        // get a thousand and no explanation why. Read once per daemon, because a
+        // person editing the file mid-session is not going to rewrite the history
+        // that has already been kept.
+        static const std::size_t history_limit = [] {
+            const Config config = loadConfig();
+            return config.scrollback ? static_cast<std::size_t>(*config.scrollback)
+                                     : Screen::kMaxHistory;
+        }();
+        record->screen->setHistoryLimit(history_limit);
         record->rows = spec.rows;
         record->cols = spec.cols;
         record->started = static_cast<long long>(std::time(nullptr));

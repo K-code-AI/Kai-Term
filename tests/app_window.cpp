@@ -16,6 +16,7 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QTimer>
 #include <QWidget>
 #include <chrono>
@@ -1007,6 +1008,125 @@ int main(int argc, char** argv) {
         std::remove(glass_theme.c_str());
         ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
         ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
+    }
+
+    {
+        // The settings menu, end to end. Ctrl+Shift+K opens it over the grid, the
+        // preview is the live window, leaving puts the window back and touches no
+        // file, and saving writes the lines that moved in the words the reader takes
+        // back. The mouse drives it too: a panel only the keyboard can answer is a
+        // panel you cannot finish with the thing your hand is already on.
+        const std::string menu_cfg = root + "/menu-settings";
+        std::ofstream(menu_cfg) << "font_size = 12\npadding = 6\n";
+        ::setenv("KAI_TERM_CONFIG", menu_cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(120);
+        expect("the config's font size and padding reach the window",
+               window.fontPixelSize() == 12 && window.padding() == 6.0);
+
+        const auto press_key = [&window](int key, const QString& text = QString()) {
+            QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const auto open_menu = [&window] {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const auto click = [&window](const QPointF& at) {
+            QMouseEvent press(QEvent::MouseButtonPress, at, at, Qt::LeftButton,
+                              Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &press);
+            QMouseEvent release(QEvent::MouseButtonRelease, at, at, Qt::LeftButton,
+                                Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &release);
+        };
+        const auto fileText = [&menu_cfg] {
+            std::ifstream in(menu_cfg);
+            return std::string((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        };
+
+        open_menu();
+        pump(80);
+        expect("Ctrl+Shift+K opens the settings menu over the grid",
+               window.settingsActive());
+        expect("the menu paints where a pointer can reach it",
+               !window.settingsRowRect(0).isNull());
+
+        // The first row is the font. Typing into it changes the window as you go,
+        // because a preview of a font that is not the font is no preview.
+        press_key(Qt::Key_1, "1");
+        press_key(Qt::Key_8, "8");
+        pump(80);
+        expect("typing a font size changes the window while you type",
+               window.fontPixelSize() == 18);
+
+        // Leaving is not saving.
+        press_key(Qt::Key_Escape);
+        pump(80);
+        expect("leaving the menu puts the window back the way it was",
+               !window.settingsActive() && window.fontPixelSize() == 12);
+        expect("and leaves the file exactly as it was",
+               fileText().find("font_size = 12") != std::string::npos);
+
+        // Saving writes the row that moved, in the file's own words.
+        open_menu();
+        pump(80);
+        press_key(Qt::Key_1, "1");
+        press_key(Qt::Key_6, "6");
+        pump(60);
+        press_key(Qt::Key_Return);
+        pump(100);
+        expect("saving writes the font size to the settings file",
+               fileText().find("font_size = 16") != std::string::npos);
+        expect("the window keeps what was chosen", window.fontPixelSize() == 16);
+        expect("a line nobody touched is left alone",
+               fileText().find("padding = 6") != std::string::npos);
+
+        // The mouse: the row's `+`, then the word `save`.
+        open_menu();
+        pump(120);
+        const int padding_row = 3; // font, background opacity, foreground opacity, padding
+        const QPointF plus = window.settingsStepPoint(padding_row, true);
+        expect("every row paints a plus a pointer can hit", !plus.isNull());
+        click(plus);
+        pump(80);
+        expect("clicking + on the padding row moves the window", window.padding() == 7.0);
+        click(window.settingsSavePoint());
+        pump(100);
+        expect("clicking save writes it", fileText().find("padding = 7") != std::string::npos);
+        expect("and the menu closes when you click it", !window.settingsActive());
+
+        // A value the setting would refuse cannot be arrived at: the arrows stop at
+        // the edges rather than wrapping into an absurd number.
+        open_menu();
+        pump(120);
+        for (int i = 0; i < 200; ++i)
+            click(window.settingsStepPoint(0, true)); // the font row, `+`, over and over
+        pump(120);
+        expect("twenty clicks on + stop at the largest font instead of rolling over",
+               window.fontPixelSize() == 72);
+        press_key(Qt::Key_Escape);
+        pump(80);
+        expect("and leaving that experiment off puts the font back",
+               window.fontPixelSize() == 16);
+
+        kai::AppWindow reopened(kai::startWindowBackend(24, 80));
+        expect("the next window reads the saved settings back",
+               reopened.fontPixelSize() == 16 && reopened.padding() == 7.0);
+        reopened.discardOnClose();
+        reopened.shutdown();
+        pump(200);
+
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        std::remove(menu_cfg.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
     }
 
     {
