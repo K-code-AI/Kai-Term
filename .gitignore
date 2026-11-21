@@ -41,6 +41,7 @@ clangd/
 .scratch/
 tmp/
 *.log
+IDEA.md
 
 # OS
 .DS_Store

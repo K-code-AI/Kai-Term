@@ -152,6 +152,23 @@ int main(int argc, char** argv) {
         shot(window, dir, "mixer-bg", s[0], s[1]);
     }
 
+    // The ground the sentence sits on, in the three states the switch walks. The
+    // mixer is open on the window's own background here, which is the case the
+    // default gets "wrong" on purpose: the colour being mixed *is* the ground, and
+    // black and white are what the word at the end of the strip is for.
+    press(window, Qt::Key_Up);  // off the first channel, onto the sentence
+    pump(120);
+    const int ground_sizes[][2] = {{960, 540}, {430, 320}};
+    for (const char* name : {"ground-background", "ground-black", "ground-white"}) {
+        for (const auto& s : ground_sizes) {
+            window.resize(s[0], s[1]);
+            pump(150);
+            shot(window, dir, name, s[0], s[1]);
+        }
+        press(window, Qt::Key_Right);
+        pump(120);
+    }
+
     window.discardOnClose();
     window.shutdown();
     pump(200);

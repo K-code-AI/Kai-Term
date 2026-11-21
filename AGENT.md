@@ -36,9 +36,12 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
   land where they were painted (`tests/app_window.cpp`, the settings-menu block).
 - Verified offscreen: a menu fits a window far smaller than it wants to be — panel, rows,
   bars and the two words all inside it, none of them painted over the others — and the
-  mixer's sample sentence is painted in the colour being mixed while the strip under it is
-  not (`tests/app_window.cpp`, the small-panel block; `build/kai-term-panelview` writes the
-  pictures at four window sizes).
+  mixer's sample sentence is painted in the colour being mixed (`tests/app_window.cpp`,
+  the small-panel block; `build/kai-term-panelview` writes the pictures at four window
+  sizes).
+- Seen on the live window: the preview's ground switch — the sentence on the window's own
+  background, and the word at the end of the strip walking it to black and white, by
+  pointer and by arrow (Kaida, 2026-11-20: "The ground now works I saw it").
 - Verified offscreen: the two transparency settings reach the window's alpha, the picker
   previews them as they are typed, and they save to `kai-term.conf` as fractions
   (`tests/app_window.cpp`, the transparency block). Not verified on a live compositor —
@@ -440,6 +443,28 @@ test that hangs should still cost a test and not a machine.
   pixels — the sentence is the pixel furthest from the strip's own ground — and ask whether
   the last row sits above the two words; the pixel ones fail without the fix, and the
   row-and-word one fails with the fallback font switched off.
+
+- 2026-11-20: **the preview's ground is a choice, not a guess.** The ground that evening
+  was decided *for* you: the panel's own ground unless the colour came within a fifth of
+  the scale of it, in which case the ground stepped toward white or black. Kaida tried it
+  and asked for something honest instead — the ground is the window's own background at
+  its own opacity, and a switch on the side of the strip alternates `background` / `black`
+  / `white` ("The ground should just be of the current background color (with the opacity
+  of the backgroud) and have a switch on the side that alternate between Black / White /
+  Current Background colour"). The auto-blend is gone, and with it the case where the menu
+  quietly decided a colour was unreadable and moved the ground out from under it: mixing
+  the background now shows a sentence in the colour of the thing it is written on, which
+  looks like a bug and is the truest thing the panel can say about that colour. The switch
+  is a place the keys can be — walking up off the first channel stops on the sentence and
+  Left/Right walk the three grounds, because a choice reachable only by pointer is a
+  choice the keyboard does not have (Kaida: "left right when the cursor is on the preview
+  zone seems nice"). Typing a digit there changes nothing, because it would be a number
+  nobody is standing on. The choice lives on the widget rather than in the mixer, so it
+  outlives one mixing: a ground picked because the window's own was unreadable was picked
+  for the window. The checks read the strip's modal colour as its ground and the furthest
+  pixel as its ink, inside the border and left of the switch — the accent border and the
+  word itself are both colours that are not the sentence, and a reader that did not know
+  that mistook them for it.
 
 - 2026-11-20: **a daemon is one process, and nothing starts a second one.** The storm was
   open since 2026-11-19 and came back this evening through a route nobody had thought of:

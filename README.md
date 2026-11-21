@@ -543,9 +543,18 @@ one changes the window while the button is down, because a preview you have to a
 before you can judge is not a preview. Enter hands the colour back into the row it came
 from; Esc leaves it as it was; the list's `save` is what writes the file.
 
+What the sentence sits on is yours to choose, and the word at the end of the strip is the
+switch: **`background`**, the window's own ground as the window shows it, at
+`background_opacity`; **`black`**; **`white`**. It starts on your own ground because that
+is the ground the colour is going to be read on — and when you are mixing the background
+itself, that is the very colour in the letters, and the sentence disappears. That is a
+fact about the colour, not something the menu should paint over, so the two flat grounds
+are one click or one arrow away rather than a guess the program makes for you.
+
 In the settings menu and the mixer, the left and right arrows change the value — the row is
 already chosen and the question is what it should say. In the mixer that includes the `hex`
-row, where the pair of digits the cursor is on steps by one. The colour menu is the one
+row, where the pair of digits the cursor is on steps by one, and the sentence itself, where
+they walk the three grounds. The colour menu is the one
 place they mean something else: six hex digits to choose between. Where a typed number does
 want a cursor, `Shift+Left` and `Shift+Right` move it.
 

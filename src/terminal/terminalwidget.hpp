@@ -403,6 +403,9 @@ public:
     QRectF pickerPanelRect() const { return picker_hit_.panel; }
     QRectF settingsPanelRect() const { return settings_hit_.panel; }
     QRectF mixerPreviewRect() const { return mixer_hit_.preview; }
+    // Which ground the sentence is sitting on, and where the word that changes it is.
+    int mixerGround() const { return mixer_ground_; }
+    QRectF mixerGroundSwitchRect() const { return mixer_hit_.ground_switch; }
 
     // The lowest row each panel painted. A panel that is too tall for its window
     // does not say so in its own rectangle — it says so by painting its last rows
@@ -1904,12 +1907,33 @@ private:
         row = pos;
     }
 
+    // The mixer's ring has one stop the other panels do not: the preview above the
+    // channels. The order is the order on the screen — the channels, the two words,
+    // and the preview back at the top — so walking is looking, and coming down off
+    // `cancel` lands on the sentence rather than on the first row, because that is
+    // where the panel goes from the bottom edge.
+    void mixerWalk(int direction) {
+        const int rows = static_cast<int>(kMixChannelCount);
+        int pos = mixer_focus_ == 0   ? mixer_->row()
+                  : mixer_focus_ == 1 ? rows
+                  : mixer_focus_ == 2 ? rows + 1
+                                      : rows + 2;
+        const int stops = rows + 3;
+        pos = (pos + direction + stops) % stops;
+        if (pos < rows) {
+            mixer_focus_ = 0;
+            mixer_->setRow(pos);
+            return;
+        }
+        mixer_focus_ = pos == rows ? 1 : (pos == rows + 1 ? 2 : 3);
+    }
+
     // Left and Right switch between the two words while the keys are on them,
     // instead of walking digits that are no longer on screen. Tab is deliberately
     // not here: Tab is Down, here as everywhere else, and reaching the words by
     // walking is the whole point.
     static bool overlayWordSwitch(int key, Qt::KeyboardModifiers mods, int focus) {
-        if (focus == 0)
+        if (focus != 1 && focus != 2)
             return false;
         const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
         return key == Qt::Key_Left || key == Qt::Key_Right ||
@@ -2048,18 +2072,12 @@ private:
             return;
         }
         if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
-            int row = mixer_->row();
-            overlayWalk(mixer_focus_, row, kMixChannelCount, -1);
-            if (mixer_focus_ == 0)
-                mixer_->setRow(row);
+            mixerWalk(-1);
             update();
             return;
         }
         if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
-            int row = mixer_->row();
-            overlayWalk(mixer_focus_, row, kMixChannelCount, 1);
-            if (mixer_focus_ == 0)
-                mixer_->setRow(row);
+            mixerWalk(1);
             update();
             return;
         }
@@ -2072,7 +2090,17 @@ private:
         // arrows for the cursor, because there the whole row is one string.
         // (Kaida, 2026-11-20: "everything else should be adjustable with the left
         // right arrows".)
+        //
+        // On the preview the value is the ground the sentence sits on, and there are
+        // three of them, so the arrows walk round rather than step.
+        // (Kaida, 2026-11-20: "left right when the cursor is on the preview zone
+        // seems nice".)
         if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
+            if (mixer_focus_ == 3) {
+                mixer_ground_ = previewGroundStep(mixer_ground_, -1);
+                update();
+                return;
+            }
             if (mods.testFlag(Qt::ShiftModifier))
                 mixer_->digitStep(-1);
             else if (mixer_->nudge(-1)) {
@@ -2083,6 +2111,11 @@ private:
             return;
         }
         if (key == Qt::Key_Right || (plain && key == Qt::Key_L)) {
+            if (mixer_focus_ == 3) {
+                mixer_ground_ = previewGroundStep(mixer_ground_, 1);
+                update();
+                return;
+            }
             if (mods.testFlag(Qt::ShiftModifier))
                 mixer_->digitStep(1);
             else if (mixer_->nudge(1)) {
@@ -2094,14 +2127,20 @@ private:
         }
         if (key == Qt::Key_Plus || key == Qt::Key_Equal || key == Qt::Key_Minus ||
             key == Qt::Key_Underscore) {
-            if (mixer_->nudge(key == Qt::Key_Plus || key == Qt::Key_Equal ? 1 : -1)) {
+            const int direction = key == Qt::Key_Plus || key == Qt::Key_Equal ? 1 : -1;
+            if (mixer_focus_ == 3) {
+                mixer_ground_ = previewGroundStep(mixer_ground_, direction);
+            } else if (mixer_->nudge(direction)) {
                 mixer_focus_ = 0;
                 previewMixer();
             }
             update();
             return;
         }
-        if (plain && text.size() == 1) {
+        // Typing a digit belongs to a channel row. With the keys on the sentence it
+        // would change a number nobody is looking at, on the one part of this panel
+        // whose whole job is to be looked at.
+        if (plain && text.size() == 1 && mixer_focus_ != 3) {
             const char c = text.at(0).toLatin1();
             const bool typed = mixer_->channel() == MixChannel::Hex
                                    ? mixer_->typeHex(c)
@@ -2149,6 +2188,20 @@ private:
         }
         if (hit.cancel.isValid() && hit.cancel.contains(where)) {
             finishMixer(false);
+            return;
+        }
+        // The switch before the strip, because it sits inside it: a click on the word
+        // chooses a ground, and a click anywhere else on the sentence moves the keys
+        // there so the arrows have something to change.
+        if (hit.ground_switch.isValid() && hit.ground_switch.contains(where)) {
+            mixer_ground_ = previewGroundStep(mixer_ground_, 1);
+            mixer_focus_ = 3;
+            update();
+            return;
+        }
+        if (hit.preview.isValid() && hit.preview.contains(where)) {
+            mixer_focus_ = 3;
+            update();
             return;
         }
         for (std::size_t i = 0; i < hit.bars.size(); ++i) {
@@ -2242,30 +2295,67 @@ private:
         // strip with the mixed colour and writing the sample over it in black or
         // white gave a wall of the colour with a caption on it, and painted the
         // menu the same colour twice over; what is being chosen is a colour to
-        // read *through*, so it goes on the letters and nowhere else. The strip
-        // borrows a ground of its own only when the panel's is too near the
-        // colour to read against. (Kaida, 2026-11-20: "the Quick brown fox line
-        // didn't get paint in red when it should be the only thing getting
-        // painted red on this menu, since it's the preview".)
+        // read *through*, so it goes on the letters and nowhere else. (Kaida,
+        // 2026-11-20: "the Quick brown fox line didn't get paint in red when it
+        // should be the only thing getting painted red on this menu, since it's
+        // the preview".)
+        //
+        // What it sits on is a choice rather than a guess, and the switch at the end
+        // of the strip walks three of them: the window's own background as the window
+        // shows it, black, white. The colour being mixed is generally the colour of
+        // the row it was opened from, so the ground worth defaulting to is the one the
+        // mix will actually be read on — and when that ground turns out to be the very
+        // colour being mixed, the two flat ones are a keystroke away rather than a
+        // mystery.
+        const int chip_cells = 11;  // `background`, and a space to breathe in
         const QRectF preview(panel.x() + pad, y - ch + fm.ascent() * 0.15,
                              panel_w - 2 * pad, 2 * ch);
+        const QRectF chip(preview.right() - (chip_cells + 1) * cw,
+                          preview.center().y() - ch * 0.75, chip_cells * cw, ch * 1.5);
+        const QColor strip =
+            previewGroundColour(mixer_ground_, bg, ground, background_opacity_);
+        const QColor accent_ink(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+        const bool preview_focused = mixer_focus_ == 3;
 
         mixer_hit_ = OverlayHit{};
         mixer_hit_.panel = panel;
         mixer_hit_.preview = preview;
+        mixer_hit_.ground_switch = chip;
         mixer_hit_.table_x = table_x;
         mixer_hit_.label_w = label_w;
         mixer_hit_.cw = cw;
 
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(panel_ink(fg, 70), 1));
-        p.setBrush(previewGround(mixed, ground));
+        if (preview_focused) {
+            // The keys are standing on the preview, so the preview is lit — the same
+            // band a row gets, and the only thing on the panel wearing it.
+            p.setPen(Qt::NoPen);
+            p.setBrush(panel_ground(theme_.selection));
+            p.drawRoundedRect(preview.adjusted(-pad / 2, -3.0, pad / 2, 3.0), kScrollBarRadius,
+                              kScrollBarRadius);
+        }
+        p.setPen(QPen(preview_focused ? accent_ink : panel_ink(fg, 70), 1));
+        p.setBrush(strip);
         p.drawRoundedRect(preview, kMixerBarRadius, kMixerBarRadius);
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setPen(QColor(mixed.r, mixed.g, mixed.b));
-        p.drawText(preview.adjusted(cw, 0, -cw, 0),
+        p.drawText(preview.adjusted(cw, 0, -(chip_cells + 2) * cw, 0),
                    Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine,
                    QStringLiteral("Aa Bb Cc 0123 #$%&  the quick brown fox"));
+        // The switch: labelled with the ground it is on, and painted as that ground, so
+        // the word and the colour say the same thing and a border is all that keeps it
+        // an object of its own when the two agree. Its ink follows its own ground, the
+        // one place in this program where black-on-white is decided by the swatch
+        // rather than by the theme — the swatch is what is being shown.
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(preview_focused ? accent_ink : panel_ink(fg, 120), preview_focused ? 2 : 1));
+        p.setBrush(strip);
+        p.drawRoundedRect(chip, kMixerBarRadius, kMixerBarRadius);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setPen(inkLuminance(strip.red(), strip.green(), strip.blue()) > 0.55
+                     ? QColor(0, 0, 0)
+                     : QColor(255, 255, 255));
+        p.drawText(chip, Qt::AlignCenter | Qt::TextSingleLine, previewGroundName(mixer_ground_));
         y += 2 * ch;
 
         for (int i = 0; i < kMixChannelCount; ++i) {
@@ -2905,16 +2995,14 @@ private:
                             std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255));
     }
 
-    // The colour the preview sentence sits on: the panel's own ground, unless
-    // the colour being mixed is so close to it that the sentence would vanish
-    // into the panel — in which case the ground steps away from the sentence
-    // rather than the sentence stepping away from the colour, toward white under
-    // a dark one and black under a light one. The letters keep the mixed colour
-    // either way; that is the whole point of the row.
+    // How light a colour reads, on the scale the eye actually uses.
     static double inkLuminance(int r, int g, int b) {
         return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
     }
 
+    // `t` of the way from one flat colour to another. Also what compositing an
+    // opaque colour over an opaque one at an alpha means, which is how the preview
+    // shows a background at `background_opacity` on a panel that is not transparent.
     static QColor blendToward(const QColor& from, const QColor& toward, double t) {
         const auto part = [t](int a, int b) {
             return static_cast<int>(a + (b - a) * t + 0.5);
@@ -2924,16 +3012,49 @@ private:
                       std::clamp(part(from.blue(), toward.blue()), 0, 255));
     }
 
-    static QColor previewGround(const Rgb& mixed, const QColor& panel_ground) {
-        const double ground = inkLuminance(panel_ground.red(), panel_ground.green(),
-                                           panel_ground.blue());
-        const double ink = inkLuminance(mixed.r, mixed.g, mixed.b);
-        // A fifth of the scale is roughly where two flat colours stop reading as
-        // two flat colours, which is as small a step as a preview may ask for.
-        if (std::fabs(ink - ground) >= 0.2)
-            return panel_ground;
-        return blendToward(panel_ground, ink < 0.5 ? QColor(255, 255, 255) : QColor(0, 0, 0),
-                           0.62);
+    // What the preview sentence sits on, for the three answers the switch beside it
+    // walks. `Background` is the ground the colour is actually going to be read on:
+    // the window's own background, at `background_opacity`, laid over the panel —
+    // which is what "with the opacity of the background" has to mean here, since a
+    // menu paints itself opaque whatever the transparency says. `Black` and `White`
+    // are the two test grounds: a colour that reads on neither is a colour with a
+    // problem, and the mixer should be able to say so about a colour you are one
+    // keystroke from saving.
+    // (Kaida, 2026-11-20: "The ground should just be of the current background color
+    // (with the opacity of the backgroud) and have a switch on the side that
+    // alternate between Black / White / Current Background colour".)
+    static constexpr int kPreviewGroundCount = 3;
+
+    static QColor previewGroundColour(int choice, const Color& bg, const QColor& panel,
+                                      double opacity) {
+        switch (choice) {
+            case 1:
+                return QColor(0, 0, 0);
+            case 2:
+                return QColor(255, 255, 255);
+            default:
+                break;
+        }
+        return blendToward(panel, QColor(bg.r, bg.g, bg.b), std::clamp(opacity, 0.0, 1.0));
+    }
+
+    static QString previewGroundName(int choice) {
+        switch (choice) {
+            case 1:
+                return QStringLiteral("black");
+            case 2:
+                return QStringLiteral("white");
+            default:
+                break;
+        }
+        return QStringLiteral("background");
+    }
+
+    // Walking the switch. The words run in the order they read best against a
+    // coloured ground — your own ground, then the two flat ones — and wrap, because
+    // the way back from `white` should be the same gesture as the way to it.
+    static int previewGroundStep(int choice, int direction) {
+        return (choice + direction + kPreviewGroundCount) % kPreviewGroundCount;
     }
 
     struct OverlayHit {
@@ -2947,6 +3068,7 @@ private:
         QRectF save;                 // the two words at the bottom of the panel
         QRectF cancel;
         QRectF preview;    // the mixer's sentence, which is the colour being mixed
+        QRectF ground_switch;  // the word at the end of it, which changes what it sits on
         std::vector<QRectF> bars;     // the mixer's channels, one bar per row
         std::vector<QRectF> swatches; // the picker's colour boxes, per row
         std::vector<QRectF> minus;    // the two arrows of each row, for a mouse
@@ -3415,7 +3537,16 @@ private:
     std::unique_ptr<ColorMixer> mixer_;
     std::function<void(Rgb, bool)> mixer_finish_;
     std::function<void(Rgb)> mixer_preview_;
+    // Where the keys are in the mixer: 0 is a channel row, 1 and 2 are the two words
+    // at the bottom, and 3 is the preview above the rows — a stop of its own because
+    // what sits under the sentence is a choice with three answers, and a choice you
+    // can only reach with a pointer is a choice the keys do not have.
     int mixer_focus_ = 0;
+    // What the preview sentence sits on, walked by the switch at the end of the
+    // strip. Kept here rather than in the mixer so the choice outlives one mixing: a
+    // ground picked because the window's own was unreadable is picked for the window,
+    // not for the colour.
+    int mixer_ground_ = 0;
     int mixer_drag_ = -1; // the bar a mouse is currently pushing along
     mutable OverlayHit mixer_hit_;
     mutable OverlayHit picker_hit_;

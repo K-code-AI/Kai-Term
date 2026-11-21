@@ -40,8 +40,13 @@ the sample sentence painted in the colour you are mixing (the only thing on that
 wearing it), six bars (red, green, blue, hue, saturation,
 lightness) you can push or click, and the hex digits for when you already know what you
 want; the window changes while you push, and the list's `save` is what writes the file.
+The sentence sits on the window's own ground, at its own opacity, and the word at the end
+of the strip switches between that, black and white — because mixing the background means
+the sentence is the colour of the thing it is written on, and that is worth seeing rather
+than quietly fixing.
 Left and right change the value on every row of the mixer and the settings menu, the `hex`
-row included — the pair under the cursor steps by one — and `Shift+Left`/`Shift+Right` move
+row included — the pair under the cursor steps by one — and on the sentence itself, where
+they walk those three grounds; `Shift+Left`/`Shift+Right` move
 that cursor when a typed number wants one; the colour list is the one panel where the plain
 arrows still choose between six digits. Each panel takes a smaller drawing font until it
 fits the window it is opened in, so a small window gets a whole menu rather than one painted

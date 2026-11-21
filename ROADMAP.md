@@ -379,7 +379,9 @@ Needed:
   blue, hue, saturation, lightness — the sample sentence painted in the colour being mixed,
   and the six hex digits for when you already know. Left and right change the value on
   every row, the hex row included; `Shift+Left`/`Shift+Right` move the digit cursor.
-  `src/config/colormixer.hpp` is
+  The sentence sits on the window's own background at its own opacity, and the word at the
+  end of the strip — a stop in the walking ring, so the arrows reach it too — alternates
+  that with black and white. `src/config/colormixer.hpp` is
   Qt-free and keeps the wheel in tenths so the bars and the wheel stay one colour
   (`rgb → hsl → rgb` is exact for every colour); the app-window test drives a bar with the
   pointer and reads the mixed colour off the disk afterwards.

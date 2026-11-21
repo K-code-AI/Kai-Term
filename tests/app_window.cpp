@@ -21,12 +21,14 @@
 #include <QTimer>
 #include <QWidget>
 #include <chrono>
+#include <algorithm>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <vector>
 #include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
@@ -1452,9 +1454,9 @@ int main(int argc, char** argv) {
         expect("and sit below its rows rather than across them",
                window.pickerSavePoint().y() > window.pickerBottomRowRect().bottom());
 
-        // The mixer, opened on the window's own background — the case a coloured
-        // strip gets wrong, because the colour being mixed is nearly the colour
-        // of the panel it is being mixed in.
+        // The mixer, opened on the window's own background. This is the case where the
+        // ground the sentence sits on is the very colour being mixed, which is what
+        // the switch at the end of the strip exists for.
         press(Qt::Key_Down);
         pump(60);
         press(Qt::Key_Return);
@@ -1464,31 +1466,146 @@ int main(int argc, char** argv) {
         expect("the mixer's preview strip is inside the panel",
                window.mixerPanelRect().contains(strip));
 
-        const QImage painted = window.grab().toImage();
         const QColor want(mixed.r, mixed.g, mixed.b);
         const auto step = [](const QColor& a, const QColor& b) {
             return std::max({std::abs(a.red() - b.red()), std::abs(a.green() - b.green()),
                              std::abs(a.blue() - b.blue())});
         };
-        // The sentence is centred, so the strip's own ground is what sits at its
-        // left edge; the sentence is then whatever pixel stands furthest from it.
-        const QColor ground = painted.pixelColor(static_cast<int>(strip.left()) + 3,
-                                                 static_cast<int>(strip.center().y()));
-        QColor ink = ground;
-        int ink_step = 0;
-        for (int y = static_cast<int>(strip.top()); y < static_cast<int>(strip.bottom()); ++y) {
-            for (int x = static_cast<int>(strip.left()); x < static_cast<int>(strip.right()); ++x) {
-                const QColor got = painted.pixelColor(x, y);
-                if (step(got, ground) > ink_step) {
-                    ink_step = step(got, ground);
-                    ink = got;
+        // The strip's ground and its sentence's ink, read off the painted window. The
+        // ground is whatever the strip is mostly made of — a flat fill, against which
+        // the glyphs are a few per cent of the pixels — and the ink is the pixel
+        // standing furthest from it, taken inside the border and to the left of the
+        // switch, neither of which is part of the sentence.
+        const auto readStrip = [&step, &strip](const QImage& painted, const QRectF& avoid) {
+            const int x0 = static_cast<int>(strip.left()) + 4;
+            const int y0 = static_cast<int>(strip.top()) + 4;
+            const int y1 = static_cast<int>(strip.bottom()) - 4;
+            const int x1 = avoid.isValid() ? std::min(static_cast<int>(strip.right()) - 4,
+                                                      static_cast<int>(avoid.left()) - 4)
+                                           : static_cast<int>(strip.right()) - 4;
+            std::vector<std::pair<QRgb, int>> tally;
+            for (int y = y0; y < y1; ++y) {
+                for (int x = x0; x < x1; ++x) {
+                    const QRgb got = painted.pixelColor(x, y).rgba();
+                    bool counted = false;
+                    for (std::pair<QRgb, int>& entry : tally) {
+                        if (entry.first != got)
+                            continue;
+                        ++entry.second;
+                        counted = true;
+                        break;
+                    }
+                    if (!counted)
+                        tally.emplace_back(got, 1);
                 }
             }
+            std::pair<QRgb, int> modal{0u, -1};
+            for (const std::pair<QRgb, int>& entry : tally)
+                if (entry.second > modal.second)
+                    modal = entry;
+            const QColor ground = QColor::fromRgba(modal.first);
+            QColor ink = ground;
+            int furthest = 0;
+            for (int y = y0; y < y1; ++y) {
+                for (int x = x0; x < x1; ++x) {
+                    const QColor got = painted.pixelColor(x, y);
+                    if (step(got, ground) > furthest) {
+                        furthest = step(got, ground);
+                        ink = got;
+                    }
+                }
+            }
+            return std::make_pair(ground, ink);
+        };
+        const auto click = [&window](const QPointF& at) {
+            QMouseEvent down(QEvent::MouseButtonPress, at, at, Qt::LeftButton, Qt::LeftButton,
+                             Qt::NoModifier);
+            QMouseEvent up(QEvent::MouseButtonRelease, at, at, Qt::LeftButton, Qt::NoButton,
+                           Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &down);
+            QCoreApplication::sendEvent(&window, &up);
+        };
+
+        {
+            const auto read = readStrip(window.grab().toImage(), window.mixerGroundSwitchRect());
+            expect("the sentence sits on the window's own background to begin with",
+                   step(read.first, want) <= 20);
+            expect("and the switch that changes it is inside the strip",
+                   strip.contains(window.mixerGroundSwitchRect()));
+            expect("which starts on the background", window.mixerGround() == 0);
         }
-        expect("the quick brown fox is painted in the colour being mixed",
-               step(ink, want) <= 70);
-        expect("while the ground under it is not, so the sentence is the only thing wearing it",
-               step(ground, want) >= 100);
+        // The switch, walked by the pointer. The ground changes and the sentence keeps
+        // the colour, which is the whole point of it: on the window's own ground the
+        // colour being mixed *is* the ground, so the sentence disappears until you move
+        // off it — a fact about the colour, and now one you can see rather than one to
+        // paint over. (Kaida, 2026-11-20: "The ground should just be of the current
+        // background color (with the opacity of the backgroud) and have a switch on the
+        // side that alternate between Black / White / Current Background colour".)
+        click(window.mixerGroundSwitchRect().center());
+        pump(80);
+        expect("one click walks the switch to black", window.mixerGround() == 1);
+        {
+            const auto read = readStrip(window.grab().toImage(), window.mixerGroundSwitchRect());
+            expect("the sentence is on black now", step(read.first, QColor(0, 0, 0)) <= 20);
+            expect("and it is still the only thing wearing the colour being mixed",
+                   step(read.second, want) <= 70);
+        }
+        click(window.mixerGroundSwitchRect().center());
+        pump(80);
+        expect("another walks it to white", window.mixerGround() == 2);
+        {
+            const auto read = readStrip(window.grab().toImage(), window.mixerGroundSwitchRect());
+            expect("and the ground is white", step(read.first, QColor(255, 255, 255)) <= 20);
+            expect("with the sentence still in the mixed colour", step(read.second, want) <= 70);
+        }
+        click(window.mixerGroundSwitchRect().center());
+        pump(80);
+        expect("and the third walks it round to the background again",
+               window.mixerGround() == 0);
+
+        // The same switch under the keys. The sentence is a place the cursor can be,
+        // reached by walking rather than by a key of its own, because that is how every
+        // other part of this program is reached.
+        // (Kaida, 2026-11-20: "left right when the cursor is on the preview zone seems
+        // nice".)
+        const auto type = [&window](const QString& text) {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_5, Qt::NoModifier, text);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        // A click on the switch leaves the keys on the sentence, so walk back down to a
+        // channel before asking where Up goes from one.
+        press(Qt::Key_Down);
+        pump(60);
+        expect("and a click there leaves the keys on the sentence to walk down from",
+               window.mixerCursor().second == 0);
+        press(Qt::Key_Up);
+        pump(60);
+        expect("walking up off the first channel lands on the sentence",
+               window.mixerCursor().second == 3);
+        press(Qt::Key_Right);
+        pump(60);
+        expect("and Right walks its ground", window.mixerGround() == 1);
+        press(Qt::Key_Right);
+        press(Qt::Key_Right);
+        pump(60);
+        expect("which wraps at the end rather than stopping", window.mixerGround() == 0);
+        press(Qt::Key_Left);
+        pump(60);
+        expect("and wraps back the other way", window.mixerGround() == 2);
+        type("5");
+        pump(60);
+        expect("while typing on the sentence changes no colour, because it would be a "
+               "number nobody is standing on",
+               window.theme().background.r == mixed.r && window.mixerGround() == 2);
+        press(Qt::Key_Down);
+        pump(60);
+        expect("and walking down leaves the sentence behind", window.mixerCursor().second == 0);
+        press(Qt::Key_Right);
+        pump(60);
+        expect("where Right is the colour again, not the ground",
+               window.theme().background.r != mixed.r);
+        press(Qt::Key_Left);
+        pump(60);
 
         // The arrows edit the colour, as they do on every other row of this
         // program; the cursor a typed number wants has moved to Shift+arrows.
