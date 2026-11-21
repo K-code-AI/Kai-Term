@@ -26,16 +26,28 @@ another shell while it stays open, which is what restoring means. There are conf
 files now — key=value in `~/.config/kai-term/kai-term.conf` for behaviour and
 `theme.conf` for colours, environment beating them, unknown keys announced with their
 line — carrying `confirm_quit`, the window's body (`font_size`, `cols`, `rows`,
-`background_opacity`, `foreground_opacity`, all followed by the real window at startup) and
-twenty-one colours: the five
-window colours and the sixteen ANSI palette entries. The colours reach the window as a
+`background_opacity`, `foreground_opacity`, all followed by the real window at startup),
+twenty-one colours, and `theme`, which says which colours to wear: left out or
+`Default.conf` for `theme.conf`, a bare name for a file in `~/.config/kai-term/themes/`,
+and anything with a slash in it for the path it is. One theme file is read per launch, a
+named theme replacing `theme.conf` rather than layering over it. The twenty-one colours are
+the five window colours and the sixteen ANSI palette entries. The colours reach the window as a
 theme, and **a colour the config names is the top authority**: it outranks the session's
 own `OSC 4/10/11` and holds on every window, including one attached to a running session,
 so a saved theme is not washed back to defaults by a shell that recolours at startup. A
 colour the config left unnamed stays the session's to set, and the built-in palette answers
 beneath both. And all twenty-one can be chosen inside the window itself —
 **Ctrl+Shift+P** opens the picker over the grid, previews on the window as you type,
-and writes the changed lines back to `theme.conf`. **Enter on a colour opens the mixer** —
+and writes the changed lines back to `theme.conf`. Under the colours a `theme` line says
+which theme they would go into, which makes the picker a theme creator rather than an
+editor of one file: the extension is left out because every theme has one, the field is
+shut until `e` opens it so a stray letter cannot rename the theme you were about to save,
+and while it is open the arrows walk a caret inside the word, Enter confirms and gets out,
+Esc puts the word back. Saving under a name that is already a theme asks first — the title
+becomes *Overwrite midnight.conf?* and the two words become `overwrite` and `keep it`, in
+the same places and walked the same way — while a name nothing is using writes without
+asking and takes every colour the window is wearing, because a new file starts empty.
+**Enter on a colour opens the mixer** —
 the sample sentence painted in the colour you are mixing (the only thing on that menu
 wearing it), six bars (red, green, blue, hue, saturation,
 lightness) you can push or click, and the hex digits for when you already know what you
@@ -62,12 +74,17 @@ anywhere. It is colours and nothing else; how
 solid the window is — `background_opacity` for the ground the cells sit on and
 `foreground_opacity` for the text, cursor and dialogs, typed `1` to `100` — belongs to the
 settings menu with the rest of how the window behaves. That menu is **Ctrl+Shift+K**, opening font size, the two
-transparencies, padding, scrollback, cursor style and when closing asks over the grid,
+transparencies, padding, scrollback, cursor style, when closing asks and which theme is
+being worn over the grid,
 previewing on the window as you go and writing `kai-term.conf` when you say save. A row there cannot be driven outside the values
 its setting accepts, and both panels answer the mouse: the wheel walks the list, a click
 picks a row or the digit inside a value, each row has its `-` and `+`, and `save`/`cancel`
 are the two words Enter and Esc already were — reached by walking one step past the last
-row, because one gesture should move the keys everywhere. The ground is transparent by painting
+row, because one gesture should move the keys everywhere. The last row is the theme, and
+its answers are `Default.conf` plus whatever `.conf` files are in `themes/`: stepping it
+repaints the window in that theme before anything is written, leaving puts the colours
+back, and saving writes the name into `kai-term.conf` so the next window opens wearing it
+too. The ground is transparent by painting
 it at its own alpha on a surface that has one, so the desktop shows through while the
 text stays as solid as it was made; the X11 whole-window fade was tried first and does
 nothing on a Wayland compositor, and would have dimmed the glyphs along with the

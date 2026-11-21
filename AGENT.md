@@ -51,6 +51,21 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
   and `help <command>` one page each, an unknown dash-word answered with the page and exit
   2 instead of a window, and `-c FILE` taking its colours from the `theme.conf` beside it
   (`tests/cli_surface.cpp`, `tests/config.cpp`).
+- Verified: `theme` in `kai-term.conf` picks which colours to wear — left out or
+  `Default.conf` for `theme.conf`, a bare name for `<config>/themes/<name>`, a slash for
+  that path, `KAI_TERM_THEME` above all of it — and only the one file is read
+  (`tests/config.cpp`).
+- Verified offscreen: the settings menu's last row is that choice, and stepping it wears
+  the theme before anything is written, Esc puts the colours back, saving writes the name
+  into `kai-term.conf`, and the next window opens wearing it (`tests/app_window.cpp`).
+- Verified offscreen: the picker's `theme` line — the name without its `.conf`, shut until
+  `e` opens it, a caret the arrows walk, Enter confirming and Esc putting the word back —
+  saves under a new name as a new file holding every colour, and asks in the panel before
+  writing over a theme that exists (`tests/app_window.cpp`, and `picker-name`, `picker-edit`
+  and `picker-overwrite` from `build/kai-term-panelview`).
+- Verified offscreen, and found by it: an overlay opens with the keys on its first row. The
+  picker had been keeping whichever word the last visit ended on, so the second visit
+  opened with the keys already on `save`; the settings menu had the same hole.
 - Verified offscreen: the two transparency settings reach the window's alpha, the picker
   previews them as they are typed, and they save to `kai-term.conf` as fractions
   (`tests/app_window.cpp`, the transparency block). Not verified on a live compositor —
@@ -556,6 +571,60 @@ test that hangs should still cost a test and not a machine.
   leaves behind cannot point at a process number the kernel has since handed to something
   else. `tests/cli_surface.cpp` counts daemons by *runtime directory and marker* rather
   than by process name, so it can say "one" and mean this test's one.
+
+- 2026-11-20: **a theme is a file you can have more than one of.** IDEA.md's third idea, and
+  the last thing in the config that assumed there was exactly one set of colours. The rule
+  Kaida wrote is short — "We add a 'Theme = Default.conf' to our config and a sub-directory
+  'themes' in ~/.config/kai-term where they get sourced from by default unless a full path
+  for the theme is given" — and the whole of it is honoured by three sentences in
+  `resolveThemePath`: empty or `Default.conf` means `theme.conf`, which is what has always
+  held the colours and what the picker writes, so nothing written before this needs
+  converting; a bare name means `<config>/themes/<name>`; anything with a slash is taken
+  for the path it is. One file is read per launch — a named theme *replaces* `theme.conf`
+  rather than layering over it, because two files both claiming to say the background is one
+  colour is one argument about the same pixel — and it is still read last. `KAI_TERM_THEME`
+  outranks the lot: the environment is the thing you are holding right now. A `-c` directory
+  brings its own `themes/` with it, for the same reason everything else follows that flag.
+
+  Wearing one is a choice row at the end of Ctrl+Shift+K, and the honest version of a preview
+  had to be paid for: the code that turns a `Config` into colours and locks was inside
+  `adoptConfig`, which re-reads from disk, and a theme you have not saved is not on disk.
+  `applyConfigColours` is that code with a name now, so the menu wears a theme before writing
+  anything and puts the old one back on Esc.
+
+  Making a new one is the picker's job, and the field is where the argument lived. Kaida's
+  shape: "the picker's name field is always visible — saving under the loaded name asks to
+  overwrite, a new name writes a new theme", then, on seeing it: "let's not show the .conf
+  and keep it implied. also we should require pressing e to edit the field and in edit mode
+  the arrow can control the cursor and enter will confirm and get us out of edit mode". So the
+  line reads `theme  midnight`, shut until `e` opens it — a letter typed while walking the
+  colour list cannot rename the theme you were about to save — and open it takes a caret the
+  arrows walk, Backspace taking the letter before it. Enter confirms and leaves the keys where
+  they were: confirming a name is not saving, and the word for saving is one step down, where
+  it has always been. Esc inside the field puts the word back and leaves the panel up, because
+  throwing away the colours somebody just chose along with the letters they did not finish is
+  a bigger undo than anyone asked for. A pointer landing on the field opens it the way `e`
+  does, because a box you can point at but not type into is a label with a border round it.
+
+  Saving asks once, in the panel, when the name is already a file: the title becomes
+  `Overwrite midnight.conf?` and the two words become `overwrite` and `keep it`, same places,
+  same walking — a question that opens somewhere else is a question about a panel you have
+  just stopped looking at. A name nothing is using writes without a word, and takes every
+  colour the window is wearing rather than only the ones that moved, because a new file
+  starts empty; then `theme = dusk.conf` goes into `kai-term.conf`, which is where the
+  decision lives rather than in the colours themselves. The widget now hands back every
+  colour the panel holds and the caller diffs, which is one list instead of two.
+
+  Two bugs the checks found on their own. The first was the field's `.conf`: the widget showed
+  what the config holds, so `themeFileName` was appending an extension to a name that already
+  had one — the display name came out of `pickerDisplayName` with the full name kept behind
+  it, which is the same lesson the hex cursor learned: what is shown and what is stored are
+  two different things and the panel has to know both. The second was older than this feature:
+  `picker_focus_` was never reset when the picker opened, so a visit that ended with the keys
+  on `save` opened the *next* visit with the keys already on `save`. The settings menu had the
+  same hole. Both start on the panel's own first row now, and the check that caught it was a
+  walk that arrived at the wrong place — the reason to write "the keys are here" as an
+  assertion rather than assuming it.
 
 ## Next Steps
 

@@ -128,6 +128,36 @@ int main(int argc, char** argv) {
         pump(150);
         shot(window, dir, "picker", s[0], s[1]);
     }
+    // The name line, with the keys on it and the field shut: the theme's name without
+    // its extension, and the keystroke that opens it said out loud.
+    for (int i = 0; i < 3; ++i) {
+        press(window, Qt::Key_Up); // off the first colour: `cancel`, `save`, the name
+        pump(40);
+    }
+    shot(window, dir, "picker-name", 960, 540);
+
+    // `e` opens the field, and the caret is where the next letter goes.
+    press(window, Qt::Key_E);
+    pump(120);
+    shot(window, dir, "picker-edit", 960, 540);
+    press(window, Qt::Key_Escape); // the word goes back, the panel stays
+    pump(80);
+
+    // And the question, which is the same panel with different words on the bottom.
+    press(window, Qt::Key_Return); // off the name, onto `save`
+    pump(80);
+    press(window, Qt::Key_Return); // `save`, and the name is taken
+    pump(120);
+    shot(window, dir, "picker-overwrite", 960, 540);
+    press(window, Qt::Key_Escape); // back to the panel, still open
+    pump(80);
+    press(window, Qt::Key_Escape); // and out of the panel
+    pump(120);
+    // Opened again so the mixer below is entered from a fresh list with the keys on
+    // `foreground`, which is what the shots underneath assume.
+    press(window, Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
+    pump(150);
+
     press(window, Qt::Key_Return);
     pump(150);
     for (const auto& s : sizes) {

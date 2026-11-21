@@ -105,30 +105,33 @@ public:
     // colours: the colours and their locks are refreshed from the file, but the
     // window's size is whatever the person has it at now — saving a colour must
     // not resize the terminal out from under them.
-    void adoptConfig(bool owns_screen, bool apply_body = true) {
-        config_ = loadConfig();
-        for (const std::string& problem : config_.problems)
-            std::fprintf(stderr, "kai-term: %s\n", problem.c_str());
+    // The colours of a config, worn now: the built-in theme, whatever that file
+    // overrode, and the whole result locked so a program painting with OSC 10/11
+    // cannot talk the window out of the person’s colours. Split out of
+    // `adoptConfig` because a theme chosen in the settings menu has to be worn
+    // before it is written, and a preview painted by different code than the real
+    // thing is a preview that lies.
+    void applyConfigColours(const Config& source, bool owns_screen) {
         Theme theme; // the built-in colours first, then whatever the file overrode
         const auto lift = [](Color& into, const std::optional<Rgb>& from) {
             if (from)
                 into = Color{static_cast<std::uint8_t>(from->r), static_cast<std::uint8_t>(from->g),
                              static_cast<std::uint8_t>(from->b)};
         };
-        lift(theme.foreground, config_.foreground);
-        lift(theme.background, config_.background);
-        lift(theme.cursor, config_.cursor);
-        lift(theme.selection, config_.selection);
-        lift(theme.accent, config_.accent);
+        lift(theme.foreground, source.foreground);
+        lift(theme.background, source.background);
+        lift(theme.cursor, source.cursor);
+        lift(theme.selection, source.selection);
+        lift(theme.accent, source.accent);
         for (std::size_t i = 0; i < theme.palette.size(); ++i)
-            lift(theme.palette[i], config_.palette[i]);
+            lift(theme.palette[i], source.palette[i]);
         // The two alphas travel with the colours rather than being applied to the
         // window as a whole, because they are not one thing: the ground the cells
         // sit on and the ink drawn over it get separate numbers, so a background you
         // can see the desktop through leaves the text as readable as it ever was.
         // `opacity` is the older name for the ground and still reads.
-        theme.background_opacity = config_.background_opacity.value_or(1.0);
-        theme.foreground_opacity = config_.foreground_opacity.value_or(1.0);
+        theme.background_opacity = source.background_opacity.value_or(1.0);
+        theme.foreground_opacity = source.foreground_opacity.value_or(1.0);
         applyTheme(theme, owns_screen);
         // A colour the person put in their config is now a LOCK in the screen: it
         // outranks whatever the session paints (OSC 4/10/11) and survives a
@@ -145,7 +148,7 @@ public:
         };
         std::array<std::optional<Color>, 16> palette_locks;
         for (std::size_t i = 0; i < palette_locks.size(); ++i)
-            palette_locks[i] = liftOpt(config_.palette[i]);
+            palette_locks[i] = liftOpt(source.palette[i]);
         // The whole theme is the lock, named or not. A colour the file did not name
         // is still this window's colour — the theme's own default beneath the names —
         // and a program painting over it with OSC 10/11 is stating an opinion about
@@ -160,6 +163,33 @@ public:
         setColourLocks(Color{theme.foreground.r, theme.foreground.g, theme.foreground.b},
                        Color{theme.background.r, theme.background.g, theme.background.b},
                        palette_locks);
+    }
+
+    // Wear one theme's colours now, without writing anything: the settings file first,
+    // then the named theme over it, which is how a startup would read the pair. The
+    // window's own opacities travel with it, because they are a separate decision and
+    // this menu may be holding an unsaved change to them.
+    // (Kaida, 2026-11-20: "An option in our interactive settings (Ctrl + Shift + K) to
+    // select from the themes inside ~/.config/kai-term/themes".)
+    void previewTheme(const std::string& name) {
+        Config themed;
+        parseConfigFile(config_.settings_path, themed);
+        parseConfigFile(resolveThemePath(name), themed);
+        themed.background_opacity = theme().background_opacity;
+        themed.foreground_opacity = theme().foreground_opacity;
+        applyConfigColours(themed, ownsScreen());
+    }
+
+    // How many rows the settings menu has. A test that counts them by hand has to be
+    // edited every time a row is added, and a test edited to match the code is a test
+    // that has stopped saying anything about it.
+    int settingsRowCount() const { return static_cast<int>(settingsRows().size()); }
+
+    void adoptConfig(bool owns_screen, bool apply_body = true) {
+        config_ = loadConfig();
+        for (const std::string& problem : config_.problems)
+            std::fprintf(stderr, "kai-term: %s\n", problem.c_str());
+        applyConfigColours(config_, owns_screen);
         // The window's body, not just its colours: a config that says
         // `font_size = 14` means the cells are 14 pixels tall now, and a
         // config that says `cols = 100` means the opening window is as wide
@@ -598,18 +628,51 @@ private:
     void showThemePicker() {
         const Theme current = theme();
         const std::vector<ThemeField> fields = fieldsForTheme(current);
-        pickThemeInTerminal(fields, [this](std::vector<ThemeField> changed, bool saved) {
-            if (!saved || changed.empty())
-                return; // cancel already put the old colours back; nothing changed
-            std::vector<std::pair<std::string, std::string>> colours;
-            for (const ThemeField& field : changed)
-                colours.emplace_back(field.key, colourText(field.value));
-            std::string error;
-            const bool wrote = saveConfigValues(
-                config_.theme_path, colours, error,
-                "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n");
-            if (wrote) {
-                setStatusText("colours saved to " + config_.theme_path, 6000);
+        const std::string loaded = themeName(config_.theme);
+        pickThemeInTerminal(
+            fields, loaded,
+            [](const std::string& name) {
+                std::ifstream probe(resolveThemePath(name));
+                return probe.good();
+            },
+            [this, fields, loaded](std::vector<ThemeField> now, bool saved,
+                                   std::string name) {
+                if (!saved)
+                    return; // cancel already put the old colours back
+                // A different name is a different file, and a new file wants every
+                // colour the window is wearing rather than only the ones that moved.
+                // The same name keeps the older, quieter rule: rewrite the lines that
+                // changed and leave the rest of somebody's file — comments, alignment,
+                // settings the picker has never heard of — exactly as they were.
+                const bool renamed = name != loaded;
+                std::vector<std::pair<std::string, std::string>> colours;
+                for (std::size_t i = 0; i < now.size() && i < fields.size(); ++i) {
+                    const Rgb& was = fields[i].value;
+                    const Rgb& is = now[i].value;
+                    if (renamed || was.r != is.r || was.g != is.g || was.b != is.b)
+                        colours.emplace_back(now[i].key, colourText(now[i].value));
+                }
+                const std::string path = resolveThemePath(name);
+                if (colours.empty() && !renamed)
+                    return; // nothing moved; the file stays exactly as it was
+                std::string error;
+                bool wrote = saveConfigValues(
+                    path, colours, error,
+                    "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n");
+                // A new theme is only worn once the settings file says to wear it. The
+                // colours went in above; this is the line that points at them, and it
+                // goes into `kai-term.conf`, where the decisions live and not into the
+                // colours themselves.
+                if (wrote && renamed)
+                    wrote = saveConfigValues(config_.settings_path, {{"theme", name}}, error);
+                if (!wrote) {
+                    setStatusText("could not save colours: " + error, 8000);
+                    return;
+                }
+                config_.theme = name;
+                setStatusText(renamed ? "theme saved to " + path
+                                      : "colours saved to " + path,
+                              6000);
                 // Re-read so the locks match the file that is now on disk: the
                 // colours just written become locked, and any colour the preview
                 // had locked but not saved goes back to the session's authority.
@@ -624,9 +687,7 @@ private:
                 // the transparency the preview was already showing is re-applied,
                 // because that is a colour decision, not a body one.
                 adoptConfig(ownsScreen(), false);
-            } else
-                setStatusText("could not save colours: " + error, 8000);
-        });
+            });
     }
 
     // The picker's rows, in the order it shows them: the five window colours
@@ -675,17 +736,22 @@ private:
         const double ground_before = theme().background_opacity;
         const double ink_before = theme().foreground_opacity;
         const std::string quit_before = config_.confirm_quit;
+        const std::string theme_before = config_.theme;
 
         pickSettingsInTerminal(
             rows,
             [this, font_before, padding_before, scrollback_before, cursor_before, ground_before,
-             ink_before, quit_before](std::vector<SettingRow> changed, bool saved) {
+             ink_before, quit_before, theme_before](std::vector<SettingRow> changed, bool saved) {
                 if (!saved) {
                     setFontPixelSize(font_before);
                     setPadding(padding_before);
                     setHistoryLimit(scrollback_before);
                     setCursorStyle(cursor_before);
                     config_.confirm_quit = quit_before;
+                    // The colours that were on when the menu opened, put back from the
+                    // file they came from. Leaving without saving has to un-preview the
+                    // theme as much as the font.
+                    previewTheme(theme_before);
                     applyOpacity(ground_before, ink_before);
                     return;
                 }
@@ -739,6 +805,20 @@ private:
         }
         rows.push_back({"confirm_quit", "confirm quit", SettingKind::Choice, quit, 0, 0, 0,
                         {"never", "running", "always"}});
+        // Which colours the window is wearing. The answers are the names on disk, with
+        // the default offered first even though it is not a file in `themes` — it is the
+        // file the colours have always lived in, and a menu that hides the answer you are
+        // already on is a menu that lies about the present.
+        std::vector<std::string> themes = listThemes();
+        const std::string loaded = themeName(config_.theme);
+        if (std::find(themes.begin(), themes.end(), loaded) == themes.end())
+            themes.insert(themes.begin() + 1, loaded); // a full path, or a deleted theme
+        int theme_row = 0;
+        for (std::size_t i = 0; i < themes.size(); ++i) {
+            if (themes[i] == loaded)
+                theme_row = static_cast<int>(i);
+        }
+        rows.push_back({"theme", "theme", SettingKind::Choice, theme_row, 0, 0, 0, themes});
         return rows;
     }
 
@@ -758,6 +838,8 @@ private:
                                               : CursorStyle::Underline);
         else if (row.key == "confirm_quit")
             config_.confirm_quit = settingFileText(row);
+        else if (row.key == "theme")
+            previewTheme(settingFileText(row));
         else if (row.key == "background_opacity")
             applyOpacity(fractionFromPercent(row.value), theme().foreground_opacity);
         else if (row.key == "foreground_opacity")

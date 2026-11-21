@@ -797,6 +797,19 @@ int main(int argc, char** argv) {
                 press(key, QString(QChar(c)));
             }
         };
+        // Pressing the panel's left-hand word, wherever it was painted. It is not always
+        // `save`: once a theme is already sitting at that name the word is `overwrite`,
+        // and the question is answered on the same spot the ask appeared.
+        const auto click_word = [&window](bool left) {
+            const QPointF at = left ? window.pickerSavePoint() : window.pickerCancelPoint();
+            QMouseEvent down(QEvent::MouseButtonPress, at, window.mapToGlobal(at.toPoint()),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &down);
+            QMouseEvent up(QEvent::MouseButtonRelease, at, window.mapToGlobal(at.toPoint()),
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &up);
+            pump(60);
+        };
 
         // Open the picker with Ctrl+Shift+P.
         {
@@ -912,13 +925,39 @@ int main(int argc, char** argv) {
             press(Qt::Key_Down); // foreground … accent, and then black
         type_hex("ff0000");
         pump(40);
+        // The theme file exists by now — the save above made it — so writing to the same
+        // name is the case that asks first. The answer is the same word, in the same
+        // place, pressed a second time.
+        // (Kaida, 2026-11-20: "saving under the loaded name asks to overwrite, a new
+        // name writes a new theme".)
+        click_word(true); // `save`
+        expect("writing over a theme that is already there is asked about first",
+               window.pickerActive() && window.pickerAskingOverwrite() &&
+                   window.pickerTitleText() == QStringLiteral("Overwrite Default.conf?"));
+        click_word(false); // `keep it`
+        pump(60);
+        expect("and `keep it` leaves the file and the colours it holds alone",
+               !window.pickerActive());
         {
-            const QPointF save = window.pickerSavePoint();
-            QMouseEvent ev(QEvent::MouseButtonPress, save, window.mapToGlobal(save.toPoint()),
-                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            std::ifstream in(theme);
+            const std::string kept((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+            expect("the colour you walked away from is not in the file",
+                   kept.find("color0 = #ff0000") == std::string::npos);
+        }
+        // Asked twice is not the same as unable: the same walk, answered yes.
+        {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+                         Qt::ControlModifier | Qt::ShiftModifier);
             QCoreApplication::sendEvent(&window, &ev);
         }
         pump(60);
+        for (int i = 0; i < 5; ++i)
+            press(Qt::Key_Down); // foreground … accent, and then black
+        type_hex("ff0000");
+        pump(40);
+        click_word(true); // `save`
+        click_word(true); // `overwrite`
         {
             std::ifstream in(theme);
             const std::string written((std::istreambuf_iterator<char>(in)),
@@ -1133,7 +1172,7 @@ int main(int argc, char** argv) {
         // same gesture that reaches the words. (Kaida, 2026-11-20: "no tab to reach
         // save and leave, they should be reachable when going down. the interfaces
         // must be Cohesive.")
-        const int row_count = 7; // font, 2 opacities, padding, scrollback, cursor, confirm
+        const int row_count = window.settingsRowCount(); // asked, not counted by hand
         const auto walk = [&window, &press_key](int steps) {
             for (int i = 0; i < steps; ++i) {
                 press_key(Qt::Key_Down);
@@ -1237,14 +1276,16 @@ int main(int argc, char** argv) {
         }
         pump(60);
         at(scrollback_row, 0);
+        // Down the rest of the rows one step at a time, so the block says where the keys
+        // are instead of assuming how many rows the menu has today.
+        for (int row = scrollback_row + 1; row < row_count; ++row) {
+            walk(1);
+            at(row, 0);
+        }
         walk(1);
-        at(5, 0);
+        at(row_count - 1, 1); // one step past the last row is `save`
         walk(1);
-        at(6, 0); // the last row
-        walk(1);
-        at(6, 1); // one step past it is `save`
-        walk(1);
-        at(6, 2); // and another is `cancel`
+        at(row_count - 1, 2); // and another is `cancel`
         walk(1);
         at(0, 0); // and another is the top of the list
         press_key(Qt::Key_Up);
@@ -1255,8 +1296,8 @@ int main(int argc, char** argv) {
         at(0, 1);
         press_key(Qt::Key_Up);
         pump(30);
-        at(6, 0); // and up from `save` is the bottom of the list
-        for (int i = 0; i < 2; ++i) {
+        at(row_count - 1, 0); // and up from `save` is the bottom of the list
+        for (int i = 0; i < row_count - 1 - scrollback_row; ++i) {
             press_key(Qt::Key_Up);
             pump(30);
         }
@@ -1293,6 +1334,273 @@ int main(int argc, char** argv) {
         pump(200);
         std::remove(menu_cfg.c_str());
         ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    }
+
+    {
+        // Themes. The settings menu ends with a row that says which colours the window
+        // is wearing, and the answers are the default plus whatever files are in
+        // `themes`. Stepping the row paints the window before anything is written,
+        // saving writes the name into the settings file, and leaving puts the colours
+        // back — a preview you cannot undo is a preview you were tricked into.
+        // (Kaida, 2026-11-20: "An option in our interactive settings (Ctrl + Shift + K)
+        // to select from the themes inside ~/.config/kai-term/themes would also be
+        // needed".)
+        const std::string home = root + "/theme-home";
+        static_cast<void>(::mkdir(home.c_str(), 0755));
+        static_cast<void>(::mkdir((home + "/kai-term").c_str(), 0755));
+        static_cast<void>(::mkdir((home + "/kai-term/themes").c_str(), 0755));
+        const std::string theme_cfg = home + "/kai-term/kai-term.conf";
+        std::ofstream(theme_cfg) << "font_size = 14\n";
+        std::ofstream(home + "/kai-term/theme.conf")
+            << "background = #102030\nforeground = #eef0f1\n";
+        std::ofstream(home + "/kai-term/themes/midnight.conf")
+            << "background = #050607\nforeground = #f5f6f7\n";
+        // Nothing in the environment names a file here, because the environment
+        // outranks the `theme` key and this block is about what that key does.
+        ::setenv("XDG_CONFIG_HOME", home.c_str(), 1);
+        ::unsetenv("KAI_TERM_CONFIG");
+        ::unsetenv("KAI_TERM_THEME");
+
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(120);
+        expect("with nothing written down the window wears the file colours always lived in",
+               window.theme().background.r == 0x10);
+
+        const auto press_key = [&window](int key, const QString& text = QString()) {
+            QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const auto open_menu = [&window] {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        const int last_row = window.settingsRowCount() - 1;
+        // Up off a row is `cancel`, up again `save`, up again the bottom of the list,
+        // so walking up reaches the last row from wherever the last visit left it.
+        const auto to_theme_row = [&] {
+            open_menu();
+            pump(80);
+            for (int guard = 0; guard < 24 && (window.settingsCursor().first != last_row ||
+                                               window.settingsCursor().second != 0);
+                 ++guard) {
+                press_key(Qt::Key_Up);
+                pump(20);
+            }
+        };
+
+        to_theme_row();
+        expect("the menu ends with a row that says which colours are on",
+               window.settingsCursor().first == last_row &&
+                   window.settingsCursor().second == 0);
+        press_key(Qt::Key_Right);
+        pump(80);
+        expect("stepping that row puts the other theme on the window, before any saving",
+               window.theme().background.r == 0x05);
+        press_key(Qt::Key_Escape);
+        pump(80);
+        expect("and leaving without saving puts the colours back",
+               window.theme().background.r == 0x10 && !window.settingsActive());
+
+        to_theme_row();
+        press_key(Qt::Key_Right);
+        pump(80);
+        press_key(Qt::Key_Down); // off the last row, onto `save`
+        pump(20);
+        press_key(Qt::Key_Return);
+        pump(120);
+        std::ifstream saved(theme_cfg);
+        const std::string written((std::istreambuf_iterator<char>(saved)),
+                                  std::istreambuf_iterator<char>());
+        expect("saving writes the name into the settings file",
+               written.find("theme = midnight.conf") != std::string::npos);
+
+        // A window started afterwards reads that line and wears the theme it names,
+        // which is the whole point: the choice outlives the window that made it.
+        kai::AppWindow after(kai::startWindowBackend(24, 80));
+        after.show();
+        static_cast<void>(waitFor([&after] { return !after.sessionName().empty(); }));
+        pump(120);
+        expect("and the next window reads the name and wears that theme",
+               after.theme().background.r == 0x05);
+        after.discardOnClose();
+        after.shutdown();
+        pump(200);
+
+        // The picker's name field: always on the panel, typed into, and the difference
+        // between writing a theme over and writing a new one.
+        // (Kaida, 2026-11-20: "the picker's name field is always visible — saving under
+        // the loaded name asks to overwrite, a new name writes a new theme".)
+        const auto type_hex = [&press_key](const std::string& digits) {
+            for (char c : digits) {
+                const int key = (c >= '0' && c <= '9')
+                                    ? (Qt::Key_0 + (c - '0'))
+                                    : (Qt::Key_A + (c - 'a'));
+                press_key(key, QString(QChar(c)));
+            }
+        };
+        const auto click_at = [&window](const QPointF& at) {
+            QMouseEvent down(QEvent::MouseButtonPress, at, window.mapToGlobal(at.toPoint()),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &down);
+            QMouseEvent up(QEvent::MouseButtonRelease, at, window.mapToGlobal(at.toPoint()),
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &up);
+            pump(60);
+        };
+        const auto open_picker = [&window] {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+            pump(80);
+        };
+
+        open_picker();
+        expect("the picker is up and says which theme its colours came from",
+               window.pickerActive() && window.pickerNameText() == QStringLiteral("midnight"));
+        expect("with the extension left out, because every theme has one",
+               !window.pickerNameText().contains(QStringLiteral(".conf")) &&
+                   window.pickerTargetNameText() == QStringLiteral("midnight.conf"));
+        expect("the name is on the panel rather than somewhere you have to ask for",
+               !window.pickerNameRect().isNull() &&
+                   window.pickerPanelRect().contains(window.pickerNameRect()));
+
+        // The field is shut until it is opened, so a letter typed while walking the list
+        // cannot quietly rename the theme. (Kaida, 2026-11-20: "we should require
+        // pressing e to edit the field".)
+        // Up off the first colour wraps: `cancel`, `save`, then the name — the ring back
+        // to front, which is fewer presses than twenty-one rows of Down.
+        for (int i = 0; i < 3; ++i) {
+            press_key(Qt::Key_Up);
+            pump(20);
+        }
+        expect("walking the ring backwards off the colours lands on the name",
+               window.pickerCursor().second == 3);
+        press_key(Qt::Key_Z, QStringLiteral("z"));
+        pump(20);
+        expect("and a letter typed at a shut field changes nothing",
+               window.pickerNameText() == QStringLiteral("midnight") &&
+                   !window.pickerEditing());
+        press_key(Qt::Key_E, QStringLiteral("e"));
+        pump(20);
+        expect("`e` opens the field, with the caret at the end of the word",
+               window.pickerEditing() && window.pickerCaret() == 8);
+        press_key(Qt::Key_Left);
+        press_key(Qt::Key_Left);
+        pump(20);
+        expect("the arrows walk the caret inside the word",
+               window.pickerCaret() == 6 && window.pickerEditing());
+        press_key(Qt::Key_X, QStringLiteral("x"));
+        pump(20);
+        expect("and a letter lands where the caret is, not at the end",
+               window.pickerNameText() == QStringLiteral("midnigxht") &&
+                   window.pickerCaret() == 7);
+        press_key(Qt::Key_Backspace);
+        pump(20);
+        expect("Backspace takes the letter before the caret",
+               window.pickerNameText() == QStringLiteral("midnight") &&
+                   window.pickerCaret() == 6);
+        press_key(Qt::Key_Escape);
+        pump(40);
+        expect("Esc puts the word back and leaves the panel up",
+               window.pickerNameText() == QStringLiteral("midnight") &&
+                   !window.pickerEditing() && window.pickerActive());
+
+        press_key(Qt::Key_E, QStringLiteral("e"));
+        pump(20);
+        for (int i = 0; i < 24; ++i)
+            press_key(Qt::Key_Backspace);
+        expect("the field can be emptied", window.pickerNameText().isEmpty());
+        for (const char c : std::string("dusk"))
+            press_key(Qt::Key_D, QString(QChar(c)));
+        expect("and typed into", window.pickerNameText() == QStringLiteral("dusk"));
+        expect("while the file it will write carries the extension the other themes have",
+               window.pickerTargetNameText() == QStringLiteral("dusk.conf"));
+        press_key(Qt::Key_Return);
+        pump(40);
+        expect("Enter confirms the name and gets out of the field, leaving the keys on it",
+               !window.pickerEditing() && window.pickerCursor().second == 3 &&
+                   window.pickerActive() && window.pickerNameText() == QStringLiteral("dusk"));
+        press_key(Qt::Key_Return); // off the name, onto `save`
+        pump(40);
+        expect("the word below the field is the next thing down",
+               window.pickerCursor().second == 1);
+        press_key(Qt::Key_Return); // `save`
+        pump(150);
+        expect("a name nothing is using yet writes without asking",
+               !window.pickerActive());
+        {
+            std::ifstream dusk(home + "/kai-term/themes/dusk.conf");
+            const std::string text((std::istreambuf_iterator<char>(dusk)),
+                                   std::istreambuf_iterator<char>());
+            expect("a new name is a new file in the themes directory",
+                   dusk.good() && text.find("background = #050607") != std::string::npos);
+            std::ifstream settings(theme_cfg);
+            const std::string settings_text((std::istreambuf_iterator<char>(settings)),
+                                            std::istreambuf_iterator<char>());
+            expect("and the settings file is what points at it",
+                   settings_text.find("theme = dusk.conf") != std::string::npos);
+            expect("the whole set goes into a file that was not there before",
+                   text.find("foreground = ") != std::string::npos);
+        }
+
+        // The second time, the name is taken — by the theme being worn — so the panel
+        // asks, and the two answers are the two words it already had.
+        open_picker();
+        expect("the panel opens on the name it just wrote",
+               window.pickerNameText() == QStringLiteral("dusk"));
+        // The pointer's way in: landing on the field opens it, because a box you can
+        // point at but not type into is a label with a border round it.
+        click_at(window.pickerNameRect().center());
+        expect("pointing at the name puts the keys on it and opens it",
+               window.pickerCursor().second == 3 && window.pickerEditing());
+        expect("and the thing lit is the name, which is what the keys are on",
+               !window.pickerHighlightRect().isNull() &&
+                   window.pickerNameRect().contains(window.pickerHighlightRect()));
+        press_key(Qt::Key_Return); // back out of the field with the name as it was
+        pump(40);
+        press_key(Qt::Key_Escape); // and out of the panel, to start again on a colour
+        pump(60);
+        open_picker();
+        type_hex("ff0000"); // the keys start on `foreground`, so this is the row that moves
+        pump(60);
+        click_at(window.pickerSavePoint());
+        expect("saving under a name that is already a theme is asked about",
+               window.pickerActive() && window.pickerAskingOverwrite() &&
+                   window.pickerTitleText() == QStringLiteral("Overwrite dusk.conf?"));
+        press_key(Qt::Key_Escape);
+        pump(60);
+        expect("Esc answers the question without throwing the panel away",
+               window.pickerActive() && !window.pickerAskingOverwrite());
+        click_at(window.pickerSavePoint());
+        expect("and asking again is the same word in the same place",
+               window.pickerAskingOverwrite());
+        click_at(window.pickerCancelPoint());
+        pump(80);
+        expect("`keep it` leaves the file as it was", !window.pickerActive());
+        {
+            std::ifstream dusk(home + "/kai-term/themes/dusk.conf");
+            const std::string text((std::istreambuf_iterator<char>(dusk)),
+                                   std::istreambuf_iterator<char>());
+            expect("nothing was written while the answer was no",
+                   text.find("foreground = #ff0000") == std::string::npos);
+        }
+
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        for (const std::string& gone : {theme_cfg, home + "/kai-term/theme.conf",
+                                        home + "/kai-term/themes/midnight.conf",
+                                        home + "/kai-term/themes/dusk.conf"})
+            std::remove(gone.c_str());
+        static_cast<void>(::rmdir((home + "/kai-term/themes").c_str()));
+        static_cast<void>(::rmdir((home + "/kai-term").c_str()));
+        static_cast<void>(::rmdir(home.c_str()));
+        ::unsetenv("XDG_CONFIG_HOME");
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+        ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
     }
 
     {
@@ -1398,13 +1706,23 @@ int main(int argc, char** argv) {
         expect("Esc goes back without keeping it",
                !window.mixerActive() && window.theme().foreground.r == mixed.r);
 
-        // The list's own `save` is still the thing that writes a file.
-        {
-            const QPointF save = window.pickerSavePoint();
-            QMouseEvent ev(QEvent::MouseButtonPress, save, window.mapToGlobal(save.toPoint()),
-                           Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-            QCoreApplication::sendEvent(&window, &ev);
-        }
+        // The list's own `save` is still the thing that writes a file — and the theme
+        // is already on disk by now, so the ask comes first and the answer is the same
+        // word again.
+        const auto click_save = [&window] {
+            const QPointF at = window.pickerSavePoint();
+            QMouseEvent down(QEvent::MouseButtonPress, at, window.mapToGlobal(at.toPoint()),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &down);
+            QMouseEvent up(QEvent::MouseButtonRelease, at, window.mapToGlobal(at.toPoint()),
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &up);
+            pump(60);
+        };
+        click_save();
+        expect("saving over the theme that is loaded asks first",
+               window.pickerActive() && window.pickerAskingOverwrite());
+        click_save();
         pump(120);
         expect("the list's `save` writes and closes", !window.pickerActive());
         std::ifstream theme_in(theme);
@@ -1871,7 +2189,7 @@ int main(int argc, char** argv) {
                          Qt::ControlModifier | Qt::ShiftModifier);
             QCoreApplication::sendEvent(&walking, &ev);
         };
-        const int rows = 7; // font, two opacities, padding, scrollback, cursor, confirm
+        const int rows = walking.settingsRowCount(); // asked, not counted by hand
         const int padding_row = 3;
 
         open_settings();

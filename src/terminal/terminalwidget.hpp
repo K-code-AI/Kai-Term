@@ -297,13 +297,34 @@ public:
     // it is the terminal: each keystroke reapplies the theme through the same
     // `applyTheme` a config file goes through, with the same ownership rule,
     // so what you watch choosing is exactly what you would get.
-    void pickThemeInTerminal(std::vector<ThemeField> fields,
-                             std::function<void(std::vector<ThemeField>, bool saved)> finish) {
+    // The panel now holds a decision it did not used to: the NAME the colours go into.
+    // `loaded` is the theme being worn, which the field opens on so the panel says what
+    // is true; `name_taken` answers whether a name the person typed is already a file,
+    // which is the panel's business because it is the panel that has to ask before it
+    // writes over one. What comes back through `finish` is every colour as the panel
+    // leaves it and the name to put them in — the caller decides which lines that is
+    // worth rewriting.
+    // (Kaida, 2026-11-20: themes as files, "the picker's name field is always visible —
+    // saving under the loaded name asks to overwrite, a new name writes a new theme".)
+    void pickThemeInTerminal(
+        std::vector<ThemeField> fields, std::string loaded,
+        std::function<bool(const std::string& name)> name_taken,
+        std::function<void(std::vector<ThemeField> now, bool saved, std::string name)> finish) {
         if (overlay_.active || picker_)
             return; // a dialog and a picker do not stack; one is always the wrong one
         picker_ = std::make_unique<ThemePicker>(std::move(fields));
         picker_before_ = theme_;
         picker_saved_locks_ = screen_.colourLocks(); // handed back untouched on a cancel
+        picker_loaded_name_ = std::move(loaded);
+        picker_name_ = pickerDisplayName(picker_loaded_name_);
+        picker_name_taken_ = std::move(name_taken);
+        picker_overwrite_ = false;
+        picker_editing_ = false;
+        picker_caret_ = 0;
+        // The keys start on the first row. Where they were last time belongs to that
+        // panel, which is gone: an overlay that opens with the keys already on `save`
+        // has hidden the fact that the last visit ended there.
+        picker_focus_ = 0;
         picker_finish_ = std::move(finish);
         update();
     }
@@ -321,6 +342,9 @@ public:
         if (overlay_.active || picker_ || settings_)
             return; // one thing at a time over the grid; a stack is always the wrong one
         settings_ = std::make_unique<SettingsPicker>(std::move(rows));
+        // As in the picker: a panel opens with the keys on its first row. Which word the
+        // last visit happened to end on is not this visit's business.
+        settings_focus_ = 0;
         settings_finish_ = std::move(finish);
         settings_preview_ = std::move(preview);
         update();
@@ -364,6 +388,8 @@ public:
     // thing about a row the keys can be on without the colour moving.
     int mixerDigit() const { return mixer_ ? mixer_->digit() : -1; }
 
+    // Where the keys are: the row, and which of the panel's stops — 0 the list, 1
+    // `save`, 2 `cancel`, 3 the name the colours go into.
     std::pair<int, int> pickerCursor() const {
         return picker_ ? std::pair<int, int>{picker_->row(), picker_focus_}
                        : std::pair<int, int>{-1, -1};
@@ -409,6 +435,7 @@ public:
     }
     QPointF settingsSavePoint() const { return settings_hit_.save.center(); }
     QPointF pickerSavePoint() const { return picker_hit_.save.center(); }
+    QPointF pickerCancelPoint() const { return picker_hit_.cancel.center(); }
     QPointF mixerSavePoint() const { return mixer_hit_.save.center(); }
 
     // Where a panel was last painted, so a check can ask whether it fits the
@@ -429,6 +456,16 @@ public:
     QRectF mixerHighlightRect() const { return mixer_hit_.highlight; }
     QRectF pickerHighlightRect() const { return picker_hit_.highlight; }
     QRectF settingsHighlightRect() const { return settings_hit_.highlight; }
+    // The picker's name field: what it holds, where it was painted, and what the panel
+    // is asking when it is asking. A field a test cannot read is a field that can be
+    // missing and still pass.
+    QString pickerNameText() const { return picker_name_; }
+    bool pickerEditing() const { return picker_editing_; }
+    int pickerCaret() const { return picker_caret_; }
+    QString pickerTargetNameText() const { return pickerTargetName(); }
+    QString pickerTitleText() const { return pickerTitle(); }
+    QRectF pickerNameRect() const { return picker_hit_.name; }
+    bool pickerAskingOverwrite() const { return picker_overwrite_; }
 
     // The lowest row each panel painted. A panel that is too tall for its window
     // does not say so in its own rectangle — it says so by painting its last rows
@@ -1885,12 +1922,15 @@ private:
     void finishPicker(bool saved) {
         if (!picker_)
             return;
-        // A save hands back only the colours that actually moved — the model
-        // remembers what they were on opening — so writing them touches the
-        // lines the person changed and no others. A cancel hands back nothing;
-        // the old colours are already being put back.
-        const std::vector<ThemeField> result = saved ? picker_->changes() : std::vector<ThemeField>{};
-        const std::function<void(std::vector<ThemeField>, bool)> finish =
+        // A save hands back every colour as the panel now has it, and the name it should
+        // be filed under. The caller works out which lines that is worth rewriting —
+        // which is one list rather than two, and is also what makes a save under a new
+        // name work: a brand new file wants every colour, not just the ones that moved.
+        // A cancel hands back nothing; the old colours are already being put back.
+        const std::vector<ThemeField> result =
+            saved ? picker_->fields() : std::vector<ThemeField>{};
+        const std::string name = themeFileName(picker_name_.toStdString(), picker_loaded_name_);
+        const std::function<void(std::vector<ThemeField>, bool, std::string)> finish =
             std::move(picker_finish_);
         if (!saved) {
             applyTheme(picker_before_, owns_screen_); // the preview was a maybe
@@ -1898,9 +1938,78 @@ private:
         }
         picker_.reset();
         picker_finish_ = nullptr;
+        picker_overwrite_ = false;
         update();
         if (finish)
-            finish(result, saved);
+            finish(result, saved, name);
+    }
+
+    // Down off the last colour comes the name, then the two words, then the top of the
+    // list again — the order they are painted in, so walking is looking.
+    void pickerWalk(int direction) {
+        // Walking off the name leaves it as it stands: the arrows are for moving between
+        // the panel's stops, and a field that silently stays open would steal the next
+        // pair of arrows from wherever the keys went.
+        picker_editing_ = false;
+        picker_caret_ = 0;
+        const int rows = static_cast<int>(picker_->fields().size());
+        int pos = picker_focus_ == 0   ? picker_->row()
+                  : picker_focus_ == 3 ? rows
+                  : picker_focus_ == 1 ? rows + 1
+                                       : rows + 2;
+        const int stops = rows + 3;
+        pos = (pos + direction + stops) % stops;
+        if (pos < rows) {
+            picker_focus_ = 0;
+            picker_->setRow(pos);
+            return;
+        }
+        picker_focus_ = pos == rows ? 3 : (pos == rows + 1 ? 1 : 2);
+    }
+
+    // Saving, from either hand. Writing over a theme that is already there is the one
+    // thing in this panel that loses work nobody meant to lose, so it is asked about
+    // first; a name that is not taken writes without a word. The keyboard and the
+    // pointer ask the same question because they mean the same thing.
+    // (Kaida, 2026-11-20: "saving under the loaded name asks to overwrite, a new name
+    // writes a new theme".)
+    void requestPickerSave() {
+        const bool taken =
+            picker_name_taken_ && picker_name_taken_(pickerTargetName().toStdString());
+        if (taken && !picker_overwrite_) {
+            picker_overwrite_ = true;
+            picker_focus_ = 1;
+            update();
+            return;
+        }
+        picker_->confirm();
+        finishPicker(true);
+    }
+
+    // Every theme in the list is a `.conf` file, so the field does not spend four
+    // characters of a narrow panel saying what is already true of all of them. A name
+    // that carries some other extension keeps it — `odd.theme` is that file.
+    static QString pickerDisplayName(const std::string& name) {
+        const QString text = QString::fromStdString(name);
+        return text.endsWith(QStringLiteral(".conf"))
+                   ? text.left(text.size() - 5) // the extension is implied
+                   : text;
+    }
+
+    // The name as it will be written: what is in the field, with the extension the other
+    // themes have. The question the panel asks spells it this way too, so the name you
+    // are asked about is the name you get.
+    QString pickerTargetName() const {
+        return QString::fromStdString(
+            themeFileName(picker_name_.toStdString(), picker_loaded_name_));
+    }
+
+    // The title the panel wears. Normally the word that says what the panel is; while a
+    // theme is already sitting at that name, the question of whether to write over it.
+    QString pickerTitle() const {
+        if (picker_overwrite_)
+            return QStringLiteral("Overwrite ") + pickerTargetName() + QStringLiteral("?");
+        return QStringLiteral("Colours");
     }
 
     // One ring, not two modes: walking down past the last row arrives at `save`,
@@ -1965,6 +2074,43 @@ private:
 
     void pickerKeyPress(int key, Qt::KeyboardModifiers mods, const QString& text) {
         const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
+        if (picker_editing_ &&
+            (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier)))) {
+            // Escape inside the field backs out of the field: the word goes back to what
+            // it was when `e` was pressed and the panel stays up. A key that cancels the
+            // whole panel from inside a half-typed name throws away the colours somebody
+            // just chose along with the letters they did not finish.
+            picker_name_ = picker_before_edit_;
+            picker_editing_ = false;
+            picker_caret_ = 0;
+            update();
+            return;
+        }
+        if (picker_overwrite_) {
+            // The panel is asking one question, and the answer is one of its two words.
+            // Nothing else counts as a keystroke right now: typing a letter while the
+            // screen is asking about a file is how a name gets mangled unseen, and Esc
+            // backs out of the question rather than out of the whole panel, because the
+            // colours somebody just chose should still be there behind it.
+            if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
+                picker_overwrite_ = false;
+                update();
+                return;
+            }
+            if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+                if (picker_focus_ == 1)
+                    finishPicker(true); // overwrite it
+                else
+                    finishPicker(false); // keep the file, and the colours it holds
+                return;
+            }
+            if (overlayWordSwitch(key, mods, picker_focus_) || key == Qt::Key_Up ||
+                key == Qt::Key_Down || (plain && (key == Qt::Key_K || key == Qt::Key_J))) {
+                picker_focus_ = picker_focus_ == 1 ? 2 : 1;
+                update();
+            }
+            return;
+        }
         if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
             finishPicker(false);
             return;
@@ -1983,8 +2129,23 @@ private:
                 return;
             }
             if (picker_focus_ == 1) {
-                picker_->confirm();
-                finishPicker(true);
+                requestPickerSave();
+                return;
+            }
+            if (picker_focus_ == 3) {
+                if (picker_editing_) {
+                    // Enter closes the field: the name stays exactly as it was typed, and
+                    // the keys go back to being the panel's keys. Confirming is not
+                    // saving — the word for that is below, and it is one step away.
+                    picker_editing_ = false;
+                    picker_caret_ = 0;
+                    update();
+                    return;
+                }
+                // Done looking at the name. The word below is the next thing down and the
+                // one you want next, and walking is how everything else here is reached.
+                picker_focus_ = 1;
+                update();
                 return;
             }
             openMixerForRow(picker_->row());
@@ -1995,21 +2156,59 @@ private:
             update();
             return;
         }
-        const int rows = static_cast<int>(picker_->fields().size());
         if (key == Qt::Key_Up || (plain && key == Qt::Key_K)) {
-            int row = picker_->row();
-            overlayWalk(picker_focus_, row, rows, -1);
-            if (picker_focus_ == 0)
-                picker_->setRow(row);
+            pickerWalk(-1);
             update();
             return;
         }
         if (key == Qt::Key_Down || (plain && key == Qt::Key_J) || key == Qt::Key_Tab) {
-            int row = picker_->row();
-            overlayWalk(picker_focus_, row, rows, 1);
-            if (picker_focus_ == 0)
-                picker_->setRow(row);
+            pickerWalk(1);
             update();
+            return;
+        }
+        if (picker_focus_ == 3) {
+            // (Kaida, 2026-11-20: "we should require pressing e to edit the field and in
+            // edit mode the arrow can control the cursor and enter will confirm and get us
+            // out of edit mode".)
+            if (!picker_editing_) {
+                // The field is shut until it is opened, and `e` is the whole of opening
+                // it. Needing it is the price of a panel where a stray letter cannot
+                // quietly rename the theme you were about to save.
+                if (plain && key == Qt::Key_E) {
+                    picker_editing_ = true;
+                    picker_before_edit_ = picker_name_;
+                    picker_caret_ = static_cast<int>(picker_name_.size());
+                    update();
+                }
+                return;
+            }
+            if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
+                picker_caret_ = std::max(0, picker_caret_ - 1);
+                update();
+                return;
+            }
+            if (key == Qt::Key_Right || (plain && key == Qt::Key_L)) {
+                picker_caret_ = std::min(static_cast<int>(picker_name_.size()),
+                                         picker_caret_ + 1);
+                update();
+                return;
+            }
+            if (key == Qt::Key_Backspace) {
+                if (picker_caret_ > 0) {
+                    picker_name_.remove(picker_caret_ - 1, 1);
+                    --picker_caret_; // the word is one letter shorter where the caret was
+                }
+                update();
+                return;
+            }
+            if (plain && text.size() == 1) {
+                const QChar c = text.at(0);
+                // Printable and no spaces: a theme is a file name, and a file name with a
+                // space in it is a thing you have to quote in every other program.
+                if (c.unicode() >= 0x21 && c.unicode() <= 0x7e && picker_name_.size() < 48)
+                    picker_name_.insert(picker_caret_++, c);
+                update();
+            }
             return;
         }
         if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
@@ -2788,12 +2987,24 @@ private:
         if (!hit.hit)
             return;
         if (hit.save) {
-            picker_->confirm();
-            finishPicker(true);
+            requestPickerSave();
             return;
         }
         if (hit.leave) {
             finishPicker(false);
+            return;
+        }
+        if (hit.name) {
+            // A pointer landing on the name means the next thing typed is a name, so the
+            // click opens the field the way `e` does. A box you can point at but not type
+            // into is a label with a border round it.
+            picker_focus_ = 3;
+            if (!picker_editing_) {
+                picker_editing_ = true;
+                picker_before_edit_ = picker_name_;
+                picker_caret_ = static_cast<int>(picker_name_.size());
+            }
+            update();
             return;
         }
         if (hit.row < 0)
@@ -3150,6 +3361,7 @@ private:
         QRectF cancel;
         QRectF preview;    // the mixer's sentence, which is the colour being mixed
         QRectF ground_switch;  // the word at the end of it, which changes what it sits on
+        QRectF name;       // the picker's theme-name line, which is typed rather than walked
         std::vector<QRectF> bars;     // the mixer's channels, one bar per row
         std::vector<QRectF> swatches; // the picker's colour boxes, per row
         std::vector<QRectF> minus;    // the two arrows of each row, for a mouse
@@ -3198,7 +3410,11 @@ private:
         // A list has an answer for running out of room already, so the fallback
         // font is asked only to fit a panel of a dozen rows and the rest scrolls.
         const double gap = kPanelRowGap;
-        const double rows_tall = std::min(5.0 + total + 2.0, kPanelListRows);
+        // Six lines are the panel's own rather than the list's: a title, the name the
+        // colours go into, the two words, the hint, and the air between the title and
+        // the table. The list gets whatever height is left and scrolls.
+        const double own_lines = 6.0;
+        const double rows_tall = std::min(own_lines + total, kPanelListRows);
         const PanelFont pf =
             panelFont(std::max(table_cells, hintCells(hint)), rows_tall, gap * rows_tall);
         const double cw = pf.cw;
@@ -3208,10 +3424,10 @@ private:
         const double table_w = table_cells * cw;
         const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
         const double panel_w = std::min(inner_w + 2 * pad, std::max(2.0, width() - 2.0));
-        const double panel_h = std::min((5 + total + 2) * (ch + gap) + 2 * pad,
+        const double panel_h = std::min((own_lines + total) * (ch + gap) + 2 * pad,
                                         std::max(2.0, height() - 2.0));
-        const int visible =
-            std::max(1, static_cast<int>((panel_h - 2 * pad - 5 * (ch + gap)) / (ch + gap)));
+        const int visible = std::max(
+            1, static_cast<int>((panel_h - 2 * pad - own_lines * (ch + gap)) / (ch + gap)));
         int first = 0;
         if (total > visible)
             first = std::clamp(picker_->row() - visible + 1, 0, total - visible);
@@ -3229,7 +3445,7 @@ private:
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
         p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Colours"));
+                   Qt::AlignHCenter | Qt::AlignVCenter, pickerTitle());
         y += ch + kTitleGap;
 
         // The rows are centred in the panel rather than hung off its left edge.
@@ -3303,8 +3519,60 @@ private:
             y += ch + gap;
         }
 
+        // The name the colours go into: the table's own columns, one line above the two
+        // words. It is a row of the table rather than a caption on the panel because it
+        // is one of the things you are choosing, and it is always there — a field you
+        // have to be told about before you can save a theme under a new name is a field
+        // you will not find. (Kaida, 2026-11-20: "the picker's name field is always
+        // visible — saving under the loaded name asks to overwrite, a new name writes a
+        // new theme".)
+        const double words_y = panel.bottom() - pad - 3 * ch;
+        const QRectF name_box(panel.x() + pad / 2, words_y - gap - ch, panel_w - pad, ch);
+        picker_hit_.name = name_box;
+        const double name_y = words_y - gap - fm.ascent() * 0.15;
+        const double value_x = table_x + label_w * cw;
+        const QString name_value = picker_name_;
+        // Lit like every other value here is: the thing the keys act on, which in a name
+        // is the name and not the line it sits in.
+        const QRectF name_value_box(value_x - cw * 0.4, name_box.top() + 1.0,
+                                    (fm.horizontalAdvance(name_value) / cw + 0.8) * cw,
+                                    ch - 2.0);
+        if (picker_focus_ == 3) {
+            paintFocusBand(p, name_value_box);
+            picker_hit_.highlight = name_value_box;
+        }
+        p.setPen(panel_ink(fg));
+        p.drawText(QPointF(table_x, name_y),
+                   QStringLiteral("theme").leftJustified(label_w, QLatin1Char(' ')));
+        p.drawText(QPointF(value_x, name_y), name_value);
+        if (picker_focus_ == 3 && picker_editing_) {
+            // Where the next character goes. The colour rows show the same rule under a
+            // digit; a word has the same rule between its letters, and the arrows move it
+            // the way they move a digit along a hex value.
+            const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+            p.setPen(QPen(accent, 1));
+            const double caret =
+                value_x + fm.horizontalAdvance(name_value.left(picker_caret_)) + 1.0;
+            p.drawLine(QPointF(caret, name_y + fm.descent() * 0.4),
+                       QPointF(caret + cw - 2.0, name_y + fm.descent() * 0.4));
+        } else if (picker_focus_ == 3) {
+            // Shut, and saying so in the words the panel already uses. The field is one
+            // keystroke away and the note is the only place that fact can be written
+            // without changing the standing line at the bottom.
+            p.setPen(panel_ink(fg, 150));
+            p.drawText(QPointF(value_x + fm.horizontalAdvance(name_value) + cw, name_y),
+                       QStringLiteral("(e to edit)"));
+        }
+
+        // While the panel is asking about a theme that already exists, the two words are
+        // the question's two answers. Same places, same walking, one less thing to learn
+        // for a panel that occasionally has to ask.
         paintOverlayButtons(p, panel, pf, fg, picker_hit_.save, picker_hit_.cancel,
-                            picker_focus_);
+                            picker_focus_,
+                            picker_overwrite_ ? QStringLiteral("overwrite")
+                                              : QStringLiteral("save"),
+                            picker_overwrite_ ? QStringLiteral("keep it")
+                                              : QStringLiteral("cancel"));
         noteWordHit(picker_hit_, picker_focus_);
 
         // The hint is anchored to the bottom of the panel, because the panel
@@ -3472,13 +3740,12 @@ private:
     // terminal's cells they kept their full height in a panel that had shrunk to
     // fit a small window, and landed on the last row of the list.
     void paintOverlayButtons(QPainter& p, const QRectF& panel, const PanelFont& pf,
-                             const Color& fg, QRectF& save, QRectF& cancel,
-                             int focus) const {
+                             const Color& fg, QRectF& save, QRectF& cancel, int focus,
+                             const QString& save_word = QStringLiteral("save"),
+                             const QString& cancel_word = QStringLiteral("cancel")) const {
         const double ch = pf.ch;
         const double cw = pf.cw;
         const double pad = 1.5 * ch;
-        const QString save_word = QStringLiteral("save");
-        const QString cancel_word = QStringLiteral("cancel");
         const double gap = 3 * cw;
         const double save_w = pf.fm.horizontalAdvance(save_word) + cw;
         const double cancel_w = pf.fm.horizontalAdvance(cancel_word) + cw;
@@ -3529,6 +3796,7 @@ private:
         int digit = -1;  // which digit of its value, or -1
         bool save = false;
         bool leave = false;
+        bool name = false; // the picker's theme-name line
         bool step_down = false; // the row's `-` arrow
         bool step_up = false;   // and its `+` arrow
         bool hit = false; // anywhere inside the panel, buttons and rows included
@@ -3544,6 +3812,10 @@ private:
         }
         if (hit.cancel.contains(where)) {
             out.leave = true;
+            return out;
+        }
+        if (hit.name.contains(where)) {
+            out.name = true;
             return out;
         }
         for (std::size_t i = 0; i < hit.rows.size(); ++i) {
@@ -3644,7 +3916,26 @@ private:
     std::unique_ptr<ThemePicker> picker_;
     Theme picker_before_;
     Screen::ColourLocks picker_saved_locks_; // the config's locks, restored on a cancel
-    std::function<void(std::vector<ThemeField>, bool saved)> picker_finish_;
+    std::function<void(std::vector<ThemeField> now, bool saved, std::string name)> picker_finish_;
+    // The name the colours would be saved under, as it stands in the field, and the one
+    // they are wearing now. Editing the first into something else is how a new theme
+    // gets its name, so the panel has to hold both: one is what to write over, the other
+    // is what to call the file.
+    QString picker_name_;
+    std::string picker_loaded_name_;
+    std::function<bool(const std::string& name)> picker_name_taken_;
+    // The field is typed into only when it has been opened with `e`, and then the arrows
+    // are a caret inside the word rather than a walk between the panel's stops. What the
+    // name was when `e` was pressed is kept, so Esc puts the word back rather than
+    // leaving half of it on the screen.
+    bool picker_editing_ = false;
+    int picker_caret_ = 0;
+    QString picker_before_edit_;
+    // True while the panel is asking whether to write over a theme that is already
+    // there. The question lives in the same panel rather than in a window of its own,
+    // because a question that appears somewhere else is a question about a panel you
+    // have just stopped looking at.
+    bool picker_overwrite_ = false;
     std::unique_ptr<SettingsPicker> settings_;
     std::function<void(std::vector<SettingRow>, bool saved)> settings_finish_;
     std::function<void(const SettingRow&)> settings_preview_;

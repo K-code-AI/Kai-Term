@@ -382,7 +382,8 @@ nothing can be kept.
   on whether or not this window is looking at it.
 
 - **Ctrl+Shift+K** opens the settings menu over the grid — font size, the two
-  transparencies, padding, scrollback, cursor style and when closing asks — walked
+  transparencies, padding, scrollback, cursor style, when closing asks, and which theme
+  is being worn — walked
   with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, and one
   more step down from the last row landing on the words `save` and `cancel`, and one step
   back up landing on the last row again. Enter opens
@@ -393,7 +394,11 @@ nothing can be kept.
   preview is the window, so a font you are choosing is a font you are looking at. A
   row cannot be driven outside the values its setting accepts: numbers stop at their
   edges, and a row like `confirm quit` only steps between the three words the file
-  takes.
+  takes. The `theme` row steps between the default and whatever `.conf` files are in
+  `themes/`, and stepping it repaints the window in that theme straight away — leaving
+  without saving puts the old colours back, because a preview you cannot undo is a
+  commit you were tricked into. Saving writes the name into `kai-term.conf`, so the
+  next window opens wearing it too.
 
 - **Ctrl+Shift+P** opens the colour picker over the grid: the five window colours
   and the sixteen ANSI palette entries, walked with Up/Down or k/j, digits walked
@@ -406,6 +411,19 @@ nothing can be kept.
   running session the preview moves only the window's chrome, because a session's
   screen colours are the session's own business, and the save is still for the
   next window.
+
+  Under the colours is a `theme` line saying which theme they would be saved into, and it
+  makes the picker a theme creator rather than an editor of one file. Its extension is
+  left out because every theme has one; `Default` is `theme.conf`, and anything else is a
+  file in `themes/`. The field is shut until `e` opens it — a stray letter while walking
+  the list cannot rename the theme you were about to save — and while it is open the
+  arrows walk a caret inside the word, a letter lands where the caret is, Backspace takes
+  the letter before it, Enter confirms and gets you out, and Esc puts the word back as it
+  was and leaves the panel up. Saving under a name that is already a theme asks first: the
+  title becomes `Overwrite midnight.conf?` and the two words become `overwrite` and
+  `keep it`, in the same places, walked the same way. A name nothing is using writes
+  without asking, and gets every colour the window is wearing rather than only the ones
+  that moved, because a new file starts empty.
 
 - Plain **Ctrl+S** is left alone and goes to the shell, where it stops and starts
   output the way it always has. That is why the key above has Shift in it: a terminal
@@ -477,6 +495,25 @@ Two files, because two kinds of thing get set:
   transparency is not a colour, so it is edited in the settings menu and goes to
   `kai-term.conf` instead.)
 
+A third thing lives beside them: **`~/.config/kai-term/themes/`** holds more than one
+palette, and `theme` in `kai-term.conf` says which of them to wear.
+
+```
+theme = Default.conf            # the colours above, and what the picker writes
+theme = midnight.conf           # ~/.config/kai-term/themes/midnight.conf
+theme = /home/kai/palettes/dusk.conf   # a path is taken as the path it is
+```
+
+Leaving `theme` out and writing `theme = Default.conf` are the same sentence, and both
+mean `theme.conf` — the file that has always held the colours, and the one the picker
+writes, so nothing written before themes existed needs converting. A bare name is a file
+in `themes/`; a name with a slash in it is that path, extension and all. One theme file
+is read per launch: a named theme replaces `theme.conf` rather than layering over it, and
+it is still read last, so the colours win where a colour somehow appears in both files.
+`KAI_TERM_THEME` outranks the whole arrangement, because the environment is the thing you
+are holding right now. A `-c` or `--config-dir` directory brings its own `themes/` with
+it, because the point of pointing somewhere is that everything follows.
+
 Both live under `$XDG_CONFIG_HOME` when it is set, else `~/.config`; `KAI_TERM_CONFIG`
 and `KAI_TERM_THEME` point either one at a different file, which is how a test gets a
 config without touching anybody's home directory. To run the whole program against a
@@ -504,6 +541,7 @@ foreground_opacity = 1          # how solid the text, cursor and dialogs are
 scrollback     = 1000           # lines a screen remembers above its top edge (0-20000)
 padding        = 10             # pixels of air between the grid and the window edge (0-64)
 cursor_style   = underline      # block | bar | underline, until a program picks its own
+theme        = Default.conf     # which colours to wear: a name in themes/, or a path
 
 # ~/.config/kai-term/theme.conf
 foreground   = #dcdcdc          # the ink of unstyled text

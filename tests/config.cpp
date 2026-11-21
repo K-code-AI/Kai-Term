@@ -468,6 +468,69 @@ int main() {
         ::rmdir(other.c_str());
     }
 
+    {
+        // `theme = ...`: which colours to wear. A bare name is a file in `themes`, a
+        // name with a slash is that path, and `Default.conf` — like leaving it out —
+        // is the file the colours have always lived in.
+        // (Kaida, 2026-11-20: "We add a 'Theme = Default.conf' to our config and a
+        // sub-directory 'themes' in ~/.config/kai-term where they get sourced from by
+        // default unless a full path for the theme is given".)
+        const std::string home = dir + "/themedir";
+        const std::string themes = home + "/themes";
+        ::mkdir(home.c_str(), 0755);
+        ::mkdir(themes.c_str(), 0755);
+        writeFile(home + "/kai-term.conf", "theme = midnight.conf\n");
+        writeFile(home + "/theme.conf", "background = #111111\n");
+        writeFile(themes + "/midnight.conf", "background = #222222\n");
+        writeFile(themes + "/b.conf", "background = #333333\n");
+        writeFile(themes + "/a.conf", "background = #444444\n");
+        writeFile(themes + "/notes.txt", "not a theme\n");
+        ::unsetenv("KAI_TERM_CONFIG");
+        ::unsetenv("KAI_TERM_THEME");
+        setConfigDir(home);
+        expect("no theme named is the file the colours have always lived in",
+               resolveThemePath("") == home + "/theme.conf");
+        expect("and Default.conf says the same thing in words",
+               resolveThemePath("Default.conf") == home + "/theme.conf");
+        expect("a bare name is a file in the themes directory",
+               resolveThemePath("midnight.conf") == themes + "/midnight.conf");
+        expect("and a name with a slash in it is the path it is",
+               resolveThemePath("/elsewhere/odd.conf") == "/elsewhere/odd.conf");
+        const std::vector<std::string> offered = listThemes();
+        expect("the themes to choose from are the default and the ones on disk, in order",
+               offered == std::vector<std::string>{"Default.conf", "a.conf", "b.conf",
+                                                   "midnight.conf"});
+        const Config chosen = loadConfig();
+        expect("the settings file says which theme, and that file is the one read",
+               chosen.theme_path == themes + "/midnight.conf" &&
+                   isColour(chosen.background, 0x22, 0x22, 0x22));
+        expect("and the theme is remembered as it was written", chosen.theme == "midnight.conf");
+        expect("a theme nobody wrote down still has a name to show",
+               themeName("") == "Default.conf" && themeName("x.conf") == "x.conf");
+        ::setenv("KAI_TERM_THEME", (home + "/theme.conf").c_str(), 1);
+        expect("while KAI_TERM_THEME outranks what the file asked for",
+               resolveThemePath("midnight.conf") == home + "/theme.conf");
+        const Config forced = loadConfig();
+        expect("and the colours follow it, not the name",
+               isColour(forced.background, 0x11, 0x11, 0x11));
+        ::unsetenv("KAI_TERM_THEME");
+
+        writeFile(home + "/kai-term.conf", "theme =\n");
+        const Config blank = loadConfig();
+        expect("a `theme` with nothing after it is refused by name",
+               blank.problems.size() == 1 &&
+                   mentions(blank.problems, "theme needs a file name"));
+        expect("and the colours fall back to the default file",
+               isColour(blank.background, 0x11, 0x11, 0x11));
+        setConfigDir("");
+        for (const std::string& gone : {themes + "/midnight.conf", themes + "/a.conf",
+                                        themes + "/b.conf", themes + "/notes.txt",
+                                        home + "/kai-term.conf", home + "/theme.conf"})
+            std::remove(gone.c_str());
+        ::rmdir(themes.c_str());
+        ::rmdir(home.c_str());
+    }
+
     std::remove(path.c_str());
     std::remove(kept.c_str());
     std::remove(fresh.c_str());

@@ -22,11 +22,13 @@
 // you decide to live with. A living setting should not outrank the thing
 // someone is holding in their hand right now.
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <dirent.h>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -158,6 +160,11 @@ struct Config {
     // Empty means the files said nothing, which is not the same as a value of
     // "never": a setting nobody wrote leaves the built-in answer standing.
     std::string confirm_quit;
+    // Which colours to wear, as written: empty or `Default.conf` for the file the program
+    // has always used, a bare name for a file in `themes`, and anything with a slash in it
+    // for that path. Only ever read from the settings file — a theme is colours, and the
+    // settings file is where the decisions live.
+    std::string theme;
     // How the window presents itself, when the files have opinions: a font
     // size in pixels, an opening grid, and how solid the window is against
     // whatever is behind it.
@@ -309,6 +316,86 @@ inline std::string themeFilePath() {
     return root.empty() ? "" : root + "/kai-term/theme.conf";
 }
 
+// The name that means "the colours that are already there". Leaving `theme` out and
+// writing `theme = Default.conf` are the same sentence, and the file it names is the one
+// that has always held the colours — `theme.conf`, which is also what the colour picker
+// writes. Nothing moves, and nothing written before this existed needs converting.
+// (Kaida, 2026-11-20: "We add a 'Theme = Default.conf' to our config and a sub-directory
+// 'themes' in ~/.config/kai-term where they get sourced from by default unless a full
+// path for the theme is given".)
+inline constexpr const char* kDefaultThemeName = "Default.conf";
+
+// Where the other themes live: a `themes` directory beside the two files, wherever those
+// happen to be. A directory named by `-c` brings its own themes with it, because the point
+// of pointing somewhere is that everything follows.
+inline std::string themesDirectory() {
+    if (!configDirOverride().empty())
+        return configDirOverride() + "/themes";
+    const std::string root = configRoot();
+    return root.empty() ? std::string() : root + "/kai-term/themes";
+}
+
+// Which file a theme name means. Empty and `Default.conf` both mean the colours the
+// program has always used; a name with a slash in it is taken for the path it is —
+// "unless a full path for the theme is given" — and anything else is a file in the themes
+// directory. KAI_TERM_THEME outranks the lot, because the environment is the thing you are
+// holding right now and it has always won over a file.
+inline std::string resolveThemePath(const std::string& name) {
+    if (const char* override_path = std::getenv("KAI_TERM_THEME"))
+        return override_path;
+    if (name.empty() || name == kDefaultThemeName)
+        return themeFilePath();
+    if (name.find('/') != std::string::npos)
+        return name;
+    const std::string dir = themesDirectory();
+    return dir.empty() ? name : dir + "/" + name;
+}
+
+// The themes there are to choose from: the default first, then every `.conf` in the themes
+// directory in the order a person would read them. A file inside `themes` that is itself
+// called `Default.conf` is not offered, because that name already answers to the colours
+// the program carries — two rows with one name would be a question, not a choice.
+inline std::vector<std::string> listThemes() {
+    std::vector<std::string> names{kDefaultThemeName};
+    std::vector<std::string> found;
+    const std::string dir = themesDirectory();
+    if (!dir.empty()) {
+        if (DIR* handle = ::opendir(dir.c_str())) {
+            while (const dirent* entry = ::readdir(handle)) {
+                const std::string name = entry->d_name;
+                if (name.size() <= 5 || name.compare(name.size() - 5, 5, ".conf") != 0)
+                    continue;
+                if (name == kDefaultThemeName)
+                    continue;
+                found.push_back(name);
+            }
+            ::closedir(handle);
+        }
+    }
+    std::sort(found.begin(), found.end());
+    names.insert(names.end(), found.begin(), found.end());
+    return names;
+}
+
+// What a theme is called when the config did not say: the default has a name even when
+// nobody wrote it down, because the row that shows it has to say something.
+inline std::string themeName(const std::string& written) {
+    return written.empty() ? std::string(kDefaultThemeName) : written;
+}
+
+// A name typed into the picker, turned into a file name. A theme is a `.conf` file, and
+// nobody should have to type the extension they can see on every other theme in the list;
+// a name that already has a dot in it is left alone, because typing `odd.theme` means
+// that file and not `odd.theme.conf`. An empty name is not a file, so it means the one
+// that is on.
+inline std::string themeFileName(const std::string& typed, const std::string& loaded) {
+    if (typed.empty())
+        return themeName(loaded);
+    if (typed.find('.') != std::string::npos)
+        return typed;
+    return typed + ".conf";
+}
+
 // Read one file into the config. Both files speak the same key=value, and
 // the reader is deliberately lenient about which key appears in which file —
 // a colour written in kai-term.conf still works — because refusing to read
@@ -378,6 +465,14 @@ inline void parseConfigFile(const std::string& path, Config& config) {
                 continue;
             }
             config.confirm_quit = lowerWord(value);
+        } else if (key == "theme") {
+            // Kept exactly as written, slashes and case and all: it is a file name, and a
+            // file system that distinguishes case is not this parser's business.
+            if (value.empty()) {
+                note(line_no, "theme needs a file name like Default.conf or midnight.conf");
+                continue;
+            }
+            config.theme = value;
         } else if (key == "font_size") {
             int got = 0;
             if (!numberFromText(value, 6, 72, got))
@@ -453,15 +548,20 @@ inline void parseConfigFile(const std::string& path, Config& config) {
     }
 }
 
-// Read the person's settings, then the person's theme. The theme is read
-// last so it wins where a colour somehow appears in both: the file the
-// picker writes is the more recent intention, and the most recent intention
-// is the one to keep.
+// Read the person's settings, then the colours those settings name. The theme is read
+// last so it wins where a colour somehow appears in both: the file the picker writes is
+// the more recent intention, and the most recent intention is the one to keep.
+//
+// The settings are read first for a second reason as well: `theme` lives in them, so
+// which colour file exists at all is not known until they have been read. Everything
+// still resolves relative to wherever the configuration was pointed, so `-c` moves the
+// themes along with the files.
 inline Config loadConfig() {
     Config config;
     config.settings_path = settingsFilePath();
     config.theme_path = themeFilePath();
     parseConfigFile(config.settings_path, config);
+    config.theme_path = resolveThemePath(config.theme);
     parseConfigFile(config.theme_path, config);
     return config;
 }

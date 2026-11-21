@@ -404,6 +404,21 @@ Needed:
   overlay, a session in the list — keeps its whole-line band, because there "this line" is
   the true thing to say. `OverlayHit::highlight` records the one lit rect, which is what the
   checks ask rather than a guess at where a band was drawn.
+- **Themes are files, built 2026-11-20.** `theme` in `kai-term.conf` says which colours to
+  wear: left out or `Default.conf` for `theme.conf`, which is what has always held them and
+  what the picker writes, a bare name for a file in `~/.config/kai-term/themes/`, and
+  anything with a slash for the path it is. One theme file is read per launch, so a named
+  theme replaces the default rather than layering over it, and it is still read last.
+  `resolveThemePath`/`listThemes` answer it in the Qt-free reader; `applyConfigColours` came
+  out of `adoptConfig` so the settings menu can wear a theme before writing anything, and
+  leaving puts it back. The settings menu ends in that choice row, and the picker gained a
+  `theme` line — the name without its `.conf`, because every theme has one — which is shut
+  until `e` opens it, takes a caret the arrows walk, and is confirmed by Enter. Saving under
+  a name that already exists asks in the panel itself (title becomes the question, the two
+  words become the two answers); a name that does not writes a new file with every colour,
+  because a new file starts empty, and points `theme` at it.
+  (Kaida, 2026-11-20: "We add a 'Theme = Default.conf' to our config and a sub-directory
+  'themes' … the colour picker now becomes the theme creator with a field for the name".)
 - **A menu fits the window it is in, built 2026-11-20.** A panel is measured in cells from
   its own content and knew nothing about the window's size, so a small window got a panel
   painted off both its edges, its hint under its rows and its two words on top of them.
