@@ -991,3 +991,21 @@ test that hangs should still cost a test and not a machine.
 - Behaviour and colours live in separate files — `kai-term.conf` and `theme.conf` — because they are edited for different reasons and the colour file is what the picker rewrites on every keystroke. The reader is lenient about which key is in which file and reads the theme last, so a person editing either by hand gets the answer they meant.
 - A colour the config names is a LOCK and is the top authority, above a session's own `OSC 4/10/11` and the built-ins, on every window including one attached to a running session. The person chose it; the program did not. A colour the config left unnamed is not locked and stays the session's to recolour, so a program that legitimately changes a colour is still heard. The lock lives in the `Screen`, not the widget, so the authority is one rule in the model, and it is deliberately untouched by a program's colour writes — only the config and the picker move it. (Kaida, 2026-11-19: "the theme saved in the user config should supersede everything when existing.")
 - The one way to run against a different set of settings is `--config-dir DIR`, read for both files from `DIR` directly. It beats the default directory but loses to an explicit `KAI_TERM_CONFIG`/`KAI_TERM_THEME` for the single file it names, so tests and one-off overrides keep working.
+
+- A file a program writes and a file it reads have to agree on one shape, or a save quietly
+  produces a file the reader disagrees with. Theme files are written `key value` — the shape
+  a kitty theme arrives in — while `kai-term.conf` keeps `key = value`, because that file is
+  mostly somebody's own notes. The writer recognised a setting only where the line contained
+  `=`, so saving over a theme written without one matched no line, marked nothing as written,
+  and appended all the colours again in the very shape it had stopped writing: a theme holding
+  each of its colours twice, with whichever copy the reader reached last winning. Both shapes
+  are read, because a file somebody already wrote is not wrong. One shape is written per
+  file, and which one is the caller's word.
+  (Kaida, 2026-11-21: "Overwriting a theme should also Overwrite it for real instead of
+  appending to it. to avoid conflict like this", and on which shape is right, "only the
+  =less layout should be used is what i meant, we a re deprecating the value = xx layout".)
+- A test that seeds its fixture in the shape it is checking for proves nothing. Every
+  window test wrote its theme file with `key = value` by hand, so the old writer read them
+  all perfectly and the duplication it caused on a real file — one the writer itself had
+  produced — was invisible for as long as the feature existed. The check that catches it is
+  a round trip: let the writer make the file, then save over what it made.

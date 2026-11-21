@@ -265,7 +265,7 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 365 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 374 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
@@ -547,12 +547,21 @@ different set of settings, launch it with `-c FILE` — the settings come from `
 the colours from the `theme.conf` in the same directory — or with `--config-dir DIR`,
 which reads both files from `DIR` under their usual names. A directory given to `-c` is
 taken as the directory answer, because a shell completing a path hands one over as often
-as a file. Both files are plain `key = value` —
-the shape Old-Term's config has always had — with `#` comments, one setting per line,
-and whitespace around the `=` free. The `=` is also optional: `background #1c1c1c` reads,
-which is the shape a kitty theme is written in, so a palette from over there drops into
-`themes/` and is worn without editing a line of it. The two spellings mean the same
-sentence and may be mixed in one file; a colour's own `#` is never taken for a comment.
+as a file. Both files are one setting per
+line with `#` comments, and both spellings of a setting are read: `background = #1c1c1c`
+and `background #1c1c1c` mean the same sentence, whitespace around the `=` is free, and the
+two may be mixed in one file — a colour's own `#` is never taken for a comment. What is
+*written* differs between the two files, because the two files have different owners.
+`kai-term.conf` is written `key = value`, the shape it has always had, since most of it is
+somebody's own notes and comments and a setting added at one space is one the eye finds.
+A theme file is written without the `=`, the shape a kitty theme is written in, so a
+palette from over there drops into `themes/` and is worn without editing a line of it — and
+a theme the colour editor writes comes out looking like one of those, colours lined up in a
+column. The `=` was deprecated for theme files on 2026-11-21; writing it there is what used
+to leave a theme holding every colour it had saved twice, because a save that looked only
+for a line containing `=` found nothing to change in a file written without one and added
+each colour again underneath, where the reader picked one of them up. A theme already
+written with the sign is not wrong and keeps working; the lines a save touches lose it.
 A theme written this way can be read by kitty in return, because the palette is stored as
 `color0` through `color15` and the highlight as `selection_background` — the names kitty
 uses — while the screen keeps calling them `black` and `selection`. A setting nobody recognizes is not skipped in
@@ -577,17 +586,17 @@ cursor_blink   = 500            # ms each half of a blink lasts; 0 keeps the cur
                                 # (500 is what a window does when the line is absent)
 theme        = Default.conf     # which colours to wear: a name in themes/, or a path
 
-# ~/.config/kai-term/theme.conf
-foreground   = #dcdcdc          # the ink of unstyled text
-background   = #1e1e1e          # the blank screen
-cursor       = #dcdcdc
-selection_background = #3e60a8 # the highlight under a dragged selection
-                                # (`selection` is the older name for it; it still reads)
-selection_foreground = #f0f0f0 # the ink drawn on top of that highlight
-accent       = #6ea0ff          # what a dialog puts on the answer its focus is on
-color0       = #000000          # the sixteen ANSI colours, black through bright white
-color1       = #800000
-color9       = #ff0000          # ... any of color0 through color15
+# ~/.config/kai-term/theme.conf — a theme is written without the `=`; both shapes read
+foreground            #dcdcdc          # the ink of unstyled text
+background            #1e1e1e          # the blank screen
+cursor                #dcdcdc
+selection_background  #3e60a8          # the highlight under a dragged selection
+                                       # (`selection` is the older name for it; still reads)
+selection_foreground  #f0f0f0          # the ink drawn on top of that highlight
+accent                #6ea0ff          # what a dialog puts on the answer its focus is on
+color0                #000000          # the sixteen ANSI colours, black through bright white
+color1                #800000
+color9                #ff0000          # ... any of color0 through color15
 ```
 
 Colours are `#rrggbb` (the `#` is optional); names are refused, because a wrongly

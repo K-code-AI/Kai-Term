@@ -677,16 +677,33 @@ inline bool ensureParentDirectory(const std::string& path) {
 // and settings it does not touch are copied byte for byte; a line whose key it
 // is setting keeps its leading text and its trailing comment and changes only
 // the value, so the alignment somebody lined up by hand survives; keys that
-// were not in the file are added at the end. A file that did not exist gets a
-// short header so the next person to open it knows what it is. Everything is
-// written to a sibling temp file and renamed over the original, because a save
-// interrupted halfway should leave the old config standing, not a half-written
-// one that the reader will then complain about at startup.
+// were not in the file are added at the end, in the column the rest of the file
+// already writes at. A file that did not exist gets a short header so the next
+// person to open it knows what it is. Everything is written to a sibling temp
+// file and renamed over the original, because a save interrupted halfway should
+// leave the old config standing, not a half-written one that the reader will
+// then complain about at startup.
+//
+// A line names its setting in either of two shapes: `key = value`, which is what
+// the settings file is written in, and `key value`, which is what a theme file is
+// written in. Both are read, because a file somebody already wrote is not wrong
+// and because a kitty theme arrives without the sign; `equals_sign` is the word
+// for which shape goes back out. It is true for `kai-term.conf` and false for a
+// theme, whose `=` form was deprecated on 2026-11-21.
+//
+// Before that word existed, this function recognised a setting only where the
+// line contained `=`. A theme written without one therefore matched nothing,
+// nothing was marked as written, and every colour was appended again in the old
+// shape — a file with each colour in it twice, the second copy winning, which is
+// exactly what the colour editor did to Kaida's themes when he saved over one.
+// (Kaida, 2026-11-21: "only the =less layout should be used is what i meant, we
+// a re deprecating the value = xx layout".)
 inline bool saveConfigValues(const std::string& path,
                              const std::vector<std::pair<std::string, std::string>>& values,
                              std::string& error,
                              const std::string& new_file_header =
-                                 "# kai-term settings — edit here or from inside the window\n") {
+                                 "# kai-term settings — edit here or from inside the window\n",
+                             bool equals_sign = true) {
     if (path.empty()) {
         error = "no config file path is set";
         return false;
@@ -708,25 +725,83 @@ inline bool saveConfigValues(const std::string& path,
         }
     }
 
+    // Where a line's key stops and its value starts, in either shape. A `#` sitting at
+    // the value's position is a colour rather than a comment — the same distinction the
+    // reader makes, and the one that has to be made here too or every colour line in a
+    // theme would read as a note somebody left.
+    struct Setting {
+        std::size_t key_end = 0;  // just past the key's last letter
+        std::size_t value_at = 0; // the value's first character
+        bool had_equals = false;
+    };
+    const auto find_setting = [](const std::string& line, Setting& out) {
+        const std::size_t key_start = line.find_first_not_of(" \t");
+        if (key_start == std::string::npos || line[key_start] == '#')
+            return false; // blank, or a note somebody left
+        std::size_t i = key_start;
+        while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '=')
+            ++i;
+        out.key_end = i;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
+            ++i;
+        if (i < line.size() && line[i] == '=') {
+            out.had_equals = true;
+            ++i;
+            while (i < line.size() && (line[i] == ' ' || line[i] == '\t'))
+                ++i;
+        }
+        if (i >= line.size())
+            return false; // a key with nothing after it sets nothing
+        out.value_at = i;
+        return true;
+    };
+
     std::vector<bool> placed(values.size(), false);
+    std::size_t column = 0; // the column this file writes its values at
     for (std::string& line : lines) {
-        const std::size_t hash = line.find('#');
-        if (hash != std::string::npos && line.find_first_not_of(" \t") >= hash)
-            continue; // a comment line, not a setting
-        const std::size_t eq = line.find('=');
-        if (eq == std::string::npos)
+        Setting at;
+        if (!find_setting(line, at))
             continue;
-        const std::string key = lowerWord(trimSpace(line.substr(0, eq)));
+        const std::string key = lowerWord(trimSpace(line.substr(0, at.key_end)));
+        if (at.value_at > column)
+            column = at.value_at;
         for (std::size_t i = 0; i < values.size(); ++i) {
             if (placed[i] || values[i].first != key)
                 continue;
-            const std::string comment = trailingComment(line.substr(eq + 1));
-            line = line.substr(0, eq + 1) + " " + values[i].second;
+            const std::string comment = trailingComment(line.substr(at.value_at));
+            // Whatever separates a key from its value is kept, spaces and all, so the
+            // columns somebody lined up by hand stay lined up. Only the sign comes and
+            // goes, with the layout this file is written in.
+            std::string sep = line.substr(at.key_end, at.value_at - at.key_end);
+            if (at.had_equals && !equals_sign) {
+                std::string kept;
+                for (const char c : sep) {
+                    if (c != '=')
+                        kept += c;
+                }
+                sep = kept.empty() ? " " : kept;
+            } else if (!at.had_equals && equals_sign) {
+                sep = " = ";
+            } else if (sep.empty()) {
+                sep = " ";
+            }
+            line = line.substr(0, at.key_end) + sep + values[i].second;
             if (!comment.empty())
                 line += " " + comment;
             placed[i] = true;
             break;
         }
+    }
+
+    // A colour the theme has never held joins at the column the rest of the file uses, so
+    // it lines up with its neighbours instead of arriving at a column of its own. A theme
+    // with no lines yet — one being written for the first time — is lined up on the longest
+    // colour being written. The settings file keeps the plainer `key = value` for a line it
+    // is adding: that file is mostly somebody's own notes and comments, and a setting added
+    // at one space is one the eye finds in a diff.
+    if (!equals_sign && column == 0) {
+        for (const std::pair<std::string, std::string>& v : values)
+            column = std::max(column, v.first.size() + 1);
     }
 
     std::string body;
@@ -735,8 +810,18 @@ inline bool saveConfigValues(const std::string& path,
     for (const std::string& line : lines)
         body += line + "\n";
     for (std::size_t i = 0; i < values.size(); ++i) {
-        if (!placed[i])
-            body += values[i].first + " = " + values[i].second + "\n";
+        if (placed[i])
+            continue;
+        const std::string& key = values[i].first;
+        std::string line = key;
+        if (equals_sign) {
+            line += " = " + values[i].second;
+        } else {
+            const std::size_t pad = column > key.size() + 1 ? column - key.size() : 1;
+            line.append(pad, ' ');
+            line += values[i].second;
+        }
+        body += line + "\n";
     }
 
     const std::string temp = path + ".tmp";

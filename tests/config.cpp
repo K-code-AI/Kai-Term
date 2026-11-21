@@ -348,6 +348,75 @@ int main() {
         expect("confirm_quit still says never", round.confirm_quit == "never");
     }
 
+    // A theme file is written without the `=`, and saving over one has to edit the lines
+    // that are there. It did not: only a line containing `=` was recognised, so nothing
+    // matched, nothing was marked as written, and every colour went on at the bottom in
+    // the old shape — a theme holding each of its colours twice, the copy the reader saw
+    // last winning. (Kaida, 2026-11-21: "Overwriting a theme should also Overwrite it for
+    // real instead of appending to it"; and on which shape is correct, "only the =less
+    // layout should be used is what i meant, we a re deprecating the value = xx layout".)
+    const std::string kept_theme = dir + "/kept-theme";
+    writeFile(kept_theme,
+              "# kai-term colours\n"
+              "background            #f7f7f7\n"
+              "foreground            #494542   # matched to my editor\n"
+              "color0                #090200\n");
+    {
+        std::string error;
+        const bool saved = saveConfigValues(
+            kept_theme, {{"background", "#e7f7f7"}, {"color1", "#ea2c20"}}, error,
+            "# kai-term colours\n", /*equals_sign=*/false);
+        expect("saving over a theme written without the sign succeeds", saved && error.empty());
+        std::ifstream in(kept_theme);
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        expect("the colour that moved is changed where it stood",
+               text.find("background            #e7f7f7") != std::string::npos);
+        expect("and nothing was appended in the old shape",
+               text.find("background =") == std::string::npos &&
+                   text.find(" = #") == std::string::npos);
+        expect("the theme holds its background once, not twice",
+               text.find("#f7f7f7") == std::string::npos);
+        expect("a colour the file never held joins without the sign",
+               text.find("color1                #ea2c20") != std::string::npos);
+        expect("in line with the colours above it",
+               text.find("\ncolor1") > text.find("\nbackground"));
+        expect("the untouched colour is exactly as it was",
+               text.find("color0                #090200") != std::string::npos);
+        expect("and the note beside a colour survives editing another one",
+               text.find("# matched to my editor") != std::string::npos);
+        // What the whole thing was for: the file the writer produced is the file the
+        // reader agrees about, with no line complaining and no colour doubled.
+        ::setenv("KAI_TERM_THEME", kept_theme.c_str(), 1);
+        ::setenv("KAI_TERM_CONFIG", (dir + "/no-such-config").c_str(), 1);
+        const Config back = loadConfig();
+        expect("the rewritten theme reads back with nothing to complain about",
+               back.problems.empty());
+        expect("wearing the new background", back.background && back.background->r == 0xe7);
+        expect("the colour that was added",
+               back.palette[1] && back.palette[1]->r == 0xea && back.palette[1]->g == 0x2c);
+        expect("and the ink the file still says, comment and all",
+               back.foreground && back.foreground->r == 0x49);
+    }
+
+    // A theme somebody wrote the old way is not wrong, and saving over it converts the
+    // lines it touches rather than leaving the file in both shapes at once.
+    const std::string old_theme = dir + "/old-shape-theme";
+    writeFile(old_theme, "background = #101010\nforeground = #d0d0d0\n");
+    {
+        std::string error;
+        static_cast<void>(saveConfigValues(old_theme, {{"background", "#202020"}}, error,
+                                           "# kai-term colours\n", /*equals_sign=*/false));
+        std::ifstream in(old_theme);
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        expect("a theme written the old way is edited in place, not doubled",
+               text.find("background  #202020") != std::string::npos &&
+                   text.find("#101010") == std::string::npos);
+        expect("and the line this save had no reason to touch keeps its shape",
+               text.find("foreground = #d0d0d0") != std::string::npos);
+    }
+
     // colourText is what the picker writes, and a colour made entirely of
     // digits would never show a broken letter. Spell every one of them and
     // read the answer back, because a saved colour the reader refuses is a

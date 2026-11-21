@@ -686,9 +686,14 @@ private:
                     return;
                 }
                 std::string error;
+                // A theme is written without the `=`: that is the layout theme files use
+                // now, and writing a second copy of every colour in the old shape is how a
+                // save came to leave a theme holding each of its colours twice.
+                // (Kaida, 2026-11-21.)
                 bool wrote = saveConfigValues(
                     path, colours, error,
-                    "# kai-term colours — edit here, or in the window: settings (Ctrl+Shift+K), then Enter on the theme row\n");
+                    "# kai-term colours — edit here, or in the window: settings (Ctrl+Shift+K), then Enter on the theme row\n",
+                    /*equals_sign=*/false);
                 // A new theme is only worn once the settings file says to wear it. The
                 // colours went in above; this is the line that points at them, and it
                 // goes into `kai-term.conf`, where the decisions live and not into the

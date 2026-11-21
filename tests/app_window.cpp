@@ -183,6 +183,64 @@ std::string writtenInto(const std::string& name) {
     return view.text();
 }
 
+// What a theme file says about one colour, whatever shape the line is written in. Theme
+// files are written `key  value` since the `=` was dropped for them on 2026-11-21, while
+// the files already on disk — and the ones these tests seed on purpose, to prove those
+// still read — say `key = value`. A check about a colour should not be a check about
+// spacing; a check about the shape says so out loud where it means it.
+bool theme_says(const std::string& text, const std::string& key, const std::string& colour) {
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const std::size_t end = text.find('\n', at);
+        const std::string line =
+            text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        at = end == std::string::npos ? text.size() : end + 1;
+        const std::size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos || line[start] == '#')
+            continue; // blank, or a note somebody left
+        const std::size_t key_end = line.find_first_of(" \t=", start);
+        if (line.substr(start, key_end == std::string::npos ? std::string::npos
+                                                            : key_end - start) != key)
+            continue;
+        const std::size_t value = line.find_first_not_of(" \t=", key_end);
+        if (value == std::string::npos)
+            continue;
+        // A value opening with `#` is a colour and runs to the next space; a note somebody
+        // left beside it starts at the `#` after that. The same distinction the reader
+        // makes — made wrong here and no colour in the file would ever match.
+        const std::size_t value_end = line[value] == '#' ? line.find_first_of(" \t", value)
+                                                         : line.find_first_of(" \t#", value);
+        if (line.substr(value, value_end == std::string::npos ? std::string::npos
+                                                              : value_end - value) == colour)
+            return true;
+    }
+    return false;
+}
+
+// How many lines of the file name this colour at all. A theme that was saved by appending
+// instead of overwriting holds each colour it saved twice, and the reader takes whichever
+// copy it liked — so the count is the thing worth asserting, not the text.
+// (Kaida, 2026-11-21: "Overwriting a theme should also Overwrite it for real instead of
+// appending to it. to avoid conflict like this".)
+int theme_mentions(const std::string& text, const std::string& key) {
+    int times = 0;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const std::size_t end = text.find('\n', at);
+        const std::string line =
+            text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        at = end == std::string::npos ? text.size() : end + 1;
+        const std::size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos || line[start] == '#')
+            continue;
+        const std::size_t key_end = line.find_first_of(" \t=", start);
+        if (line.substr(start, key_end == std::string::npos ? std::string::npos
+                                                            : key_end - start) == key)
+            ++times;
+    }
+    return times;
+}
+
 // Close a window the way a desktop closes one — an ordinary close, not a call into the
 // teardown underneath it — and take the question it puts up inside itself, if it puts
 // one up. The question is drawn by the terminal rather than by the desktop now, so it
@@ -891,7 +949,9 @@ int main(int argc, char** argv) {
             const std::string written((std::istreambuf_iterator<char>(in)),
                                       std::istreambuf_iterator<char>());
             expect("the saved colour is in the theme file: " + written,
-                   written.find("foreground = #11ff00") != std::string::npos);
+                   theme_says(written, "foreground", "#11ff00"));
+            expect("and the theme was rewritten, not added to: that colour is named once",
+                   theme_mentions(written, "foreground") == 1);
             std::ifstream settings(cfg);
             const std::string settings_text((std::istreambuf_iterator<char>(settings)),
                                             std::istreambuf_iterator<char>());
@@ -929,7 +989,7 @@ int main(int argc, char** argv) {
             const std::string written((std::istreambuf_iterator<char>(in)),
                                       std::istreambuf_iterator<char>());
             expect("and the theme file never heard about the colour that was left",
-                   written.find("background = #000000") == std::string::npos);
+                   !theme_says(written, "background", "#000000"));
         }
 
         // A palette row is a row like any other: walk down past the six
@@ -960,7 +1020,7 @@ int main(int argc, char** argv) {
             const std::string kept((std::istreambuf_iterator<char>(in)),
                                    std::istreambuf_iterator<char>());
             expect("the colour you walked away from is not in the file",
-                   kept.find("color0 = #ff0000") == std::string::npos);
+                   !theme_says(kept, "color0", "#ff0000"));
         }
         // Asked twice is not the same as unable: the same walk, answered yes.
         openThemeEditor(&window);
@@ -976,7 +1036,9 @@ int main(int argc, char** argv) {
             const std::string written((std::istreambuf_iterator<char>(in)),
                                       std::istreambuf_iterator<char>());
             expect("the palette entry saves under its file spelling: " + written,
-                   written.find("color0 = #ff0000") != std::string::npos);
+                   theme_says(written, "color0", "#ff0000"));
+            expect("over the copy the file already had, rather than under it",
+                   theme_mentions(written, "color0") == 1);
         }
         kai::AppWindow repainted(kai::startWindowBackend(24, 80));
         expect("and the next window carries the re-coloured black into its palette",
@@ -985,6 +1047,71 @@ int main(int argc, char** argv) {
                    repainted.theme().palette[0].b == 0);
         repainted.discardOnClose();
         repainted.shutdown();
+        pump(200);
+        // The loop a person actually takes, and the one that left a theme holding every
+        // colour twice: the editor writes a theme; later the editor is opened on that
+        // theme, one colour is changed, and the save goes back over the file already there.
+        // That file is written the way themes are written — no `=` — and a save that
+        // recognised only a line holding `=` matched nothing in it, so every colour went on
+        // again underneath the first and the reader took whichever copy it liked.
+        // (Kaida, 2026-11-21: "loading a theme.conf of the new layout and editing the value
+        // and saving result in this ... duplicating entry for each Value".)
+        const std::string loop_cfg = root + "/loop-config";
+        const std::string loop_theme = root + "/loop-theme.conf";
+        std::ofstream(loop_cfg) << "cols = 90\nrows = 28\n";
+        std::ofstream(loop_theme) << "# kai-term colours\n"
+                                     "background            #f7f7f7\n"
+                                     "foreground            #494542\n";
+        ::setenv("KAI_TERM_CONFIG", loop_cfg.c_str(), 1);
+        ::setenv("KAI_TERM_THEME", loop_theme.c_str(), 1);
+        {
+            kai::AppWindow worn(kai::startWindowBackend(24, 80));
+            worn.show();
+            static_cast<void>(waitFor([&worn] { return !worn.sessionName().empty(); }));
+            const auto tap = [&worn](int key, const QString& text = QString()) {
+                QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
+                QCoreApplication::sendEvent(&worn, &ev);
+            };
+            const auto touch_word = [&worn](bool left) {
+                const QPointF at = left ? worn.pickerSavePoint() : worn.pickerCancelPoint();
+                QMouseEvent down(QEvent::MouseButtonPress, at, worn.mapToGlobal(at.toPoint()),
+                                 Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(&worn, &down);
+                QMouseEvent up(QEvent::MouseButtonRelease, at, worn.mapToGlobal(at.toPoint()),
+                               Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(&worn, &up);
+                pump(60);
+            };
+            expect("a theme written without the sign is worn by the window that names it",
+                   worn.theme().background.r == 0xF7 && worn.theme().foreground.g == 0x45);
+            openThemeEditor(&worn);
+            pump(60);
+            for (const char digit : std::string("12ab34")) { // the editor opens on background
+                const int key = (digit >= '0' && digit <= '9')
+                                    ? (Qt::Key_0 + (digit - '0'))
+                                    : (Qt::Key_A + (digit - 'a'));
+                tap(key, QString(QChar(digit)));
+            }
+            pump(40);
+            touch_word(true); // `save`
+            touch_word(true); // and the ask to write over the theme that is already there
+            pump(80);
+            std::ifstream in(loop_theme);
+            const std::string text((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+            expect("saving over a theme written without the sign changes it where it stood: " +
+                       text,
+                   theme_says(text, "background", "#12ab34"));
+            expect("and holds that colour once, not once and again below it",
+                   theme_mentions(text, "background") == 1);
+            expect("the colour this save had no reason to touch is still there, once",
+                   theme_says(text, "foreground", "#494542") &&
+                       theme_mentions(text, "foreground") == 1);
+            expect("and nothing in the file went out in the deprecated shape",
+                   text.find('=') == std::string::npos);
+            worn.discardOnClose();
+            worn.shutdown();
+        }
         pump(200);
 
         window.discardOnClose();
@@ -1691,14 +1818,19 @@ int main(int argc, char** argv) {
             const std::string text((std::istreambuf_iterator<char>(dusk)),
                                    std::istreambuf_iterator<char>());
             expect("a new name is a new file in the themes directory",
-                   dusk.good() && text.find("background = #050607") != std::string::npos);
+                   dusk.good() && theme_says(text, "background", "#050607"));
             std::ifstream settings(theme_cfg);
             const std::string settings_text((std::istreambuf_iterator<char>(settings)),
                                             std::istreambuf_iterator<char>());
             expect("and the settings file is what points at it",
                    settings_text.find("theme = Dusk.conf") != std::string::npos);
             expect("the whole set goes into a file that was not there before",
-                   text.find("foreground = ") != std::string::npos);
+                   theme_mentions(text, "foreground") == 1);
+            // The layout a theme is written in, said out loud: the `key = value` shape is
+            // deprecated for themes, so a file the editor makes holds no sign anywhere —
+            // which is what left Kaida's themes holding every colour twice.
+            expect("and a theme the editor wrote is written without the sign",
+                   text.find(" = ") == std::string::npos);
         }
 
         // The second time, the name is taken — by the theme being worn — so the panel
@@ -1740,7 +1872,7 @@ int main(int argc, char** argv) {
             const std::string text((std::istreambuf_iterator<char>(dusk)),
                                    std::istreambuf_iterator<char>());
             expect("nothing was written while the answer was no",
-                   text.find("foreground = #ff0000") == std::string::npos);
+                   !theme_says(text, "foreground", "#ff0000"));
         }
 
         // The colour rows had the same trouble the name field had: a capital arrives as
@@ -2059,7 +2191,7 @@ int main(int argc, char** argv) {
             const std::string text((std::istreambuf_iterator<char>(in)),
                                    std::istreambuf_iterator<char>());
             expect("the colour typed in the editor is in the file the editor wrote",
-                   text.find("background = #123456") != std::string::npos);
+                   theme_says(text, "background", "#123456"));
         }
         press_key(Qt::Key_Escape); // leave the menu without saving
         pump(140);
@@ -2213,11 +2345,11 @@ int main(int argc, char** argv) {
         const std::string theme_text((std::istreambuf_iterator<char>(theme_in)),
                                      std::istreambuf_iterator<char>());
         const Color ink = window.theme().foreground;
-        const std::string want = "foreground = " + kai::colourText(Rgb{ink.r, ink.g, ink.b});
+        const std::string want = kai::colourText(Rgb{ink.r, ink.g, ink.b});
         expect("and the theme file says the colour the window is showing",
-               theme_text.find(want) != std::string::npos);
+               theme_says(theme_text, "foreground", want));
         expect("leaving the background line alone",
-               theme_text.find("background = #1e1e1e") != std::string::npos);
+               theme_says(theme_text, "background", "#1e1e1e"));
 
         // A fresh window reads the mixed colour off the disk, which is the only
         // proof that what was previewed is what was written.
