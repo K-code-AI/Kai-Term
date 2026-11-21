@@ -47,6 +47,11 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
   once you walk to it — the mixer titled with the colour it is editing, and the rows a
   couple of pixels apart (`tests/app_window.cpp`; `build/kai-term-panelview` for the
   pictures).
+- Verified offscreen: a panel is as large as what it holds — the line of keys is small print
+  that breaks over the panel's width, the panel is narrower than that sentence, its corner is
+  cut, its title and its last row have air of their own, and nothing is painted outside its
+  frame (`tests/app_window.cpp`, the panel-size block; each of the ten rules was turned off
+  and the check that owns it was seen to fail).
 - Verified by running the real binary: `--help` one row per argument, `<command> --help`
   and `help <command>` one page each, an unknown dash-word answered with the page and exit
   2 instead of a window, and `-c FILE` taking its colours from the `theme.conf` beside it
@@ -625,6 +630,61 @@ test that hangs should still cost a test and not a machine.
   same hole. Both start on the panel's own first row now, and the check that caught it was a
   walk that arrived at the wrong place — the reason to write "the keys are here" as an
   assertion rather than assuming it.
+
+- 2026-11-20: **a panel was as wide as its instructions.** IDEA.md said the settings windows
+  were too large and should be more rounded, and when asked where the size was going Kaida
+  named it: "the tooltips are the culprit, they take too much space and make the windows
+  larger, tooltips should have a reduced size". It was true in the exact sense. The line of
+  keys along the bottom was set in the panel's own font, drawn on one unbreakable line, and
+  the panel's width was `max(table, hint)` — and a sentence about arrow keys is longer than
+  any table of colours, so the hint was the widest thing in every panel and every panel was
+  measured from it. Rounding was four pixels on a panel several hundred wide, which is not a
+  rounded thing, it is a rectangle with soft edges.
+
+  So: small print (`kPanelHintScale`), broken over as many lines as the panel's width needs,
+  and the panel as wide as its table. The type starts below the terminal's own
+  (`kPanelFontScale`) because a grid is not a menu — the same sentence `panelFont` already
+  said when it shrank a panel to fit, and it was simply never applied until the panel had
+  room left over. The corner is `panelRadius`, a curve you can see and one that grows with
+  the panel's own type so a small panel is not all curve.
+
+  The bottom of a panel — words, breath, hint — is now one function. Before it was arithmetic
+  repeated in three panels, each reserving *one row* for a hint whose height nobody had
+  measured, which was fine while the hint was exactly one row tall and is a way for a
+  two-line hint to be painted straight through the words. Same reason the picker's list and
+  the name line and the words had each been anchored from a different edge.
+
+  Then: "It could be a little bit bigger, it feels cramped now." The first cut had
+  eight-tenths type and a row of padding, and taking the sentence out from under a panel is
+  not the same as taking the air out of it — the padding was never what made them large.
+  Nine-tenths and a row and a half. A change like that is not arguable from a screenshot
+  description, which is why `build/kai-term-panelview` photographs the panels at four window
+  sizes and every round of this went: change, photograph, look, adjust.
+
+  Then the two gaps: "a bit more space between the title and the actual settings, and a bit
+  more space between the settings and the save / cancel buttons". Both are constants now, in
+  *rows* rather than pixels — `kTitleGapRows` and `kPanelBottomAir` — because a gap written in
+  pixels is one size of gap on a big panel and no gap at all on a small one, and `kTitleGap`
+  had been six pixels since before panels resized themselves.
+
+  And the `(e to edit)` note, which Kaida had not mentioned and was worse than cramped: "the
+  (e to edit) tool tip render outside our frame and it's not beatiful at all". It was drawn
+  after the theme name in a value column ten cells wide. The note is twelve cells long. It
+  has *never* fitted, on any theme name, at any size — it left the panel and hung over the
+  terminal every time the keys were on the field, and the photographs taken of that field
+  yesterday had shown it and been read as a panel with a slightly long line. The fix is not to
+  widen the panel for a note that only appears on one row: the way to open the field is said
+  along the bottom with every other key the panel says. Which introduced the last problem of
+  the day — the panel's height depends on the hint, so walking on to the name would have
+  grown the panel and moved the row you were looking at. The height is reserved for the
+  longest of the panel's candidate lines and the one it is saying is centred in that, so the
+  words change and the panel does not.
+
+  Fifteen checks. Each of the ten rules was then switched off one at a time and the check that
+  owns it was seen to fail — including the one that first fooled me: `kPanelFontScale = 1.0`
+  changed nothing, because the hint's size is *relative* to the rows, so the knob that turns
+  off "small print" is `kPanelHintScale`. A probe that fails to fail is the other half of the
+  test, and it found a wrong probe twice today.
 
 ## Next Steps
 

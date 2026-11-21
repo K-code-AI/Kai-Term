@@ -467,6 +467,33 @@ public:
     QRectF pickerNameRect() const { return picker_hit_.name; }
     bool pickerAskingOverwrite() const { return picker_overwrite_; }
 
+    // The line of keys at the bottom of whichever panel was painted last: where it landed,
+    // how many lines it came to, and the size it is set in beside the size the rows above
+    // it are set in. That line used to be the widest and the largest thing in every panel,
+    // which is how a menu about a font size came to be as wide as a sentence about arrow
+    // keys. (Kaida, 2026-11-20: "the tooltips are the culprit, they take too much space and
+    // make the windows larger, tooltips should have a reduced size".)
+    QRectF panelHintRect() const { return hint_hit_; }
+    int panelHintLines() const { return panel_hint_lines_; }
+    int panelHintPixels() const { return panel_hint_px_; }
+    int panelRowsPixels() const { return panel_rows_px_; }
+    // Which of the panel's lines of keys it was that got painted. The colour list says
+    // something different when the keys are standing on the theme name, and a check
+    // cannot ask about words it cannot read back.
+    QString panelHintText() const { return panel_hint_text_; }
+    // A panel's title as it was painted, so the air under it is a distance a check
+    // can measure rather than an impression a photograph has to argue about.
+    QRectF panelTitleRect() const { return title_hit_; }
+    // The two words as one box, so "clear of the hint" is a question about two rectangles
+    // rather than about where a pixel happened to be painted.
+    QRectF pickerWordsRect() const { return picker_hit_.save.united(picker_hit_.cancel); }
+    QRectF settingsWordsRect() const { return settings_hit_.save.united(settings_hit_.cancel); }
+    QRectF mixerWordsRect() const { return mixer_hit_.save.united(mixer_hit_.cancel); }
+    // The picker's theme name as it was painted. It is the last line of the list, and the
+    // two words are the panel's, and they read as one block of three when they are hung
+    // together. (Kaida, 2026-11-20: "The theme name is too close to the save and cancel
+    // buttons it should be a bit higher".)
+
     // The lowest row each panel painted. A panel that is too tall for its window
     // does not say so in its own rectangle — it says so by painting its last rows
     // underneath its two words, which is the mangling worth asking about.
@@ -2476,23 +2503,29 @@ private:
         const int bar_cells = 20;  // a bar wide enough to push with a pointer
         const int value_cells = 4; // `359` and a space
         const int table_cells = label_w + bar_cells + value_cells + 1;
-        // title, two rows of preview, the channels, the two words, a gap, the hint.
-        const double table_rows = 3 + 2 + kMixChannelCount + 3;
+        // Title, two rows of preview, the six channels. The two words and the line of keys
+        // under them are the panel's bottom and are sized by themselves.
+        const double content_rows = 3 + 2 + kMixChannelCount;
 
         // The panel is measured in cells and then fitted to the window, so a
         // small window gets a small panel rather than one whose edges, hint line
         // and two words are painted off the screen.
         const double gap = kPanelRowGap;
-        const PanelFont pf =
-            panelFont(std::max(table_cells, hintCells(hint)), table_rows, gap * table_rows);
+        const PanelFont pf = panelFont(table_cells, content_rows + 3.0, gap * (content_rows + 3.0));
         const double cw = pf.cw;
         const double ch = pf.ch;
         const QFontMetricsF& fm = pf.fm;
-        const double pad = 1.5 * ch;
+        const double pad = kPanelPadCells * ch;
         const double table_w = table_cells * cw;
-        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
-        const double panel_w = std::min(inner_w + 2 * pad, std::max(2.0, width() - 2.0));
-        const double panel_h = std::min(table_rows * (ch + gap) + 2 * pad,
+        // As wide as its table, which is the widest thing in it. This used to be as wide as
+        // the sentence at the bottom of the panel, and a sentence is wider than any table:
+        // the hint, not the colours, is what was making every menu large.
+        // (Kaida, 2026-11-20: "the tooltips are the culprit, they take too much space and
+        // make the windows larger, tooltips should have a reduced size".)
+        const double panel_w = std::min(table_w + 2 * pad, std::max(2.0, width() - 2.0));
+        const PanelBottom bottom = panelBottom({hint}, panel_w - pad, pf);
+        const double panel_h = std::min(content_rows * (ch + gap) + kPanelBottomAir * ch +
+                                            bottom.height + 2 * pad,
                                         std::max(2.0, height() - 2.0));
         const QRectF panel((width() - panel_w) / 2.0, (height() - panel_h) / 2.0, panel_w,
                            panel_h);
@@ -2501,15 +2534,16 @@ private:
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(QPen(panel_ink(fg, 80), 1));
         p.setBrush(ground);
-        p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
+        p.drawRoundedRect(panel, panelRadius(ch), panelRadius(ch));
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setFont(pf.font);
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
-        p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, mixerTitle());
-        y += ch + kTitleGap;
+        const QRectF title_rect(panel.x(), y - fm.ascent(), panel.width(), fm.height());
+        p.drawText(title_rect, Qt::AlignHCenter | Qt::AlignVCenter, mixerTitle());
+        title_hit_ = title_rect;
+        y += ch + kTitleGapRows * ch;
 
         // Everything the mixer paints is centred in the panel: the panel is as
         // wide as the widest thing in it, and a table hung off the left padding
@@ -2708,14 +2742,11 @@ private:
             y += ch + gap;
         }
 
-        paintOverlayButtons(p, panel, pf, fg, mixer_hit_.save, mixer_hit_.cancel,
-                            mixer_focus_);
+        paintOverlayButtons(p, panel, pf, fg, mixer_hit_.save, mixer_hit_.cancel, mixer_focus_,
+                            panelWordsY(panel, pad, bottom));
         noteWordHit(mixer_hit_, mixer_focus_);
         p.setPen(panel_ink(fg, 140));
-        p.drawText(QRectF(panel.x() + pad / 2, panel.bottom() - pad - fm.height(),
-                          panel_w - pad, fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine | Qt::ElideRight,
-                   hint);
+        paintPanelHint(p, bottom.hint, pf, panel, pad, bottom.reserved, panel_ink(fg, 140));
     }
 
     // The colour of a bar at one point along it: this channel set to `fraction` of
@@ -3110,7 +3141,7 @@ private:
         p.setBrush(ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
-        p.drawRoundedRect(lay.panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
+        p.drawRoundedRect(lay.panel, panelRadius(cellHeight()), panelRadius(cellHeight()));
 
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setFont(font_);
@@ -3170,8 +3201,18 @@ private:
     // computed twice, the two would drift and a click would land on the line above
     // the one you aimed at.
     // Air between a panel's title and the first line under it, so the title
-    // reads as the name of the panel and not as the first row's label.
-    static constexpr double kTitleGap = 6.0;
+    // reads as the name of the panel and not as the first row's label. In rows,
+    // because six pixels written when every panel was drawn at one size does not
+    // grow with a panel that is — and a title that touches its rows stops being a
+    // title. (Kaida, 2026-11-20: "a bit more space between the title and the actual
+    // settings".)
+    static constexpr double kTitleGapRows = 0.75;
+    // Air between the last row of a panel and the two words under it. The rows are the
+    // thing you are choosing and the words are the thing you press afterwards; painted
+    // against each other they read as one more row of the list, and `save` is not one more
+    // colour. (Kaida, 2026-11-20: "a bit more space between the settings and the save /
+    // cancel buttons".)
+    static constexpr double kPanelBottomAir = 0.8;
     // Air between the lines of a panel. Rows used to sit exactly one row-height
     // apart, which made a panel read as one solid block of text with a highlight
     // somewhere in it; a couple of pixels between the lines is what lets each row
@@ -3180,6 +3221,21 @@ private:
     // (Kaida, 2026-11-20: "every elements could do with 1 or 2 px more space in
     // between them for breathing".)
     static constexpr double kPanelRowGap = 2.0;
+    // A menu is not the terminal. Its type starts smaller than the grid's, so a panel
+    // reads as something laid over the screen rather than a block of text that fell off
+    // it, and an ordinary window has room for the whole list at once. The terminal's own
+    // font is untouched — the menu got smaller, not the person's type.
+    // (Kaida, 2026-11-20: "The settings windows are too large and should be more
+    // rounded".)
+    static constexpr double kPanelFontScale = 0.9;
+    // The margin inside a panel's edge, in rows. A row and a half was air nobody asked
+    // for: the panel is wide because of what is in it, and the extra half row made every
+    // one of them bigger than its own content.
+    static constexpr double kPanelPadCells = 1.4;
+    // How round a panel is. Four pixels on a panel several hundred wide reads as a
+    // rectangle with soft edges; this is a corner you can see, and it grows with the
+    // panel's own type so a small panel is not all curve.
+    static double panelRadius(double ch) { return std::max(8.0, ch * 0.55); }
     static constexpr double kMixerBarRadius = 3.0;
     static constexpr double kMixerKnobWidth = 7.0;
     // How small a panel may go before it stops being a panel. Below this the
@@ -3216,16 +3272,27 @@ private:
     // windows size, to make sure our menu can fit properly without getting
     // mangled".)
     PanelFont panelFont(double cells_w, double cells_h, double extra_h = 0.0) const {
+        // A panel starts smaller than the grid it is laid over — see kPanelFontScale — and
+        // then shrinks further if the window still will not hold it. The metrics have to be
+        // worked out from the smaller font rather than taken from the terminal's, or every
+        // row is measured with one ruler and painted with another.
         PanelFont out{font_, QFontMetricsF(font_), cellWidth(), cellHeight()};
         if (out.font.pixelSize() <= 0) // a point-sized font still has to shrink
             out.font.setPixelSize(14);
+        const int menu_px = std::max(
+            kPanelMinFontPixels, static_cast<int>(out.font.pixelSize() * kPanelFontScale));
+        out.font.setPixelSize(menu_px);
+        out.fm = QFontMetricsF(out.font);
+        out.cw = cellAdvance(out.fm);
+        out.ch = out.fm.height();
         const double room_w = std::max(1.0, static_cast<double>(width()) - 2.0);
         const double room_h = std::max(1.0, static_cast<double>(height()) - 2.0);
+        const double pad_two = 2.0 * kPanelPadCells; // left and right, or top and bottom
         for (int guard = 0; guard < 32; ++guard) {
-            // A panel's padding is one and a half rows on each side, whatever
-            // the font, so it shrinks with it rather than eating a small panel.
-            const double want_w = cells_w * out.cw + 3.0 * out.ch;
-            const double want_h = cells_h * out.ch + extra_h + 3.0 * out.ch;
+            // A panel's padding is in rows, whatever the font, so it shrinks with it
+            // rather than eating a small panel.
+            const double want_w = cells_w * out.cw + pad_two * out.ch;
+            const double want_h = cells_h * out.ch + extra_h + pad_two * out.ch;
             if (want_w <= room_w && want_h <= room_h)
                 break;
             if (out.font.pixelSize() <= kPanelMinFontPixels)
@@ -3243,16 +3310,156 @@ private:
         return out;
     }
 
-    // How wide the line of keys at the bottom of a panel is, in cells. That
-    // line, not the table, is usually what makes a panel wide, so it is what the
-    // panel is fitted against. Measured at the window's own font: the line and
-    // the cells shrink together, so the ratio holds as the panel does.
+    // How wide the line of keys at the bottom of a panel is, in cells. It used to be what
+    // the panel was fitted against, which is how a panel ended up as wide as a sentence
+    // about how to use it. It wraps now — see `panelHint` — and this is only what it would
+    // have wanted, kept for the panels that still measure themselves against it.
     int hintCells(const QString& hint) const {
         const QFontMetricsF fm(font_);
         const double cw = cellAdvance(fm);
         if (cw <= 0.0)
             return 0;
         return static_cast<int>(std::ceil(fm.horizontalAdvance(hint) / cw));
+    }
+
+    // The line of keys at the bottom of a panel, as small print broken over as many lines
+    // as the panel's own width needs.
+    //
+    // It is set smaller because it is said once and read once: the keys are what you are
+    // doing, not the thing to look at, and a panel whose hint is the same size as its rows
+    // is a panel arguing with itself about which of them you are meant to read.
+    // It is wrapped because it is a sentence, and a sentence that is not allowed to break
+    // makes everything around it wider to hold it — the hint was the widest line in every
+    // panel, and the panels were that wide.
+    // (Kaida, 2026-11-20: "the tooltip at the bottom should use a smaller font to help and
+    // maybe use more than 1 long line".)
+    struct PanelHint {
+        QFont font;
+        QFontMetricsF fm{font};
+        QStringList lines;
+        double height = 0.0; // the lines themselves; the panel adds its own air
+    };
+    static constexpr double kPanelHintScale = 0.85;
+    static constexpr int kPanelHintMaxLines = 3;
+
+    PanelHint panelHint(const QString& hint, double avail_w, const PanelFont& pf) const {
+        PanelHint out;
+        out.font = pf.font;
+        out.font.setPixelSize(
+            std::max(kPanelMinFontPixels, static_cast<int>(pf.font.pixelSize() * kPanelHintScale)));
+        out.fm = QFontMetricsF(out.font);
+        double widest = 0.0;
+        for (const QString& line : wrapWords(hint, out.fm, avail_w, kPanelHintMaxLines)) {
+            out.lines.append(line);
+            widest = std::max(widest, out.fm.horizontalAdvance(line));
+        }
+        // The height the lines need, at the size they are painted. A panel that gave one
+        // row to this line and then drew two over its own words is the bug this replaces.
+        out.height = out.fm.height() * out.lines.size();
+        return out;
+    }
+
+    // Greedy word wrap, by width rather than by cells: the hint is proportional text in a
+    // proportional font, and breaking it at a cell count would cut it mid-word on the words
+    // that are wider than their share. A word longer than the line is left to overflow
+    // rather than hyphenated — this is a hint, not a book.
+    //
+    // It breaks evenly rather than filling each line to the wall. Filled greedily, a hint
+    // that needs two lines gets one full one and one with a word left over, and a line of
+    // centred text with three words on it under a line with eight looks like a mistake even
+    // when both are inside the panel. So: work out how many lines it takes, then aim each
+    // line at the width they would have if the sentence were shared out.
+    static QStringList wrapWords(const QString& text, const QFontMetricsF& fm, double avail_w,
+                                 int max_lines) {
+        const QStringList words = text.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        double total = 0.0;
+        for (const QString& word : words)
+            total += fm.horizontalAdvance(word) + fm.horizontalAdvance(QLatin1Char(' '));
+        int lines_needed = 1;
+        if (avail_w > 0.0)
+            lines_needed = std::max(1, static_cast<int>(std::ceil(total / avail_w)));
+        const int wanted = std::min(lines_needed, max_lines);
+        const double target =
+            std::min(avail_w, total / wanted + fm.horizontalAdvance(QLatin1Char(' ')));
+
+        QStringList lines;
+        QString line;
+        for (const QString& word : words) {
+            const QString joined = line.isEmpty() ? word : line + QLatin1Char(' ') + word;
+            if (!line.isEmpty() && fm.horizontalAdvance(joined) > target &&
+                lines.size() + 1 < wanted) {
+                lines.append(line);
+                line = word;
+            } else {
+                line = joined; // even when it overflows: one wide word beats two cut ones
+            }
+        }
+        if (!line.isEmpty())
+            lines.append(line);
+        if (lines.isEmpty())
+            lines.append(text);
+        return lines;
+    }
+
+    // Paint it, centred in the height that was reserved for it, bottom-up.
+    void paintPanelHint(QPainter& p, const PanelHint& hint, const PanelFont& pf,
+                        const QRectF& panel, double pad, double reserved_h,
+                        const QColor& ink) const {
+        if (hint.lines.isEmpty())
+            return;
+        p.setFont(hint.font);
+        // Centred in the reservation rather than hung off its bottom, so a panel whose
+        // second line of keys is shorter — or longer, on the way into the theme field —
+        // keeps the same edge and the same gap above it.
+        double y = panel.bottom() - pad - (reserved_h - hint.height) / 2.0;
+        QRectF painted;
+        for (int i = hint.lines.size() - 1; i >= 0; --i) {
+            const QRectF line(panel.x() + pad / 2, y - hint.fm.height(), panel.width() - pad,
+                              hint.fm.height());
+            p.drawText(line,
+                       static_cast<int>(Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine),
+                       hint.lines.at(i));
+            painted = painted.isNull() ? line : painted.united(line);
+            y -= hint.fm.height();
+        }
+        p.setPen(ink); // the panel's rows are drawn at the panel's own size, not this
+        // Recorded so a check can ask whether the hint is small print that fits, rather
+        // than guessing at where a line of text was drawn.
+        hint_hit_ = painted;
+        panel_hint_lines_ = static_cast<int>(hint.lines.size());
+        panel_hint_text_ = hint.lines.join(QLatin1Char(' '));
+        panel_hint_px_ = hint.font.pixelSize();
+        panel_rows_px_ = pf.font.pixelSize();
+    }
+
+    // The bottom of every panel is the same three things in the same order: the two words,
+    // a breath, and the line of keys underneath them. It is worked out here, once, because
+    // the hint is the one part whose height is not known until it has been set in its own
+    // font and broken over the panel's width — and a panel that reserved one row for it and
+    // then drew two would paint them through the words.
+    //
+    // A panel may have more than one thing it wants to say down there — the colour list says
+    // something different when the keys are standing on the theme name — and then the height
+    // is reserved for the longest of them. A panel that grew a row every time you walked to
+    // the bottom of it would move the row you were looking at.
+    struct PanelBottom {
+        PanelHint hint;
+        double reserved = 0.0; // the tallest variant of the line, which is what was paid for
+        double height = 0.0;   // words, breath and the reservation together
+    };
+    static constexpr double kPanelWordsAir = 0.5; // rows of air between the words and the hint
+
+    PanelBottom panelBottom(const QStringList& variants, double inner_w,
+                            const PanelFont& pf) const {
+        PanelBottom out;
+        out.hint = panelHint(variants.isEmpty() ? QString() : variants.first(), inner_w, pf);
+        for (const QString& variant : variants)
+            out.reserved = std::max(out.reserved, panelHint(variant, inner_w, pf).height);
+        out.height = pf.ch + kPanelWordsAir * pf.ch + out.reserved;
+        return out;
+    }
+    static double panelWordsY(const QRectF& panel, double pad, const PanelBottom& bottom) {
+        return panel.bottom() - pad - bottom.height;
     }
 
     // The surface every panel is painted on: the window's own background, dimmed
@@ -3387,6 +3594,17 @@ private:
 
         const QString hint =
             QStringLiteral("Arrows to Navigate - Enter to Select - Escape to Cancel");
+        // The theme field's own keys, said where every other key in this panel is said.
+        // They used to be written after the name on its row, which is ten cells wide, and a
+        // note twelve cells long walked out of the panel's side and hung over the terminal.
+        // (Kaida, 2026-11-20: "the (e to edit) tool tip render outside our frame and it's not
+        // beatiful at all".)
+        const QString name_hint =
+            picker_editing_
+                ? QStringLiteral("Type the name - Arrows move the cursor - Enter confirms - "
+                                 "Escape puts it back")
+                : QStringLiteral("e edits the theme name - Arrows to Navigate - Enter to "
+                                 "Select - Escape to Cancel");
         const auto& fields = picker_->fields();
 
         // The label column is as wide as the longest name plus a space —
@@ -3410,24 +3628,35 @@ private:
         // A list has an answer for running out of room already, so the fallback
         // font is asked only to fit a panel of a dozen rows and the rest scrolls.
         const double gap = kPanelRowGap;
-        // Six lines are the panel's own rather than the list's: a title, the name the
-        // colours go into, the two words, the hint, and the air between the title and
-        // the table. The list gets whatever height is left and scrolls.
-        const double own_lines = 6.0;
-        const double rows_tall = std::min(own_lines + total, kPanelListRows);
-        const PanelFont pf =
-            panelFont(std::max(table_cells, hintCells(hint)), rows_tall, gap * rows_tall);
+        // Three lines are the panel's own rather than the list's: a title, and the name the
+        // colours go into with a row of air under it. The two words and the line of keys
+        // under them are the panel's bottom, sized by themselves. The list gets what height
+        // is left and scrolls.
+        const double own_rows = 3.0;
+        const double rows_tall = std::min(own_rows + 2.0 + total, kPanelListRows);
+        const PanelFont pf = panelFont(table_cells, rows_tall, gap * rows_tall);
         const double cw = pf.cw;
         const double ch = pf.ch;
+        // The title's air, and the air the rows stop at before the two words — both in rows,
+        // so they are the same shape of gap at every size a panel is drawn at.
+        const double own_px = (kTitleGapRows + kPanelBottomAir) * ch;
         const QFontMetricsF& fm = pf.fm;
-        const double pad = 1.5 * ch;
+        const double pad = kPanelPadCells * ch;
         const double table_w = table_cells * cw;
-        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
-        const double panel_w = std::min(inner_w + 2 * pad, std::max(2.0, width() - 2.0));
-        const double panel_h = std::min((own_lines + total) * (ch + gap) + 2 * pad,
-                                        std::max(2.0, height() - 2.0));
-        const int visible = std::max(
-            1, static_cast<int>((panel_h - 2 * pad - own_lines * (ch + gap)) / (ch + gap)));
+        // As wide as its table, not as wide as the sentence at the bottom of it.
+        const double panel_w = std::min(table_w + 2 * pad, std::max(2.0, width() - 2.0));
+        // The line the panel says right now, and the height reserved for whichever of the
+        // two it is — so walking on to and off the theme name changes the words and not the
+        // size of the panel underneath them.
+        const bool on_name = picker_focus_ == 3;
+        const PanelBottom bottom =
+            panelBottom({on_name ? name_hint : hint, hint, name_hint}, panel_w - pad, pf);
+        const double panel_h =
+            std::min(own_rows * (ch + gap) + own_px + total * (ch + gap) + bottom.height + 2 * pad,
+                     std::max(2.0, height() - 2.0));
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - bottom.height -
+                                                          own_px - own_rows * (ch + gap)) /
+                                                         (ch + gap)));
         int first = 0;
         if (total > visible)
             first = std::clamp(picker_->row() - visible + 1, 0, total - visible);
@@ -3438,15 +3667,16 @@ private:
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(QPen(panel_ink(fg, 80), 1));
         p.setBrush(panelGroundColour(bg));
-        p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
+        p.drawRoundedRect(panel, panelRadius(ch), panelRadius(ch));
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setFont(pf.font);
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
-        p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, pickerTitle());
-        y += ch + kTitleGap;
+        const QRectF title_rect(panel.x(), y - fm.ascent(), panel.width(), fm.height());
+        p.drawText(title_rect, Qt::AlignHCenter | Qt::AlignVCenter, pickerTitle());
+        title_hit_ = title_rect;
+        y += ch + kTitleGapRows * ch;
 
         // The rows are centred in the panel rather than hung off its left edge.
         // The panel is as wide as the widest thing in it, which is the line at the
@@ -3526,10 +3756,17 @@ private:
         // you will not find. (Kaida, 2026-11-20: "the picker's name field is always
         // visible — saving under the loaded name asks to overwrite, a new name writes a
         // new theme".)
-        const double words_y = panel.bottom() - pad - 3 * ch;
-        const QRectF name_box(panel.x() + pad / 2, words_y - gap - ch, panel_w - pad, ch);
+        const double words_y = panelWordsY(panel, pad, bottom);
+        // A row of air between the name and the two words. Hanging it one row-gap below
+        // the table made it read as a third word rather than the last line of the list —
+        // the two things on that bottom edge are the ones you press, and the line above
+        // them is the thing you are naming.
+        // (Kaida, 2026-11-20: "The theme name is too close to the save and cancel buttons
+        // it should be a bit higher".)
+        const double name_air = ch;
+        const QRectF name_box(panel.x() + pad / 2, words_y - name_air - ch, panel_w - pad, ch);
         picker_hit_.name = name_box;
-        const double name_y = words_y - gap - fm.ascent() * 0.15;
+        const double name_y = words_y - name_air - fm.ascent() * 0.15;
         const double value_x = table_x + label_w * cw;
         const QString name_value = picker_name_;
         // Lit like every other value here is: the thing the keys act on, which in a name
@@ -3549,26 +3786,26 @@ private:
             // Where the next character goes. The colour rows show the same rule under a
             // digit; a word has the same rule between its letters, and the arrows move it
             // the way they move a digit along a hex value.
+            //
+            // A shut field used to write `(e to edit)` here, after the name. The value
+            // column is ten cells and the note was twelve, so it walked out through the
+            // panel's side and hung over the terminal; the way to open the field is said
+            // along the bottom of the panel with every other key now.
+            // (Kaida, 2026-11-20: "the (e to edit) tool tip render outside our frame and
+            // it's not beatiful at all".)
             const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
             p.setPen(QPen(accent, 1));
             const double caret =
                 value_x + fm.horizontalAdvance(name_value.left(picker_caret_)) + 1.0;
             p.drawLine(QPointF(caret, name_y + fm.descent() * 0.4),
                        QPointF(caret + cw - 2.0, name_y + fm.descent() * 0.4));
-        } else if (picker_focus_ == 3) {
-            // Shut, and saying so in the words the panel already uses. The field is one
-            // keystroke away and the note is the only place that fact can be written
-            // without changing the standing line at the bottom.
-            p.setPen(panel_ink(fg, 150));
-            p.drawText(QPointF(value_x + fm.horizontalAdvance(name_value) + cw, name_y),
-                       QStringLiteral("(e to edit)"));
         }
 
         // While the panel is asking about a theme that already exists, the two words are
         // the question's two answers. Same places, same walking, one less thing to learn
         // for a panel that occasionally has to ask.
         paintOverlayButtons(p, panel, pf, fg, picker_hit_.save, picker_hit_.cancel,
-                            picker_focus_,
+                            picker_focus_, words_y,
                             picker_overwrite_ ? QStringLiteral("overwrite")
                                               : QStringLiteral("save"),
                             picker_overwrite_ ? QStringLiteral("keep it")
@@ -3579,10 +3816,7 @@ private:
         // may be shorter than the list: a hint that scrolls away with the
         // rows would be the one line the picker always had and never kept.
         p.setPen(panel_ink(fg, 140));
-        p.drawText(QRectF(panel.x() + pad / 2, panel.bottom() - pad - fm.height(),
-                          panel_w - pad, fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine | Qt::ElideRight,
-                   hint);
+        paintPanelHint(p, bottom.hint, pf, panel, pad, bottom.reserved, panel_ink(fg, 140));
     }
 
     // The settings menu, in the picker's voice: the same dimmed panel, the same
@@ -3614,20 +3848,25 @@ private:
         // As in the picker: the fallback font fits a panel of a dozen rows and
         // the list scrolls, because a list already has an answer for height.
         const double gap = kPanelRowGap;
-        const double rows_tall = std::min(5.0 + total + 2.0, kPanelListRows);
-        const PanelFont pf =
-            panelFont(std::max(table_cells, hintCells(hint)), rows_tall, gap * rows_tall);
+        const double own_rows = 1.0; // the title; the words and the hint are the panel's bottom
+        const double rows_tall = std::min(own_rows + 2.0 + total, kPanelListRows);
+        const PanelFont pf = panelFont(table_cells, rows_tall, gap * rows_tall);
         const double cw = pf.cw;
         const double ch = pf.ch;
+        const double own_px = (kTitleGapRows + kPanelBottomAir) * ch;
         const QFontMetricsF& fm = pf.fm;
-        const double pad = 1.5 * ch;
+        const double pad = kPanelPadCells * ch;
         const double table_w = table_cells * cw;
-        const double inner_w = std::max(table_w, fm.horizontalAdvance(hint));
-        const double panel_w = std::min(inner_w + 2 * pad, std::max(2.0, width() - 2.0));
-        const double panel_h = std::min((5 + total + 2) * (ch + gap) + 2 * pad,
-                                        std::max(2.0, height() - 2.0));
-        const int visible =
-            std::max(1, static_cast<int>((panel_h - 2 * pad - 5 * (ch + gap)) / (ch + gap)));
+        // As wide as its rows. The line of keys underneath used to set the width, which is
+        // how a menu about a font size ended up as wide as a sentence about arrow keys.
+        const double panel_w = std::min(table_w + 2 * pad, std::max(2.0, width() - 2.0));
+        const PanelBottom bottom = panelBottom({hint}, panel_w - pad, pf);
+        const double panel_h =
+            std::min(own_rows * (ch + gap) + own_px + total * (ch + gap) + bottom.height + 2 * pad,
+                     std::max(2.0, height() - 2.0));
+        const int visible = std::max(1, static_cast<int>((panel_h - 2 * pad - bottom.height -
+                                                          own_px - own_rows * (ch + gap)) /
+                                                         (ch + gap)));
         int first = 0;
         if (total > visible)
             first = std::clamp(settings_->row() - visible + 1, 0, total - visible);
@@ -3637,15 +3876,16 @@ private:
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(QPen(panel_ink(fg, 80), 1));
         p.setBrush(panelGroundColour(bg));
-        p.drawRoundedRect(panel, kScrollBarRadius + 1, kScrollBarRadius + 1);
+        p.drawRoundedRect(panel, panelRadius(ch), panelRadius(ch));
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setFont(pf.font);
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
-        p.drawText(QRectF(panel.x(), y - fm.ascent(), panel.width(), fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Settings"));
-        y += ch + kTitleGap;
+        const QRectF title_rect(panel.x(), y - fm.ascent(), panel.width(), fm.height());
+        p.drawText(title_rect, Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Settings"));
+        title_hit_ = title_rect;
+        y += ch + kTitleGapRows * ch;
 
         // The rows are centred in the panel rather than hung off its left edge.
         // The panel is as wide as the widest thing in it, which is the line at the
@@ -3719,14 +3959,11 @@ private:
             y += ch + gap;
         }
 
-        paintOverlayButtons(p, panel, pf, fg, settings_hit_.save,
-                            settings_hit_.cancel, settings_focus_);
+        paintOverlayButtons(p, panel, pf, fg, settings_hit_.save, settings_hit_.cancel,
+                            settings_focus_, panelWordsY(panel, pad, bottom));
         noteWordHit(settings_hit_, settings_focus_);
         p.setPen(panel_ink(fg, 140));
-        p.drawText(QRectF(panel.x() + pad / 2, panel.bottom() - pad - fm.height(),
-                          panel_w - pad, fm.height()),
-                   Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine | Qt::ElideRight,
-                   hint);
+        paintPanelHint(p, bottom.hint, pf, panel, pad, bottom.reserved, panel_ink(fg, 140));
     }
 
     // The two words at the bottom of an overlay: `save` and `leave`. A panel that
@@ -3741,19 +3978,20 @@ private:
     // fit a small window, and landed on the last row of the list.
     void paintOverlayButtons(QPainter& p, const QRectF& panel, const PanelFont& pf,
                              const Color& fg, QRectF& save, QRectF& cancel, int focus,
+                             double words_y,
                              const QString& save_word = QStringLiteral("save"),
                              const QString& cancel_word = QStringLiteral("cancel")) const {
         const double ch = pf.ch;
         const double cw = pf.cw;
-        const double pad = 1.5 * ch;
         const double gap = 3 * cw;
         const double save_w = pf.fm.horizontalAdvance(save_word) + cw;
         const double cancel_w = pf.fm.horizontalAdvance(cancel_word) + cw;
-        // A row of air between the words and the hint below them. Painted flush,
-        // the two read as one line of small text, and the words are the part you
-        // are meant to be able to hit. (Kaida, 2026-11-20: "they are a bit too close
-        // to the control indication written under them".)
-        const double y = panel.bottom() - pad - 3 * ch;
+        // The caller says where the words go, because how far above the hint they have to
+        // sit depends on how tall the hint turned out to be. Painted flush, the two read as
+        // one line of small text, and the words are the part you are meant to be able to
+        // hit. (Kaida, 2026-11-20: "they are a bit too close to the control indication
+        // written under them".)
+        const double y = words_y;
         const double left = panel.x() + (panel.width() - (save_w + gap + cancel_w)) / 2.0;
         save = QRectF(left, y, save_w, ch);
         cancel = QRectF(left + save_w + gap, y, cancel_w, ch);
@@ -3961,6 +4199,15 @@ private:
     // that is not a named colour, which it is not.
     QString mixer_title_;
     int mixer_drag_ = -1; // the bar a mouse is currently pushing along
+    // Where the line of keys at the bottom of a panel landed, and how big it is set
+    // next to the rows above it. Recorded while painting, like every other hit rect,
+    // because a layout rule nobody can measure is a layout rule that quietly lapses.
+    mutable QRectF hint_hit_;
+    mutable int panel_hint_lines_ = 0;
+    mutable int panel_hint_px_ = 0;
+    mutable int panel_rows_px_ = 0;
+    mutable QString panel_hint_text_;
+    mutable QRectF title_hit_;
     mutable OverlayHit mixer_hit_;
     mutable OverlayHit picker_hit_;
     mutable OverlayHit settings_hit_;

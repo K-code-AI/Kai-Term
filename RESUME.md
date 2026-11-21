@@ -84,7 +84,11 @@ row, because one gesture should move the keys everywhere. The last row is the th
 its answers are `Default.conf` plus whatever `.conf` files are in `themes/`: stepping it
 repaints the window in that theme before anything is written, leaving puts the colours
 back, and saving writes the name into `kai-term.conf` so the next window opens wearing it
-too. The ground is transparent by painting
+too. Every panel is as large as what it holds: set a little smaller than the terminal's own
+type because a menu is not the terminal, corners cut, title with room under it, and the line
+of keys along the bottom in small print broken over as many lines as the panel's width needs
+— it used to be set as large as the rows and never allowed to break, so it was the widest
+thing in every panel and every panel was built round it. The ground is transparent by painting
 it at its own alpha on a surface that has one, so the desktop shows through while the
 text stays as solid as it was made; the X11 whole-window fade was tried first and does
 nothing on a Wayland compositor, and would have dimmed the glyphs along with the

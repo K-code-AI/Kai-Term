@@ -2032,6 +2032,133 @@ int main(int argc, char** argv) {
 
 
     {
+        // A panel is as large as what it holds. It used to be as large as its
+        // instructions: the line of keys along the bottom was set in the same size as the
+        // rows and was never allowed to break, so it was the widest thing in every panel and
+        // every panel was built round it. (Kaida, 2026-11-20: "The settings windows are too
+        // large and should be more rounded ( the tooltips are the culprit, they take too much
+        // space and make the windows larger, tooltips should have a reduced size)".)
+        const std::string cfg = root + "/panel-size-config";
+        std::ofstream(cfg) << "font_size = 16\n";
+        ::setenv("KAI_TERM_CONFIG", cfg.c_str(), 1);
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.resize(900, 560);
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(200);
+
+        const auto press = [&window](int key, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            QKeyEvent ev(QEvent::KeyPress, key, mods);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+
+        press(Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
+        pump(120);
+        // The line of keys measured in the size of a panel's own rows — which is exactly how
+        // wide a panel had to be to carry it on one line, and so the width every panel used
+        // to have.
+        QFont hint_voice = window.font();
+        hint_voice.setPixelSize(window.panelRowsPixels());
+        const double sentence_w = QFontMetricsF(hint_voice).horizontalAdvance(
+            QStringLiteral("Arrows to Navigate - Enter to Select - Escape to Cancel"));
+        expect("the line of keys is set smaller than the rows above it",
+               window.panelHintPixels() < window.panelRowsPixels());
+        expect("and broken over the panel's width instead of widening the panel",
+               window.panelHintLines() >= 2);
+        expect("every line of it inside the panel",
+               window.pickerPanelRect().contains(window.panelHintRect()));
+        expect("the two words sit above it, not through it",
+               window.pickerWordsRect().bottom() <= window.panelHintRect().top());
+        // The complaint asked directly. The settings menu's own rows happen to be about as
+        // wide as the sentence, so it is the colour list — twenty-one colours, and a panel
+        // built round a sentence about arrow keys — where the difference is honest.
+        expect("a panel is narrower than the sentence along its bottom",
+               window.pickerPanelRect().width() < sentence_w);
+        // The theme field said `(e to edit)` after its name, in a value column ten cells
+        // wide, and the note walked out through the side of the panel. It is said along the
+        // bottom now, where the panel's other keys are said.
+        // (Kaida, 2026-11-20: "the (e to edit) tool tip render outside our frame and it's not
+        // beatiful at all".)
+        const double picker_h = window.pickerPanelRect().height();
+        press(Qt::Key_Up); // up from the first row wraps to `cancel`…
+        press(Qt::Key_Up); // …then to `save`…
+        press(Qt::Key_Up); // …and once more lands on the theme name
+        pump(100);
+        expect("the keys are standing on the theme name",
+               window.pickerNameRect().contains(window.pickerHighlightRect()));
+        expect("the theme field's own keys are said along the bottom",
+               window.panelHintText().contains(QStringLiteral("e edits the theme name")));
+        expect("inside the panel, like everything else here",
+               window.pickerPanelRect().contains(window.panelHintRect()));
+        // The gutter to the right of the panel, along the name's own line. The old note ran
+        // out through the frame and into it, which is the thing that was "not beatiful at
+        // all" — so this asks whether anything at all was painted out there.
+        const QImage shot = window.grab().toImage();
+        const int gutter_y = static_cast<int>(window.pickerNameRect().center().y());
+        const int edge = static_cast<int>(window.pickerPanelRect().right());
+        const QColor clean = shot.pixelColor(edge + 70, gutter_y);
+        bool gutter_clean = true;
+        for (int x = edge + 3; x < edge + 40; ++x) {
+            if (shot.pixelColor(x, gutter_y) != clean)
+                gutter_clean = false;
+        }
+        expect("and nothing at all is painted outside the panel's own frame", gutter_clean);
+        expect("and saying them does not resize the panel under the rows",
+               std::abs(window.pickerPanelRect().height() - picker_h) < 1.0);
+        press(Qt::Key_Escape);
+        pump(80);
+        // The name and the words used to hang together as one block of three at the bottom of
+        // the list. (Kaida, 2026-11-20: "The theme name is too close to the save and cancel
+        // buttons it should be a bit higher".)
+        expect("the theme name has room of its own above the two words",
+               window.pickerNameRect().bottom() + 0.5 * window.pickerNameRect().height() <=
+                   window.pickerWordsRect().top());
+        press(Qt::Key_Escape);
+        pump(80);
+
+        press(Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
+        pump(120);
+        expect("and the settings menu's words are clear of its hint too",
+               window.settingsWordsRect().bottom() <= window.panelHintRect().top());
+        // Two gaps the panels had run out of: one under the title, and one where the rows
+        // stop and the two words begin. Both asked for in rows, so they are the same shape
+        // of gap at every size a panel is drawn at.
+        // (Kaida, 2026-11-20: "a bit more space between the title and the actual settings,
+        // and a bit more space between the settings and the save / cancel buttons".)
+        const double row_h = window.settingsRowRect(0).height();
+        expect("the title has room of its own above the rows",
+               window.settingsRowRect(0).top() - window.panelTitleRect().bottom() >= 0.5 * row_h);
+        expect("and the rows stop short of the two words",
+               window.settingsWordsRect().top() - window.settingsBottomRowRect().bottom() >=
+                   0.5 * row_h);
+
+        // The corner. Four pixels of rounding on a panel several hundred wide reads as a
+        // rectangle with soft edges, which is not what was asked for. This finds where the
+        // fill actually starts along the panel's own top row, so it is a question about the
+        // painted corner rather than about a constant somebody could set to anything.
+        const QImage painted = window.grab().toImage();
+        const QRectF panel = window.settingsPanelRect();
+        const int left = static_cast<int>(panel.left());
+        const int top = static_cast<int>(panel.top());
+        const QColor inside = painted.pixelColor(left + 10, top + 10);
+        int filled_from = 0;
+        for (int x = 0; x < 24; ++x) {
+            if (painted.pixelColor(left + x, top + 2) == inside) {
+                filled_from = x;
+                break;
+            }
+        }
+        expect("and a panel's corner is cut, not merely softened", filled_from >= 4);
+
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        std::remove(cfg.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    }
+
+
+    {
         // The menu and the listing used to disagree. `session list` showed the shells a
         // window had left behind; Ctrl+Shift+A offered only the ones somebody had saved.
         // The one you were hunting for was the one the menu could not see, which is the

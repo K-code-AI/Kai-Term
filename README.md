@@ -419,11 +419,22 @@ nothing can be kept.
   the list cannot rename the theme you were about to save — and while it is open the
   arrows walk a caret inside the word, a letter lands where the caret is, Backspace takes
   the letter before it, Enter confirms and gets you out, and Esc puts the word back as it
-  was and leaves the panel up. Saving under a name that is already a theme asks first: the
+  was and leaves the panel up. What `e` does is said along the bottom of the panel when the
+  keys are standing on the name, because the line under the panel is where this window says
+  its keys — a note written beside the name used to run out of the panel's side. Saving
+  under a name that is already a theme asks first: the
   title becomes `Overwrite midnight.conf?` and the two words become `overwrite` and
   `keep it`, in the same places, walked the same way. A name nothing is using writes
   without asking, and gets every colour the window is wearing rather than only the ones
   that moved, because a new file starts empty.
+
+- Every panel in this window is as large as what it holds. A menu is set a little smaller
+  than the terminal's own type — the window did not get smaller, the menu is a menu — its
+  corners are cut, its title has room under it, and the line of keys along the bottom is
+  small print broken over as many lines as the panel's width needs. That line used to be set
+  in the same size as the rows and was never allowed to break, so it was the widest thing in
+  every panel and every panel was built round it: a menu about a font size was as wide as a
+  sentence about arrow keys.
 
 - Plain **Ctrl+S** is left alone and goes to the shell, where it stops and starts
   output the way it always has. That is why the key above has Shift in it: a terminal

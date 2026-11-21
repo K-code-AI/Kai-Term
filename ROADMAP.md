@@ -404,6 +404,28 @@ Needed:
   overlay, a session in the list — keeps its whole-line band, because there "this line" is
   the true thing to say. `OverlayHit::highlight` records the one lit rect, which is what the
   checks ask rather than a guess at where a band was drawn.
+- **A panel is as large as what it holds, built 2026-11-20.** The line of keys along the
+  bottom of every panel was set in the same size as the rows and drawn on one unbreakable
+  line, so it was the widest thing in every panel and the panels were measured from it: a
+  menu about a font size came out as wide as a sentence about arrow keys. It is small print
+  now (`kPanelHintScale`) broken over as many lines as the panel's width needs, the panel is
+  as wide as its table, and the two words and the hint are laid out by one function so a
+  hint that turns out to need two lines cannot be painted through the words. A panel's type
+  also starts below the terminal's (`kPanelFontScale`) — the window did not get smaller, the
+  menu is a menu — its corners are cut (`panelRadius`, from four pixels to a corner you can
+  see), and its title and its last row each have air of their own (`kTitleGapRows`,
+  `kPanelBottomAir`, both in rows so they are the same shape of gap at every size).
+  (Kaida, 2026-11-20: "The settings windows are too large and should be more rounded
+  ( the tooltips are the culprit, they take too much space and make the windows larger,
+  tooltips should have a reduced size)"; then, on the first cut, "It could be a little bit
+  bigger, it feels cramped now", which is why the type is at nine-tenths and not
+  eight-tenths.) The colour picker's `(e to edit)` note went the same way: written beside the
+  theme name, in a value column ten cells wide, a note twelve cells long walked out through
+  the panel's side — it is said along the bottom with the panel's other keys now, and the
+  height is reserved for whichever of the two lines the panel is saying, so walking to the
+  name changes the words and not the size of the panel under them. Fifteen checks, each seen
+  to fail with its feature off, including one that reads the gutter outside the panel's right
+  edge and asks whether anything at all was painted there.
 - **Themes are files, built 2026-11-20.** `theme` in `kai-term.conf` says which colours to
   wear: left out or `Default.conf` for `theme.conf`, which is what has always held them and
   what the picker writes, a bare name for a file in `~/.config/kai-term/themes/`, and
