@@ -592,7 +592,8 @@ background            #1e1e1e          # the blank screen
 cursor                #dcdcdc
 selection_background  #3e60a8          # the highlight under a dragged selection
                                        # (`selection` is the older name for it; still reads)
-selection_foreground  #f0f0f0          # the ink drawn on top of that highlight
+selection_foreground  #f0f0f0          # the ink on that highlight, and on the lit row of
+                                       # a menu — so a row never wears the colour it stands on
 accent                #6ea0ff          # what a dialog puts on the answer its focus is on
 color0                #000000          # the sixteen ANSI colours, black through bright white
 color1                #800000

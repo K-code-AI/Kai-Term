@@ -1369,6 +1369,38 @@ int main(int argc, char** argv) {
                                window.theme().selection.b);
         expect("and the highlight is really painted there",
                window.grab().toImage().pixelColor(band) == selection);
+
+        // A theme whose ordinary ink happens to be its selection ground: a pale theme with
+        // a pale highlight reaches this exactly, and the lit value — the one thing the keys
+        // are about — was drawn on the band in the band's own colour, so it was not there.
+        // A band is the selection's ground, so what stands on it wears the selection's ink.
+        // (Kaida, 2026-11-21: "In the settings menus the higlight uses the
+        // selection_background, But it should also use selection_foreground. to ensure
+        // visibility in the case of foreground being the same value as
+        // selection_background".)
+        const auto as_worn = window.theme();
+        auto camouflaged = window.theme();
+        camouflaged.foreground = camouflaged.selection; // the ink *is* the band
+        camouflaged.selection_foreground = Color{0x12, 0x34, 0x56}; // and is not, on the band
+        window.applyTheme(camouflaged, true);
+        pump(60);
+        {
+            const QImage shot = window.grab().toImage();
+            const QColor band_ink(0x12, 0x34, 0x56);
+            const QRect box = value_band.toRect().adjusted(4, 4, -4, -4); // clear the corners
+            int strokes = 0;
+            for (int x = box.left(); x < box.right(); ++x) {
+                for (int y = box.top(); y < box.bottom(); ++y) {
+                    if (shot.pixelColor(x, y) == band_ink)
+                        ++strokes;
+                }
+            }
+            expect("a value lit on a band wearing its own ink is still drawn, in the "
+                   "selection's ink",
+                   strokes > 20);
+            window.applyTheme(as_worn, true); // the rest of the block is about other things
+            pump(40);
+        }
         walk(1); // and one step down, onto `save`
         expect("walking onto `save` takes the highlight off the last row",
                window.grab().toImage().pixelColor(band) != selection);

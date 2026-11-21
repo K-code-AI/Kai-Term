@@ -2888,7 +2888,7 @@ private:
                     paintFocusBand(p, hex_box);
                     mixer_hit_.highlight = hex_box;
                 }
-                p.setPen(panel_ink(fg));
+                p.setPen(focused ? band_ink() : panel_ink(fg));
                 p.drawText(QPointF(bar.left(), y), hex_text);
                 if (focused && mixer_focus_ == 0) {
                     const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
@@ -3781,6 +3781,18 @@ private:
         p.setRenderHint(QPainter::Antialiasing, false);
     }
 
+    // The ink that goes on top of a focus band. A band is filled with the selection's own
+    // ground, so what stands on it wears the selection's own ink — the rule the dragged
+    // selection already follows, and the reason a theme whose ordinary ink happens to be
+    // its selection ground does not paint the one thing the keys are about in the colour it
+    // is sitting on. Asking the panel's ink instead worked on the themes the panels were
+    // first drawn against and nowhere else.
+    // (Kaida, 2026-11-21: "In the settings menus the higlight uses the selection_background,
+    // But it should also use selection_foreground. to ensure visibility in the case of
+    // foreground being the same value as selection_background ... and make the whole thing
+    // more cohesive".)
+    QColor band_ink(int alpha = 255) const { return panel_ink(theme_.selection_foreground, alpha); }
+
     // The mixer's title, naming the colour it is editing. "Mix colour" asks which
     // colour and leaves the question open; the row it came from has a name, and a
     // panel that edits one thing should say which. (Kaida, 2026-11-20: "The Colour
@@ -4061,6 +4073,9 @@ private:
                 QString::fromStdString(field.label.empty() ? field.key : field.label);
             p.drawText(QPointF(table_x, y), label.leftJustified(label_w, QLatin1Char(' ')));
             const std::string hex = colourText(field.value);
+            // The value stands on the band, so it wears the band's ink; the label beside it
+            // is on bare panel and keeps the panel's.
+            p.setPen(focused ? band_ink() : panel_ink(fg));
             p.drawText(QPointF(table_x + label_w * cw, y), QString::fromStdString(hex));
 
             // The digit the next keystroke will replace, lit with the same
@@ -4143,6 +4158,7 @@ private:
         p.setPen(panel_ink(fg));
         p.drawText(QPointF(table_x, name_y),
                    QStringLiteral("theme").leftJustified(label_w, QLatin1Char(' ')));
+        p.setPen(picker_focus_ == 3 ? band_ink() : panel_ink(fg));
         p.drawText(QPointF(value_x, name_y), name_value);
         if (picker_focus_ == 3 && picker_editing_) {
             // Where the next character goes. The colour rows show the same rule under a
@@ -4305,6 +4321,9 @@ private:
             }
             p.setPen(panel_ink(fg));
             p.drawText(QPointF(table_x, y), label.leftJustified(label_w, QLatin1Char(' ')));
+            // Only the value is on the band, so only the value changes ink.
+            if (focused)
+                p.setPen(band_ink());
             p.drawText(QPointF(table_x + label_w * cw, y), value);
 
             // The row's two arrows: the same two keystrokes, drawn where a pointer
@@ -4386,7 +4405,12 @@ private:
                                   theme_.selection.b, scaleAlpha(220, background_opacity_)));
             p.drawRoundedRect(*button.box, kScrollBarRadius, kScrollBarRadius);
             p.setRenderHint(QPainter::Antialiasing, false);
-            p.setPen(panel_ink(button.colour.red(), button.colour.green(), button.colour.blue()));
+            // A lit word sits on a band like any other value, so it takes the band's ink
+            // rather than its own: `leave` is drawn in the ordinary foreground, which is
+            // exactly the colour a theme can also use for its selection ground.
+            p.setPen(lit ? band_ink()
+                         : panel_ink(button.colour.red(), button.colour.green(),
+                                     button.colour.blue()));
             p.drawText(*button.box, Qt::AlignCenter, *button.word);
         }
     }
