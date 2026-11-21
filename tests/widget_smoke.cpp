@@ -961,6 +961,29 @@ int main(int argc, char** argv) {
                differingPixels(block_cell, cursorCell(grabImage(&w))) > 0);
     }
 
+    // A shape the config file named belongs to the window, and nothing the session
+    // writes moves it. This is the same authority the config's colours hold, and it is
+    // what a snapshot of a session tests: restoring one replays its own `CSI 2 q`, which
+    // is how a style somebody chose in their settings was lost the moment a session was
+    // opened. Nothing named, nothing held.
+    // (Kaida, 2026-11-21: "Cursor style is lost upon a fresh instance of kai-term / when
+    // loading a session. It needs to always apply the cursor style supplied by the config
+    // file at all times. just like the theme, the Windows hold the cursor style".)
+    {
+        w.lockCursorStyle(kai::CursorStyle::Bar);
+        sendText(&w, "printf '\\033[2 q'"); // the shape a snapshot would ask for
+        sendKey(&w, Qt::Key_Return);
+        pump(500);
+        expect("a shape named in the config outlives the session's own DECSCUSR",
+               w.screen().cursorShape() == kai::Screen::CursorShape::Bar);
+        w.lockCursorStyle(std::nullopt); // nothing named, nothing held
+        sendText(&w, "printf '\\033[2 q'");
+        sendKey(&w, Qt::Key_Return);
+        const bool free_again = waitFor(
+            [&] { return w.screen().cursorShape() == kai::Screen::CursorShape::Block; }, 2000);
+        expect("and with nothing named, a program still picks its own shape", free_again);
+    }
+
     w.shutdown();
 
     if (failures == 0) {

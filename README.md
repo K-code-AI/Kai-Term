@@ -246,7 +246,7 @@ Verified results on this machine:
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
   inspection performed)`. When btop is not installed it prints that the checks were not
   exercised instead of pretending to pass.
-- `kai-term-widget-smoke` prints `PASS: 112 offscreen widget checks passed (no visual inspection
+- `kai-term-widget-smoke` prints `PASS: 120 offscreen widget checks passed (no visual inspection
   performed) [this platform has no separate X11-style selection: only the clipboard copy was
   exercised]`. The bracketed note is the test being honest about the platform it ran on.
 - `kai-term-ipc` prints `PASS: 43 protocol framing and field checks passed`.
@@ -265,7 +265,7 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 345 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 350 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
@@ -572,7 +572,7 @@ foreground_opacity = 1          # how solid the text, cursor and dialogs are
                                 # (`opacity` is the older name for the ground; it still reads)
 scrollback     = 1000           # lines a screen remembers above its top edge (0-20000)
 padding        = 10             # pixels of air between the grid and the window edge (0-64)
-cursor_style   = underline      # block | bar | underline, until a program picks its own
+cursor_style   = underline      # block | bar | underline; named here, the window holds it
 theme        = Default.conf     # which colours to wear: a name in themes/, or a path
 
 # ~/.config/kai-term/theme.conf
@@ -600,6 +600,13 @@ startup (`OSC 10/11`), and it holds on a window attached to a running session, s
 session comes back wearing your theme rather than the colours it happened to save. A
 colour you did *not* name stays the session's to recolour, so a program that legitimately
 changes a colour is still heard, and the built-in palette answers beneath both.
+
+**`cursor_style` is held the same way.** Named in your config, it is the shape the window
+shows and a program cannot ask it out of it — including the shape a saved session replays
+when a window attaches to it, which is how a cursor chosen in the settings used to vanish
+the moment a session was opened. Left unnamed, `DECSCUSR` works as it always has and a
+program picks its own shape; `CSI 0 q` and `CSI 9 q`, the standard's "user default", come
+back to whatever your file said.
 
 Everything in `theme.conf` — all twenty-two colours — is also editable from inside the
 window, from the settings menu's `theme` row (the panel is titled *Theme Editor*), which

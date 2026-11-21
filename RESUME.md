@@ -44,7 +44,10 @@ theme, and **a colour the config names is the top authority**: it outranks the s
 own `OSC 4/10/11` and holds on every window, including one attached to a running session,
 so a saved theme is not washed back to defaults by a shell that recolours at startup. A
 colour the config left unnamed stays the session's to set, and the built-in palette answers
-beneath both. And all twenty-two can be chosen inside the window itself —
+beneath both. `cursor_style` is held by the same rule (added 2026-11-21 for exactly the same
+complaint): named, it is the shape the window shows against every `DECSCUSR` — including the
+one a snapshot replays on attach, which was losing it; unnamed, a program still picks its own
+shape and `CSI 0 q` returns to the file's. And all twenty-two can be chosen inside the window itself —
 **Enter on the settings menu's `theme` row** opens the colour editor over the grid, previews
 on the window as you type, and writes the changed lines back to `theme.conf`. It has no key
 of its own: Ctrl+Shift+P used to jump straight in and is gone, so the colours live where the
@@ -484,7 +487,7 @@ Individual results:
 - `./build/tests/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `./build/tests/kai-term-selection` → `PASS: 119 selection and text-extraction checks passed`.
 - `./build/tests/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
-- `./build/tests/kai-term-widget-smoke` → `PASS: 112 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/tests/kai-term-widget-smoke` → `PASS: 120 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
 - `./build/tests/kai-term-ipc` → `PASS: 43 protocol framing and field checks passed`.
 - `./build/tests/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
 - `./build/tests/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.

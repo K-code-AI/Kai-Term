@@ -637,14 +637,24 @@ public:
         update();
     }
     int historyLimit() const { return static_cast<int>(screen_.historyLimit()); }
+    static Screen::CursorShape shapeFor(CursorStyle style) {
+        return style == CursorStyle::Block    ? Screen::CursorShape::Block
+               : style == CursorStyle::Bar    ? Screen::CursorShape::Bar
+                                              : Screen::CursorShape::Underline;
+    }
     void setCursorStyle(CursorStyle style) {
-        default_cursor_shape_for_new_screen_ =
-            style == CursorStyle::Block    ? Screen::CursorShape::Block
-            : style == CursorStyle::Bar    ? Screen::CursorShape::Bar
-                                           : Screen::CursorShape::Underline;
-        screen_.setDefaultCursorShape(style == CursorStyle::Block    ? Screen::CursorShape::Block
-                                        : style == CursorStyle::Bar  ? Screen::CursorShape::Bar
-                                                                      : Screen::CursorShape::Underline);
+        default_cursor_shape_for_new_screen_ = shapeFor(style);
+        screen_.setDefaultCursorShape(shapeFor(style));
+        update();
+    }
+    // The cursor's shape, held for the config: named there, it outranks every DECSCUSR
+    // the session writes — including the one a snapshot replays when a window attaches
+    // to a running session. Nothing named, nothing locked, and a program is free to pick
+    // its own shape.
+    // (Kaida, 2026-11-21: "the Windows hold the cursor style".)
+    void lockCursorStyle(std::optional<CursorStyle> style) {
+        screen_.lockCursorShape(style ? std::optional<Screen::CursorShape>(shapeFor(*style))
+                                      : std::nullopt);
         update();
     }
     CursorStyle cursorStyle() const {
@@ -3797,12 +3807,20 @@ private:
         // note twelve cells long walked out of the panel's side and hung over the terminal.
         // (Kaida, 2026-11-20: "the (e to edit) tool tip render outside our frame and it's not
         // beatiful at all".)
+        // The name field's keys, said in the same three parts as every panel says them,
+        // with one word swapped: the line of keys is the same size whoever the keys are
+        // standing on. It used to grow a clause at the front, which made the panel taller
+        // the moment the keys walked on to the name — a tooltip that changes the shape of
+        // the thing it is describing is a tooltip that moves what you are aiming at.
+        // (Kaida, 2026-11-20: "the (e to edit) tool tip render outside our frame and it's
+        // not beatiful at all"; 2026-11-21: "The tooltips should stay the same size as
+        // every other field even on the name field. The name field should just change the
+        // \"Select\" word to \"Edit\" instead of adding a whole new line in the beginning
+        // of the tooltip".)
         const QString name_hint =
             picker_editing_
-                ? QStringLiteral("Type the name - Arrows move the cursor - Enter confirms - "
-                                 "Escape puts it back")
-                : QStringLiteral("Enter edits the theme name - Arrows to Navigate - Enter to "
-                                 "Select - Escape to Cancel");
+                ? QStringLiteral("Arrows to Move - Enter to Confirm - Escape to Put Back")
+                : QStringLiteral("Arrows to Navigate - Enter to Edit - Escape to Cancel");
         const auto& fields = picker_->fields();
 
         // The label column is as wide as the longest name plus a space —

@@ -164,6 +164,15 @@ public:
         setColourLocks(Color{theme.foreground.r, theme.foreground.g, theme.foreground.b},
                        Color{theme.background.r, theme.background.g, theme.background.b},
                        palette_locks);
+        // The cursor's shape belongs with the colours, because it is the same kind of
+        // decision: what the window looks like, held by the window rather than by the
+        // bytes running through it. Named in the file, it outranks the session's
+        // DECSCUSR — including the shape a snapshot replays on attach, which is how a
+        // style chosen in the settings was lost as soon as a session was opened.
+        // (Kaida, 2026-11-21: "Cursor style is lost upon a fresh instance of kai-term /
+        // when loading a session … just like the theme, the Windows hold the cursor
+        // style".)
+        lockCursorStyle(source.cursor_style);
     }
 
     // Wear one theme's colours now, without writing anything: the settings file first,
@@ -802,6 +811,10 @@ private:
                     setPadding(was.padding);
                     setHistoryLimit(was.scrollback);
                     setCursorStyle(was.cursor_style);
+                    // …and the lock back to whatever the file says, so a shape the menu
+                    // previewed does not outlive the menu: without this a cancelled shape
+                    // would keep out every DECSCUSR the session writes afterwards.
+                    lockCursorStyle(config_.cursor_style);
                     config_.confirm_quit = was.confirm_quit;
                     // The colours the window was wearing when the menu opened, put back
                     // from the file they came from. Leaving without saving has to
@@ -929,9 +942,12 @@ private:
         else if (row.key == "scrollback")
             setHistoryLimit(row.value);
         else if (row.key == "cursor_style")
-            setCursorStyle(row.value == 0 ? CursorStyle::Block
-                             : row.value == 1 ? CursorStyle::Bar
-                                              : CursorStyle::Underline);
+            // A shape chosen here is a decision about the window, so the window holds it
+            // against the session for the preview as much as after the save.
+            lockCursorStyle(std::optional<CursorStyle>(
+                row.value == 0   ? CursorStyle::Block
+                : row.value == 1 ? CursorStyle::Bar
+                                 : CursorStyle::Underline));
         else if (row.key == "confirm_quit")
             config_.confirm_quit = settingFileText(row);
         else if (row.key == "theme")

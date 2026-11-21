@@ -1350,6 +1350,73 @@ int main(int argc, char** argv) {
     }
 
     {
+        // Every setting the file names is worn by the window that reads it. The cursor's
+        // shape is the one that used to be lost: the file was read, the session started,
+        // and the session's own DECSCUSR — or the one a snapshot replays when a window
+        // attaches — answered a moment later and won.
+        // (Kaida, 2026-11-21: "It needs to always apply the cursor style supplied by the
+        // config file at all times. just like the theme, the Windows hold the cursor
+        // style. Make sure other settings are also kept after being applied to the config
+        // file".)
+        const std::string all_cfg = root + "/every-setting";
+        std::ofstream(all_cfg) << "font_size = 15\npadding = 9\nscrollback = 333\n"
+                               << "cursor_style = bar\nbackground_opacity = 0.9\n"
+                               << "confirm_quit = never\n";
+        ::setenv("KAI_TERM_CONFIG", all_cfg.c_str(), 1);
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(300);
+        expect("a window wears the font, padding, history and cursor its file names",
+               window.fontPixelSize() == 15 && window.padding() == 9.0 &&
+                   window.historyLimit() == 333 &&
+                   window.cursorStyle() == kai::CursorStyle::Bar);
+        // A program inside the session asks for a block. The window keeps the bar its
+        // own file named — which is the same thing a snapshot of a session does on
+        // attach, and was the whole of the complaint.
+        const auto run = [&window](const std::string& line) {
+            window.pasteText(line);
+            static_cast<void>(QApplication::sendEvent(
+                &window, new QKeyEvent(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier)));
+            pump(80);
+        };
+        run("printf '\\033[2 q'");
+        pump(400);
+        expect("and a program asking for a shape does not move the one the file named",
+               window.screen().cursorShape() == kai::Screen::CursorShape::Bar &&
+                   window.fontPixelSize() == 15 && window.historyLimit() == 333);
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+
+        // The same escape in a window whose file names no shape: nothing is held, and
+        // DECSCUSR does what it has always done. Without this half the rule could be
+        // satisfied by a shape that never moves at all.
+        const std::string bare_cfg = root + "/no-cursor-setting";
+        std::ofstream(bare_cfg) << "font_size = 15\n";
+        ::setenv("KAI_TERM_CONFIG", bare_cfg.c_str(), 1);
+        kai::AppWindow free(kai::startWindowBackend(24, 80));
+        free.show();
+        static_cast<void>(waitFor([&free] { return !free.sessionName().empty(); }));
+        pump(300);
+        free.pasteText("printf '\\033[2 q'");
+        static_cast<void>(QApplication::sendEvent(
+            &free, new QKeyEvent(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier)));
+        const bool moved = waitFor(
+            [&free] {
+                return free.screen().cursorShape() == kai::Screen::CursorShape::Block;
+            },
+            4000);
+        expect("and a file that names no shape leaves it a program's to pick", moved);
+        free.discardOnClose();
+        free.shutdown();
+        pump(200);
+        std::remove(all_cfg.c_str());
+        std::remove(bare_cfg.c_str());
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+    }
+
+    {
         // Themes. The settings menu ends with a row that says which colours the window
         // is wearing, and the answers are the default plus whatever files are in
         // `themes`. Stepping the row paints the window before anything is written,
@@ -2480,6 +2547,18 @@ int main(int argc, char** argv) {
         expect("and that mark is clear of the rows too",
                window.pickerPanelRect().contains(up_mark) &&
                    !up_mark.intersects(window.pickerRowRect(rows - 1)));
+        const int narrow_hint_lines = window.panelHintLines(); // the keys are on a colour
+        press(Qt::Key_Down); // the last colour, then the theme name
+        pump(60);
+        // At a width where the old wording needed a third line, this is the same check
+        // with the room taken away: a name field whose keys take more lines than any
+        // other field's is a panel that changes shape under the keys.
+        expect("and the same at a width where the old wording wrapped further",
+               window.panelHintLines() == narrow_hint_lines &&
+                   window.panelHintText() ==
+                       QStringLiteral("Arrows to Navigate - Enter to Edit - Escape to Cancel"));
+        press(Qt::Key_Up); // back on to the colour for what follows
+        pump(40);
         window.resize(900, 560);
         pump(200);
         for (int i = 1; i < rows; ++i) { // and the keys back to the top for what follows
@@ -2513,14 +2592,24 @@ int main(int argc, char** argv) {
         // (Kaida, 2026-11-20: "the (e to edit) tool tip render outside our frame and it's not
         // beatiful at all".)
         const double picker_h = window.pickerPanelRect().height();
+        const int hint_lines = window.panelHintLines();
         press(Qt::Key_Up); // up from the first row wraps to `cancel`…
         press(Qt::Key_Up); // …then to `save`…
         press(Qt::Key_Up); // …and once more lands on the theme name
         pump(100);
         expect("the keys are standing on the theme name",
                window.pickerNameRect().contains(window.pickerHighlightRect()));
-        expect("the theme field's own keys are said along the bottom",
-               window.panelHintText().contains(QStringLiteral("Enter edits the theme name")));
+        // The name's line of keys is the panel's usual line with one word swapped, rather
+        // than the usual line with a clause bolted on the front — which is what made the
+        // panel taller the moment the keys walked on to the name.
+        // (Kaida, 2026-11-21: "The tooltips should stay the same size as every other field
+        // even on the name field. The name field should just change the \"Select\" word to
+        // \"Edit\" instead of adding a whole new line in the beginning of the tooltip".)
+        expect("the name field says the usual keys with one word swapped",
+               window.panelHintText() ==
+                   QStringLiteral("Arrows to Navigate - Enter to Edit - Escape to Cancel"));
+        expect("and takes up exactly as much room as it did on a colour",
+               window.panelHintLines() == hint_lines);
         expect("inside the panel, like everything else here",
                window.pickerPanelRect().contains(window.panelHintRect()));
         // The gutter to the right of the panel, along the name's own line. The old note ran

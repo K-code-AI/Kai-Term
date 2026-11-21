@@ -148,6 +148,19 @@ public:
         cursor_shape_ = shape;
     }
     CursorShape defaultCursorShape() const { return default_cursor_shape_; }
+    // The shape the config file named, which nothing the session writes may move — the
+    // same authority the config's colours hold. A snapshot of a session replays its own
+    // `CSI 2 q`, and fish and prompt tools write DECSCUSR at startup, which is how a
+    // style somebody chose in their settings was lost the moment a session was opened.
+    // Nothing named, nothing locked: a program picking a shape is what DECSCUSR is for.
+    // (Kaida, 2026-11-21: "It needs to always apply the cursor style supplied by the
+    // config file at all times. just like the theme, the Windows hold the cursor style".)
+    void lockCursorShape(std::optional<CursorShape> shape) {
+        locked_cursor_shape_ = shape;
+        if (shape)
+            setDefaultCursorShape(*shape);
+    }
+    std::optional<CursorShape> lockedCursorShape() const { return locked_cursor_shape_; }
     int cols() const { return cols_; }
     int cursorX() const { return cursor_x_; }
     int cursorY() const { return cursor_y_; }
@@ -859,6 +872,9 @@ private:
     bool saved_autowrap_ = true;
     CursorShape cursor_shape_ = CursorShape::Underline;
     CursorShape default_cursor_shape_ = CursorShape::Underline;
+    // The shape named in the config file, which outranks the session's DECSCUSR. See
+    // `lockCursorShape()`.
+    std::optional<CursorShape> locked_cursor_shape_;
     std::size_t history_limit_ = kMaxHistory;
     bool autowrap_ = true;
     bool pending_wrap_ = false;
@@ -2116,10 +2132,16 @@ private:
                         break;
                     n = n * 10 + (c - '0');
                 }
+                // The shape asked for, unless the person's own file named one — in which
+                // case the answer to every DECSCUSR is that shape, and the program is
+                // told nothing it can act on.
+                const auto asked = [this](CursorShape shape) {
+                    return locked_cursor_shape_.value_or(shape);
+                };
                 switch (n) {
-                    case 1: case 2: cursor_shape_ = CursorShape::Block; break;
-                    case 3: case 4: cursor_shape_ = CursorShape::Underline; break;
-                    case 5: case 6: cursor_shape_ = CursorShape::Bar; break;
+                    case 1: case 2: cursor_shape_ = asked(CursorShape::Block); break;
+                    case 3: case 4: cursor_shape_ = asked(CursorShape::Underline); break;
+                    case 5: case 6: cursor_shape_ = asked(CursorShape::Bar); break;
                     case 0: case 9: cursor_shape_ = default_cursor_shape_; break; // user default
                     default: break; // 7 and up name nothing; leave the shape alone
                 }

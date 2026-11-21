@@ -816,6 +816,56 @@ test that hangs should still cost a test and not a machine.
   It is worth remembering that a block dying at check one is rarely the feature — and that
   text you can search for uniquely is worth more than a position you have to count to.
 
+- 2026-11-21: **the tooltip that changed the shape of the thing it described, and a cursor
+  the session kept taking back.** Two more from IDEA.md.
+
+  *"In the theme editor The tooltips should stay the same size as every other field even on
+  the name field. The name field should just change the \"Select\" word to \"Edit\" instead
+  of adding a whole new line in the beginning of the tooltip."* The name row's line had
+  grown a clause at the front — `Enter edits the theme name - ` bolted onto the usual
+  sentence — because when Enter stopped meaning *save* and started meaning *open*, the panel
+  had to say so somewhere, and the bottom line is where keys get said. The fix is not to
+  explain it better; it is that `Select` was the wrong word on that row all along. Standing
+  on the name, the line is now the panel's usual one with one word swapped, and standing
+  *inside* it, the same three parts with the verbs changed: `Arrows to Move - Enter to
+  Confirm - Escape to Put Back`. A field whose keys take more lines than any other field's
+  is a panel that changes shape under the keys, which is the same fault the hint line was
+  fixed for a day earlier, arriving again by a different route.
+
+  *"Cursor style is lost upon a fresh instance of kai-term / when loading a session. It needs
+  to always apply the cursor style supplied by the config file at all times. just like the
+  theme, the Windows hold the cursor style."* Kaida named the answer in the complaint. The
+  colours had already been through this: the file is read, the window wears it, and then the
+  session talks — `OSC 10/11` from a prompt that wants its own background, and a snapshot
+  that replays every byte it remembered. The cursor's turn was `DECSCUSR`: the file said
+  `bar`, the window obliged, and a moment later the session's own `CSI 2 q`, or the one a
+  restored snapshot replayed, moved it and nothing brought it back. So the shape is now a
+  lock, set beside the colour locks in the same place a config is worn: named in the file it
+  answers every `DECSCUSR` including `CSI 0 q`, which the standard spells "user default" and
+  which now genuinely means *the person's default*; left unnamed there is no lock and a
+  program picks its shape exactly as it always did. The settings menu's row is a choice
+  somebody is making, so it locks too, and leaving the menu without saving hands the lock
+  back to the file — otherwise a cancelled preview would have gone on refusing the session's
+  shapes for the rest of the window's life, which is a bug that would have taken a fortnight
+  to name.
+
+  *"Make sure other settings are also kept after being applied to the config file"* was an
+  audit, and the audit's answer is that the cursor was the only one still leaking: font,
+  padding, scrollback and the rest are decisions about the window, and a session has no
+  channel to argue with them. The colours were closed off when the theme authority landed;
+  the shape was the last thing a session could write over.
+
+  Tests: 345 checks became 350 in the window test, 118 became 120 in the widget one — and
+  the first version of the window check did not fail when the feature was removed, because
+  it read `cursorStyle()`, which is the window's *default* shape, and the default had always
+  been set correctly. The bug was in the shape on screen. The check now runs a `printf`
+  inside the session the way Kaida would, and looks at what the window is showing; its
+  partner runs the same escape in a window whose file names no shape and insists the cursor
+  moves. A check about a lock has to be seen to open it too, or a welded door passes for a
+  locked one. The tooltip's line-count check needed the same treatment: at a wide window the
+  old long sentence and the new short one both fit in two lines, so the check was repeated at
+  a width where the old one needed three.
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,
