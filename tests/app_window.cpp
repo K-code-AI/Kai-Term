@@ -2116,6 +2116,16 @@ int main(int argc, char** argv) {
         const QRectF strip = window.mixerPreviewRect();
         expect("the mixer's preview strip is inside the panel",
                window.mixerPanelRect().contains(strip));
+        // The sentence says what it is, and all of it is drawn. A pangram was long
+        // enough that the centred draw clipped both ends and the strip read as a
+        // sentence with pieces missing.
+        // (Kaida, 2026-11-21: 'the preview pane in the Theme editor should read
+        // "  0123 #$%& Color Preview" instead of " 0123 #$%& The quick brown fox ...".)
+        expect("the strip says what it is rather than exercising every letter",
+               AppWindow::mixerSampleText() == QStringLiteral("0123 #$%& Color Preview") &&
+                   !AppWindow::mixerSampleText().contains(QStringLiteral("fox")));
+        expect("and all of it fits the strip in a window smaller than it wants",
+               window.mixerSampleFits());
 
         const QColor want(mixed.r, mixed.g, mixed.b);
         const auto step = [](const QColor& a, const QColor& b) {
@@ -2290,6 +2300,8 @@ int main(int argc, char** argv) {
         const QRectF panel = window.mixerPanelRect();
         expect("the mixer fits a window much smaller than it wants to be",
                room().contains(panel));
+        expect("and the sentence on its strip is still drawn whole at this size",
+               window.mixerSampleFits());
         bool bars_inside = true;
         for (int i = 0; i < kMixChannelCount; ++i) {
             const QRectF bar = window.mixerBarRect(i);
@@ -2357,6 +2369,49 @@ int main(int argc, char** argv) {
 
         openThemeEditor(&window);
         pump(120);
+
+        // The whole list, when the window has room for it. The list used to cap itself at
+        // a dozen rows and scroll the rest in any window, including one with plenty of
+        // room; now it takes the height it is given and only scrolls when it genuinely
+        // has to — and then it says so.
+        // (Kaida, 2026-11-21: "when there is enough space show all color in the theme
+        // editor instead of having to scroll. prioritize showing everything without
+        // scrolling, and when scrolling is needed can we show a little indicator to say
+        // that there is more to be seen if the user scrolls".)
+        const int rows = window.pickerRowCount();
+        expect("a window with room for the list shows every colour on it",
+               rows == 22 && window.pickerVisibleRows() >= rows &&
+                   window.pickerFirstRow() == 0);
+        expect("and says nothing about there being more to see",
+               !window.pickerMoreAbove() && !window.pickerMoreBelow());
+
+        window.resize(430, 320);
+        pump(200);
+        expect("a window too small for the list scrolls it instead",
+               window.pickerVisibleRows() < rows);
+        expect("with the keys at the top, that is more below it says",
+               !window.pickerMoreAbove() && window.pickerMoreBelow());
+        const QRectF down_mark = window.pickerScrollMarkRect(false);
+        expect("and the mark for it is inside the panel and clear of the rows",
+               window.pickerPanelRect().contains(down_mark) &&
+                   !down_mark.intersects(window.pickerRowRect(window.pickerFirstRow())));
+        for (int i = 1; i < rows; ++i) { // the last colour, without walking off the list
+            press(Qt::Key_Down);
+            pump(20);
+        }
+        expect("walking to the end of it says there is more above instead",
+               window.pickerMoreAbove() && !window.pickerMoreBelow());
+        const QRectF up_mark = window.pickerScrollMarkRect(true);
+        expect("and that mark is clear of the rows too",
+               window.pickerPanelRect().contains(up_mark) &&
+                   !up_mark.intersects(window.pickerRowRect(rows - 1)));
+        window.resize(900, 560);
+        pump(200);
+        for (int i = 1; i < rows; ++i) { // and the keys back to the top for what follows
+            press(Qt::Key_Up);
+            pump(20);
+        }
+
         // The line of keys measured in the size of a panel's own rows — which is exactly how
         // wide a panel had to be to carry it on one line, and so the width every panel used
         // to have.

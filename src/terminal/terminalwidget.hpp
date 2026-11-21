@@ -533,6 +533,29 @@ public:
     QRectF pickerPanelRect() const { return picker_hit_.panel; }
     QRectF settingsPanelRect() const { return settings_hit_.panel; }
     QRectF mixerPreviewRect() const { return mixer_hit_.preview; }
+    // Where the colour list is scrolled to, and whether it said so. Recorded while
+    // painting, as the hit rects are: the list's window is a consequence of the panel's
+    // size, and the only honest place to learn it is where it was worked out.
+    struct PickerScroll {
+        int first = 0;
+        int visible = 0;
+        int total = 0;
+        QRectF up;
+        QRectF down;
+    };
+    int pickerFirstRow() const { return picker_scroll_.first; }
+    int pickerVisibleRows() const { return picker_scroll_.visible; }
+    bool pickerMoreAbove() const { return !picker_scroll_.up.isEmpty(); }
+    bool pickerMoreBelow() const { return !picker_scroll_.down.isEmpty(); }
+    QRectF pickerScrollMarkRect(bool upwards) const {
+        return upwards ? picker_scroll_.up : picker_scroll_.down;
+    }
+
+    // What the strip says, and whether it all fit. The second one is the difference
+    // between a short sentence and a long one being clipped at both ends by a centred
+    // draw, which is how the pangram read.
+    static QString mixerSampleText() { return kMixerSample; }
+    bool mixerSampleFits() const { return mixer_sample_fits_; }
     // Which ground the sentence is sitting on, and where the word that changes it is.
     int mixerGround() const { return mixer_ground_; }
     QRectF mixerGroundSwitchRect() const { return mixer_hit_.ground_switch; }
@@ -2683,9 +2706,16 @@ private:
         p.drawRoundedRect(preview, kMixerBarRadius, kMixerBarRadius);
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setPen(QColor(mixed.r, mixed.g, mixed.b));
-        p.drawText(preview.adjusted(cw, 0, -(chip_cells + 2) * cw, 0),
-                   Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine,
-                   QStringLiteral("Aa Bb Cc 0123 #$%&  the quick brown fox"));
+        const QRectF sample_box = preview.adjusted(cw, 0, -(chip_cells + 2) * cw, 0);
+        // The sentence says what it is. It used to be a pangram, which is long enough
+        // that the centred draw clipped both ends of it and the strip read as a
+        // sentence with pieces missing — and a caption in a colour swatch has one job,
+        // which is to be the colour, so it does not need to be a typing test too.
+        // (Kaida, 2026-11-21: 'the preview pane in the Theme editor should read
+        // "  0123 #$%& Color Preview" instead of " 0123 #$%& The quick brown fox ...".)
+        p.drawText(sample_box, Qt::AlignHCenter | Qt::AlignVCenter | Qt::TextSingleLine,
+                   kMixerSample);
+        mixer_sample_fits_ = fm.horizontalAdvance(kMixerSample) <= sample_box.width();
         // The switch: labelled with the ground it is on, and painted as that ground, so
         // the word and the colour say the same thing and a border is all that keeps it
         // an object of its own when the two agree. Its ink follows its own ground, the
@@ -3344,6 +3374,10 @@ private:
     // rows of a long panel the fallback shrinks to fit, and beyond it the rows
     // walk off the bottom and come back the way they always have.
     static constexpr double kPanelListRows = 12.0;
+    // How small a colour list may be set in order to show all of itself. Above this, the
+    // whole list; below it, a dozen rows and a scroll — eight-pixel type you cannot read
+    // is not better than a scroll you can.
+    static constexpr int kPanelListFitMinPixels = 11;
 
     // What a panel is painted in: a font, its metrics, and the cell that font
     // makes. The panels measure themselves in cells, so these three are the
@@ -3369,7 +3403,12 @@ private:
     // (Kaida, 2026-11-20: "maybe a fallback max font size depending on the
     // windows size, to make sure our menu can fit properly without getting
     // mangled".)
-    PanelFont panelFont(double cells_w, double cells_h, double extra_h = 0.0) const {
+    // `min_px` is how small the type may go on the way to fitting. A list that is trying
+    // to show all of itself passes a higher floor than a panel that merely must not
+    // overflow: shrinking a colour list to eight pixels to avoid scrolling is trading a
+    // scroll for something worse.
+    PanelFont panelFont(double cells_w, double cells_h, double extra_h = 0.0,
+                        int min_px = kPanelMinFontPixels) const {
         // A panel starts smaller than the grid it is laid over — see kPanelFontScale — and
         // then shrinks further if the window still will not hold it. The metrics have to be
         // worked out from the smaller font rather than taken from the terminal's, or every
@@ -3393,19 +3432,46 @@ private:
             const double want_h = cells_h * out.ch + extra_h + pad_two * out.ch;
             if (want_w <= room_w && want_h <= room_h)
                 break;
-            if (out.font.pixelSize() <= kPanelMinFontPixels)
+            if (out.font.pixelSize() <= min_px)
                 break; // nothing smaller is still readable; let it clip a little
             const double scale = std::min(room_w / want_w, room_h / want_h);
             int px = static_cast<int>(out.font.pixelSize() * scale);
             if (px >= out.font.pixelSize())
                 px = out.font.pixelSize() - 1; // the ratio rounded up; step anyway
-            px = std::max(kPanelMinFontPixels, px);
+            px = std::max(min_px, px);
             out.font.setPixelSize(px);
             out.fm = QFontMetricsF(out.font);
             out.cw = cellAdvance(out.fm);
             out.ch = out.fm.height();
         }
         return out;
+    }
+
+    // A small triangle in a band of air, pointing at the rows that are off screen. Drawn
+    // as a shape rather than a character because a panel's font is whatever the
+    // terminal's font is, and a glyph it does not carry draws an empty box. Answers with
+    // the rect it drew — empty if the band was too thin to hold one, because a mark
+    // squashed into nothing is a smudge and not a sign.
+    static QRectF paintScrollMark(QPainter& p, const QRectF& band, bool points_up,
+                                  const QColor& ink, double cw, double ch) {
+        const double hw = std::max(4.0, cw * 0.4);
+        const double hh = std::max(3.0, ch * 0.28);
+        if (band.height() < hh + 2.0)
+            return QRectF();
+        const double cx = band.center().x();
+        const double cy = band.center().y();
+        const QPolygonF mark = points_up ? QPolygonF{QPointF(cx - hw, cy + hh / 2.0),
+                                                     QPointF(cx + hw, cy + hh / 2.0),
+                                                     QPointF(cx, cy - hh / 2.0)}
+                                         : QPolygonF{QPointF(cx - hw, cy - hh / 2.0),
+                                                     QPointF(cx + hw, cy - hh / 2.0),
+                                                     QPointF(cx, cy + hh / 2.0)};
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.drawPolygon(mark);
+        p.setRenderHint(QPainter::Antialiasing, false);
+        return QRectF(cx - hw, cy - hh / 2.0, 2 * hw, hh);
     }
 
     // How wide the line of keys at the bottom of a panel is, in cells. It used to be what
@@ -3731,8 +3797,40 @@ private:
         // under them are the panel's bottom, sized by themselves. The list gets what height
         // is left and scrolls.
         const double own_rows = 3.0;
-        const double rows_tall = std::min(own_rows + 2.0 + total, kPanelListRows);
-        const PanelFont pf = panelFont(table_cells, rows_tall, gap * rows_tall);
+        const double all_rows = own_rows + 2.0 + total;
+        // Show the whole list when the window will hold it at a size worth reading. The
+        // font used to be asked to fit a dozen rows and the rest scrolled, which meant a
+        // window that had room for twenty-two rows of slightly smaller type was given
+        // twelve of slightly larger type and a scroll. So: try for all of them down to
+        // `kPanelListFitMinPixels`, and only if that fails fall back to the dozen-row
+        // panel — which is where the scroll, and the mark saying there is more, come in.
+        // (Kaida, 2026-11-21: "when there is enough space show all color in the theme
+        // editor instead of having to scroll. prioritize showing everything without
+        // scrolling, and when scrolling is needed can we show a little indicator to say
+        // that there is more to be seen if the user scrolls".)
+        const double room_w = std::max(1.0, static_cast<double>(width()) - 2.0);
+        const double room_h = std::max(1.0, static_cast<double>(height()) - 2.0);
+        const auto width_for = [table_cells, room_w](const PanelFont& f) {
+            return std::min(table_cells * f.cw + 2.0 * kPanelPadCells * f.ch, room_w);
+        };
+        // The line of keys is the tallest thing at the bottom of a panel and its height
+        // depends on the panel's width, so asking "would the whole list fit?" without it
+        // is asking about a stack of rows rather than about the panel that gets built.
+        // The reservation is for the longest of the lines the panel could say, which is
+        // the same reservation the panel itself makes further down.
+        const auto bottom_for = [this, &hint, &name_hint, &width_for](const PanelFont& f) {
+            return panelBottom({hint, name_hint}, width_for(f) - kPanelPadCells * f.ch, f);
+        };
+        const double scroll_rows = std::min(all_rows, kPanelListRows);
+        const PanelFont scrolling = panelFont(table_cells, scroll_rows, gap * scroll_rows);
+        const double extra_all = gap * all_rows +
+                                 (kTitleGapRows + kPanelBottomAir) * scrolling.ch +
+                                 bottom_for(scrolling).height;
+        const PanelFont whole =
+            panelFont(table_cells, all_rows, extra_all, kPanelListFitMinPixels);
+        const bool whole_fits =
+            all_rows * whole.ch + extra_all + 2.0 * kPanelPadCells * whole.ch <= room_h;
+        const PanelFont pf = whole_fits ? whole : scrolling;
         const double cw = pf.cw;
         const double ch = pf.ch;
         // The title's air, and the air the rows stop at before the two words — both in rows,
@@ -3758,6 +3856,7 @@ private:
         int first = 0;
         if (total > visible)
             first = std::clamp(picker_->row() - visible + 1, 0, total - visible);
+        picker_scroll_ = PickerScroll{first, visible, total, QRectF(), QRectF()};
 
         const QRectF panel((width() - panel_w) / 2.0, (height() - panel_h) / 2.0, panel_w,
                            panel_h);
@@ -3783,6 +3882,8 @@ private:
         // the interface, lots of empty space on the right as it is now".)
         const double table_x = panel.x() + (panel_w - table_w) / 2.0;
         const int last = std::min(first + visible, total);
+        const double list_top = y - ch + fm.ascent() * 0.15;
+        double list_bottom = list_top;
         picker_hit_ = OverlayHit{};
         picker_hit_.panel = panel;
         picker_hit_.table_x = table_x;
@@ -3795,6 +3896,7 @@ private:
                              panel_w - pad, ch);
             picker_hit_.rows.push_back(row);
             picker_hit_.row_index.push_back(i);
+            list_bottom = row.bottom();
             // The value is what is lit, not the line: see the same choice in
             // `paintSettings`. Here the value is the six digits, and the swatch
             // beside them stays a plain square — it is the colour, not a number
@@ -3861,6 +3963,22 @@ private:
         // them is the thing you are naming.
         // (Kaida, 2026-11-20: "The theme name is too close to the save and cancel buttons
         // it should be a bit higher".)
+        // The scroll marks: a triangle in the air above the list when there are rows
+        // above it, and one below when there are more below. They sit in air the panel
+        // already leaves — between its title and its rows, and between its rows and its
+        // two words — so appearing costs no row and the panel does not change size when
+        // one is drawn, which is the mistake to avoid in anything that comes and goes
+        // while the keys are walking.
+        // (Kaida, 2026-11-21: "when scrolling is needed can we show a little indicator to
+        // say that there is more to be seen if the user scrolls".)
+        if (first > 0)
+            picker_scroll_.up = paintScrollMark(p, QRectF(panel.x(), title_hit_.bottom(),
+                                                          panel_w, list_top - title_hit_.bottom()),
+                                                true, panel_ink(fg, 120), cw, ch);
+        if (first + visible < total)
+            picker_scroll_.down =
+                paintScrollMark(p, QRectF(panel.x(), list_bottom, panel_w, words_y - list_bottom),
+                                false, panel_ink(fg, 120), cw, ch);
         const double name_air = ch;
         const QRectF name_box(panel.x() + pad / 2, words_y - name_air - ch, panel_w - pad, ch);
         picker_hit_.name = name_box;
@@ -4278,6 +4396,11 @@ private:
     // because a question that appears somewhere else is a question about a panel you
     // have just stopped looking at.
     bool picker_overwrite_ = false;
+    // The sentence the colour mixer's preview strip is painted with.
+    inline static const QString kMixerSample = QStringLiteral("0123 #$%& Color Preview");
+    // Recorded while painting, as the panels' hit rects are.
+    mutable bool mixer_sample_fits_ = true;
+    mutable PickerScroll picker_scroll_;
     std::unique_ptr<SettingsPicker> settings_;
     // The menu, still holding its rows and its unsaved values, while another panel is up.
     bool settings_suspended_ = false;
