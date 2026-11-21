@@ -152,15 +152,15 @@ int main(int argc, char** argv) {
     }
     shot(window, dir, "picker-name", 960, 540);
 
-    // `e` opens the field, and the caret is where the next letter goes.
-    press(window, Qt::Key_E);
+    // Enter opens the field, and the caret is where the next letter goes.
+    press(window, Qt::Key_Return);
     pump(120);
     shot(window, dir, "picker-edit", 960, 540);
     press(window, Qt::Key_Escape); // the word goes back, the panel stays
     pump(80);
 
     // And the question, which is the same panel with different words on the bottom.
-    press(window, Qt::Key_Return); // off the name, onto `save`
+    press(window, Qt::Key_Down); // off the name, onto `save`
     pump(80);
     press(window, Qt::Key_Return); // `save`, and the name is taken
     pump(120);
@@ -172,8 +172,8 @@ int main(int argc, char** argv) {
     shot(window, dir, "settings-returned", 960, 540);   // at 960x540, as named
     press(window, Qt::Key_Escape); // and out of the menu
     pump(120);
-    // Opened again so the mixer below is entered from a fresh list with the keys on
-    // `foreground`, which is what the shots underneath assume.
+    // Opened again so the mixer below is entered from a fresh list, which starts with its
+    // keys on the ground; one step down is the ink, and that is what these shots mix.
     press(window, Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
     pump(150);
     for (int i = 0; i < 3; ++i) {
@@ -183,6 +183,8 @@ int main(int argc, char** argv) {
     press(window, Qt::Key_Return);
     pump(150);
 
+    press(window, Qt::Key_Down); // background, then foreground
+    pump(60);
     press(window, Qt::Key_Return);
     pump(150);
     for (const auto& s : sizes) {
@@ -197,7 +199,7 @@ int main(int argc, char** argv) {
     // the ground under it has to step aside.
     press(window, Qt::Key_Escape);
     pump(120);
-    press(window, Qt::Key_Down); // off `foreground`, onto `background`
+    press(window, Qt::Key_Up); // off `foreground`, onto `background`
     pump(60);
     press(window, Qt::Key_Return);
     pump(150);

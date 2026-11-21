@@ -840,10 +840,10 @@ int main(int argc, char** argv) {
             pump(60);
         };
 
-        // Open the picker with Ctrl+Shift+P.
+        // Up from the settings menu on to the theme row, and Enter.
         openThemeEditor(&window);
         pump(60);
-        expect("Ctrl+Shift+P opens the theme picker", window.pickerActive());
+        expect("the theme row opens the colour editor", window.pickerActive());
 
         // The picker owns the keyboard: a keystroke that is not a colour or a
         // navigation key is swallowed, not sent to the shell. (We check the
@@ -851,8 +851,9 @@ int main(int argc, char** argv) {
         press(Qt::Key_Q, "q");
         expect("the picker is still up after a stray letter", window.pickerActive());
 
-        // Type a colour into the focused setting (foreground, the first row)
-        // and watch the window change under the keystroke.
+        // Walk on to a named colour — the first row is the ground, the second the ink on
+        // it — type six digits, and watch the window change under the keystroke.
+        press(Qt::Key_Down); // background, then foreground
         const Color before = window.theme().foreground;
         type_hex("11ff00");
         pump(40);
@@ -912,8 +913,7 @@ int main(int argc, char** argv) {
         const Color as_they_were = window.theme().background;
         openThemeEditor(&window);
         pump(60);
-        press(Qt::Key_Down); // move to background
-        type_hex("000000");
+        type_hex("000000"); // the keys start on the background
         pump(40);
         expect("the cancel path previews too (the window changed)",
                window.theme().background.r == 0 && window.theme().background.g == 0);
@@ -939,7 +939,7 @@ int main(int argc, char** argv) {
         openThemeEditor(&window);
         pump(60);
         for (int i = 0; i < 6; ++i)
-            press(Qt::Key_Down); // foreground … accent, and then black
+            press(Qt::Key_Down); // background … selection foreground, and then black
         type_hex("ff0000");
         pump(40);
         // The theme file exists by now — the save above made it — so writing to the same
@@ -966,7 +966,7 @@ int main(int argc, char** argv) {
         openThemeEditor(&window);
         pump(60);
         for (int i = 0; i < 6; ++i)
-            press(Qt::Key_Down); // foreground … accent, and then black
+            press(Qt::Key_Down); // background … selection foreground, and then black
         type_hex("ff0000");
         pump(40);
         click_word(true); // `save`
@@ -1381,8 +1381,9 @@ int main(int argc, char** argv) {
         expect("with nothing written down the window wears the file colours always lived in",
                window.theme().background.r == 0x10);
 
-        const auto press_key = [&window](int key, const QString& text = QString()) {
-            QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
+        const auto press_key = [&window](int key, const QString& text = QString(),
+                                         Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            QKeyEvent ev(QEvent::KeyPress, key, mods, text);
             QCoreApplication::sendEvent(&window, &ev);
         };
         const auto open_menu = [&window] {
@@ -1491,9 +1492,17 @@ int main(int argc, char** argv) {
         expect("and a letter typed at a shut field changes nothing",
                window.pickerNameText() == QStringLiteral("midnight") &&
                    !window.pickerEditing());
+        // `e` used to be the key that opened the field. It is not any more, and the
+        // letter is still just a letter: the field stays shut and the word stays whole.
+        // (Kaida, 2026-11-21: "the Enter key should allow the Editing of the Theme name
+        // field, replacing and removing the e key for the edit of that field".)
         press_key(Qt::Key_E, QStringLiteral("e"));
         pump(20);
-        expect("`e` opens the field, with the caret at the end of the word",
+        expect("and `e` opens nothing, having been replaced by Enter",
+               !window.pickerEditing() && window.pickerNameText() == QStringLiteral("midnight"));
+        press_key(Qt::Key_Return);
+        pump(20);
+        expect("Enter opens the field, with the caret at the end of the word",
                window.pickerEditing() && window.pickerCaret() == 8);
         press_key(Qt::Key_Left);
         press_key(Qt::Key_Left);
@@ -1516,22 +1525,31 @@ int main(int argc, char** argv) {
                window.pickerNameText() == QStringLiteral("midnight") &&
                    !window.pickerEditing() && window.pickerActive());
 
-        press_key(Qt::Key_E, QStringLiteral("e"));
+        press_key(Qt::Key_Return);
         pump(20);
         for (int i = 0; i < 24; ++i)
             press_key(Qt::Key_Backspace);
         expect("the field can be emptied", window.pickerNameText().isEmpty());
-        for (const char c : std::string("dusk"))
+        // A capital arrives as the same key with Shift on it, so a field that asked for
+        // no modifiers swallowed every capital in a name.
+        // (Kaida, 2026-11-21: "make the Field accept Capital letters as it does not
+        // currently".)
+        press_key(Qt::Key_D, QStringLiteral("D"), Qt::ShiftModifier);
+        press_key(Qt::Key_U, QStringLiteral("u"));
+        expect("the field takes a capital, and the small letters after it",
+               window.pickerNameText() == QStringLiteral("Du"));
+        for (const char c : std::string("sk"))
             press_key(Qt::Key_D, QString(QChar(c)));
-        expect("and typed into", window.pickerNameText() == QStringLiteral("dusk"));
+        expect("and keeps typing into the same word",
+               window.pickerNameText() == QStringLiteral("Dusk"));
         expect("while the file it will write carries the extension the other themes have",
-               window.pickerTargetNameText() == QStringLiteral("dusk.conf"));
+               window.pickerTargetNameText() == QStringLiteral("Dusk.conf"));
         press_key(Qt::Key_Return);
         pump(40);
         expect("Enter confirms the name and gets out of the field, leaving the keys on it",
                !window.pickerEditing() && window.pickerCursor().second == 3 &&
-                   window.pickerActive() && window.pickerNameText() == QStringLiteral("dusk"));
-        press_key(Qt::Key_Return); // off the name, onto `save`
+                   window.pickerActive() && window.pickerNameText() == QStringLiteral("Dusk"));
+        press_key(Qt::Key_Down); // off the name, onto `save`
         pump(40);
         expect("the word below the field is the next thing down",
                window.pickerCursor().second == 1);
@@ -1540,7 +1558,7 @@ int main(int argc, char** argv) {
         expect("a name nothing is using yet writes without asking",
                !window.pickerActive());
         {
-            std::ifstream dusk(home + "/kai-term/themes/dusk.conf");
+            std::ifstream dusk(home + "/kai-term/themes/Dusk.conf");
             const std::string text((std::istreambuf_iterator<char>(dusk)),
                                    std::istreambuf_iterator<char>());
             expect("a new name is a new file in the themes directory",
@@ -1549,7 +1567,7 @@ int main(int argc, char** argv) {
             const std::string settings_text((std::istreambuf_iterator<char>(settings)),
                                             std::istreambuf_iterator<char>());
             expect("and the settings file is what points at it",
-                   settings_text.find("theme = dusk.conf") != std::string::npos);
+                   settings_text.find("theme = Dusk.conf") != std::string::npos);
             expect("the whole set goes into a file that was not there before",
                    text.find("foreground = ") != std::string::npos);
         }
@@ -1558,7 +1576,7 @@ int main(int argc, char** argv) {
         // asks, and the two answers are the two words it already had.
         open_picker();
         expect("the panel opens on the name it just wrote",
-               window.pickerNameText() == QStringLiteral("dusk"));
+               window.pickerNameText() == QStringLiteral("Dusk"));
         // The pointer's way in: landing on the field opens it, because a box you can
         // point at but not type into is a label with a border round it.
         click_at(window.pickerNameRect().center());
@@ -1577,7 +1595,7 @@ int main(int argc, char** argv) {
         click_at(window.pickerSavePoint());
         expect("saving under a name that is already a theme is asked about",
                window.pickerActive() && window.pickerAskingOverwrite() &&
-                   window.pickerTitleText() == QStringLiteral("Overwrite dusk.conf?"));
+                   window.pickerTitleText() == QStringLiteral("Overwrite Dusk.conf?"));
         press_key(Qt::Key_Escape);
         pump(60);
         expect("Esc answers the question without throwing the panel away",
@@ -1589,19 +1607,33 @@ int main(int argc, char** argv) {
         pump(80);
         expect("`keep it` leaves the file as it was", !window.pickerActive());
         {
-            std::ifstream dusk(home + "/kai-term/themes/dusk.conf");
+            std::ifstream dusk(home + "/kai-term/themes/Dusk.conf");
             const std::string text((std::istreambuf_iterator<char>(dusk)),
                                    std::istreambuf_iterator<char>());
             expect("nothing was written while the answer was no",
                    text.find("foreground = #ff0000") == std::string::npos);
         }
 
+        // The colour rows had the same trouble the name field had: a capital arrives as
+        // the same key with Shift on it, so a row that demanded no modifiers swallowed
+        // every `F` anybody typed into it.
+        open_picker();
+        press_key(Qt::Key_Down); // off the ground and on to the ink
+        type_hex("000000"); // the row to black, and the cursor back where it started
+        pump(40);
+        press_key(Qt::Key_F, QStringLiteral("F"), Qt::ShiftModifier);
+        pump(40);
+        expect("a capital hex digit lands on a colour as readily as a small one",
+               window.theme().foreground.r == 0xf0);
+        press_key(Qt::Key_Escape);
+        pump(60);
+
         window.discardOnClose();
         window.shutdown();
         pump(200);
         for (const std::string& gone : {theme_cfg, home + "/kai-term/theme.conf",
                                         home + "/kai-term/themes/midnight.conf",
-                                        home + "/kai-term/themes/dusk.conf"})
+                                        home + "/kai-term/themes/Dusk.conf"})
             std::remove(gone.c_str());
         static_cast<void>(::rmdir((home + "/kai-term/themes").c_str()));
         static_cast<void>(::rmdir((home + "/kai-term").c_str()));
@@ -1668,14 +1700,38 @@ int main(int argc, char** argv) {
         expect("the colour list has a row for the ink on a selection", ink_row >= 0);
         expect("while the row called `black` writes the file's `color0`",
                black_row >= 0 && window.pickerRowKey(black_row) == QStringLiteral("color0"));
+        // The order of the list, which is the whole of the argument for having one: the
+        // window's own colours in the order you notice them, then each palette colour
+        // beside its bright version.
+        // (Kaida, 2026-11-21: "the color should be grouped togheter by \"color\" ... Black,
+        // Bright Black, Red, Bright Red ... Foreground background cursor ... can stay at
+        // the top but in this order: Background, Foreground, Accent, Cursor, Selection
+        // Background, Selection Foreground.")
+        const QStringList wanted{
+            "background",  "foreground", "accent",
+            "cursor",       "selection background", "selection foreground",
+            "black",        "bright black",         "red",
+            "bright red",   "green",      "bright green",
+            "yellow",       "bright yellow",        "blue",
+            "bright blue",  "magenta",    "bright magenta",
+            "cyan",         "bright cyan",          "white",
+            "bright white"};
+        bool in_order = window.pickerRowCount() == wanted.size();
+        for (int row = 0; in_order && row < wanted.size(); ++row)
+            in_order = window.pickerRowLabel(row) == wanted.at(row);
+        expect("the colours are in the order they are noticed, bright next to plain",
+               in_order);
+        expect("and a colour is followed by its bright version, not by the next hue",
+               window.pickerRowLabel(black_row + 1) == QStringLiteral("bright black") &&
+                   window.pickerRowKey(black_row + 1) == QStringLiteral("color8"));
         expect("and the three selection rows keep the names a person reads",
-               window.pickerRowLabel(3) == QStringLiteral("selection") &&
+               window.pickerRowLabel(4) == QStringLiteral("selection background") &&
                    window.pickerRowLabel(ink_row) == QStringLiteral("selection foreground") &&
                    window.pickerRowKey(ink_row) == QStringLiteral("selection_foreground"));
         // The name that goes *into the file* for the highlight. Without this the row could
         // quietly keep writing `selection` and every check above would still pass.
         expect("while the highlight writes the file kitty's name for it",
-               window.pickerRowKey(3) == QStringLiteral("selection_background"));
+               window.pickerRowKey(4) == QStringLiteral("selection_background"));
         window.discardOnClose();
         window.shutdown();
         pump(200);
@@ -1808,13 +1864,13 @@ int main(int argc, char** argv) {
         press_key(Qt::Key_Up); // ...and the name, which is where a new theme starts
         pump(60);
         expect("the keys are on the name", window.pickerCursor().second == 3);
-        press_key(Qt::Key_E);
+        press_key(Qt::Key_Return); // Enter opens the field the keys are standing on
         pump(40);
         for (int i = 0; i < 24; ++i)
             press_key(Qt::Key_Backspace); // the worn name goes, and the new one starts clean
         type_word("amber");
         press_key(Qt::Key_Return); // confirm the word — confirming is not saving
-        press_key(Qt::Key_Return); // the word below the field is the next thing down
+        press_key(Qt::Key_Down); // the word below the field is the next thing down
         expect("the word below the name is `save`", window.pickerCursor().second == 1);
         press_key(Qt::Key_Return); // and it saves
         pump(200);
@@ -1852,19 +1908,18 @@ int main(int argc, char** argv) {
         press_key(Qt::Key_Return);
         pump(140);
         expect("the editor opens from the theme row again", window.pickerActive());
-        press_key(Qt::Key_Down); // from `foreground` down to `background`
-        type_word("123456");
+        type_word("123456"); // the keys start on `background`
         pump(60);
         expect("typing a colour into the editor changes the window as it is typed",
                window.theme().background.r == 0x12);
-        for (int i = 0; i < 4; ++i)
-            press_key(Qt::Key_Up); // `foreground`, `cancel`, `save`, the name
-        press_key(Qt::Key_E);
+        for (int i = 0; i < 3; ++i)
+            press_key(Qt::Key_Up); // off the first colour: `cancel`, `save`, the name
+        press_key(Qt::Key_Return); // and Enter opens it
         for (int i = 0; i < 24; ++i)
             press_key(Qt::Key_Backspace);
         type_word("second");
         press_key(Qt::Key_Return); // confirm the word
-        press_key(Qt::Key_Return); // onto `save`
+        press_key(Qt::Key_Down); // onto `save`
         expect("the word below the name is `save`, again", window.pickerCursor().second == 1);
         press_key(Qt::Key_Return); // and write it
         pump(200);
@@ -1945,6 +2000,8 @@ int main(int argc, char** argv) {
                !window.pickerHighlightRect().isNull() &&
                    window.pickerRowRect(0).contains(window.pickerHighlightRect()) &&
                    !window.pickerHighlightRect().intersects(window.pickerSwatchRect(0)));
+        press(Qt::Key_Down); // the ink, which is the colour this block mixes
+        pump(20);
         press(Qt::Key_Return);
         pump(60);
         expect("Enter opens the mixer for the colour under the highlight",
@@ -2107,9 +2164,8 @@ int main(int argc, char** argv) {
 
         // The mixer, opened on the window's own background. This is the case where the
         // ground the sentence sits on is the very colour being mixed, which is what
-        // the switch at the end of the strip exists for.
-        press(Qt::Key_Down);
-        pump(60);
+        // the switch at the end of the strip exists for. The list opens with its keys on
+        // the ground, so there is nowhere to walk: Enter is already on the right row.
         press(Qt::Key_Return);
         pump(100);
         const Color mixed = window.theme().background; // the colour being mixed
@@ -2378,6 +2434,16 @@ int main(int argc, char** argv) {
         // editor instead of having to scroll. prioritize showing everything without
         // scrolling, and when scrolling is needed can we show a little indicator to say
         // that there is more to be seen if the user scrolls".)
+        // The heading is nearer the panel's top edge than the rows are, which is what
+        // "a bit more up" looks like: it is a title, not the first line of the thing it
+        // titles. (Kaida, 2026-11-21: 'the title "Colours" to be a bit more up and also
+        // changed for "Theme Editor"'.)
+        const QRectF title = window.panelTitleRect();
+        const QRectF first_row = window.pickerRowRect(0);
+        expect("the colour editor is called what the row that opens it is about",
+               window.pickerTitleText() == QStringLiteral("Theme Editor"));
+        expect("and its title sits nearer the top of the panel than the rows do",
+               title.top() - window.pickerPanelRect().top() < first_row.top() - title.bottom());
         const int rows = window.pickerRowCount();
         expect("a window with room for the list shows every colour on it",
                rows == 22 && window.pickerVisibleRows() >= rows &&
@@ -2395,6 +2461,15 @@ int main(int argc, char** argv) {
         expect("and the mark for it is inside the panel and clear of the rows",
                window.pickerPanelRect().contains(down_mark) &&
                    !down_mark.intersects(window.pickerRowRect(window.pickerFirstRow())));
+        // The mark belongs to the rows, not to the gap. Centred in the air between the
+        // list and the words it read as a thing in the middle of nowhere; it sits nearer
+        // the last row now. (Kaida, 2026-11-21: "the scrolling indicator on the Theme
+        // editor pointing down should be closer to the color a bit more up".)
+        const int last_shown = window.pickerFirstRow() + window.pickerVisibleRows() - 1;
+        const double to_rows = down_mark.top() - window.pickerRowRect(last_shown).bottom();
+        const double to_words = window.pickerSaveRect().top() - down_mark.bottom();
+        expect("and nearer the last colour than the words below it",
+               to_rows > 0.0 && to_rows < to_words);
         for (int i = 1; i < rows; ++i) { // the last colour, without walking off the list
             press(Qt::Key_Down);
             pump(20);
@@ -2445,7 +2520,7 @@ int main(int argc, char** argv) {
         expect("the keys are standing on the theme name",
                window.pickerNameRect().contains(window.pickerHighlightRect()));
         expect("the theme field's own keys are said along the bottom",
-               window.panelHintText().contains(QStringLiteral("e edits the theme name")));
+               window.panelHintText().contains(QStringLiteral("Enter edits the theme name")));
         expect("inside the panel, like everything else here",
                window.pickerPanelRect().contains(window.panelHintRect()));
         // The gutter to the right of the panel, along the name's own line. The old note ran

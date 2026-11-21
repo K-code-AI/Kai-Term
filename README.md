@@ -265,7 +265,7 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 327 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 345 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
@@ -408,11 +408,19 @@ nothing can be kept.
   decision somebody wrote to a file is not a preview.
 
 - **Enter on the `theme` row** opens the colour editor over the grid: the six window
-  colours and the sixteen ANSI palette entries, walked with Up/Down or k/j, digits walked
-  with Left/Right or h/l, a hex digit typed replaces the one under the cursor and
-  the cursor steps along, Enter on a colour opens the mixer for it, and the word `save`
-  two steps below the last row writes what you chose. It has no key of its own: the
-  colours live where the other decisions are, and one key fewer is one key fewer.
+  colours in the order you notice them — `background`, `foreground`, `accent`, `cursor`,
+  `selection background`, `selection foreground` — and then the sixteen palette entries,
+  each colour next to its bright version, so `red` and `bright red` are compared without
+  scrolling the length of the panel. Walked with Up/Down or k/j, digits walked with
+  Left/Right or h/l, a hex digit typed replaces the one under the cursor and the cursor
+  steps along, Enter on a colour opens the mixer for it, and the word `save` two steps
+  below the last row writes what you chose. The list shows every colour whenever the
+  window will hold them at a size worth reading, and scrolls only when it genuinely has
+  to; when it scrolls, a small triangle above or below the rows says there is more that
+  way. Under the rows is the name the colours will be written to: Enter opens that field,
+  letters type into it, Enter closes it, and Esc puts the word back. It has no key of its
+  own: the colours live where the other decisions are, and one key fewer is one key
+  fewer.
   Esc leaves with nothing written. The
   preview is not a preview: it is the window. Each keystroke recolours the real
   screen, so what you watch choosing is what you get — on a window attached to a
@@ -594,15 +602,17 @@ colour you did *not* name stays the session's to recolour, so a program that leg
 changes a colour is still heard, and the built-in palette answers beneath both.
 
 Everything in `theme.conf` — all twenty-two colours — is also editable from inside the
-window, from the settings menu's `theme` row, which writes back only the lines that
+window, from the settings menu's `theme` row (the panel is titled *Theme Editor*), which
+writes back only the lines that
 actually changed and
 leaves comments, alignment, and settings it has never heard of exactly as they were. The
 picker is colours and nothing else — how solid the window is belongs to the settings menu,
 next to the font. Saving colours never resizes the window: the grid and font you have now
 are the ones you keep.
 
-**Enter on a colour opens the mixer** for it: the sample sentence across the top of the
-window painted in the colour you are mixing — the only thing on that menu wearing it, so
+**Enter on a colour opens the mixer** for it: the caption across the top of the window —
+`0123 #$%& Color Preview` — painted in the colour you are mixing, the only thing on that
+menu wearing it, so
 what you are looking at is the colour read *through*, not a wall of it — six bars you can
 push — red, green, blue,
 and the hue, saturation and lightness the same colour is on the wheel — and the six hex

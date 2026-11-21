@@ -381,8 +381,16 @@ Needed:
   moves the digits out from under the cursor. Three settings came with it
   (`scrollback`, `padding`, `cursor_style`), the scrollback one honoured in the daemon
   as well as the window because that is where the history a snapshot reads from lives.
+- **The colour editor, built 2026-11-21** (Enter on the settings menu's `theme` row). The
+  twenty-two colours of a theme, in the order they are noticed — the window's own six, then
+  each palette colour beside its bright version — with the name they will be written to under
+  them, Enter opening that field and capitals arriving intact. It shows every colour the
+  window has room for at a size worth reading and scrolls only when it must, marking the
+  direction of what is off-screen with a triangle in the air the panel already left. It took
+  over from Ctrl+Shift+P, and the `e` that used to open the name field: a panel where Enter
+  opens the thing the keys are standing on needs one rule, not two.
 - **The colour mixer, built 2026-11-20** (Enter on a colour row). Six bars — red, green,
-  blue, hue, saturation, lightness — the sample sentence painted in the colour being mixed,
+  blue, hue, saturation, lightness — the caption across the strip painted in the colour being mixed,
   and the six hex digits for when you already know. Left and right change the value on
   every row, the hex row included; `Shift+Left`/`Shift+Right` move the digit cursor.
   The sentence sits on the window's own background at its own opacity, and the word at the

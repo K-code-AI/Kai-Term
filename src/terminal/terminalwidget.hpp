@@ -522,6 +522,9 @@ public:
     }
     QPointF settingsSavePoint() const { return settings_hit_.save.center(); }
     QPointF pickerSavePoint() const { return picker_hit_.save.center(); }
+    // The whole word, not just somewhere inside it: how far the bottom of the list is
+    // from the first thing below it is a question about edges.
+    QRectF pickerSaveRect() const { return picker_hit_.save; }
     QPointF pickerCancelPoint() const { return picker_hit_.cancel.center(); }
     QPointF mixerSavePoint() const { return mixer_hit_.save.center(); }
 
@@ -2143,7 +2146,12 @@ private:
     QString pickerTitle() const {
         if (picker_overwrite_)
             return QStringLiteral("Overwrite ") + pickerTargetName() + QStringLiteral("?");
-        return QStringLiteral("Colours");
+        // "Theme Editor", because that is what it is: the row of the settings menu that
+        // opens it is called `theme`, and a window called Colours that is reached from a
+        // row called theme makes you hold two names for one thing.
+        // (Kaida, 2026-11-21: 'the title "Colours" to be a bit more up and also changed for
+        // "Theme Editor"'.)
+        return QStringLiteral("Theme Editor");
     }
 
     // One ring, not two modes: walking down past the last row arrives at `save`,
@@ -2276,9 +2284,15 @@ private:
                     update();
                     return;
                 }
-                // Done looking at the name. The word below is the next thing down and the
-                // one you want next, and walking is how everything else here is reached.
-                picker_focus_ = 1;
+                // Enter opens the thing the keys are standing on, and here that thing is a
+                // field. It used to be `e`, which was one more key to know and a rule this
+                // panel did not otherwise follow.
+                // (Kaida, 2026-11-21: "the Enter key should allow the Editing of the Theme
+                // name field, replacing and removing the e key for the edit of that
+                // field".)
+                picker_editing_ = true;
+                picker_before_edit_ = picker_name_;
+                picker_caret_ = static_cast<int>(picker_name_.size());
                 update();
                 return;
             }
@@ -2301,21 +2315,14 @@ private:
             return;
         }
         if (picker_focus_ == 3) {
-            // (Kaida, 2026-11-20: "we should require pressing e to edit the field and in
-            // edit mode the arrow can control the cursor and enter will confirm and get us
-            // out of edit mode".)
-            if (!picker_editing_) {
-                // The field is shut until it is opened, and `e` is the whole of opening
-                // it. Needing it is the price of a panel where a stray letter cannot
-                // quietly rename the theme you were about to save.
-                if (plain && key == Qt::Key_E) {
-                    picker_editing_ = true;
-                    picker_before_edit_ = picker_name_;
-                    picker_caret_ = static_cast<int>(picker_name_.size());
-                    update();
-                }
-                return;
-            }
+            // The field is shut until Enter opens it, which is the price of a panel where
+            // a stray letter cannot quietly rename the theme you were about to save. In
+            // edit mode the arrows walk the caret and Enter confirms and gets out.
+            // (Kaida, 2026-11-20: "in edit mode the arrow can control the cursor and enter
+            // will confirm and get us out of edit mode"; 2026-11-21: Enter is what opens
+            // it, not `e`.)
+            if (!picker_editing_)
+                return; // every other keystroke is the panel's, not the field's
             if (key == Qt::Key_Left || (plain && key == Qt::Key_H)) {
                 picker_caret_ = std::max(0, picker_caret_ - 1);
                 update();
@@ -2335,7 +2342,14 @@ private:
                 update();
                 return;
             }
-            if (plain && text.size() == 1) {
+            // Shift is not a reason to lose a letter: a capital arrives as the same key
+            // with Shift on it, and a name field that swallows them is a field where
+            // `MyTheme` comes out as `y heme`. Control and Alt are still refused — they
+            // mean something else to this window.
+            // (Kaida, 2026-11-21: "make the Field accept Capital letters as it does not
+            // currently".)
+            const bool typed = text.size() == 1 && (plain || mods == Qt::ShiftModifier);
+            if (typed) {
                 const QChar c = text.at(0);
                 // Printable and no spaces: a theme is a file name, and a file name with a
                 // space in it is a thing you have to quote in every other program.
@@ -2360,7 +2374,7 @@ private:
         // not a navigation key above is simply not the picker's business, and
         // it is swallowed rather than sent to the shell — a dialog owns the
         // keyboard while it is up.
-        if (plain && text.size() == 1) {
+        if ((plain || mods == Qt::ShiftModifier) && text.size() == 1) {
             const char c = text.at(0).toLatin1();
             if (picker_->typeHex(c)) {
                 picker_focus_ = 0; // you are editing a colour again, not a word
@@ -2647,7 +2661,13 @@ private:
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
-        const QRectF title_rect(panel.x(), y - fm.ascent(), panel.width(), fm.height());
+        // The heading is raised out of the panel's padding a little: it is a title rather
+        // than a row, and at one padding from the edge it sat as deep as the first line of
+        // the thing it is heading. The rows stay where they are, so what the rise buys is
+        // air between a panel's name and its contents.
+        // (Kaida, 2026-11-21: "we would need the title "Colours" to be a bit more up".)
+        const QRectF title_rect(panel.x(), y - fm.ascent() - kPanelTitleRise * ch,
+                                panel.width(), fm.height());
         p.drawText(title_rect, Qt::AlignHCenter | Qt::AlignVCenter, mixerTitle());
         title_hit_ = title_rect;
         y += ch + kTitleGapRows * ch;
@@ -3349,6 +3369,14 @@ private:
     // (Kaida, 2026-11-20: "every elements could do with 1 or 2 px more space in
     // between them for breathing".)
     static constexpr double kPanelRowGap = 2.0;
+    // How far down a scroll mark sits in its band of air, as a fraction of that band. The
+    // same fraction from the opposite end for the other direction, so each mark sits
+    // nearer the rows it is beside than the empty air it points away into.
+    static constexpr double kPanelMarkLow = 0.62;
+    // How much closer to the panel's top edge its title is painted than the rows are —
+    // the title is a heading, not a row, and flush with the padding it sat too deep.
+    // (Kaida, 2026-11-21: "we would need the title \"Colours\" to be a bit more up".)
+    static constexpr double kPanelTitleRise = 0.45;
     // A menu is not the terminal. Its type starts smaller than the grid's, so a panel
     // reads as something laid over the screen rather than a block of text that fell off
     // it, and an ordinary window has room for the whole list at once. The terminal's own
@@ -3458,8 +3486,14 @@ private:
         const double hh = std::max(3.0, ch * 0.28);
         if (band.height() < hh + 2.0)
             return QRectF();
+        // Not centred in the band: a mark belongs to the rows it is next to, so it sits
+        // nearer them than nearer the empty air. Centred, it read as a thing in the middle
+        // of a gap that had nothing to do with either end of the list.
+        // (Kaida, 2026-11-21: "the scrolling indicator on the Theme editor pointing down
+        // should be closer to the color a bit more up".)
         const double cx = band.center().x();
-        const double cy = band.center().y();
+        const double cy =
+            band.top() + band.height() * (points_up ? kPanelMarkLow : 1.0 - kPanelMarkLow);
         const QPolygonF mark = points_up ? QPolygonF{QPointF(cx - hw, cy + hh / 2.0),
                                                      QPointF(cx + hw, cy + hh / 2.0),
                                                      QPointF(cx, cy - hh / 2.0)}
@@ -3767,7 +3801,7 @@ private:
             picker_editing_
                 ? QStringLiteral("Type the name - Arrows move the cursor - Enter confirms - "
                                  "Escape puts it back")
-                : QStringLiteral("e edits the theme name - Arrows to Navigate - Enter to "
+                : QStringLiteral("Enter edits the theme name - Arrows to Navigate - Enter to "
                                  "Select - Escape to Cancel");
         const auto& fields = picker_->fields();
 
@@ -3870,7 +3904,13 @@ private:
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
-        const QRectF title_rect(panel.x(), y - fm.ascent(), panel.width(), fm.height());
+        // The heading is raised out of the panel's padding a little: it is a title rather
+        // than a row, and at one padding from the edge it sat as deep as the first line of
+        // the thing it is heading. The rows stay where they are, so what the rise buys is
+        // air between a panel's name and its contents.
+        // (Kaida, 2026-11-21: "we would need the title "Colours" to be a bit more up".)
+        const QRectF title_rect(panel.x(), y - fm.ascent() - kPanelTitleRise * ch,
+                                panel.width(), fm.height());
         p.drawText(title_rect, Qt::AlignHCenter | Qt::AlignVCenter, pickerTitle());
         title_hit_ = title_rect;
         y += ch + kTitleGapRows * ch;
@@ -4104,7 +4144,13 @@ private:
 
         double y = panel.y() + pad + fm.ascent();
         p.setPen(panel_ink(fg));
-        const QRectF title_rect(panel.x(), y - fm.ascent(), panel.width(), fm.height());
+        // The heading is raised out of the panel's padding a little: it is a title rather
+        // than a row, and at one padding from the edge it sat as deep as the first line of
+        // the thing it is heading. The rows stay where they are, so what the rise buys is
+        // air between a panel's name and its contents.
+        // (Kaida, 2026-11-21: "we would need the title "Colours" to be a bit more up".)
+        const QRectF title_rect(panel.x(), y - fm.ascent() - kPanelTitleRise * ch,
+                                panel.width(), fm.height());
         p.drawText(title_rect, Qt::AlignHCenter | Qt::AlignVCenter, QStringLiteral("Settings"));
         title_hit_ = title_rect;
         y += ch + kTitleGapRows * ch;

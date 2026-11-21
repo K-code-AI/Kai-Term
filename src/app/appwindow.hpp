@@ -716,24 +716,41 @@ private:
     // label (`bright magenta`) while their key stays the file's `color13` —
     // the person reads names, the file keeps the convention.
     static std::vector<ThemeField> fieldsForTheme(const Theme& theme) {
+        // The window's own colours first, in the order they are noticed: the ground, the
+        // ink on it, the colour that means `this one`, the cursor, and the two halves of a
+        // selection. (Kaida, 2026-11-21: "Foreground background cursor ... can stay at the
+        // top but in this order: Background, Foreground, Accent, Cursor, Selection
+        // Background, Selection Foreground.")
         std::vector<ThemeField> fields = {
-            {"foreground", rgbOf(theme.foreground), "foreground"},
             {"background", rgbOf(theme.background), "background"},
+            {"foreground", rgbOf(theme.foreground), "foreground"},
+            {"accent", rgbOf(theme.accent), "accent"},
             {"cursor", rgbOf(theme.cursor), "cursor"},
             // The file says `selection_background`, the screen says `selection`: the names
             // on the screen are the ones a person reads, and the ones in the file are the
-            // ones kitty already uses.
-            {"selection_background", rgbOf(theme.selection), "selection"},
+            // ones kitty already uses. "selection background" is the name in the file and
+            // the name on the screen now, because a row called `selection` next to one
+            // called `selection foreground` leaves you guessing which half is which.
+            {"selection_background", rgbOf(theme.selection), "selection background"},
             {"selection_foreground", rgbOf(theme.selection_foreground), "selection foreground"},
-            {"accent", rgbOf(theme.accent), "accent"},
         };
         static const char* const kPaletteNames[16] = {
             "black",  "red",    "green",  "yellow", "blue",   "magenta", "cyan",  "white",
             "bright black", "bright red", "bright green", "bright yellow",
             "bright blue",  "bright magenta", "bright cyan", "bright white"};
-        for (std::size_t i = 0; i < theme.palette.size(); ++i)
+        // A colour and its bright version next to each other. They are one colour at two
+        // strengths, and sixteen rows in file order meant scrolling the length of the
+        // panel to compare a pair.
+        // (Kaida, 2026-11-21: "The color should be grouped togheter by "color" ...
+        // Black, Bright Black, Red, Bright Red, Green, Bright Green ...".)
+        const std::size_t palette_size = theme.palette.size();
+        for (std::size_t i = 0; i < 8 && i < palette_size; ++i) {
             fields.push_back({"color" + std::to_string(i), rgbOf(theme.palette[i]),
                               kPaletteNames[i]});
+            if (i + 8 < palette_size)
+                fields.push_back({"color" + std::to_string(i + 8), rgbOf(theme.palette[i + 8]),
+                                  kPaletteNames[i + 8]});
+        }
         return fields;
     }
 

@@ -35,8 +35,10 @@ the six window colours and the sixteen ANSI palette entries. A line's `=` is opt
 which is the shape a kitty theme is written in: drop one into `themes/` and it is worn
 without editing a line of it, and because the palette is stored as `color0` through
 `color15` and the highlight as `selection_background`, one of ours can be read back by
-kitty. The screen keeps its own vocabulary — the row says `black`, `selection` and
-`selection foreground`, the file says `color0` and the kitty names. The colours reach the
+kitty. The screen keeps its own vocabulary — the row says `black`, `bright black` and
+`selection background`, the file says `color0`, `color8` and the kitty names. The rows run
+in the order they are noticed — background, foreground, accent, cursor, the two halves of
+a selection — and then each palette colour beside its bright version. The colours reach the
 window as a
 theme, and **a colour the config names is the top authority**: it outranks the session's
 own `OSC 4/10/11` and holds on every window, including one attached to a running session,
@@ -51,9 +53,12 @@ the keys come back to the `theme` row, and what the editor *saved* stays saved e
 then leave the menu without saving. Under the colours a `theme` line says
 which theme they would go into, which makes the picker a theme creator rather than an
 editor of one file: the extension is left out because every theme has one, the field is
-shut until `e` opens it so a stray letter cannot rename the theme you were about to save,
-and while it is open the arrows walk a caret inside the word, Enter confirms and gets out,
-Esc puts the word back. Saving under a name that is already a theme asks first — the title
+shut until Enter opens it — the same key that opens everything else here, and the
+replacement for the `e` it used to need — so a stray letter still cannot rename the theme
+you were about to save, and while it is open the arrows walk a caret inside the word,
+Enter confirms and gets out, Esc puts the word back. Capitals arrive as the same key with
+Shift on it, which the field used to refuse; a name is a file name, so it keeps whatever
+case you typed. Saving under a name that is already a theme asks first — the title
 becomes *Overwrite midnight.conf?* and the two words become `overwrite` and `keep it`, in
 the same places and walked the same way — while a name nothing is using writes without
 asking and takes every colour the window is wearing, because a new file starts empty.

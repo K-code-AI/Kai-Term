@@ -742,6 +742,80 @@ test that hangs should still cost a test and not a machine.
   four of them said 960x540 while sitting at 330x220 — is fixed too, since a photograph that
   lies about its size is how a panel looks fine and is not.
 
+- 2026-11-21: **five ideas, and a list that stopped hiding.** IDEA.md arrived with two more
+  after the pair shipped that morning: *"when there is enough space show all color in the
+  theme editor instead of having to scroll. prioritize showing everything without scrolling,
+  and when scrolling is needed can we show a little indicator to say that there is more to be
+  seen if the user scrolls"*, and *"The preview pane in the Theme editor should read `0123
+  #$%& Color Preview` instead of `The quick brown fox ...`"* — then three more while that was
+  in flight: *"the scrolling indicator … pointing down should be closer to the color a bit
+  more up. the one pointing up is fine but we would need the title \"Colours\" to be a bit
+  more up and also changed for \"Theme Editor\""*, *"the Enter key should allow the Editing of
+  the Theme name field, replacing and removing the e key … Also make the Field accept Capital
+  letters as it does not currently"*, and *"The color should be grouped togheter by 'color'
+  … Black, Bright Black, Red, Bright Red … Foreground background cursor … can stay at the top
+  but in this order: Background, Foreground, Accent, Cursor, Selection Background, Selection
+  Foreground."*
+
+  The caption first, because it was a bug wearing a wording ticket: the sample sentence was a
+  pangram, long enough that the centred draw clipped both ends, so the strip read as a
+  sentence with pieces missing off it. A caption inside a swatch has one job, which is to be
+  the colour, and `mixerSampleFits()` now records while painting whether all of it fitted —
+  the check that would have caught the clipping the day it was written.
+
+  Then the list. The font had been asked to fit a dozen rows and the rest scrolled, so a
+  window with room for twenty-two rows of slightly smaller type was given twelve of slightly
+  larger type and a scroll. Asking for all of them was easy; asking *whether they fit* was
+  not. The first version measured the rows and nothing else, declared it fitted at 900x560,
+  and then scrolled anyway — because the panel is not a stack of rows: it is the rows plus the
+  title, the air, the two words and the line of keys, and the line of keys is the tallest thing
+  at the bottom and gets taller the narrower the panel is. The honest question needed the
+  bottom measured first, which meant a reference panel in the scrolling size, which is also
+  the size the fallback wants anyway. Below `kPanelListFitMinPixels` it still scrolls, because
+  eight-pixel type you cannot read is not better than a scroll you can.
+
+  The mark is drawn as a polygon, not a glyph: a panel's font is whatever the terminal's font
+  is, and a character it does not carry draws an empty box. It lives in air the panel already
+  leaves — title to rows, rows to words — so appearing never costs a row, which is the same
+  trap the hint fell into a day earlier: anything that comes and goes while you walk has to
+  fit in space that was already reserved. It is not centred in that air either. Centred, it
+  read as a thing in the middle of a gap that had nothing to do with either end of the list;
+  it sits nearer the rows it belongs to now, which is what Kaida asked for and, once seen,
+  obvious.
+
+  The `e` was the second key in this program that meant *open the thing you are standing on*,
+  and Enter already meant that everywhere else, including two rows above in the same panel.
+  Removing it also removed a rule from the manual. Capitals were a plain bug: a capital is the
+  same key with Shift on it, the field asked for `plain`, and so `MyTheme` came out as
+  `y heme` — the same reason a capital `F` typed at a colour row vanished, which nobody had
+  reported because nobody tries to type hex in capitals. A name is a file name, so it keeps
+  whatever case you typed, extension and all.
+
+  Reordering the rows looked like ten lines and cost twenty-one checks, which is the sound a
+  test suite makes when it has been walking by number instead of by name. Most of the ripple
+  was honest — a block that mixes the ink now has to say so and step down one — and one was
+  not: a four-step walk up that had been reaching the name field *from the background row*,
+  which only existed because an earlier line had stepped down to it. `selection background`
+  took the place of `selection` on the screen too, because a row called `selection` next to
+  one called `selection foreground` leaves you guessing which half is which; the file still
+  takes both spellings.
+
+  Tests: 327 checks became 345. Every rule here was switched off and seen to fail its own
+  check, and two of them needed a second attempt. The lower scroll mark passed with the mark
+  disabled, because the probe had only disabled the upper one — two checks is not one rule,
+  and disabling one half proves nothing about the other. The capital hex check passed with
+  capitals refused, because the theme it ran against already had an `f` in the high nibble of
+  the channel it was watching: a check that cannot tell the difference is a check that agrees
+  with whatever happens, so the row is now driven to black first and the `f` has nowhere to
+  come from but the keystroke.
+
+  And one lesson about editing. A three-line change was applied by line number, and the lines
+  were not the three lines assumed: the lambda's `sendEvent` was overwritten by a second copy
+  of the line above it, which compiles, runs, and delivers no keystrokes at all. The whole
+  theme block then failed at its first check and the failure looked like a behaviour change.
+  It is worth remembering that a block dying at check one is rarely the feature — and that
+  text you can search for uniquely is worth more than a position you have to count to.
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,
