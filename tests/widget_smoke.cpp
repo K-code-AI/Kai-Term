@@ -959,6 +959,28 @@ int main(int argc, char** argv) {
         expect("DECSCUSR with no parameter means the terminal's own shape", default_seen);
         expect("the default shape is drawn differently from the block",
                differingPixels(block_cell, cursorCell(grabImage(&w))) > 0);
+
+        // The blink, asked for as a rate rather than a switch. Slow enough that a grab
+        // lands well inside one half of it: this is checking that the cursor's cell
+        // changes and changes back, not that a timer fires.
+        // (Kaida, 2026-11-21: "can we add cursor blink, with customizable blink speed
+        // ( 0 being no blinking)".)
+        w.setCursorBlink(400);
+        expect("the rate is the one asked for", w.cursorBlink() == 400);
+        const bool went_out = waitFor([&] { return !w.cursorBlinkPhase(); }, 3000);
+        const QImage out_cell = cursorCell(grabImage(&w));
+        const bool came_back = waitFor([&] { return w.cursorBlinkPhase(); }, 3000);
+        const QImage in_cell = cursorCell(grabImage(&w));
+        expect("the cursor goes out and comes back on its own", went_out && came_back);
+        expect("and that is a different picture, not just a different number",
+               differingPixels(out_cell, in_cell) > 0);
+        w.setCursorBlink(0);
+        pump(200);
+        const QImage steady_once = cursorCell(grabImage(&w));
+        pump(600);
+        expect("a blink of 0 stops the timer and leaves the cursor lit",
+               !w.cursorBlinkRunning() && w.cursorBlinkPhase() &&
+                   differingPixels(steady_once, cursorCell(grabImage(&w))) == 0);
     }
 
     // A shape the config file named belongs to the window, and nothing the session

@@ -190,9 +190,19 @@ struct Config {
     // compositor that rounds its corners this is the difference between glyphs
     // inside the glass and glyphs clipped by it.
     std::optional<double> padding;
-    // The cursor's shape before a program picks its own with DECSCUSR — the
-    // default an application may override, not a rule it must obey.
+    // The cursor's shape. Named in the file it is the window's and every DECSCUSR the
+    // session writes answers to it — the same authority the colours hold, so a shape
+    // chosen here is not lost when a session is attached. Left out, a program picks its
+    // own shape as the escape was designed to.
     std::optional<CursorStyle> cursor_style;
+    // How long each half of the cursor's blink lasts, in milliseconds: lit for that
+    // long, dark for the same again, and 0 meaning it stays lit. A cursor that never
+    // blinks is easy to lose in a screen full of text and one that blinks quickly is a
+    // metronome behind the words you are reading, so it is a number rather than a
+    // switch — and 0 is a real answer rather than an off state.
+    // (Kaida, 2026-11-21: "can we add cursor blink, with customizable blink speed
+    // ( 0 being no blinking)".)
+    std::optional<int> cursor_blink;
     std::optional<Rgb> foreground;
     std::optional<Rgb> background;
     std::optional<Rgb> cursor;
@@ -547,6 +557,12 @@ inline void parseConfigFile(const std::string& path, Config& config) {
                 note(line_no, "cursor_style wants block, bar or underline, got '" + value + "'");
             else
                 config.cursor_style = got;
+        } else if (key == "cursor_blink") {
+            int got = 0;
+            if (!numberFromText(value, 0, 5000, got))
+                note(line_no, "cursor_blink wants a number from 0 to 5000, got '" + value + "'");
+            else
+                config.cursor_blink = got;
         } else if (key == "foreground") {
             colour(config.foreground);
         } else if (key == "background") {

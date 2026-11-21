@@ -142,17 +142,33 @@ int main() {
         // silent half-read — the same promise the menu keeps by clamping, kept here
         // for the file somebody edits at 2am.
         const std::string body_keys = dir + "/body-menu-keys";
-        writeFile(body_keys, "scrollback = 5000\npadding = 14\ncursor_style = bar\n");
+        writeFile(body_keys,
+                  "scrollback = 5000\npadding = 14\ncursor_style = bar\ncursor_blink = 600\n");
         ::setenv("KAI_TERM_CONFIG", body_keys.c_str(), 1);
         {
             const Config keys = loadConfig();
             expect("the scrollback, the padding and the cursor shape all arrive",
                    keys.problems.empty() && keys.scrollback && *keys.scrollback == 5000 &&
                        keys.padding && *keys.padding == 14.0 && keys.cursor_style &&
-                       *keys.cursor_style == CursorStyle::Bar);
+                       *keys.cursor_style == CursorStyle::Bar && keys.cursor_blink &&
+                       *keys.cursor_blink == 600);
+        }
+        // (Kaida, 2026-11-21: "customizable blink speed ( 0 being no blinking)".) The
+        // zero has to arrive as a zero rather than as \"nothing was said\", because the
+        // two mean different things to the window: one is a cursor that stays lit, the
+        // other is whatever the window does when nobody has asked.
+        const std::string steady = dir + "/body-blink-steady";
+        writeFile(steady, "cursor_blink = 0\n");
+        ::setenv("KAI_TERM_CONFIG", steady.c_str(), 1);
+        {
+            const Config zero = loadConfig();
+            expect("a blink of zero is an answer and not an absent setting",
+                   zero.problems.empty() && zero.cursor_blink && *zero.cursor_blink == 0);
         }
         const std::string wrong = dir + "/body-menu-wrong";
-        writeFile(wrong, "scrollback = ninety thousand\npadding = 4000\ncursor_style = blok\n");
+        writeFile(wrong,
+                  "scrollback = ninety thousand\npadding = 4000\ncursor_style = blok\n"
+                  "cursor_blink = soon\n");
         ::setenv("KAI_TERM_CONFIG", wrong.c_str(), 1);
         {
             const Config junk = loadConfig();
@@ -165,7 +181,9 @@ int main() {
             expect("a cursor shape that is not one of the three is refused",
                    !junk.cursor_style && mentions(junk.problems, "cursor_style") &&
                        mentions(junk.problems, "block"));
-            expect("all three said their piece", junk.problems.size() == 3);
+            expect("a blink rate that is not a number is refused by name",
+                   !junk.cursor_blink && mentions(junk.problems, "cursor_blink"));
+            expect("all four said their piece", junk.problems.size() == 4);
         }
     }
     {

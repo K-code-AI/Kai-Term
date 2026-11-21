@@ -219,6 +219,9 @@ public:
                 setHistoryLimit(*config_.scrollback);
             if (config_.cursor_style)
                 setCursorStyle(*config_.cursor_style);
+            // The blink, on the same terms as the shape: what the file says is what the
+            // window does, and a file that says nothing says steady.
+            setCursorBlink(config_.cursor_blink.value_or(0));
             if (config_.cols || config_.rows)
                 resize(sizeForGrid(config_.rows.value_or(rows()), config_.cols.value_or(cols())));
         }
@@ -784,6 +787,7 @@ private:
         double padding = 0.0;
         int scrollback = 0;
         CursorStyle cursor_style = CursorStyle::Block;
+        int cursor_blink = 0;
         double ground = 1.0;
         double ink = 1.0;
         std::string confirm_quit;
@@ -796,10 +800,16 @@ private:
         // What the window is doing before anybody touches it, so that leaving
         // without saving puts every live change back. A preview you cannot undo is
         // not a preview, it is a commit.
-        menu_baseline_ = MenuBaseline{
-            fontPixelSize(), padding(),       historyLimit(),     cursorStyle(),
-            theme().background_opacity,       theme().foreground_opacity,
-            config_.confirm_quit, config_.theme, true};
+        menu_baseline_ = MenuBaseline{fontPixelSize(),
+                                      padding(),
+                                      historyLimit(),
+                                      cursorStyle(),
+                                      cursorBlink(),
+                                      theme().background_opacity,
+                                      theme().foreground_opacity,
+                                      config_.confirm_quit,
+                                      config_.theme,
+                                      true};
 
         pickSettingsInTerminal(
             rows,
@@ -811,6 +821,7 @@ private:
                     setPadding(was.padding);
                     setHistoryLimit(was.scrollback);
                     setCursorStyle(was.cursor_style);
+                    setCursorBlink(was.cursor_blink);
                     // …and the lock back to whatever the file says, so a shape the menu
                     // previewed does not outlive the menu: without this a cancelled shape
                     // would keep out every DECSCUSR the session writes afterwards.
@@ -899,6 +910,12 @@ private:
                               : (cursorStyle() == CursorStyle::Bar ? 1 : 2);
         rows.push_back({"cursor_style", "cursor style", SettingKind::Choice, shape, 0, 0, 0,
                         {"block", "bar", "underline"}});
+        // Milliseconds per half-blink, walked fifty at a time: the range is wide enough
+        // that one millisecond a press is a walk of five thousand, and the difference
+        // between two rates a hundred apart is not worth a press each.
+        // (Kaida, 2026-11-21: "customizable blink speed ( 0 being no blinking)".)
+        rows.push_back({"cursor_blink", "cursor blink", SettingKind::Integer, cursorBlink(),
+                        0, 5000, 4, {}, false, 50});
         const std::string policy = policyWord(closePolicy());
         int quit = 1; // the answer with no file and no environment saying otherwise
         for (const char* word : {"never", "running", "always"}) {
@@ -941,6 +958,8 @@ private:
             setPadding(row.value);
         else if (row.key == "scrollback")
             setHistoryLimit(row.value);
+        else if (row.key == "cursor_blink")
+            setCursorBlink(row.value);
         else if (row.key == "cursor_style")
             // A shape chosen here is a decision about the window, so the window holds it
             // against the session for the preview as much as after the save.

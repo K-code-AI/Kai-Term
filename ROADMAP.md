@@ -370,7 +370,10 @@ Needed:
   editable in the picker as `1..100` (100 = solid) and are saved to the behaviour file,
   which is where the rest of them live.
 - **The settings menu, built 2026-11-19** (Ctrl+Shift+K). Font size, the two
-  transparencies, padding, scrollback, cursor style, `confirm_quit` and — since 2026-11-21 —
+  transparencies, padding, scrollback, cursor style, `confirm_quit`, the cursor's blink
+  (since 2026-11-21: `cursor_blink`, milliseconds per half-blink, `0` = no blinking, walked
+  fifty a press because one millisecond a press is five thousand presses) and — since
+  2026-11-21 —
   the theme, whose row steps between the themes on disk *and* opens the colour editor with
   Enter; the menu steps aside for it rather than closing, so what you had changed is still
   changed on the way back and the keys return to the same row. Walked in the
@@ -381,6 +384,9 @@ Needed:
   moves the digits out from under the cursor. Three settings came with it
   (`scrollback`, `padding`, `cursor_style`), the scrollback one honoured in the daemon
   as well as the window because that is where the history a snapshot reads from lives.
+  A `cursor_style` named in the file is locked against the session's own `DECSCUSR`, on the
+  same authority the colours have, and the lock is held by the window rather than by the
+  screen so that it outlives starting a session and moving onto one.
 - **The colour editor, built 2026-11-21** (Enter on the settings menu's `theme` row). The
   twenty-two colours of a theme, in the order they are noticed — the window's own six, then
   each palette colour beside its bright version — with the name they will be written to under

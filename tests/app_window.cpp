@@ -1319,6 +1319,34 @@ int main(int argc, char** argv) {
         pump(60);
         expect("so the keys that walked back into the rows edit the row they landed on",
                window.historyLimit() == 1001);
+        // The blink rate is the one row whose range is in the thousands of something
+        // small, so it walks fifty at a press; one millisecond a press is five thousand
+        // presses to get from a slow blink to no blink at all.
+        // (Kaida, 2026-11-21: "customizable blink speed ( 0 being no blinking)".)
+        int blink_row = -1;
+        for (int row = 0; row < window.settingsRowCount(); ++row) {
+            if (window.settingsRowKey(row) == QStringLiteral("cursor_blink"))
+                blink_row = row;
+        }
+        expect("the menu has a row for the cursor's blink", blink_row >= 0);
+        for (int guard = 0;
+             guard < 24 && (window.settingsCursor().first != blink_row ||
+                            window.settingsCursor().second != 0);
+             ++guard) {
+            press_key(Qt::Key_Down);
+            pump(20);
+        }
+        const int blink_was = window.settingsRowValue(blink_row);
+        press_key(Qt::Key_Plus);
+        pump(60);
+        expect("and one press moves it by fifty milliseconds, not one",
+               window.settingsRowValue(blink_row) == blink_was + 50 &&
+                   window.cursorBlink() == blink_was + 50);
+        press_key(Qt::Key_Minus);
+        pump(60);
+        expect("and one press back puts the window's blink where it started",
+               window.settingsRowValue(blink_row) == blink_was &&
+                   window.cursorBlink() == blink_was);
         press_key(Qt::Key_Escape);
         pump(80);
         expect("while leaving off puts the scrollback back", window.historyLimit() == 1000);        // A value the setting would refuse cannot be arrived at: the arrows stop at
@@ -1360,8 +1388,8 @@ int main(int argc, char** argv) {
         // file".)
         const std::string all_cfg = root + "/every-setting";
         std::ofstream(all_cfg) << "font_size = 15\npadding = 9\nscrollback = 333\n"
-                               << "cursor_style = bar\nbackground_opacity = 0.9\n"
-                               << "confirm_quit = never\n";
+                               << "cursor_style = bar\ncursor_blink = 600\n"
+                               << "background_opacity = 0.9\nconfirm_quit = never\n";
         ::setenv("KAI_TERM_CONFIG", all_cfg.c_str(), 1);
         kai::AppWindow window(kai::startWindowBackend(24, 80));
         window.show();
@@ -1370,7 +1398,7 @@ int main(int argc, char** argv) {
         expect("a window wears the font, padding, history and cursor its file names",
                window.fontPixelSize() == 15 && window.padding() == 9.0 &&
                    window.historyLimit() == 333 &&
-                   window.cursorStyle() == kai::CursorStyle::Bar);
+                   window.cursorStyle() == kai::CursorStyle::Bar && window.cursorBlink() == 600);
         // A program inside the session asks for a block. The window keeps the bar its
         // own file named — which is the same thing a snapshot of a session does on
         // attach, and was the whole of the complaint.
@@ -2895,7 +2923,8 @@ int main(int argc, char** argv) {
         // whatever the new shell said came in.
         const std::string hold_cfg = root + "/hold-config";
         const std::string hold_theme = root + "/hold-theme";
-        std::ofstream(hold_cfg) << "font_size = 12\n";
+        std::ofstream(hold_cfg) << "font_size = 12\ncursor_style = block\n"
+                               << "cursor_blink = 200\n";
         std::ofstream(hold_theme)
             << "foreground = #22cc55\nbackground = #05100a\ncolor1 = #ff7700\n";
         ::setenv("KAI_TERM_CONFIG", hold_cfg.c_str(), 1);
@@ -2931,6 +2960,21 @@ int main(int argc, char** argv) {
         expect("the new shell cannot paint over it either",
                holding.screenDefaultBackground().r == 0x05);
 
+        // The cursor, same story. A new screen starts with no locks and the shape the
+        // window happens to prefer, which was the *default* — and a default is exactly
+        // what DECSCUSR outranks. So the fresh session wore the file's shape until it
+        // said otherwise, which a shell does the moment it draws a prompt.
+        // (Kaida, 2026-11-21: "still loosing cursor style on a new session / when
+        // attaching a session. Fresh start still hold the right one from config".)
+        expect("the fresh session arrives wearing the shape the file named",
+               holding.screen().cursorShape() == kai::Screen::CursorShape::Block);
+        runLine(&holding, "printf '\\033[6 q'"); // blinking bar, asked for by the shell
+        pump(400);
+        expect("and the new shell asking for a bar leaves the file's shape alone",
+               holding.screen().cursorShape() == kai::Screen::CursorShape::Block);
+        expect("the blink the file named is a thing the window keeps across a session",
+               holding.cursorBlink() == 200);
+
         holding.discardOnClose();
         holding.shutdown();
         pump(200);
@@ -2948,7 +2992,7 @@ int main(int argc, char** argv) {
         // its own config, and that is what its grid wears.
         const std::string wear_cfg = root + "/wear-config";
         const std::string wear_theme = root + "/wear-theme";
-        std::ofstream(wear_cfg) << "font_size = 12\n";
+        std::ofstream(wear_cfg) << "font_size = 12\ncursor_style = block\n";
         // Only one colour is named. The rest of the theme is whatever the built-in
         // colours are, which is the part that used to be lost: a colour the file did
         // not name was not a lock, and an attached window never applied its theme's
@@ -2974,7 +3018,8 @@ int main(int argc, char** argv) {
                    << "printf '\\033]10;#ff0000\\033\\\\\\n'\n"
                    << "printf '\\033]11;#00ff00\\033\\\\\\n'\n"
                    << "printf '\\033]4;1;#0000ff\\033\\\\\\n'\n"
-                   << "exec sleep 60\n";
+                   << "printf '\\033[6 q'\n" // a bar, asked for before anybody looks
+                   << "while :; do printf '\\033[6 q'; sleep 0.2; done\n";
         }
         ::chmod(painter.c_str(), 0755);
 
@@ -3006,6 +3051,32 @@ int main(int argc, char** argv) {
         expect("and a palette entry the theme names outranks the one the session painted",
                attached.screenPaletteColour(1).r == 0xff &&
                    attached.screenPaletteColour(1).g == 0x77);
+        // The session has been asking for a bar since before this window arrived — once
+        // in the snapshot it replays, and again every fifth of a second after that. The
+        // shape the attaching window's file names is the one on screen.
+        // (Kaida, 2026-11-21: "still loosing cursor style … when attaching a session".)
+        expect("an attached window wears the cursor shape its own file names",
+               attached.screen().cursorShape() == kai::Screen::CursorShape::Block);
+
+        // The same session in a window whose file names no shape, so that the check above
+        // is known to be a refusal and not a session that never asked. (A check about a
+        // lock that passes with the lock removed is not a check; this one is only worth
+        // having next to its partner.)
+        const std::string wear_cfg_free = root + "/wear-config-free";
+        std::ofstream(wear_cfg_free) << "font_size = 12\n";
+        ::setenv("KAI_TERM_CONFIG", wear_cfg_free.c_str(), 1);
+        {
+            kai::AppWindow unshaped(std::string("worn"));
+            unshaped.show();
+            pump(600);
+            expect("and a window whose file names no shape lets the session have its bar",
+                   unshaped.screen().cursorShape() == kai::Screen::CursorShape::Bar);
+            unshaped.discardOnClose();
+            unshaped.shutdown();
+            pump(200);
+        }
+        ::setenv("KAI_TERM_CONFIG", wear_cfg.c_str(), 1);
+        std::remove(wear_cfg_free.c_str());
 
         // A resize is the second way a theme used to wash out: the session answers a
         // new geometry with a whole new snapshot, colours and all.
@@ -3019,6 +3090,40 @@ int main(int argc, char** argv) {
         attached.discardOnClose();
         attached.shutdown();
         pump(200);
+
+        // And the way it happens for real: a window that was already showing some other
+        // session moves over to this one, throwing away the screen it was drawing —
+        // which is the very screen the lock had been written on. A fresh start held the
+        // shape and every session after it did not, because the second case came through
+        // here. (Kaida, 2026-11-21: "still loosing cursor style on a new session / when
+        // attaching a session. Fresh start still hold the right one from config".)
+        {
+            SessionSpec again;
+            again.name = "worn-again";
+            again.shell = painter; // the same shell, still asking for a bar
+            again.rows = 24;
+            again.cols = 80;
+            again.saved = false;
+            std::string again_error;
+            expect("a second session is running to move onto",
+                   daemon.create(again, again_error));
+            pump(600);
+
+            kai::AppWindow moving(kai::startWindowBackend(24, 80));
+            moving.resize(900, 600);
+            moving.show();
+            pump(300);
+            expect("a window with a session of its own to walk away from",
+                   moving.screen().cursorShape() == kai::Screen::CursorShape::Block);
+            moving.restoreSession("worn-again");
+            pump(600);
+            expect("moving onto a session that keeps asking for a bar keeps the shape",
+                   moving.screen().cursorShape() == kai::Screen::CursorShape::Block);
+            moving.discardOnClose();
+            moving.shutdown();
+            pump(200);
+        }
+
         std::remove(wear_cfg.c_str());
         std::remove(wear_theme.c_str());
         std::remove(painter.c_str());

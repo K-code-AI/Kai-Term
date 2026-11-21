@@ -46,8 +46,12 @@ so a saved theme is not washed back to defaults by a shell that recolours at sta
 colour the config left unnamed stays the session's to set, and the built-in palette answers
 beneath both. `cursor_style` is held by the same rule (added 2026-11-21 for exactly the same
 complaint): named, it is the shape the window shows against every `DECSCUSR` — including the
-one a snapshot replays on attach, which was losing it; unnamed, a program still picks its own
-shape and `CSI 0 q` returns to the file's. And all twenty-two can be chosen inside the window itself —
+one a snapshot replays on attach, and the shape that survived a fresh start but not the next
+session, because starting or moving onto a session builds a new screen and the lock was
+written on the old one. That is why the window keeps the shape it was told, not only the
+screen. Unnamed, a program still picks its own shape and `CSI 0 q` returns to the file's.
+`cursor_blink` is the same cursor's timing: milliseconds per half-blink, `0` meaning it
+stays lit and no timer runs at all. And all twenty-two can be chosen inside the window itself —
 **Enter on the settings menu's `theme` row** opens the colour editor over the grid, previews
 on the window as you type, and writes the changed lines back to `theme.conf`. It has no key
 of its own: Ctrl+Shift+P used to jump straight in and is gone, so the colours live where the
@@ -92,8 +96,8 @@ anywhere. It is colours and nothing else; how
 solid the window is — `background_opacity` for the ground the cells sit on and
 `foreground_opacity` for the text, cursor and dialogs, typed `1` to `100` — belongs to the
 settings menu with the rest of how the window behaves. That menu is **Ctrl+Shift+K**, opening font size, the two
-transparencies, padding, scrollback, cursor style, when closing asks and which theme is
-being worn over the grid,
+transparencies, padding, scrollback, cursor style, cursor blink, when closing asks and
+which theme is being worn over the grid,
 previewing on the window as you go and writing `kai-term.conf` when you say save. A row there cannot be driven outside the values
 its setting accepts, and both panels answer the mouse: the wheel walks the list, a click
 picks a row or the digit inside a value, each row has its `-` and `+`, and `save`/`cancel`
@@ -487,14 +491,14 @@ Individual results:
 - `./build/tests/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `./build/tests/kai-term-selection` → `PASS: 119 selection and text-extraction checks passed`.
 - `./build/tests/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
-- `./build/tests/kai-term-widget-smoke` → `PASS: 120 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/tests/kai-term-widget-smoke` → `PASS: 124 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
 - `./build/tests/kai-term-ipc` → `PASS: 43 protocol framing and field checks passed`.
 - `./build/tests/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
 - `./build/tests/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.
 - `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
 - `./build/tests/kai-term-widget-session` → `PASS: 41 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
-- `./build/tests/kai-term-app-window` → `PASS: 327 application window checks passed`.
+- `./build/tests/kai-term-app-window` → `PASS: 362 application window checks passed`.
 - `./build/tests/kai-term-close-prompt` → `PASS: 24 close prompt checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.

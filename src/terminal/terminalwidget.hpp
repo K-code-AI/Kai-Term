@@ -80,6 +80,13 @@ public:
         : backend_(std::move(backend)), screen_(rows, cols),
           rows_(rows), cols_(cols), running_(true), shell_alive_(true)
     {
+        // The blink turns the cursor off and on again in the one cell it lives in. It
+        // is a wall-clock thing rather than a byte from the session, so it belongs to
+        // the window and not to the parser.
+        connect(&cursor_blink_timer_, &QTimer::timeout, this, [this] {
+            cursor_lit_ = !cursor_lit_;
+            repaintCursorCell();
+        });
         font_ = QFont("Monospace");
         font_.setPixelSize(14);
         updateCellPixels();
@@ -647,12 +654,64 @@ public:
         screen_.setDefaultCursorShape(shapeFor(style));
         update();
     }
+    // The cursor's blink: how long each half lasts in milliseconds, 0 meaning it stays
+    // lit. Nothing animated before this — the DECSCUSR blinking shapes chose a shape and
+    // left the timing alone — so the rate belongs to the window, in the file, where a
+    // person can say how much movement they want behind the text.
+    // (Kaida, 2026-11-21: "can we add cursor blink, with customizable blink speed
+    // ( 0 being no blinking)".)
+    void setCursorBlink(int ms) {
+        const int was = cursor_blink_ms_;
+        cursor_blink_ms_ = std::max(0, ms);
+        if (cursor_blink_ms_ == 0) {
+            cursor_blink_timer_.stop();
+            cursor_lit_ = true; // steady means lit, not steady wherever it happened to stop
+        } else if (cursor_blink_timer_.isActive()) {
+            cursor_blink_timer_.setInterval(cursor_blink_ms_);
+        } else {
+            cursor_lit_ = true;
+            cursor_blink_timer_.start(cursor_blink_ms_);
+        }
+        if (was != cursor_blink_ms_)
+            repaintCursorCell();
+    }
+    int cursorBlink() const { return cursor_blink_ms_; }
+    bool cursorBlinkRunning() const { return cursor_blink_timer_.isActive(); }
+    // The phase itself, whether or not the window is showing it: a test wants to know
+    // the timer is turning, and a window in the background hides the blink without
+    // stopping it.
+    bool cursorBlinkPhase() const { return cursor_lit_; }
+    bool cursorLit() const {
+        if (cursor_blink_ms_ <= 0 || !isActiveWindow())
+            return true;
+        return cursor_lit_;
+    }
+    // The one cell a blink changes. Repainting the window every half second to turn a
+    // cursor off and on again is a fan speeding up for nothing.
+    QRect cursorBlinkRect() const {
+        if (scroll_offset_ != 0 || !screen_.cursorVisible())
+            return QRect();
+        const int cx = std::clamp(screen_.cursorX(), 0, cols_ - 1);
+        const int cy = std::clamp(screen_.cursorY(), 0, rows_ - 1);
+        const int span = std::max(1, screen_.at(cy, cx).width);
+        const QPointF top = cellTopLeft(cy, cx);
+        const QSizeF cell = cellSize();
+        return QRect(QPoint(int(top.x()) - 1, int(top.y()) - 1),
+                     QSize(int(cell.width() * span) + 2, int(cell.height()) + 2));
+    }
+    void repaintCursorCell() {
+        const QRect cell = cursorBlinkRect();
+        if (!cell.isNull())
+            update(cell);
+    }
+
     // The cursor's shape, held for the config: named there, it outranks every DECSCUSR
     // the session writes — including the one a snapshot replays when a window attaches
     // to a running session. Nothing named, nothing locked, and a program is free to pick
     // its own shape.
     // (Kaida, 2026-11-21: "the Windows hold the cursor style".)
     void lockCursorStyle(std::optional<CursorStyle> style) {
+        cursor_style_lock_ = style; // kept for the next screen, which is coming
         screen_.lockCursorShape(style ? std::optional<Screen::CursorShape>(shapeFor(*style))
                                       : std::nullopt);
         update();
@@ -814,6 +873,16 @@ public:
             screen_.lockPalette(colour_locks_.palette);
         }
         screen_.setDefaultCursorShape(default_cursor_shape_for_new_screen_);
+        // … and the shape that outranks whatever the session asks for. That lock lives on
+        // the screen this line has just replaced, so it is put back here beside the colour
+        // locks, or a fresh start wears the shape from the file and every session after it
+        // hands the shape straight back to the shell. (Kaida, 2026-11-21: "still loosing
+        // cursor style on a new session / when attaching a session. Fresh start still hold
+        // the right one from config".)
+        screen_.lockCursorShape(cursor_style_lock_
+                                    ? std::optional<Screen::CursorShape>(
+                                          shapeFor(*cursor_style_lock_))
+                                    : std::nullopt);
         scroll_offset_ = 0;
         clearSelection();
         status_.clear();
@@ -1626,6 +1695,16 @@ public:
         repaint_deadline_.invalidate();
     }
 
+    // A window that is not the one you are typing into shows a steady cursor. The blink
+    // is there so the eye can find where the typing goes, and no typing is going there;
+    // the phase keeps turning underneath so coming back does not hand you a cursor that
+    // was dark the moment focus left.
+    void changeEvent(QEvent* event) override {
+        QWidget::changeEvent(event);
+        if (event->type() == QEvent::ActivationChange && cursor_blink_ms_ > 0)
+            repaintCursorCell();
+    }
+
     // The asking for a paint, for as long as one has not happened. It stops by itself once
     // the window has drawn, so a window that was shown normally is not left redrawing
     // itself for no reason, and a window that was shown into a surface that was not there
@@ -1789,8 +1868,11 @@ public:
         // Visible terminal cursor; tmux hides it during redraws via ESC[?25l.
         // It belongs to the live screen, so it is not drawn over history. Its
         // shape is the application's to choose (DECSCUSR); the default is the
-        // underline this terminal has always drawn.
-        if (scroll_offset_ == 0 && screen_.cursorVisible()) {
+        // underline this terminal has always drawn. The blink is a third answer to
+        // the same question — is the cursor being drawn right now — and the dark half
+        // of it is simply the cell underneath, which is why it is a gate here rather
+        // than a colour.
+        if (scroll_offset_ == 0 && screen_.cursorVisible() && cursorLit()) {
             const int cx = std::clamp(screen_.cursorX(), 0, cols_ - 1);
             const int cy = std::clamp(screen_.cursorY(), 0, rows_ - 1);
             const Cell& under = screen_.at(cy, cx);
@@ -4509,6 +4591,17 @@ private:
     ColourLocks colour_locks_;
     std::size_t history_limit_for_new_screen_ = Screen::kMaxHistory;
     Screen::CursorShape default_cursor_shape_for_new_screen_ = Screen::CursorShape::Block;
+    // The shape the config named, held by the window as well as by the screen. A lock
+    // that lives only on the screen is a lock that goes away when a session is switched,
+    // because switching builds a new screen; the colours have kept theirs in
+    // `colour_locks_` for the same reason since 2026-11-20.
+    std::optional<CursorStyle> cursor_style_lock_;
+    // The cursor's blink: the half-period the file asked for, and which half we are in.
+    // 0 is no blink at all, and then the timer never runs — a terminal that wakes twice
+    // a second to paint nothing is a laptop that runs down.
+    QTimer cursor_blink_timer_;
+    int cursor_blink_ms_ = 0;
+    bool cursor_lit_ = true;
     bool closing_on_close_ = false;
     double padding_ = 10.0;
     // The colours this window wears. Defaults until a config file says

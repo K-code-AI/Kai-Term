@@ -866,6 +866,55 @@ test that hangs should still cost a test and not a machine.
   old long sentence and the new short one both fit in two lines, so the check was repeated at
   a width where the old one needed three.
 
+- 2026-11-21: **a lock written on the thing that gets replaced, and a cursor that blinks on
+  a number.** Two things: a new setting, and the same bug back again one line further down.
+
+  *"can we add cursor blink, with customizable blink speed ( 0 being no blinking)"* — the
+  parenthetical is the interesting half. `0` is not a switch that happens to be off, it is
+  the answer *stay lit*, and the window then starts no timer at all: a terminal that wakes
+  twice a second to paint nothing is a laptop that runs down. So the file takes a number of
+  milliseconds per half-blink, the settings menu walks it, and the DECSCUSR blinking shapes
+  (`1 q`, `3 q`, `5 q`) still only choose a *shape* — how much movement somebody wants
+  behind the text they are reading is their decision, not a program's. Two decisions came
+  with it. The default is steady, because the blink has never been on here and a visible
+  change arriving with an unrelated build is not mine to make; and the row got a `step` of
+  fifty, because a range in the thousands walked one at a press is five thousand presses
+  between a slow blink and no blink — the first row in that menu whose own scale needed a
+  step, and the reason `SettingRow` now has one. The blink also taught the suite something:
+  a window that repaints twice a second makes every pixel comparison in it a race, so the
+  shape checks now read the cursor's cell at known phases rather than hoping.
+
+  *"we are still loosing cursor style on a new session / when attaching a session. Fresh
+  start still hold the right one from config."* The asymmetry in that sentence was the whole
+  diagnosis, and it should have been recognisable: on 2026-11-20 the colours went missing on
+  a session spawn for exactly this reason — `showSession` builds a new `Screen`, the theme
+  went out with the old one, and the fix was to keep the locks in the window and dress each
+  new screen with them. Yesterday's cursor fix was written against the symptom I could see,
+  the snapshot replaying a `DECSCUSR`, and so the lock went onto the screen and nowhere else.
+  A fresh start wore the file's shape; the first session after it handed the shape back to
+  the shell, because the screen holding the lock had been thrown away and rebuilt. The shape
+  is now kept in the window beside `colour_locks_` and re-applied in the same breath as the
+  colours are.
+
+  What the checks say is worth writing down, because three of them cover one rule and each
+  one fails a different way of being wrong. *"the fresh session arrives wearing the shape the
+  file named"* and *"moving onto a session that keeps asking for a bar keeps the shape"* both
+  fail with the new-screen lock removed. But *"an attached window wears the cursor shape its
+  own file names"* — the check that reads most like the complaint — passed with the fix
+  taken out, because a window that starts attached locks its screen after construction and
+  never goes through the replacement. It was not a wrong check; it was a check of the rule
+  rather than of the fix, and on its own it would have let the bug through the door Kaida
+  actually walked in through. Its partner, a window whose file names no shape attached to the
+  same session, exists so that the refusal is known to be a refusal: the session asks for a
+  bar every fifth of a second and gets one there, and does not get one next door.
+
+  Two smaller things from the same afternoon. A probe that is killed partway through leaves
+  the feature it was testing switched off in the tree — the blink's `start` call was missing
+  from a file I was about to keep editing, found only because I grepped for it before
+  believing the source rather than reading what I expected to be there. And the config's
+  complaint count: adding a fourth refused line to a fixture broke *"all three said their
+  piece"*, which is a check doing its job and a reminder that fixtures are shared.
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,

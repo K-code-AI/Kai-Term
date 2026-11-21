@@ -49,6 +49,11 @@ struct SettingRow {
     // (Kaida, 2026-11-20: "the Theme editor should be an item in the setting menu under
     // Theme. It would make things more coherent".)
     bool opens = false;
+    // How far one press of the arrows moves a number row. One is right for a font size
+    // and useless for a blink rate measured in milliseconds, where the distance from
+    // one end of the range to the other is a hundred presses rather than ten.
+    // (Kaida, 2026-11-21: "customizable blink speed".)
+    int step = 1;
 };
 
 // Put a row back inside what its setting accepts, and make its display width
@@ -216,7 +221,8 @@ public:
         // wrapping: running past 72 into 8 on a font size is a jump nobody
         // meant, while wrapping a list of three answers is how you get back to
         // the one you started on.
-        const int moved = r.value + (delta > 0 ? 1 : -1);
+        const int step = std::max(1, r.step);
+        const int moved = r.value + (delta > 0 ? step : -step);
         const int clamped = std::clamp(moved, r.minimum, r.maximum);
         if (clamped == r.value)
             return false;
