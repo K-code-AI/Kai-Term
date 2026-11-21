@@ -196,7 +196,12 @@ struct Config {
     std::optional<Rgb> foreground;
     std::optional<Rgb> background;
     std::optional<Rgb> cursor;
-    std::optional<Rgb> selection;
+    // The highlight under a dragged selection, and the ink drawn on top of it. The file
+    // spells them the way kitty does, so a kitty theme is read as it stands; `selection`
+    // still reads as the older name for the first of them, the same way `opacity` still
+    // reads for `background_opacity`.
+    std::optional<Rgb> selection_background;
+    std::optional<Rgb> selection_foreground;
     std::optional<Rgb> accent;
     // The sixteen ANSI colours, written `color0` through `color15` the way
     // every terminal program that has a config has spelled them. A person
@@ -423,13 +428,32 @@ inline void parseConfigFile(const std::string& path, Config& config) {
             continue;
         if (line[whole] == '#')
             continue; // a line that is nothing but a comment
-        const std::size_t eq = line.find('=');
-        if (eq == std::string::npos) {
-            note(line_no, "expected key = value");
-            continue;
+        // Two spellings of the same sentence: `key = value`, which is what this program has
+        // always written, and `key value`, which is what kitty writes. A theme file from
+        // kitty is a pile of colours somebody already chose, and it should be droppable into
+        // `themes/` and read as it stands, dots and all.
+        // (Kaida, 2026-11-20: "change the theme config to not require an = between the name
+        // and the value, so that kitty themes can be used as is simplifying transition for
+        // some users".)
+        //
+        // An `=` still wins when a line has one, so a value with a space in it keeps its
+        // meaning in both spellings, and a file written by this program is read the same way
+        // it always was.
+        std::string key_text;
+        std::string value;
+        if (const std::size_t eq = line.find('='); eq != std::string::npos) {
+            key_text = trimSpace(line.substr(0, eq));
+            value = trimSpace(line.substr(eq + 1));
+        } else {
+            const std::size_t space = line.find_first_of(" \t", whole);
+            if (space == std::string::npos) {
+                note(line_no, "expected key = value, or key and value separated by a space");
+                continue;
+            }
+            key_text = trimSpace(line.substr(whole, space - whole));
+            value = trimSpace(line.substr(space + 1));
         }
-        const std::string key = lowerWord(trimSpace(line.substr(0, eq)));
-        std::string value = trimSpace(line.substr(eq + 1));
+        const std::string key = lowerWord(key_text);
         if (key.empty()) {
             note(line_no, "a setting needs a name");
             continue;
@@ -529,8 +553,15 @@ inline void parseConfigFile(const std::string& path, Config& config) {
             colour(config.background);
         } else if (key == "cursor") {
             colour(config.cursor);
-        } else if (key == "selection") {
-            colour(config.selection);
+        } else if (key == "selection_background" || key == "selection") {
+            // `selection` is what this file used to call it; the name the window answers to
+            // is kitty's, so a theme from over there needs no editing.
+            colour(config.selection_background);
+        } else if (key == "selection_foreground") {
+            // The text on a selected cell. It used to be a constant in the painting — a
+            // light grey nobody could change — and a theme that sets it is a theme saying
+            // the grey was wrong for it.
+            colour(config.selection_foreground);
         } else if (key == "accent") {
             colour(config.accent);
         } else if (key.rfind("color", 0) == 0 && key.size() > 5) {

@@ -117,19 +117,35 @@ int main(int argc, char** argv) {
         pump(150);
         shot(window, dir, "settings", s[0], s[1]);
     }
-    press(window, Qt::Key_Escape);
-    pump(120);
+    // The last row of that menu is the theme, and it is the way into the colour editor
+    // now that the editor has no key of its own. Photographed here because the line along
+    // the bottom says something different on this one row.
+    // (Kaida, 2026-11-20: "the Theme editor should be an item in the setting menu under
+    // Theme".)
+    for (int i = 0; i < 3; ++i) {
+        press(window, Qt::Key_Up); // off the first row: `cancel`, `save`, the theme
+        pump(40);
+    }
+    // Back to the biggest window first: a photograph named for one size should be that
+    // size, and the size loop above left the window at its smallest.
+    window.resize(960, 540);
+    pump(150);
+    shot(window, dir, "settings-theme", 960, 540);
+    press(window, Qt::Key_Return);
+    pump(150);
 
     // The colour list, then the mixer opened out of it.
-    press(window, Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
-    pump(150);
     for (const auto& s : sizes) {
         window.resize(s[0], s[1]);
         pump(150);
         shot(window, dir, "picker", s[0], s[1]);
     }
     // The name line, with the keys on it and the field shut: the theme's name without
-    // its extension, and the keystroke that opens it said out loud.
+    // its extension, and the keystroke that opens it said out loud. These three are
+    // looked at for their words, so they are taken at the biggest size, not at the
+    // smallest size the loop above happened to stop on.
+    window.resize(960, 540);
+    pump(150);
     for (int i = 0; i < 3; ++i) {
         press(window, Qt::Key_Up); // off the first colour: `cancel`, `save`, the name
         pump(40);
@@ -151,11 +167,20 @@ int main(int argc, char** argv) {
     shot(window, dir, "picker-overwrite", 960, 540);
     press(window, Qt::Key_Escape); // back to the panel, still open
     pump(80);
-    press(window, Qt::Key_Escape); // and out of the panel
+    press(window, Qt::Key_Escape); // out of the colour list, into the menu that waited
+    pump(120);
+    shot(window, dir, "settings-returned", 960, 540);   // at 960x540, as named
+    press(window, Qt::Key_Escape); // and out of the menu
     pump(120);
     // Opened again so the mixer below is entered from a fresh list with the keys on
     // `foreground`, which is what the shots underneath assume.
-    press(window, Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
+    press(window, Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
+    pump(150);
+    for (int i = 0; i < 3; ++i) {
+        press(window, Qt::Key_Up);
+        pump(40);
+    }
+    press(window, Qt::Key_Return);
     pump(150);
 
     press(window, Qt::Key_Return);

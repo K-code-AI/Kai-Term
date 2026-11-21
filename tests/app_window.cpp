@@ -111,6 +111,35 @@ void sendKey(kai::TerminalWidget* w, int key, Qt::KeyboardModifiers mods = Qt::N
 // the paste, leaving the command at the prompt. So the commands these checks look for
 // are written to print something their own command line does not contain — `${M}-WINDOW`
 // is on the screen either way, `FIRST-WINDOW` only if the shell ran it.
+// The colour editor, opened the way it is opened now: the settings menu, three Ups off
+// its first row — `cancel`, `save`, and the last row, which is the theme — then Enter.
+// Ctrl+Shift+P used to jump straight in; it is gone, and the row is the way in.
+// (Kaida, 2026-11-20: "the Theme editor should be an item in the setting menu under
+// Theme"; "ctrl+shift+p, does indeed go away".)
+//
+// Note what this leaves behind: the settings menu is waiting underneath, unsaved. A test
+// that wants the bare terminal back leaves that menu too, with Esc.
+void leavePanels(kai::TerminalWidget* w) {
+    for (int i = 0; i < 4; ++i) {
+        if (!w->mixerActive() && !w->pickerActive() && !w->settingsActive() &&
+            !w->settingsSteppedAside())
+            return;
+        sendKey(w, Qt::Key_Escape);
+        pump(30);
+    }
+}
+
+void openThemeEditor(kai::TerminalWidget* w) {
+    leavePanels(w); // start from the bare terminal, not from where the last test stopped
+    sendKey(w, Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
+    pump(60);
+    for (int i = 0; i < 3; ++i)
+        sendKey(w, Qt::Key_Up);
+    pump(40);
+    sendKey(w, Qt::Key_Return);
+    pump(80);
+}
+
 void runLine(kai::TerminalWidget* w, const std::string& command) {
     w->pasteText(command);
     sendKey(w, Qt::Key_Return, Qt::NoModifier, QStringLiteral("\r"));
@@ -812,11 +841,7 @@ int main(int argc, char** argv) {
         };
 
         // Open the picker with Ctrl+Shift+P.
-        {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
-        }
+        openThemeEditor(&window);
         pump(60);
         expect("Ctrl+Shift+P opens the theme picker", window.pickerActive());
 
@@ -885,11 +910,7 @@ int main(int argc, char** argv) {
 
         // Cancel writes nothing and leaves the colours as they were.
         const Color as_they_were = window.theme().background;
-        {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
-        }
+        openThemeEditor(&window);
         pump(60);
         press(Qt::Key_Down); // move to background
         type_hex("000000");
@@ -911,17 +932,13 @@ int main(int argc, char** argv) {
                    written.find("background = #000000") == std::string::npos);
         }
 
-        // A palette row is a row like any other: walk down past the five
+        // A palette row is a row like any other: walk down past the six
         // window colours to `black`, the first palette entry, and the same
         // six digits edit it, save it under its file spelling (`color0`),
         // and hand it to the next window.
-        {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
-        }
+        openThemeEditor(&window);
         pump(60);
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 6; ++i)
             press(Qt::Key_Down); // foreground … accent, and then black
         type_hex("ff0000");
         pump(40);
@@ -946,13 +963,9 @@ int main(int argc, char** argv) {
                    kept.find("color0 = #ff0000") == std::string::npos);
         }
         // Asked twice is not the same as unable: the same walk, answered yes.
-        {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
-        }
+        openThemeEditor(&window);
         pump(60);
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 6; ++i)
             press(Qt::Key_Down); // foreground … accent, and then black
         type_hex("ff0000");
         pump(40);
@@ -1450,12 +1463,7 @@ int main(int argc, char** argv) {
             QCoreApplication::sendEvent(&window, &up);
             pump(60);
         };
-        const auto open_picker = [&window] {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
-            pump(80);
-        };
+        const auto open_picker = [&window] { openThemeEditor(&window); };
 
         open_picker();
         expect("the picker is up and says which theme its colours came from",
@@ -1604,6 +1612,300 @@ int main(int argc, char** argv) {
     }
 
     {
+        // A theme file from kitty, worn by a window. No `=` anywhere in it, the palette
+        // spelled `color0`…`color15`, and the ink on a selection spelled the way kitty
+        // spells it — which is also the first time that colour was anything a person could
+        // change: it used to be a light grey compiled into the painting.
+        // (Kaida, 2026-11-21: "use color0-color15 in the config, but keep their name in the
+        // UI, So the config has color0 while the UI will still say Black", "yes add selection
+        // background to our config too", "and selection foreground".)
+        const std::string home = root + "/kitty-home";
+        const std::string themes = home + "/kai-term/themes";
+        ::mkdir(home.c_str(), 0755);
+        ::mkdir((home + "/kai-term").c_str(), 0755);
+        ::mkdir(themes.c_str(), 0755);
+        const std::string kitty = themes + "/paper.conf";
+        std::ofstream(kitty)
+            << "background #1c1c1c\n"
+            << "foreground #ddeedd\n"
+            << "cursor #e2bbef\n"
+            << "selection_background #4d4d4d\n"
+            << "selection_foreground #1c1c1c\n"
+            << "color0 #3d352a\n"
+            << "color1 #cd5c5c\n";
+        std::ofstream(home + "/kai-term/kai-term.conf") << "theme = paper.conf\n";
+        ::setenv("XDG_CONFIG_HOME", home.c_str(), 1);
+        ::unsetenv("KAI_TERM_CONFIG");
+        ::unsetenv("KAI_TERM_THEME");
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(200);
+
+        expect("a kitty theme paints this window with no edits to it",
+               window.theme().background.r == 0x1c && window.theme().foreground.g == 0xee &&
+                   window.theme().cursor.b == 0xef);
+        expect("its colour0 is the window's black",
+               window.theme().palette[0].r == 0x3d && window.theme().palette[1].r == 0xcd);
+        expect("its selection colour arrives", window.theme().selection.r == 0x4d);
+        expect("and so does the ink that goes on top of it, which used to be a constant",
+               window.theme().selection_foreground.r == 0x1c &&
+                   window.theme().selection_foreground.g == 0x1c);
+
+        // The screen's names and the file's names are two lists on purpose: the row says
+        // `black` because that is what a person reads, and the file says `color0` because
+        // that is what every other terminal calls it.
+        openThemeEditor(&window);
+        pump(120);
+        int ink_row = -1;
+        int black_row = -1;
+        for (int row = 0; row < window.pickerRowCount(); ++row) {
+            if (window.pickerRowLabel(row) == QStringLiteral("selection foreground"))
+                ink_row = row;
+            if (window.pickerRowLabel(row) == QStringLiteral("black"))
+                black_row = row;
+        }
+        expect("the colour list has a row for the ink on a selection", ink_row >= 0);
+        expect("while the row called `black` writes the file's `color0`",
+               black_row >= 0 && window.pickerRowKey(black_row) == QStringLiteral("color0"));
+        expect("and the three selection rows keep the names a person reads",
+               window.pickerRowLabel(3) == QStringLiteral("selection") &&
+                   window.pickerRowLabel(ink_row) == QStringLiteral("selection foreground") &&
+                   window.pickerRowKey(ink_row) == QStringLiteral("selection_foreground"));
+        // The name that goes *into the file* for the highlight. Without this the row could
+        // quietly keep writing `selection` and every check above would still pass.
+        expect("while the highlight writes the file kitty's name for it",
+               window.pickerRowKey(3) == QStringLiteral("selection_background"));
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        std::remove(kitty.c_str());
+        std::remove((home + "/kai-term/kai-term.conf").c_str());
+        static_cast<void>(::rmdir(themes.c_str()));
+        static_cast<void>(::rmdir((home + "/kai-term").c_str()));
+        static_cast<void>(::rmdir(home.c_str()));
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+        ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
+    }
+
+    {
+        // The colour editor is a row of the settings menu now, not a key of its own, and
+        // the menu waits behind it with everything you had changed still changed.
+        // (Kaida, 2026-11-20: "Instead of having a keybind for the Theme Editor
+        // Ctrl+shift+P, the Theme editor should be an item in the setting menu under Theme.
+        // It would make things more coherent"; "ctrl+shift+p, does indeed go away"; "Yeah
+        // the setting keeps your change until you save or cancel them, even when in a
+        // sub-menu".)
+        const std::string home = root + "/submenu-home";
+        const std::string themes = home + "/kai-term/themes";
+        static_cast<void>(::mkdir(home.c_str(), 0755));
+        static_cast<void>(::mkdir((home + "/kai-term").c_str(), 0755));
+        static_cast<void>(::mkdir(themes.c_str(), 0755));
+        const std::string cfg = home + "/kai-term/kai-term.conf";
+        std::ofstream(cfg) << "font_size = 14\n";
+        std::ofstream(home + "/kai-term/theme.conf")
+            << "background = #102030\nforeground = #eef0f1\n";
+        std::ofstream(themes + "/one.conf") << "background = #050607\nforeground = #f5f6f7\n";
+        std::ofstream(themes + "/two.conf") << "background = #302010\nforeground = #f7f6f5\n";
+        ::setenv("XDG_CONFIG_HOME", home.c_str(), 1);
+        ::unsetenv("KAI_TERM_CONFIG");
+        ::unsetenv("KAI_TERM_THEME");
+
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(200);
+
+        const auto press_key = [&window](int key, const QString& text = QString()) {
+            QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
+            QCoreApplication::sendEvent(&window, &ev);
+            pump(30);
+        };
+        const auto open_menu = [&window] {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+            pump(120);
+        };
+        const auto type_word = [&press_key](const std::string& word) {
+            for (char c : word) {
+                const int key = (c >= '0' && c <= '9') ? (Qt::Key_0 + (c - '0'))
+                                                       : (Qt::Key_A + (c - 'a'));
+                press_key(key, QString(QChar(c)));
+            }
+        };
+        // Three Ups off the menu's first row: `cancel`, `save`, and the last row — which
+        // is the theme. Walking backwards is the short way to the bottom of a list.
+        const auto to_theme_row = [&press_key] {
+            for (int i = 0; i < 3; ++i)
+                press_key(Qt::Key_Up);
+        };
+
+        // The key is gone. Not hidden behind a second meaning, gone: the colours are found
+        // where every other decision is found.
+        {
+            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
+                         Qt::ControlModifier | Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&window, &ev);
+        }
+        pump(80);
+        expect("Ctrl+Shift+P opens nothing at all now",
+               !window.pickerActive() && !window.settingsActive() &&
+                   !window.mixerActive());
+
+        open_menu();
+        const int last_row = window.settingsRowCount() - 1;
+        expect("the menu ends with the theme row, which is where the editor lives",
+               window.settingsRowKey(last_row) == QStringLiteral("theme") &&
+                   window.settingsRowKey(last_row - 1) != QStringLiteral("theme"));
+        to_theme_row();
+        expect("and the keys walk to it from the top of the list",
+               window.settingsCursorRow() == last_row && window.settingsFocus() == 0);
+        expect("the line along the bottom says Enter opens the editor, on this row",
+               window.panelHintText().contains(QStringLiteral("Enter opens the theme editor")));
+
+        // A change made in the menu, then a trip into the editor and back: the change is
+        // where it was, and so are the keys.
+        const int font_at_first = window.fontPixelSize();
+        press_key(Qt::Key_Down); // `save`
+        press_key(Qt::Key_Down); // `cancel`
+        press_key(Qt::Key_Down); // the first row, which is the font size
+        expect("the walk off the bottom of the list comes back to the top",
+               window.settingsCursorRow() == 0 && window.settingsFocus() == 0);
+        press_key(Qt::Key_Right);
+        press_key(Qt::Key_Right);
+        pump(60);
+        expect("a row of the menu changes the window before anything is saved",
+               window.fontPixelSize() == font_at_first + 2);
+        to_theme_row();
+        press_key(Qt::Key_Return);
+        pump(140);
+        expect("Enter on the theme row opens the colour editor", window.pickerActive());
+        expect("and the menu steps aside rather than closing",
+               window.settingsSteppedAside() && !window.settingsActive());
+        expect("one panel at a time: the editor is the thing on the screen",
+               !window.pickerPanelRect().isEmpty());
+        expect("with the menu's unsaved font still on the window",
+               window.fontPixelSize() == font_at_first + 2);
+
+        press_key(Qt::Key_Escape); // out of the editor
+        pump(140);
+        expect("leaving the editor returns to the menu that was waiting",
+               !window.pickerActive() && window.settingsActive() &&
+                   !window.settingsSteppedAside());
+        expect("on the row the keys went in on",
+               window.settingsCursorRow() == last_row && window.settingsFocus() == 0);
+        expect("and still holding the change that had not been saved",
+               window.fontPixelSize() == font_at_first + 2);
+
+        // Saving inside the editor is a decision, not a preview: coming out and then
+        // leaving the menu without saving must not roll it back.
+        press_key(Qt::Key_Return);
+        pump(140);
+        expect("the editor opens from the same row twice", window.pickerActive());
+        press_key(Qt::Key_Up); // off the first colour: `cancel`, then `save`
+        press_key(Qt::Key_Up);
+        press_key(Qt::Key_Up); // ...and the name, which is where a new theme starts
+        pump(60);
+        expect("the keys are on the name", window.pickerCursor().second == 3);
+        press_key(Qt::Key_E);
+        pump(40);
+        for (int i = 0; i < 24; ++i)
+            press_key(Qt::Key_Backspace); // the worn name goes, and the new one starts clean
+        type_word("amber");
+        press_key(Qt::Key_Return); // confirm the word — confirming is not saving
+        press_key(Qt::Key_Return); // the word below the field is the next thing down
+        expect("the word below the name is `save`", window.pickerCursor().second == 1);
+        press_key(Qt::Key_Return); // and it saves
+        pump(200);
+        expect("a new name writes a new theme and the menu comes back",
+               !window.pickerActive() && window.settingsActive());
+        expect("the theme row now says the name the editor just wrote",
+               window.settingsRowChoice(last_row) == QStringLiteral("amber.conf"));
+        {
+            std::ifstream in(cfg);
+            const std::string text((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+            expect("and the settings file already points at it",
+                   text.find("theme = amber.conf") != std::string::npos);
+        }
+        press_key(Qt::Key_Down); // the theme row, then `save`
+        press_key(Qt::Key_Return);
+        pump(200);
+        {
+            std::ifstream in(cfg);
+            const std::string text((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+            expect("saving the menu afterwards cannot put the older name back",
+                   text.find("theme = amber.conf") != std::string::npos &&
+                       text.find("theme = one.conf") == std::string::npos);
+            expect("while the row the menu was changed on does get written",
+                   text.find("font_size = 16") != std::string::npos);
+        }
+        expect("and the menu is gone once it has saved", !window.settingsActive());
+
+        // A save inside the editor is a decision somebody wrote to a file, not a preview:
+        // leaving the menu afterwards without saving must not roll it back, and the window
+        // must not end up contradicting the settings file that now names the new theme.
+        open_menu();
+        to_theme_row();
+        press_key(Qt::Key_Return);
+        pump(140);
+        expect("the editor opens from the theme row again", window.pickerActive());
+        press_key(Qt::Key_Down); // from `foreground` down to `background`
+        type_word("123456");
+        pump(60);
+        expect("typing a colour into the editor changes the window as it is typed",
+               window.theme().background.r == 0x12);
+        for (int i = 0; i < 4; ++i)
+            press_key(Qt::Key_Up); // `foreground`, `cancel`, `save`, the name
+        press_key(Qt::Key_E);
+        for (int i = 0; i < 24; ++i)
+            press_key(Qt::Key_Backspace);
+        type_word("second");
+        press_key(Qt::Key_Return); // confirm the word
+        press_key(Qt::Key_Return); // onto `save`
+        expect("the word below the name is `save`, again", window.pickerCursor().second == 1);
+        press_key(Qt::Key_Return); // and write it
+        pump(200);
+        expect("a second new theme writes a second file and the menu is back",
+               !window.pickerActive() && window.settingsActive());
+        {
+            std::ifstream in(themes + "/second.conf");
+            const std::string text((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+            expect("the colour typed in the editor is in the file the editor wrote",
+                   text.find("background = #123456") != std::string::npos);
+        }
+        press_key(Qt::Key_Escape); // leave the menu without saving
+        pump(140);
+        expect("leaving the menu without saving keeps what the editor saved",
+               !window.settingsActive() && window.theme().background.r == 0x12);
+        {
+            std::ifstream in(cfg);
+            const std::string text((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+            expect("and the settings file still points at the theme that was saved",
+                   text.find("theme = second.conf") != std::string::npos);
+        }
+
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+        std::remove((themes + "/one.conf").c_str());
+        std::remove((themes + "/two.conf").c_str());
+        std::remove((themes + "/amber.conf").c_str());
+        std::remove((themes + "/second.conf").c_str());
+        std::remove(cfg.c_str());
+        std::remove((home + "/kai-term/theme.conf").c_str());
+        static_cast<void>(::rmdir(themes.c_str()));
+        static_cast<void>(::rmdir((home + "/kai-term").c_str()));
+        static_cast<void>(::rmdir(home.c_str()));
+        ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);
+        ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
+    }
+
+    {
         // The colour mixer, end to end. Space on a row of the picker opens it over
         // that one colour; pushing a bar changes the window while it is being
         // pushed; Enter hands the colour back to the row it came from and leaves you
@@ -1625,11 +1927,7 @@ int main(int argc, char** argv) {
             QKeyEvent ev(QEvent::KeyPress, key, Qt::NoModifier, text);
             QCoreApplication::sendEvent(&window, &ev);
         };
-        const auto open_picker = [&window] {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_P,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
-        };
+        const auto open_picker = [&window] { openThemeEditor(&window); };
         const auto mouse = [&window](QEvent::Type type, const QPointF& at,
                                     Qt::MouseButtons held) {
             QMouseEvent ev(type, at, window.mapToGlobal(at.toPoint()), Qt::LeftButton,
@@ -1796,7 +2094,7 @@ int main(int argc, char** argv) {
         };
 
         // The colour list, in a window less than half the width it would ask for.
-        press(Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
+        openThemeEditor(&window);
         pump(80);
         window.resize(420, 300);
         pump(150);
@@ -2011,6 +2309,11 @@ int main(int argc, char** argv) {
                window.theme().background.r == mixed.r);
         press(Qt::Key_Escape); // out of the list
         pump(60);
+        // ...and out of the menu that was waiting under it, which is where the list
+        // handed the keys back. A second Esc is now the way out, and the menu this
+        // test wants is a fresh one, opened from the terminal with its keys on row 0.
+        press(Qt::Key_Escape);
+        pump(60);
         press(Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
         pump(150);
         expect("the settings menu fits the same small window",
@@ -2052,7 +2355,7 @@ int main(int argc, char** argv) {
             QCoreApplication::sendEvent(&window, &ev);
         };
 
-        press(Qt::Key_P, Qt::ControlModifier | Qt::ShiftModifier);
+        openThemeEditor(&window);
         pump(120);
         // The line of keys measured in the size of a panel's own rows — which is exactly how
         // wide a panel had to be to carry it on one line, and so the width every panel used

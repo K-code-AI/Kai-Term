@@ -265,13 +265,16 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 43 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 327 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
   and, offscreen, that closing such a window really does put the question up, that the
   question is dismissed as a "no" leaves the window standing, and that `KAI_CONFIRM_QUIT`
-  reaches the window that reads it.
+  reaches the window that reads it. It is also where the panels are checked as a person
+  drives them: the settings menu, the colour editor opened from its `theme` row and what
+  the menu keeps across that trip, the mixer, the size every panel takes and what sits
+  inside it, and a kitty theme worn without a line of it being edited.
 - `kai-term-attach-state` prints `PASS: 15 attach state checks passed` — what a second
   view of a session arrives knowing. The glyphs were never the problem on their own: a
   snapshot without the modes is a picture of a terminal, and the window behaves as though
@@ -394,18 +397,23 @@ nothing can be kept.
   preview is the window, so a font you are choosing is a font you are looking at. A
   row cannot be driven outside the values its setting accepts: numbers stop at their
   edges, and a row like `confirm quit` only steps between the three words the file
-  takes. The `theme` row steps between the default and whatever `.conf` files are in
-  `themes/`, and stepping it repaints the window in that theme straight away — leaving
-  without saving puts the old colours back, because a preview you cannot undo is a
-  commit you were tricked into. Saving writes the name into `kai-term.conf`, so the
-  next window opens wearing it too.
+  takes. The `theme` row does two things: stepping it with the arrows previews the
+  default and whatever `.conf` files are in `themes/`, repainting the window straight
+  away, and Enter on it opens the colour editor. Leaving without saving puts the old
+  colours back, because a preview you cannot undo is a commit you were tricked into.
+  Saving writes the name into `kai-term.conf`, so the next window opens wearing it too.
+  Opening the editor does not close the menu: it waits behind with everything you had
+  changed still changed, and the keys come back to the `theme` row. What the editor
+  *saved* stays saved — leaving the menu after a save does not roll it back, because a
+  decision somebody wrote to a file is not a preview.
 
-- **Ctrl+Shift+P** opens the colour picker over the grid: the five window colours
-  and the sixteen ANSI palette entries, walked with Up/Down or k/j, digits walked
+- **Enter on the `theme` row** opens the colour editor over the grid: the six window
+  colours and the sixteen ANSI palette entries, walked with Up/Down or k/j, digits walked
   with Left/Right or h/l, a hex digit typed replaces the one under the cursor and
-  the cursor steps along, Enter saves, Esc leaves with nothing written. Below the
-  colours are two more rows, `background opacity` and `foreground opacity`, typed as
-  `1` to `100` where 100 is fully solid. The
+  the cursor steps along, Enter on a colour opens the mixer for it, and the word `save`
+  two steps below the last row writes what you chose. It has no key of its own: the
+  colours live where the other decisions are, and one key fewer is one key fewer.
+  Esc leaves with nothing written. The
   preview is not a preview: it is the window. Each keystroke recolours the real
   screen, so what you watch choosing is what you get — on a window attached to a
   running session the preview moves only the window's chrome, because a session's
@@ -500,11 +508,10 @@ Two files, because two kinds of thing get set:
 - **`~/.config/kai-term/kai-term.conf`** is how the program behaves and presents:
   `confirm_quit`, `font_size`, the opening grid, the two transparency settings —
   whatever joins them later.
-- **`~/.config/kai-term/theme.conf`** is how it looks: the five window colours and the
-  sixteen palette entries. It is the file Ctrl+Shift+P writes colours to, so saving
-  colours never rewrites the file holding your other decisions. (The picker's two
-  transparency is not a colour, so it is edited in the settings menu and goes to
-  `kai-term.conf` instead.)
+- **`~/.config/kai-term/theme.conf`** is how it looks: the six window colours and the
+  sixteen palette entries. It is the file the colour editor writes to, so saving colours
+  never rewrites the file holding your other decisions. (How solid the window is is not a
+  colour, so it is edited in the settings menu and goes to `kai-term.conf` instead.)
 
 A third thing lives beside them: **`~/.config/kai-term/themes/`** holds more than one
 palette, and `theme` in `kai-term.conf` says which of them to wear.
@@ -534,7 +541,13 @@ which reads both files from `DIR` under their usual names. A directory given to 
 taken as the directory answer, because a shell completing a path hands one over as often
 as a file. Both files are plain `key = value` —
 the shape Old-Term's config has always had — with `#` comments, one setting per line,
-and whitespace around the `=` free. A setting nobody recognizes is not skipped in
+and whitespace around the `=` free. The `=` is also optional: `background #1c1c1c` reads,
+which is the shape a kitty theme is written in, so a palette from over there drops into
+`themes/` and is worn without editing a line of it. The two spellings mean the same
+sentence and may be mixed in one file; a colour's own `#` is never taken for a comment.
+A theme written this way can be read by kitty in return, because the palette is stored as
+`color0` through `color15` and the highlight as `selection_background` — the names kitty
+uses — while the screen keeps calling them `black` and `selection`. A setting nobody recognizes is not skipped in
 silence: startup says which line of which file said what, and carries on with the rest.
 The reader is lenient about which file a key appears in — a colour in `kai-term.conf`
 still works — but the theme file is read last, so the file the picker writes wins where
@@ -558,7 +571,9 @@ theme        = Default.conf     # which colours to wear: a name in themes/, or a
 foreground   = #dcdcdc          # the ink of unstyled text
 background   = #1e1e1e          # the blank screen
 cursor       = #dcdcdc
-selection    = #3e60a8          # the highlight under a dragged selection
+selection_background = #3e60a8 # the highlight under a dragged selection
+                                # (`selection` is the older name for it; it still reads)
+selection_foreground = #f0f0f0 # the ink drawn on top of that highlight
 accent       = #6ea0ff          # what a dialog puts on the answer its focus is on
 color0       = #000000          # the sixteen ANSI colours, black through bright white
 color1       = #800000
@@ -578,8 +593,9 @@ session comes back wearing your theme rather than the colours it happened to sav
 colour you did *not* name stays the session's to recolour, so a program that legitimately
 changes a colour is still heard, and the built-in palette answers beneath both.
 
-Everything in `theme.conf` — all twenty-one colours — is also editable from inside the
-window with **Ctrl+Shift+P**, which writes back only the lines that actually changed and
+Everything in `theme.conf` — all twenty-two colours — is also editable from inside the
+window, from the settings menu's `theme` row, which writes back only the lines that
+actually changed and
 leaves comments, alignment, and settings it has never heard of exactly as they were. The
 picker is colours and nothing else — how solid the window is belongs to the settings menu,
 next to the font. Saving colours never resizes the window: the grid and font you have now

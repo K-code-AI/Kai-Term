@@ -43,6 +43,12 @@ struct SettingRow {
     int maximum = 100; // inclusive; ignored by a Choice row
     int digits = 2;    // the width the value is shown at, leading zeros and all
     std::vector<std::string> choices;
+    // A row that opens a panel of its own. Enter on it opens that panel instead of doing
+    // nothing, which is why the row can also be a choice row you step with the arrows:
+    // the `theme` row changes theme one name at a time *and* opens the colour editor.
+    // (Kaida, 2026-11-20: "the Theme editor should be an item in the setting menu under
+    // Theme. It would make things more coherent".)
+    bool opens = false;
 };
 
 // Put a row back inside what its setting accepts, and make its display width
@@ -234,6 +240,22 @@ public:
             return false;
         digit_ = std::clamp(index, 0, std::max(1, r.digits) - 1);
         return true;
+    }
+
+    // Replace what one row offers, and un-remember it as a change: for the case where
+    // something outside the menu wrote that setting while the menu waited. The menu must
+    // then say what the file says, and not write the older answer back over it.
+    bool setRowAnswers(const std::string& key, std::vector<std::string> choices, int value) {
+        for (std::size_t i = 0; i < rows_.size(); ++i) {
+            if (rows_[i].key != key)
+                continue;
+            rows_[i].choices = std::move(choices);
+            rows_[i].value = value;
+            clampSetting(rows_[i]);
+            opened_[i] = rows_[i]; // the file already says this; the menu owes nothing
+            return true;
+        }
+        return false;
     }
 
     // The rows whose value moved since the menu opened. A row put back the way

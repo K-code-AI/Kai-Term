@@ -100,7 +100,7 @@ int main() {
         expect("foreground, with # and uppercase", isColour(config.foreground, 0xDC, 0xDC, 0xDC));
         expect("background, without #", isColour(config.background, 0x1E, 0x1E, 0x1E));
         expect("cursor read", isColour(config.cursor, 255, 0, 0));
-        expect("selection read", isColour(config.selection, 0, 255, 0));
+        expect("selection read", isColour(config.selection_background, 0, 255, 0));
         expect("accent, mixed case hex", isColour(config.accent, 0, 0, 255));
     }
 
@@ -246,13 +246,19 @@ int main() {
               "selection = #gggggg\n"
               "accent =\n"
               "= orphan\n"
+              "cursor_style\n" // a name and no value, in either spelling
               "confirm_quit = ALWAYS\n");
     {
         const Config config = loadConfig();
         expect("the unknown key is named, not skipped",
                mentions(config.problems, "confirm_exit"));
-        expect("a line with no = is announced",
+        // A bare word with nothing after it is not a setting in either spelling, and
+        // says so. A line of several words *is* read as `key value` now — which is the
+        // kitty spelling — so it is announced as the unknown setting it turned out to be.
+        expect("a name with no value is announced",
                mentions(config.problems, "expected key = value"));
+        expect("and a line of words is announced as the setting it names",
+               mentions(config.problems, "'this'"));
         expect("a colour name is refused by name", mentions(config.problems, "'blue'"));
         expect("too short is refused", mentions(config.problems, "#12"));
         expect("non-hex is refused", mentions(config.problems, "#gggggg"));
@@ -467,6 +473,86 @@ int main() {
         std::remove((other + "/theme.conf").c_str());
         ::rmdir(other.c_str());
     }
+
+    {
+        // A theme file from kitty, read as it stands: no `=` anywhere, the palette spelled
+        // `color0`…`color15`, and the two selection colours spelled kitty's way. The ask was
+        // that dropping a file somebody already wrote should be the whole of the work.
+        // (Kaida, 2026-11-20: "change the theme config to not require an = between the name
+        // and the value, so that kitty themes can be used as is simplifying transition for
+        // some users", and the file itself: "yes this is a kitty theme conf".)
+        const std::string home = dir + "/kittydir";
+        const std::string themes = home + "/themes";
+        ::mkdir(home.c_str(), 0755);
+        ::mkdir(themes.c_str(), 0755);
+        writeFile(themes + "/paper.conf",
+                  "background #1c1c1c\n"
+                  "foreground #ddeedd\n"
+                  "cursor #e2bbef\n"
+                  "selection_background #4d4d4d\n"
+                  "color0 #3d352a\n"
+                  "color8 #554444\n"
+                  "color1 #cd5c5c\n"
+                  "color15 #ddccbb\n"
+                  "selection_foreground #1c1c1c\n");
+        writeFile(home + "/kai-term.conf", "theme = paper.conf\n");
+        ::unsetenv("KAI_TERM_CONFIG");
+        ::unsetenv("KAI_TERM_THEME");
+        setConfigDir(home);
+        const Config kitty = loadConfig();
+        expect("a kitty theme needs no = to be understood",
+               isColour(kitty.background, 0x1c, 0x1c, 0x1c) &&
+                   isColour(kitty.foreground, 0xdd, 0xee, 0xdd));
+        expect("its colour0 is the black of its own palette",
+               isColour(kitty.palette[0], 0x3d, 0x35, 0x2a) &&
+                   isColour(kitty.palette[8], 0x55, 0x44, 0x44) &&
+                   isColour(kitty.palette[15], 0xdd, 0xcc, 0xbb));
+        expect("its selection colour arrives, and so does the ink on it",
+               isColour(kitty.selection_background, 0x4d, 0x4d, 0x4d) &&
+                   isColour(kitty.selection_foreground, 0x1c, 0x1c, 0x1c));
+        expect("and nothing about it was complained about", kitty.problems.empty());
+
+        // The two spellings are the same sentence, not two dialects: a file may mix them,
+        // a comment still hangs off the end of a colour, and the older name for the
+        // selection colour still reads.
+        writeFile(themes + "/paper.conf",
+                  "background = #010203\n"          // this program's spelling
+                  "foreground #040506\n"            // kitty's
+                  "selection #070809\n"             // the older name for the one colour
+                  "cursor #0a0b0c # a comment after a colour\n");
+        const Config mixed = loadConfig();
+        expect("a file may mix the two spellings of the same sentence",
+               isColour(mixed.background, 0x01, 0x02, 0x03) &&
+                   isColour(mixed.foreground, 0x04, 0x05, 0x06));
+        expect("`selection` still reads as the older name for the highlight",
+               isColour(mixed.selection_background, 0x07, 0x08, 0x09));
+        expect("and a comment still falls off the end of a colour written kitty's way",
+               isColour(mixed.cursor, 0x0a, 0x0b, 0x0c) && mixed.problems.empty());
+
+        // What the picker writes is what the reader reads: the screen says `black` and
+        // `selection`, the file says `color0` and `selection_background`.
+        std::string error;
+        std::vector<std::pair<std::string, std::string>> out;
+        out.push_back({"color0", "#ff0000"});
+        out.push_back({"selection_background", "#00ff00"});
+        out.push_back({"selection_foreground", "#0000ff"});
+        expect("the palette and the two selection colours write under those names",
+               saveConfigValues(themes + "/written.conf", out, error));
+        ::setenv("KAI_TERM_THEME", (themes + "/written.conf").c_str(), 1);
+        const Config round = loadConfig();
+        expect("and read back the same way, by this program or by kitty",
+               isColour(round.palette[0], 0xff, 0x00, 0x00) &&
+                   isColour(round.selection_background, 0x00, 0xff, 0x00) &&
+                   isColour(round.selection_foreground, 0x00, 0x00, 0xff));
+        ::unsetenv("KAI_TERM_THEME");
+        std::remove((themes + "/paper.conf").c_str());
+        std::remove((themes + "/written.conf").c_str());
+        std::remove((home + "/kai-term.conf").c_str());
+        ::rmdir(themes.c_str());
+        ::rmdir(home.c_str());
+        setConfigDir("");
+    }
+
 
     {
         // `theme = ...`: which colours to wear. A bare name is a file in `themes`, a

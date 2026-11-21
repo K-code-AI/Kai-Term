@@ -105,6 +105,10 @@ public:
         Color background{30, 30, 30};
         Color cursor{220, 220, 220};
         Color selection{62, 96, 168};
+        // The ink on a selected cell. It was a constant in the painting for as long as
+        // there was a painting — a light grey that stayed light grey on a theme whose
+        // selection colour was already pale — and a theme can say better now.
+        Color selection_foreground{240, 240, 240};
         Color accent{110, 160, 255};
         // The sixteen ANSI colours as this window reads them. The built-in
         // answer is the built-in palette — a theme that says nothing about
@@ -329,27 +333,51 @@ public:
         update();
     }
     bool pickerActive() const { return picker_ != nullptr; }
+    // The colour list's own rows: how many, and what each is called on the screen. The
+    // screen's names and the file's names are not the same list — the row that says
+    // `black` writes `color0` — so a check has to be able to ask which of the two it is
+    // looking at.
+    int pickerRowCount() const {
+        return picker_ ? static_cast<int>(picker_->fields().size()) : 0;
+    }
+    QString pickerRowLabel(int model_row) const {
+        if (!picker_ || model_row < 0 || model_row >= pickerRowCount())
+            return QString();
+        const ThemeField& field = picker_->fields()[static_cast<std::size_t>(model_row)];
+        return QString::fromStdString(field.label.empty() ? field.key : field.label);
+    }
+    QString pickerRowKey(int model_row) const {
+        if (!picker_ || model_row < 0 || model_row >= pickerRowCount())
+            return QString();
+        return QString::fromStdString(picker_->fields()[static_cast<std::size_t>(model_row)].key);
+    }
 
     // The fourth shape over the grid: the settings menu. Same shape as the colour
     // picker and the same rule — the decisions live in `SettingsPicker`, which has
     // no Qt in it, the pixels live here, and the preview is the window. `preview`
     // is handed each row the moment it moves, so the window changes while you are
     // looking at it; `finish` says whether any of it should be written down.
+    // `open` is for a row that opens a panel of its own rather than only holding a
+    // value: Enter on it steps the menu aside and hands the row over. The menu is not
+    // finished, so nothing it holds unsaved is lost while the other panel is up.
     void pickSettingsInTerminal(
         std::vector<SettingRow> rows,
         std::function<void(std::vector<SettingRow>, bool saved)> finish,
-        std::function<void(const SettingRow&)> preview) {
+        std::function<void(const SettingRow&)> preview,
+        std::function<void(const SettingRow&)> open = {}) {
         if (overlay_.active || picker_ || settings_)
             return; // one thing at a time over the grid; a stack is always the wrong one
+        settings_suspended_ = false;
         settings_ = std::make_unique<SettingsPicker>(std::move(rows));
         // As in the picker: a panel opens with the keys on its first row. Which word the
         // last visit happened to end on is not this visit's business.
         settings_focus_ = 0;
         settings_finish_ = std::move(finish);
         settings_preview_ = std::move(preview);
+        settings_open_ = std::move(open);
         update();
     }
-    bool settingsActive() const { return settings_ != nullptr; }
+    bool settingsActive() const { return settings_ != nullptr && !settings_suspended_; }
 
     // The colour mixer, opened over one colour of the picker with Space or a click
     // on its swatch. It is a detour, not a new screen: the list stays underneath,
@@ -403,6 +431,65 @@ public:
         }
         return QRectF();
     }
+    // The settings menu stepped aside for another panel. Its rows, its values, the row
+    // the keys are on and everything unsaved in it stay exactly as they were; only the
+    // painting and the keys hand over, and both come back. A menu that closed when you
+    // opened the colour editor would throw away the font size you had just dialled in.
+    // (Kaida, 2026-11-20: "the setting keeps your change until you save or cancel them,
+    // even when in a sub-menu".)
+    bool settingsSteppedAside() const { return settings_suspended_; }
+
+    // What the menu's rows say, in the two vocabularies: the label a person reads and the
+    // key the file takes, plus the value the row is holding — which after a sub-menu is
+    // the point of asking, because it is what the menu kept for you.
+    int settingsOpenRowCount() const {
+        return settings_ ? static_cast<int>(settings_->rows().size()) : 0;
+    }
+    QString settingsRowLabel(int model_row) const {
+        if (!settings_ || model_row < 0 || model_row >= settingsOpenRowCount())
+            return QString();
+        const SettingRow& row = settings_->rows()[static_cast<std::size_t>(model_row)];
+        return QString::fromStdString(row.label.empty() ? row.key : row.label);
+    }
+    QString settingsRowKey(int model_row) const {
+        if (!settings_ || model_row < 0 || model_row >= settingsOpenRowCount())
+            return QString();
+        return QString::fromStdString(settings_->rows()[static_cast<std::size_t>(model_row)].key);
+    }
+    // The answer a choice row is holding, as the person sees it.
+    QString settingsRowChoice(int model_row) const {
+        if (!settings_ || model_row < 0 || model_row >= settingsOpenRowCount())
+            return QString();
+        const SettingRow& row = settings_->rows()[static_cast<std::size_t>(model_row)];
+        if (row.choices.empty() || row.value < 0 ||
+            row.value >= static_cast<int>(row.choices.size()))
+            return QString();
+        return QString::fromStdString(row.choices[static_cast<std::size_t>(row.value)]);
+    }
+    int settingsRowValue(int model_row) const {
+        if (!settings_ || model_row < 0 || model_row >= settingsOpenRowCount())
+            return -1;
+        return settings_->rows()[static_cast<std::size_t>(model_row)].value;
+    }
+    // Where the keys are: 0 a row, 1 `save`, 2 `cancel` — and which row when it is a row.
+    int settingsFocus() const { return settings_focus_; }
+    int settingsCursorRow() const { return settings_ ? settings_->row() : -1; }
+    // Put the menu back after the panel it stepped aside for is gone. The same object,
+    // the same row, the same unsaved values: coming back to a menu that had forgotten
+    // what you were doing is the reason sub-menus get a bad name.
+    void resumeSettings() {
+        if (!settings_)
+            return;
+        settings_suspended_ = false;
+        update();
+    }
+
+    void settingsRefreshRow(const std::string& key, const std::vector<std::string>& choices,
+                            int value) {
+        if (settings_)
+            static_cast<void>(settings_->setRowAnswers(key, choices, value));
+    }
+
     QRectF pickerSwatchRect(int model_row) const {
         for (std::size_t i = 0; i < picker_hit_.row_index.size(); ++i) {
             if (picker_hit_.row_index[i] == model_row && i < picker_hit_.swatches.size())
@@ -727,10 +814,8 @@ public:
     // daemon; it knows Ctrl+Shift+S was pressed and that somebody asked to be told.
     std::function<void()> on_save_session;
     std::function<void()> on_session_menu;
-    // Ctrl+Shift+P: the theme picker, owned by whoever runs the window. P is
-    // for palette, and it was free — the held-free list (F, N, H) is untouched.
-    std::function<void()> on_theme_picker;
-    // Ctrl+Shift+K: the settings menu. K is for configuration — the key is free
+    // Ctrl+Shift+K: the settings menu, and through its `theme` row the colour editor.
+    // K is for configuration — the key is free
     // of the held list (F, N, H) and of the chords the shell and the programs
     // inside it already answer to.
     std::function<void()> on_settings_menu;
@@ -1129,8 +1214,9 @@ public:
         }
 
         // The settings menu owns the keyboard on the same terms: a digit is a
-        // value there, and a letter may be the answer you are choosing.
-        if (settings_) {
+        // value there, and a letter may be the answer you are choosing. A menu that has
+        // stepped aside for another panel has handed those terms over with the keys.
+        if (settingsActive()) {
             settingsKeyPress(key, mods, ev->text());
             return;
         }
@@ -1166,10 +1252,6 @@ public:
             }
             if (key == Qt::Key_A && on_session_menu) {
                 on_session_menu();
-                return;
-            }
-            if (key == Qt::Key_P && on_theme_picker) {
-                on_theme_picker();
                 return;
             }
             if (key == Qt::Key_K && on_settings_menu) {
@@ -1222,7 +1304,7 @@ public:
             mixerPress(ev->position());
             return;
         }
-        if (settings_) {
+        if (settingsActive()) {
             settingsPress(ev->position());
             return;
         }
@@ -1440,7 +1522,7 @@ public:
         // the arrows do. A picker is usually taller than the window holding it, and
         // a wheel that scrolled the terminal behind it would move text nobody is
         // looking at while leaving the row you meant to click off screen.
-        if (mixer_ || picker_ || settings_) {
+        if (mixer_ || picker_ || settingsActive()) {
             const int steps = ev->angleDelta().y() / 120;
             if (steps != 0) {
                 const int direction = steps > 0 ? -1 : 1;
@@ -1605,7 +1687,7 @@ public:
         // Selection is drawn as a solid band with light text so it stays legible
         // whatever colours the application had chosen for those cells.
         const Color selection_bg = theme_.selection;
-        const Color selection_fg{240, 240, 240};
+        const Color selection_fg = theme_.selection_foreground;
 
         for (int r = 0; r < rows_; ++r) {
             const Row& line = displayRow(r);
@@ -1913,8 +1995,10 @@ private:
                 theme.background = colour;
             else if (field.key == "cursor")
                 theme.cursor = colour;
-            else if (field.key == "selection")
+            else if (field.key == "selection_background" || field.key == "selection")
                 theme.selection = colour;
+            else if (field.key == "selection_foreground")
+                theme.selection_foreground = colour;
             else if (field.key == "accent")
                 theme.accent = colour;
             else if (field.key.rfind("color", 0) == 0 && field.key.size() > 5) {
@@ -2793,6 +2877,18 @@ private:
                 finishSettings(true);
             } else if (settings_focus_ == 2) {
                 finishSettings(false);
+            } else if (settings_focus_ == 0 && settings_->current().opens && settings_open_) {
+                // Enter on a row that opens a panel does exactly that, and the menu steps
+                // aside rather than closing: what you had changed in it is still changed
+                // when the panel closes, and the keys come back to this same row.
+                // (Kaida, 2026-11-20: "the Theme editor should be an item in the setting
+                // menu under Theme"; "the setting keeps your change until you save or
+                // cancel them, even when in a sub-menu".)
+                const SettingRow row = settings_->current();
+                settings_suspended_ = true;
+                settings_hit_ = OverlayHit{}; // nothing of ours is out there to click
+                update();
+                settings_open_(row);
             }
             return;
         }
@@ -2899,6 +2995,8 @@ private:
         settings_.reset();
         settings_finish_ = nullptr;
         settings_preview_ = nullptr;
+        settings_open_ = nullptr;
+        settings_suspended_ = false;
         settings_hit_ = OverlayHit{}; // nothing is there to click any more
         update();
         if (finish)
@@ -3828,12 +3926,18 @@ private:
     // you can only ever step between the ones it has — which is what makes an
     // invalid value unreachable with the mouse too, not only with the keys.
     void paintSettings(QPainter& p) const {
-        if (!settings_)
+        if (!settingsActive())
             return;
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
+        // On a row that opens a panel, Enter does not "select" anything: it opens. The
+        // line along the bottom says which of the two it is, because the keys standing on
+        // a row that behaves differently should not be described as if they were not.
         const QString hint =
-            QStringLiteral("Arrows to Navigate - Enter to Select - Escape to Cancel");
+            settings_->current().opens
+                ? QStringLiteral("Enter opens the theme editor - Arrows to Navigate - "
+                                 "Escape to Cancel")
+                : QStringLiteral("Arrows to Navigate - Enter to Select - Escape to Cancel");
         const auto& rows = settings_->rows();
 
         int label_w = 16;
@@ -4175,6 +4279,9 @@ private:
     // have just stopped looking at.
     bool picker_overwrite_ = false;
     std::unique_ptr<SettingsPicker> settings_;
+    // The menu, still holding its rows and its unsaved values, while another panel is up.
+    bool settings_suspended_ = false;
+    std::function<void(const SettingRow&)> settings_open_;
     std::function<void(std::vector<SettingRow>, bool saved)> settings_finish_;
     std::function<void(const SettingRow&)> settings_preview_;
     // Which of an overlay's three keyboard stops the keys are on: the list, `save`,

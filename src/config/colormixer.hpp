@@ -2,7 +2,7 @@
 //
 // The colour mixer: one colour, edited as six numbers instead of one string.
 //
-// The picker on Ctrl+Shift+P is a list of hex values, which is the right shape
+// The colour list is a list of hex values, which is the right shape
 // for "change bright magenta to the magenta I used last week" and the wrong
 // shape for "make this a bit less purple". Finding that second colour in a
 // six-digit field means typing a number and looking at what happened; a mixer

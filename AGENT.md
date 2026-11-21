@@ -686,6 +686,62 @@ test that hangs should still cost a test and not a machine.
   off "small print" is `kPanelHintScale`. A probe that fails to fail is the other half of the
   test, and it found a wrong probe twice today.
 
+- 2026-11-21: **two ideas from IDEA.md, and a probe that would not fail.** The first was
+  Kaida's: "Instead of having a keybind for the Theme Editor Ctrl+shift+P, the Theme editor
+  should be an item in the setting menu under Theme. It would make things more coherent."
+  Asked plainly, the answer came back "ctrl+shift+p, does indeed go away" — so the key is
+  gone rather than kept-and-duplicated, and the way in is a row.
+
+  A `SettingRow` now has `opens`. That is the whole of the model change, and it is what lets
+  one row do both jobs it already had: the arrows still step between the themes on disk and
+  preview each, Enter opens the editor. `SettingKind` was not the place for it — a row that
+  opens something is still a `Choice` row — and the hint line along the bottom changes on
+  that row, because the keys standing on a row that behaves differently should not be
+  described as if they were not.
+
+  The real work was what "the setting keeps your change until you save or cancel them, even
+  when in a sub-menu" costs. Closing the menu and reopening it is the easy reading of that
+  sentence and it is wrong: the font size you had dialled in would be gone. So the menu
+  *steps aside* — `settings_suspended_`, one bool, checked at every place the menu paints,
+  takes a key, takes a click or takes a wheel, and the same object with the same row and the
+  same unsaved values comes back. One panel on screen at a time, and nothing forgotten.
+
+  Then the part nobody asked for and the probe found. The menu's undo baseline — what Esc
+  puts back — was captured in locals at open. A save inside the editor is not a preview, so
+  leaving the menu afterwards rolled back a decision somebody had already written to a file,
+  and left the window wearing an older theme than the settings file named. The baseline is a
+  member now (`MenuBaseline`) and the editor moves the parts it committed. Same reasoning
+  made `setRowAnswers` un-remember the theme row as a change: the editor already wrote the
+  name, so pressing `save` in the menu afterwards must not write the older one back over it.
+
+  Probe R — deleting those three lines — **did not fail anything**, and the reason is worth
+  keeping: the test saved a theme under the name it already had, so the menu's cancel
+  re-read the same file and got the saved colours by accident. Only a *renamed* save can
+  show the bug, because only then does the file the menu re-read differ from the file the
+  editor wrote. Third time this month that a probe failing to fail has been the finding.
+
+  The second idea was "change the theme config to not require an = between the name and the
+  value, so that kitty themes can be used as is". The parser had already made the hard
+  decision years ago — a value beginning with `#` is a colour, not a comment — so the rest
+  was one `else`: no `=` on the line means the first word is the key. `=` still wins when a
+  line has one, so both spellings live in one file. Kaida also asked for the selection
+  colours by name, "yes add selection background to our config too" and "and selection
+  foreground": the first is what `selection` always meant, so it keeps reading as the older
+  name the way `opacity` does, and the second was a light grey compiled into the painting,
+  on a theme whose selection colour could already be pale. `use color0-color15 in the
+  config, but keep their name in the UI` needed no work at all — the palette had been
+  written `color0` and read `black` since it was built — which is worth writing down too:
+  two of the three asks were already true, and the only reason to check is that the third
+  was not.
+
+  Tests: 290 checks became 327 in the window test, 96 became 105 in the config test. Opening
+  the editor is a walk now, so there is one helper that does the walk and it starts by
+  leaving whatever panels are up, because a test that ends inside the editor leaves the menu
+  waiting underneath. That is also the answer to "how do I get back to the terminal now":
+  two Escapes. The photographer's habit of naming a picture for a size it was not taken at —
+  four of them said 960x540 while sitting at 330x220 — is fixed too, since a photograph that
+  lies about its size is how a panel looks fine and is not.
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,

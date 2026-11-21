@@ -354,9 +354,12 @@ Needed:
   for behaviour (`confirm_quit`, and now the window's body: `font_size`, `cols`, `rows`,
   `background_opacity`, `foreground_opacity`, all followed by the real window) and
   `~/.config/kai-term/theme.conf` for
-  colours (the five window colours and the sixteen ANSI palette entries, `color0`
+  colours (the six window colours and the sixteen ANSI palette entries, `color0`
   through `color15`). The theme file is read last, so the file the picker writes wins
-  where the two overlap.
+  where the two overlap. A line's `=` is optional, added 2026-11-21 so a theme written
+  for kitty is read as it stands — and the names are kitty's too (`selection_background`,
+  `color0`), so a theme written here can be read back over there, while the screen keeps
+  saying `selection` and `black`.
 - **Real transparency, built 2026-11-19.** Two settings because two decisions:
   `background_opacity` is how much of the desktop shows through the ground, and
   `foreground_opacity` is how solid the text, cursor, selection and dialogs are — text you
@@ -367,7 +370,10 @@ Needed:
   editable in the picker as `1..100` (100 = solid) and are saved to the behaviour file,
   which is where the rest of them live.
 - **The settings menu, built 2026-11-19** (Ctrl+Shift+K). Font size, the two
-  transparencies, padding, scrollback, cursor style and `confirm_quit`, walked in the
+  transparencies, padding, scrollback, cursor style, `confirm_quit` and — since 2026-11-21 —
+  the theme, whose row steps between the themes on disk *and* opens the colour editor with
+  Enter; the menu steps aside for it rather than closing, so what you had changed is still
+  changed on the way back and the keys return to the same row. Walked in the
   window with the preview being the window, saved to `kai-term.conf`. Built so an
   invalid value cannot be reached — rows clamp to their ranges and a choice row only
   steps between the answers it has — and drivable with the mouse as well as the keys,

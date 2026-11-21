@@ -27,18 +27,28 @@ files now — key=value in `~/.config/kai-term/kai-term.conf` for behaviour and
 `theme.conf` for colours, environment beating them, unknown keys announced with their
 line — carrying `confirm_quit`, the window's body (`font_size`, `cols`, `rows`,
 `background_opacity`, `foreground_opacity`, all followed by the real window at startup),
-twenty-one colours, and `theme`, which says which colours to wear: left out or
+twenty-two colours, and `theme`, which says which colours to wear: left out or
 `Default.conf` for `theme.conf`, a bare name for a file in `~/.config/kai-term/themes/`,
 and anything with a slash in it for the path it is. One theme file is read per launch, a
-named theme replacing `theme.conf` rather than layering over it. The twenty-one colours are
-the five window colours and the sixteen ANSI palette entries. The colours reach the window as a
+named theme replacing `theme.conf` rather than layering over it. The twenty-two colours are
+the six window colours and the sixteen ANSI palette entries. A line's `=` is optional,
+which is the shape a kitty theme is written in: drop one into `themes/` and it is worn
+without editing a line of it, and because the palette is stored as `color0` through
+`color15` and the highlight as `selection_background`, one of ours can be read back by
+kitty. The screen keeps its own vocabulary — the row says `black`, `selection` and
+`selection foreground`, the file says `color0` and the kitty names. The colours reach the
+window as a
 theme, and **a colour the config names is the top authority**: it outranks the session's
 own `OSC 4/10/11` and holds on every window, including one attached to a running session,
 so a saved theme is not washed back to defaults by a shell that recolours at startup. A
 colour the config left unnamed stays the session's to set, and the built-in palette answers
-beneath both. And all twenty-one can be chosen inside the window itself —
-**Ctrl+Shift+P** opens the picker over the grid, previews on the window as you type,
-and writes the changed lines back to `theme.conf`. Under the colours a `theme` line says
+beneath both. And all twenty-two can be chosen inside the window itself —
+**Enter on the settings menu's `theme` row** opens the colour editor over the grid, previews
+on the window as you type, and writes the changed lines back to `theme.conf`. It has no key
+of its own: Ctrl+Shift+P used to jump straight in and is gone, so the colours live where the
+other decisions are. The menu waits behind it with whatever you had changed still changed,
+the keys come back to the `theme` row, and what the editor *saved* stays saved even if you
+then leave the menu without saving. Under the colours a `theme` line says
 which theme they would go into, which makes the picker a theme creator rather than an
 editor of one file: the extension is left out because every theme has one, the field is
 shut until `e` opens it so a stray letter cannot rename the theme you were about to save,
@@ -476,7 +486,7 @@ Individual results:
 - `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
 - `./build/tests/kai-term-widget-session` → `PASS: 41 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
-- `./build/tests/kai-term-app-window` → `PASS: 43 application window checks passed`.
+- `./build/tests/kai-term-app-window` → `PASS: 327 application window checks passed`.
 - `./build/tests/kai-term-close-prompt` → `PASS: 24 close prompt checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.

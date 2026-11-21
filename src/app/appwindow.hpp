@@ -121,7 +121,8 @@ public:
         lift(theme.foreground, source.foreground);
         lift(theme.background, source.background);
         lift(theme.cursor, source.cursor);
-        lift(theme.selection, source.selection);
+        lift(theme.selection, source.selection_background);
+        lift(theme.selection_foreground, source.selection_foreground);
         lift(theme.accent, source.accent);
         for (std::size_t i = 0; i < theme.palette.size(); ++i)
             lift(theme.palette[i], source.palette[i]);
@@ -609,12 +610,17 @@ private:
     void bindKeybinds() {
         on_save_session = [this] { saveCurrentSession(); };
         on_session_menu = [this] { showSessionMenu(); };
-        on_theme_picker = [this] { showThemePicker(); };
         on_settings_menu = [this] { showSettingsMenu(); };
     }
 
-    // Ctrl+Shift+P: choose the colours inside the terminal, with the terminal
-    // itself as the preview, and write what you chose back to the config file.
+    // Choose the colours inside the terminal, with the terminal itself as the preview, and
+    // write what you chose back to the config file.
+    //
+    // It has no key of its own: it is what Enter on the settings menu's `theme` row opens.
+    // One key fewer to remember, and the colours are found where the other decisions are.
+    // (Kaida, 2026-11-20: "Instead of having a keybind for the Theme Editor Ctrl+shift+P,
+    // the Theme editor should be an item in the setting menu under Theme. It would make
+    // things more coherent"; "ctrl+shift+p, does indeed go away".)
     //
     // The picker opens on the colours this window wears now, so what you see is
     // a starting point and not a lie. The widget hands back only the colours
@@ -625,7 +631,10 @@ private:
     // is shown over the session rather than washed out by it, whether this window
     // owns its screen or attached to one. After a save the config is re-read, so
     // the locked set becomes exactly the colours the file now names.
-    void showThemePicker() {
+    // `on_done` runs whether the editor saved or was cancelled, after its result has been
+    // written — which is what lets the settings menu that opened it come back to the row
+    // it came from, saying whatever the editor just made true.
+    void showThemePicker(std::function<void(bool saved)> on_done = {}) {
         const Theme current = theme();
         const std::vector<ThemeField> fields = fieldsForTheme(current);
         const std::string loaded = themeName(config_.theme);
@@ -635,10 +644,16 @@ private:
                 std::ifstream probe(resolveThemePath(name));
                 return probe.good();
             },
-            [this, fields, loaded](std::vector<ThemeField> now, bool saved,
-                                   std::string name) {
-                if (!saved)
-                    return; // cancel already put the old colours back
+            [this, fields, loaded, on_done](std::vector<ThemeField> now, bool saved,
+                                            std::string name) {
+                const auto done = [&on_done, saved] {
+                    if (on_done)
+                        on_done(saved);
+                };
+                if (!saved) {
+                    done(); // cancel already put the old colours back
+                    return;
+                }
                 // A different name is a different file, and a new file wants every
                 // colour the window is wearing rather than only the ones that moved.
                 // The same name keeps the older, quieter rule: rewrite the lines that
@@ -653,12 +668,14 @@ private:
                         colours.emplace_back(now[i].key, colourText(now[i].value));
                 }
                 const std::string path = resolveThemePath(name);
-                if (colours.empty() && !renamed)
-                    return; // nothing moved; the file stays exactly as it was
+                if (colours.empty() && !renamed) {
+                    done(); // nothing moved; the file stays exactly as it was
+                    return;
+                }
                 std::string error;
                 bool wrote = saveConfigValues(
                     path, colours, error,
-                    "# kai-term colours — edit here or with Ctrl+Shift+P in the window\n");
+                    "# kai-term colours — edit here, or in the window: settings (Ctrl+Shift+K), then Enter on the theme row\n");
                 // A new theme is only worn once the settings file says to wear it. The
                 // colours went in above; this is the line that points at them, and it
                 // goes into `kai-term.conf`, where the decisions live and not into the
@@ -667,6 +684,7 @@ private:
                     wrote = saveConfigValues(config_.settings_path, {{"theme", name}}, error);
                 if (!wrote) {
                     setStatusText("could not save colours: " + error, 8000);
+                    done();
                     return;
                 }
                 config_.theme = name;
@@ -687,6 +705,7 @@ private:
                 // the transparency the preview was already showing is re-applied,
                 // because that is a colour decision, not a body one.
                 adoptConfig(ownsScreen(), false);
+                done();
             });
     }
 
@@ -701,7 +720,11 @@ private:
             {"foreground", rgbOf(theme.foreground), "foreground"},
             {"background", rgbOf(theme.background), "background"},
             {"cursor", rgbOf(theme.cursor), "cursor"},
-            {"selection", rgbOf(theme.selection), "selection"},
+            // The file says `selection_background`, the screen says `selection`: the names
+            // on the screen are the ones a person reads, and the ones in the file are the
+            // ones kitty already uses.
+            {"selection_background", rgbOf(theme.selection), "selection"},
+            {"selection_foreground", rgbOf(theme.selection_foreground), "selection foreground"},
             {"accent", rgbOf(theme.accent), "accent"},
         };
         static const char* const kPaletteNames[16] = {
@@ -724,35 +747,52 @@ private:
     // keys, the row's `-`/`+`, and a click all go through the same clamps — so
     // there is no way to leave this menu with a font size of 4000 or a
     // `confirm_quit` that is not one of the three words the file takes.
+    // What leaving the settings menu without saving puts back. It is a member and not a
+    // local because the colour editor can be opened from inside the menu and can *save*
+    // while the menu waits: a decision somebody made and wrote to a file is not one to
+    // undo on the way out, so the editor moves the baseline it was opened from.
+    // (Kaida, 2026-11-20: "the setting keeps your change until you save or cancel them,
+    // even when in a sub-menu".)
+    struct MenuBaseline {
+        int font_size = 0;
+        double padding = 0.0;
+        int scrollback = 0;
+        CursorStyle cursor_style = CursorStyle::Block;
+        double ground = 1.0;
+        double ink = 1.0;
+        std::string confirm_quit;
+        std::string theme;
+        bool open = false;
+    };
+
     void showSettingsMenu() {
         const std::vector<SettingRow> rows = settingsRows();
         // What the window is doing before anybody touches it, so that leaving
         // without saving puts every live change back. A preview you cannot undo is
         // not a preview, it is a commit.
-        const int font_before = fontPixelSize();
-        const double padding_before = padding();
-        const int scrollback_before = historyLimit();
-        const CursorStyle cursor_before = cursorStyle();
-        const double ground_before = theme().background_opacity;
-        const double ink_before = theme().foreground_opacity;
-        const std::string quit_before = config_.confirm_quit;
-        const std::string theme_before = config_.theme;
+        menu_baseline_ = MenuBaseline{
+            fontPixelSize(), padding(),       historyLimit(),     cursorStyle(),
+            theme().background_opacity,       theme().foreground_opacity,
+            config_.confirm_quit, config_.theme, true};
 
         pickSettingsInTerminal(
             rows,
-            [this, font_before, padding_before, scrollback_before, cursor_before, ground_before,
-             ink_before, quit_before, theme_before](std::vector<SettingRow> changed, bool saved) {
+            [this](std::vector<SettingRow> changed, bool saved) {
+                const MenuBaseline was = menu_baseline_;
+                menu_baseline_ = MenuBaseline{};
                 if (!saved) {
-                    setFontPixelSize(font_before);
-                    setPadding(padding_before);
-                    setHistoryLimit(scrollback_before);
-                    setCursorStyle(cursor_before);
-                    config_.confirm_quit = quit_before;
-                    // The colours that were on when the menu opened, put back from the
-                    // file they came from. Leaving without saving has to un-preview the
-                    // theme as much as the font.
-                    previewTheme(theme_before);
-                    applyOpacity(ground_before, ink_before);
+                    setFontPixelSize(was.font_size);
+                    setPadding(was.padding);
+                    setHistoryLimit(was.scrollback);
+                    setCursorStyle(was.cursor_style);
+                    config_.confirm_quit = was.confirm_quit;
+                    // The colours the window was wearing when the menu opened, put back
+                    // from the file they came from. Leaving without saving has to
+                    // un-preview the theme as much as the font — unless the colour editor
+                    // saved some of them in the meantime, which is why this is a member
+                    // that the editor is allowed to move and not a captured local.
+                    previewTheme(was.theme);
+                    applyOpacity(was.ground, was.ink);
                     return;
                 }
                 if (changed.empty())
@@ -773,7 +813,40 @@ private:
                 // and saving must not move the window a second time.
                 adoptConfig(ownsScreen(), false);
             },
-            [this](const SettingRow& row) { applySetting(row); });
+            [this](const SettingRow& row) { applySetting(row); },
+            [this](const SettingRow& row) {
+                if (row.key != "theme")
+                    return;
+                // Enter on the theme row: the colour editor comes up over the menu, and the
+                // menu waits with everything you had changed still changed. Coming back out
+                // you are on the theme row again, and it says what the editor left true.
+                // (Kaida, 2026-11-20: "the Theme editor should be an item in the setting
+                // menu under Theme"; "the setting keeps your change until you save or cancel
+                // them, even when in a sub-menu".)
+                const std::string worn_before = config_.theme;
+                showThemePicker([this, worn_before](bool saved) {
+                    resumeSettings();
+                    if (!saved || !menu_baseline_.open)
+                        return; // a cancel changed nothing to keep
+                    // The editor wrote colours to a file, and the file is what the window
+                    // now wears. Leaving the menu after that must not roll them back: the
+                    // baseline the menu would put back moves to what was just committed.
+                    menu_baseline_.theme = config_.theme;
+                    menu_baseline_.ground = theme().background_opacity;
+                    menu_baseline_.ink = theme().foreground_opacity;
+                    if (config_.theme == worn_before)
+                        return; // the editor wrote no name, so the row still has ours to say
+                    // A new theme is a new name in the settings file, and the editor has
+                    // already written it. The row takes the file's answer so that pressing
+                    // `save` here cannot put the older name back over the top of it.
+                    for (const SettingRow& fresh : settingsRows()) {
+                        if (fresh.key == "theme") {
+                            settingsRefreshRow(fresh.key, fresh.choices, fresh.value);
+                            break;
+                        }
+                    }
+                });
+            });
     }
 
     // The menu's rows, read from the window rather than from the file: what the
@@ -818,7 +891,13 @@ private:
             if (themes[i] == loaded)
                 theme_row = static_cast<int>(i);
         }
-        rows.push_back({"theme", "theme", SettingKind::Choice, theme_row, 0, 0, 0, themes});
+        // The row both is the theme and opens the thing that makes one: stepping it
+        // with the arrows previews a theme that already exists, Enter opens the editor
+        // where you can make a new one.
+        // (Kaida, 2026-11-20: "Instead of having a keybind for the Theme Editor
+        // Ctrl+shift+P, the Theme editor should be an item in the setting menu under
+        // Theme. It would make things more coherent".)
+        rows.push_back({"theme", "theme", SettingKind::Choice, theme_row, 0, 0, 0, themes, true});
         return rows;
     }
 
@@ -883,6 +962,9 @@ private:
     // at startup, and re-reading the file every time a window closes would let
     // an edit mid-session change the answer under someone deciding in the
     // moment — the colours would not, and neither should this.
+    // The settings menu's undo baseline, live only while that menu is up (or waiting
+    // behind the colour editor it stepped aside for).
+    MenuBaseline menu_baseline_;
     Config config_;
     bool session_kept_ = false;
     // The answer to a close that was asked inside the terminal, and which of the
