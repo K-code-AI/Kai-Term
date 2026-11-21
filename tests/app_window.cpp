@@ -1706,6 +1706,70 @@ int main(int argc, char** argv) {
         expect("and leaving without saving puts the colours back",
                window.theme().background.r == 0x10 && !window.settingsActive());
 
+        // Enter on that row opens the colour editor, and the editor has to name the theme
+        // the row is standing on. The window was already wearing midnight while the settings
+        // file still named the theme it always had, and the field at the bottom showed that
+        // older name — so the edit a person came to make to midnight was written over the
+        // theme that was there before it, by somebody with no reason to suspect it.
+        // (Kaida, 2026-11-21: "the name field at the bottom is still theme1 so an unaware
+        // user will overwrite theme1 with the edit intended for theme2. make sure the name
+        // field correspond to the theme that was initially opened in the editor".)
+        to_theme_row();
+        press_key(Qt::Key_Right); // on to midnight, still unsaved
+        pump(80);
+        press_key(Qt::Key_Return);
+        pump(140);
+        expect("Enter on the theme row opens the colour editor", window.pickerActive());
+        expect("and the name below says the theme the row was standing on: " +
+                   window.pickerTargetNameText().toStdString(),
+               window.pickerNameText() == QStringLiteral("midnight") &&
+                   window.pickerTargetNameText() == QStringLiteral("midnight.conf"));
+        // The name is not decoration; it is where a save goes. One colour changed and saved,
+        // and the two files on disk say which of them was written.
+        for (const char digit : std::string("0f0f0f")) {
+            const int key = (digit >= '0' && digit <= '9') ? (Qt::Key_0 + (digit - '0'))
+                                                            : (Qt::Key_A + (digit - 'a'));
+            press_key(key, QString(QChar(digit)));
+        }
+        pump(60);
+        const auto touch = [&window](bool left) {
+            const QPointF at = left ? window.pickerSavePoint() : window.pickerCancelPoint();
+            QMouseEvent down(QEvent::MouseButtonPress, at, window.mapToGlobal(at.toPoint()),
+                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &down);
+            QMouseEvent up(QEvent::MouseButtonRelease, at, window.mapToGlobal(at.toPoint()),
+                           Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &up);
+            pump(60);
+        };
+        touch(true); // `save`
+        touch(true); // and the ask to write over the theme the field just named
+        pump(120);
+        {
+            std::ifstream written_in(home + "/kai-term/themes/midnight.conf");
+            const std::string text((std::istreambuf_iterator<char>(written_in)),
+                                   std::istreambuf_iterator<char>());
+            expect("the edit went into the theme the field named",
+                   theme_says(text, "background", "#0f0f0f"));
+            std::ifstream was_there(home + "/kai-term/theme.conf");
+            const std::string older((std::istreambuf_iterator<char>(was_there)),
+                                    std::istreambuf_iterator<char>());
+            expect("and the theme that was on before the row moved keeps its own colours",
+                   theme_says(older, "background", "#102030") &&
+                       older.find("#0f0f0f") == std::string::npos);
+        }
+        // The file goes back as it was found: the rest of this block is about which theme a
+        // window wears, not about the colours of this one.
+        std::ofstream(home + "/kai-term/themes/midnight.conf")
+            << "background = #050607\nforeground = #f5f6f7\n";
+        // And the menu is left the way every other visit to it is left, so what follows
+        // starts from the theme the file names rather than from the one this save committed.
+        press_key(Qt::Key_Escape);
+        pump(120);
+        expect("leaving the menu afterwards puts the window back on the theme its file names",
+               !window.settingsActive() && !window.pickerActive() &&
+                   window.theme().background.r == 0x10);
+
         to_theme_row();
         press_key(Qt::Key_Right);
         pump(80);

@@ -265,7 +265,7 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 374 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 379 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
@@ -431,11 +431,17 @@ nothing can be kept.
   Under the colours is a `theme` line saying which theme they would be saved into, and it
   makes the picker a theme creator rather than an editor of one file. Its extension is
   left out because every theme has one; `Default` is `theme.conf`, and anything else is a
-  file in `themes/`. The field is shut until `e` opens it — a stray letter while walking
-  the list cannot rename the theme you were about to save — and while it is open the
+  file in `themes/`. It names the theme the editor was opened on, which is the theme the
+  settings menu's `theme` row was standing on — not the one the settings file still names.
+  The two differ the moment you step the row sideways: the window puts the new theme on
+  straight away, while the file waits for `save`, and an editor that read the file wrote
+  your edit into the theme you had just walked away from.
+  (Kaida, 2026-11-21: "make sure the name field correspond to the theme that was initially
+  opened in the editor".) The field is shut until Enter opens it — a stray letter while
+  walking the list cannot rename the theme you were about to save — and while it is open the
   arrows walk a caret inside the word, a letter lands where the caret is, Backspace takes
   the letter before it, Enter confirms and gets you out, and Esc puts the word back as it
-  was and leaves the panel up. What `e` does is said along the bottom of the panel when the
+  was and leaves the panel up. What Enter does there is said along the bottom of the panel when the
   keys are standing on the name, because the line under the panel is where this window says
   its keys — a note written beside the name used to run out of the panel's side. Saving
   under a name that is already a theme asks first: the

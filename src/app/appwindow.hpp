@@ -635,6 +635,15 @@ private:
     // the Theme editor should be an item in the setting menu under Theme. It would make
     // things more coherent"; "ctrl+shift+p, does indeed go away".)
     //
+    // `opening` is the theme the editor is being opened on, and its name goes in the
+    // field at the bottom. That is a parameter rather than `config_.theme` because the
+    // settings menu can be standing on a theme it has not saved yet: walk the row from
+    // `theme1` to `theme2` and the window already wears theme2, while the file still says
+    // theme1. Opening the editor on the file's answer put theme1 in the name field, and a
+    // person saving the edit they came to make to theme2 wrote it over theme1 instead.
+    // (Kaida, 2026-11-21: "the name field at the bottom is still theme1 so an unaware user
+    // will overwrite theme1 with the edit intended for theme2".)
+    //
     // The picker opens on the colours this window wears now, so what you see is
     // a starting point and not a lie. The widget hands back only the colours
     // that actually moved, so a save rewrites those lines and leaves the rest of
@@ -647,10 +656,11 @@ private:
     // `on_done` runs whether the editor saved or was cancelled, after its result has been
     // written — which is what lets the settings menu that opened it come back to the row
     // it came from, saying whatever the editor just made true.
-    void showThemePicker(std::function<void(bool saved)> on_done = {}) {
+    void showThemePicker(const std::string& opening,
+                         std::function<void(bool saved)> on_done = {}) {
         const Theme current = theme();
         const std::vector<ThemeField> fields = fieldsForTheme(current);
-        const std::string loaded = themeName(config_.theme);
+        const std::string loaded = themeName(opening.empty() ? config_.theme : opening);
         pickThemeInTerminal(
             fields, loaded,
             [](const std::string& name) {
@@ -871,7 +881,14 @@ private:
                 // menu under Theme"; "the setting keeps your change until you save or cancel
                 // them, even when in a sub-menu".)
                 const std::string worn_before = config_.theme;
-                showThemePicker([this, worn_before](bool saved) {
+                // The row's own answer, which is the theme the window was made to wear a
+                // moment ago and the file a save here should be writing to.
+                const std::string chosen = row.value >= 0 &&
+                                                   static_cast<std::size_t>(row.value) <
+                                                       row.choices.size()
+                                               ? row.choices[static_cast<std::size_t>(row.value)]
+                                               : config_.theme;
+                showThemePicker(chosen, [this, worn_before](bool saved) {
                     resumeSettings();
                     if (!saved || !menu_baseline_.open)
                         return; // a cancel changed nothing to keep

@@ -1009,3 +1009,17 @@ test that hangs should still cost a test and not a machine.
   all perfectly and the duplication it caused on a real file — one the writer itself had
   produced — was invisible for as long as the feature existed. The check that catches it is
   a round trip: let the writer make the file, then save over what it made.
+
+- A word shown beside a `save` is a promise about where the bytes go, so it is read from the
+  same place the save reads from — never from the file underneath an unsaved change. The
+  settings menu previews the theme its row is standing on, which is what a row of choices is
+  for, while the settings file keeps naming the theme the window wore when it started. The
+  colour editor took its name from the file and its colours from the window, so a person who
+  stepped the row from `theme1` to `theme2`, pressed Enter, and saved wrote their edit over
+  `theme1` — with a field on the screen saying something that made it look right.
+  (Kaida, 2026-11-21: "the name field at the bottom is still theme1 so an unaware user will
+  overwrite theme1 with the edit intended for theme2".)
+- Two sources of truth for one thing is the bug, not the name field. Where a preview is live,
+  the preview is the answer until it is saved; the file is where the answer goes. A panel that
+  reads one from each will agree with itself on the themes it was written against and lie on
+  every other one.
