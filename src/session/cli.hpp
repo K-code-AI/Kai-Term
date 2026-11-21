@@ -752,6 +752,144 @@ inline void mentionForeignDaemon() {
         std::cout << "note: " << beside << "\n";
 }
 
+// The help, written once. Every command has one row in the general listing and one
+// page of its own, and both are drawn from the same words here: a help text typed out
+// twice is two help texts that have not disagreed yet.
+// (Kaida, 2026-11-20: "the --help should be rewritten to be clear with 1 argument per
+// row following by a little description. for more specific the help command should be
+// used with an arguement ex : kai-term list --help".)
+struct CommandHelp {
+    const char* verb;
+    const char* usage;    // what follows the program's name
+    const char* summary;  // the one line the general listing shows
+    const char* detail;   // the prose only the command's own page carries
+    const char* options;  // one row per argument this command takes
+};
+
+inline const std::vector<CommandHelp>& commandHelp() {
+    static const std::vector<CommandHelp> commands = {
+        {"list",
+         "list",
+         "the shells a daemon is keeping alive; * marks the one you are standing in",
+         "Shells opened by a window appear once they have been saved; the number that\n"
+         "are open and unsaved is said at the end.\n",
+         ""},
+        {"new",
+         "new [NAME]",
+         "start a shell, print its id, and leave you where you were",
+         "The shell starts in the directory you are standing in, running the shell your\n"
+         "environment names.\n",
+         "  NAME                 what to call it; the first free name otherwise\n"},
+        {"attach",
+         "attach ID | -n NAME [--window]",
+         "show one shell in this terminal, or in a window with --window",
+         "A shell can be started in a window, picked up in a terminal over ssh, and left\n"
+         "running when both go away: each of those is a view of the same shell.\n",
+         "  ID                   the number `kai-term list` printed\n"
+         "  -n, --name NAME      find it by its name instead of its number\n"
+         "  --window             a window onto it, rather than this terminal\n"},
+        {"detach",
+         "detach",
+         "leave the shell you are standing in, without ending it",
+         "The shell goes on running with nothing looking at it. Say `save` first if it\n"
+         "should outlive the daemon as well.\n",
+         ""},
+        {"save",
+         "save [ID] [NAME]",
+         "keep a shell so it outlives the window or terminal holding it",
+         "Standing inside the shell, no arguments are needed.\n",
+         "  ID                   which shell; the one you are standing in otherwise\n"
+         "  NAME                 what to call it\n"},
+        {"send",
+         "send ID TEXT [--enter]",
+         "type into a shell without watching it",
+         "What the shell sees is what it would have seen from a keyboard, prompt\n"
+         "redrawing itself and all.\n",
+         "  ID                   which shell\n"
+         "  TEXT                 what to type, as one argument\n"
+         "  --enter              press Enter after it\n"},
+        {"kill",
+         "kill ID",
+         "end a shell",
+         "Whatever window or terminal is watching it finds out the way it would find out\n"
+         "about a shell that exited on its own.\n",
+         "  ID                   which shell\n"},
+        {"start",
+         "start",
+         "start the daemon, if it is not already running",
+         "There is one daemon per user and windows start one themselves when they need\n"
+         "it, so this is mostly a way of asking whether it is there.\n",
+         ""},
+        {"shutdown",
+         "shutdown",
+         "stop the daemon",
+         "Shells nobody is looking at, and that were never saved, go with it.\n",
+         ""},
+        {"serve",
+         "serve",
+         "run the daemon in this terminal until Ctrl-C",
+         "This is what `kai-term start` launches out of sight, and the way to watch a\n"
+         "daemon that will not start.\n",
+         ""},
+    };
+    return commands;
+}
+
+// One row of a help page: the thing you type, then what it means, lined up.
+inline void printHelpRow(const std::string& term, const std::string& text) {
+    const std::size_t column = 25;
+    std::cout << "  " << term;
+    if (term.size() + 2 >= column)
+        std::cout << "\n" << std::string(column, ' ');
+    else
+        std::cout << std::string(column - term.size() - 2, ' ');
+    std::cout << text << "\n";
+}
+
+// The whole of it. `version` is empty when the caller is not the program itself, and
+// then the version line is left out rather than said wrong.
+inline int printHelp(const std::string& version = std::string()) {
+    if (!version.empty())
+        std::cout << "Kai-Term " << version
+                  << " — a terminal emulator whose shells outlive their windows\n\n";
+    std::cout << "Usage: kai-term [options]                open a window\n"
+                 "       kai-term <command> [arguments]    talk to the shells a daemon keeps\n"
+                 "\n"
+                 "Options\n";
+    printHelpRow("-c, --config FILE",
+                 "read settings from FILE, and colours from the theme.conf beside it");
+    printHelpRow("--config-dir DIR",
+                 "read both files from DIR instead of ~/.config/kai-term");
+    printHelpRow("-h, --help", "this text; `kai-term <command> --help` answers for one command");
+    printHelpRow("--version", "the version, and nothing else");
+    std::cout << "\nCommands\n";
+    for (const CommandHelp& command : commandHelp())
+        printHelpRow(command.usage, command.summary);
+    std::cout << "\nSettings live in ~/.config/kai-term — kai-term.conf for how the program behaves,\n"
+                 "theme.conf for how it looks — and a window's colours win over a session's own.\n"
+                 "Inside a window, Ctrl+Shift+S keeps this shell and Ctrl+Shift+A brings back one\n"
+                 "that was kept.\n";
+    return 0;
+}
+
+// One command's own page, which is what `kai-term <command> --help` is for.
+inline int printVerbHelp(const std::string& verb) {
+    for (const CommandHelp& command : commandHelp()) {
+        if (verb != command.verb)
+            continue;
+        std::cout << "kai-term " << command.usage << "\n\n  " << command.summary << "\n";
+        if (command.detail[0] != '\0')
+            std::cout << "\n" << command.detail;
+        if (command.options[0] != '\0')
+            std::cout << "\n" << command.options;
+        std::cout << "\n";
+        printHelpRow("-h, --help", "this text");
+        return 0;
+    }
+    std::cerr << "kai-term has no command `" << verb << "`.\n\n";
+    return printHelp();
+}
+
 // `kai-term <verb> ...`, for the words that mean sessions. Returns an exit code;
 // main calls this only for those words and starts a window for everything else.
 //
@@ -764,19 +902,6 @@ inline void mentionForeignDaemon() {
 inline int runSessionCommand(int argc, char** argv) {
     const std::string verb = argc > 1 ? argv[1] : "--help";
     std::string error;
-
-    auto usage = [] {
-        std::cout << "Usage: kai-term <command> [arguments]\n"
-                  << "  list                    the shells the daemon keeps; * marks yours\n"
-                  << "  new [NAME]              start one, print its id, leave you where you were\n"
-                  << "  attach ID | -n NAME     show one in this terminal; --window opens a window\n"
-                  << "  detach                  leave the session you are standing in\n"
-                  << "  save [ID] [NAME]        keep a session; inside one, no arguments needed\n"
-                  << "  send ID TEXT [--enter]  type into a session without watching it\n"
-                  << "  kill ID                 end a session\n"
-                  << "  start | shutdown | serve       the daemon itself\n";
-        return 0;
-    };
 
     // Words this surface used to answer to. Nothing is kept for compatibility —
     // but a word typed out of habit should say what replaced it rather than
@@ -791,8 +916,12 @@ inline int runSessionCommand(int argc, char** argv) {
                      "opens a window onto a session.\n";
         return 2;
     }
-    if (verb == "--help" || verb == "-h" || verb == "help")
-        return usage();
+    // `kai-term help` is the same page as `kai-term --help`, and `help <command>` is
+    // the same page as `<command> --help`. One text, two ways to ask for it.
+    if (verb == "help")
+        return argc > 2 ? printVerbHelp(argv[2]) : printHelp();
+    if (verb == "--help" || verb == "-h")
+        return printHelp();
 
     // The daemon's own foreground life. No name, no options: it owns everything
     // or nothing.
@@ -837,8 +966,13 @@ inline int runSessionCommand(int argc, char** argv) {
             use_window = true;
         } else if (word == "--enter") {
             enter = true;
+        } else if (word == "-h" || word == "--help") {
+            // The page for the command that was actually asked for, which is what
+            // `kai-term list --help` means.
+            return printVerbHelp(verb);
         } else if (word.size() > 1 && word[0] == '-') {
             std::cerr << "kai-term: unknown option " << word << "\n";
+            printVerbHelp(verb);
             return 2;
         } else {
             positional.push_back(word);
@@ -1070,7 +1204,7 @@ inline int runSessionCommand(int argc, char** argv) {
     }
 
     std::cerr << "kai-term: no such command: " << verb << "\n";
-    usage();
+    printHelp();
     return 2;
 }
 

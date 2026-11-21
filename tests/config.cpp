@@ -21,6 +21,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 #include <unistd.h>
 
 using namespace kai;
@@ -424,6 +425,47 @@ int main() {
                themeFilePath().find("/kai-term/theme.conf") != std::string::npos);
         std::remove((alt + "/kai-term.conf").c_str());
         std::remove((alt + "/theme.conf").c_str());
+    }
+
+    {
+        // `-c FILE`: the settings from that file, and the colours from the `theme.conf`
+        // beside it. One argument, because one thing is being decided — which
+        // configuration to run against.
+        // (Kaida, 2026-11-20: "we need a way to select a different config file to read
+        // from on launch with an argument ex : kai-term -c /path/to/config.conf ...
+        // instead of a Dir because theme is now defined in the config".)
+        const std::string other = dir + "/other";
+        ::mkdir(other.c_str(), 0755);
+        writeFile(other + "/work.conf", "background = #010203\n");
+        writeFile(other + "/theme.conf", "color7 = #040506\n");
+        ::unsetenv("KAI_TERM_CONFIG");
+        ::unsetenv("KAI_TERM_THEME");
+        setConfigFile(other + "/work.conf");
+        expect("-c names the file the settings come from",
+               settingsFilePath() == other + "/work.conf");
+        expect("and the colours come from the theme.conf beside it",
+               themeFilePath() == other + "/theme.conf");
+        const Config via_file = loadConfig();
+        expect("and both of those are the files actually read",
+               isColour(via_file.background, 0x01, 0x02, 0x03) &&
+                   isColour(via_file.palette[7], 0x04, 0x05, 0x06));
+        // A directory handed to `-c` is the same answer with both files under their
+        // usual names, which is what a shell completing a path tends to produce.
+        setConfigFile(other);
+        expect("-c takes a directory too, and reads the usual names from it",
+               settingsFilePath() == other + "/kai-term.conf" &&
+                   themeFilePath() == other + "/theme.conf");
+        ::setenv("KAI_TERM_THEME", theme_file.c_str(), 1);
+        expect("while KAI_TERM_THEME still wins for the one file it names",
+               themeFilePath() == theme_file);
+        ::unsetenv("KAI_TERM_THEME");
+        setConfigFile("");
+        expect("and saying no file returns to the usual place",
+               themeFilePath().find("/kai-term/theme.conf") != std::string::npos &&
+               settingsFilePath().find("/kai-term/kai-term.conf") != std::string::npos);
+        std::remove((other + "/work.conf").c_str());
+        std::remove((other + "/theme.conf").c_str());
+        ::rmdir(other.c_str());
     }
 
     std::remove(path.c_str());

@@ -306,8 +306,14 @@ KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term
 ```sh
 ./build/kai-term
 ./build/kai-term --version
-./build/kai-term --help
+./build/kai-term --help          # every option and command, one per row
+./build/kai-term list --help     # one command's own page
 ```
+
+`--help` is the answer to a mistake as well as to a question: an option the program does
+not know prints that page and stops, rather than opening a window that quietly ignored what
+you typed. Qt's own options still arrive the way they always have from a script, through
+the environment — `QT_QPA_PLATFORM` and its neighbours.
 
 The shell is chosen from `KAI_SHELL`, then `SHELL`, then `/bin/sh`; a new shell starts in
 the directory you ran the command from, or your home for a window. The shell is started
@@ -474,8 +480,11 @@ Two files, because two kinds of thing get set:
 Both live under `$XDG_CONFIG_HOME` when it is set, else `~/.config`; `KAI_TERM_CONFIG`
 and `KAI_TERM_THEME` point either one at a different file, which is how a test gets a
 config without touching anybody's home directory. To run the whole program against a
-different set of settings, launch it with `--config-dir DIR` and both files are read from
-`DIR` directly. Both files are plain `key = value` —
+different set of settings, launch it with `-c FILE` — the settings come from `FILE` and
+the colours from the `theme.conf` in the same directory — or with `--config-dir DIR`,
+which reads both files from `DIR` under their usual names. A directory given to `-c` is
+taken as the directory answer, because a shell completing a path hands one over as often
+as a file. Both files are plain `key = value` —
 the shape Old-Term's config has always had — with `#` comments, one setting per line,
 and whitespace around the `=` free. A setting nobody recognizes is not skipped in
 silence: startup says which line of which file said what, and carries on with the rest.

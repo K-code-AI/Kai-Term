@@ -385,6 +385,16 @@ Needed:
   Qt-free and keeps the wheel in tenths so the bars and the wheel stay one colour
   (`rgb → hsl → rgb` is exact for every colour); the app-window test drives a bar with the
   pointer and reads the mixed colour off the disk afterwards.
+- **The command line says what it can do, built 2026-11-20.** One help text, drawn from a
+  table of the commands, printed one argument per row; `kai-term <command> --help` and
+  `kai-term help <command>` give that command's own page. A dash-word the program does not
+  know prints the page and exits 2 instead of opening a window — which is what a typo'd
+  `--config-dir` used to do, quietly wearing the default settings. `-c FILE` /
+  `--config FILE` names the settings file to run against and takes the colours from the
+  `theme.conf` beside it (a directory is accepted, since that is what path completion
+  hands back), and both forms are stripped from `argv` before Qt sees it, wherever they
+  sit. `setConfigDir` and `setConfigFile` each give the whole answer: neither leaves half
+  of the other's answer standing.
 - **Light what the keys are on, built 2026-11-20.** The highlight used to fill the row; now
   it goes behind the value in the colour list and the settings menu, and behind the colour
   band in the mixer — painted behind the ramp, so lighting a band never paints over one of

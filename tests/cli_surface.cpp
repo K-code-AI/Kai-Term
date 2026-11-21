@@ -239,6 +239,62 @@ int main() {
         expect(contains(r.out, "no sessions"), "list with no daemon says so: " + r.out);
     }
 
+    // The words themselves: one row per thing that can be typed, one page per
+    // command, and a mistake answered with the page rather than with a window.
+    // (Kaida, 2026-11-20: "using an invalid argument should open the --help menu
+    // listing all possible argument to use with kai-term. and the --help should be
+    // rewritten to be clear with 1 argument per row following by a little description.
+    // for more specific the help command should be used with an arguement
+    // ex : kai-term list --help".)
+    {
+        const Run all = run({"--help"}, here);
+        expect(all.code == 0, "--help exits 0, got " + std::to_string(all.code));
+        expect(contains(all.out, "-c, --config FILE") && contains(all.out, "--config-dir DIR"),
+               "--help lists both ways to point at a configuration: " + all.out);
+        expect(contains(all.out, "  list  ") && contains(all.out, "  kill ID  "),
+               "--help gives every command a row of its own: " + all.out);
+
+        const Run one = run({"list", "--help"}, here);
+        expect(one.code == 0, "`list --help` exits 0, got " + std::to_string(one.code));
+        expect(contains(one.out, "kai-term list") && !contains(one.out, "Commands"),
+               "and answers with the page for that command alone: " + one.out);
+
+        const Run typed = run({"help", "attach"}, here);
+        expect(typed.code == 0, "`help attach` exits 0, got " + std::to_string(typed.code));
+        expect(contains(typed.out, "attach ID | -n NAME [--window]") &&
+                   contains(typed.out, "--window"),
+               "and `help <command>` is the same page: " + typed.out);
+
+        const Run typo = run({"--confg-dir", "/tmp"}, here);
+        expect(typo.code == 2,
+               "a misspelt option exits 2, got " + std::to_string(typo.code));
+        expect(contains(typo.out, "unknown option") && contains(typo.out, "-c, --config FILE"),
+               "and is answered with the list of options, not with a window: " + typo.out);
+
+        const Run wrong_flag = run({"list", "--pretty"}, here);
+        expect(wrong_flag.code == 2,
+               "a flag the command does not take exits 2, got " + std::to_string(wrong_flag.code));
+        expect(contains(wrong_flag.out, "unknown option --pretty") &&
+                   contains(wrong_flag.out, "kai-term list"),
+               "and says which command it was asking about: " + wrong_flag.out);
+
+        const Run hungry = run({"-c"}, here);
+        expect(hungry.code == 2, "`-c` with nothing after it exits 2");
+        expect(contains(hungry.out, "needs a value"),
+               "and says what it was missing: " + hungry.out);
+
+        // `-c FILE` is taken out of the words before anything else reads them, so the
+        // command after it is the first word again. Left in place, this would be an
+        // unknown option — which is a different failure, and now a loud one.
+        const Run after = run({"-c", "/nonexistent/kai.conf", "--version"}, here);
+        expect(after.code == 0 && contains(after.out, "Kai-Term "),
+               "-c before a command leaves the command where it was: " + after.out);
+
+        const Run absent = run({"--config", "/nonexistent/kai.conf", "list"}, here);
+        expect(absent.code == 0 && contains(absent.out, "no sessions"),
+               "a configuration file that is not there is not a crisis: " + absent.out);
+    }
+
     // Retired words say what replaced them rather than failing like a typo.
     {
         const Run r = run({"session", "list"}, here);

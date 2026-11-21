@@ -115,6 +115,14 @@ environment at another platform does not move the suite — which was worth find
 before believing a run that had not actually moved. The offscreen platform also has no X11-style PRIMARY selection, so
 PRIMARY behaviour against a real desktop is **not** verified either.
 
+The command line answers the same way a panel does: `--help` lists every option and every
+command, one per row with what it means, and `kai-term <command> --help` — or
+`kai-term help <command>` — is that command's own page. A word beginning with a dash that
+the program does not know prints the page and exits 2 rather than opening a window that
+quietly ignored it, which is what `kai-term --confg-dir x` used to do. `-c FILE` /
+`--config FILE` picks the settings file to run against and takes the colours from the
+`theme.conf` beside it; `--config-dir DIR` remains for pointing at a directory of both.
+
 The old project of the same name was deliberately not reused; this is a fresh tree at `/home/kaida/Project/Kai-Term`. The project does **not** depend on `libvterm` or any external terminal emulator. Kai-Term is GPL-3.0-only (`LICENSE`).
 
 ## Completed work

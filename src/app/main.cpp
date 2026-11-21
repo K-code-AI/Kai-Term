@@ -10,31 +10,23 @@
 #include <string_view>
 #include <cstdlib>
 
+// The one help text, in the CLI's hands so that `kai-term help`, `kai-term --help`
+// and `kai-term <command> --help` cannot drift apart from it.
 static void print_help()
 {
-    std::cout << "Kai-Term " << KAI_TERM_VERSION << "\n"
-              << "Usage: kai-term [--config-dir DIR]        a window\n"
-              << "       kai-term list | new [NAME] | attach ID [--window]\n"
-              << "                | detach | save [ID] [NAME] | send ID TEXT [--enter]\n"
-              << "                | kill ID | start | shutdown | serve\n"
-              << "A native terminal emulator and PTY-backed shell.\n"
-              << "Settings are read from ~/.config/kai-term/ (kai-term.conf and\n"
-              << "theme.conf) and win over a session's own colours; --config-dir DIR\n"
-              << "reads both files from DIR instead.\n"
-              << "Inside a window, Ctrl+Shift+S keeps this shell and starts a fresh one;\n"
-              << "Ctrl+Shift+A brings back one that was kept. From any terminal,\n"
-              << "`kai-term list` shows the shells a daemon is keeping and\n"
-              << "`kai-term attach <id>` shows one in this terminal; --window opens\n"
-              << "a window onto it instead.\n";
+    static_cast<void>(kai::printHelp(KAI_TERM_VERSION));
 }
 
 // The words that mean sessions. Anything else — no word at all, a file, a flag
 // for Qt — is a window being asked for, which is how `kai-term` has always read.
+// `help` is one of them because the help is about those words, and a person typing
+// `kai-term help` should get a page rather than a window.
 static bool is_session_verb(std::string_view word)
 {
     static const std::string_view verbs[] = {"list",   "new",     "attach", "detach",
                                              "save",   "send",    "kill",   "start",
-                                             "shutdown", "serve", "session", "open"};
+                                             "shutdown", "serve", "session", "open",
+                                             "help"};
     for (const std::string_view verb : verbs)
         if (word == verb)
             return true;
@@ -43,20 +35,33 @@ static bool is_session_verb(std::string_view word)
 
 int main(int argc, char **argv)
 {
-    // `--config-dir DIR` is taken out of argv here, before anything reads a
-    // config and before Qt sees the arguments (Qt would reject an option it does
-    // not know). It points the terminal at a different directory for BOTH config
-    // files — the escape hatch for running with a second set of settings — and
-    // because it is stripped first, the saved theme in the default directory
-    // supersedes everything by default with no flag at all.
-    for (int i = 1; i + 1 < argc; ++i) {
-        if (std::string_view(argv[i]) == "--config-dir") {
-            kai::setConfigDir(argv[i + 1]);
-            for (int j = i + 1; j + 1 < argc; ++j)
-                argv[j] = argv[j + 1];
-            --argc;
-            break; // one directory per launch
+    // Where the configuration comes from is settled before anything reads one, and
+    // before Qt sees the arguments at all: Qt would reject an option it does not
+    // know, so both forms are taken out of argv here rather than parsed later.
+    // `-c FILE` names one settings file and takes its colours from the `theme.conf`
+    // beside it; `--config-dir DIR` names the directory both live in. Either may sit
+    // before or after a command word, and because they are stripped first, the saved
+    // theme still supersedes everything when no flag is given at all.
+    for (int i = 1; i < argc;) {
+        const std::string_view word = argv[i];
+        const bool dir_form = word == "--config-dir";
+        const bool file_form = word == "-c" || word == "--config";
+        if (!dir_form && !file_form) {
+            ++i;
+            continue;
         }
+        if (i + 1 >= argc) {
+            std::cerr << "kai-term: " << word << " needs a value\n\n";
+            print_help();
+            return 2;
+        }
+        if (dir_form)
+            kai::setConfigDir(argv[i + 1]);
+        else
+            kai::setConfigFile(argv[i + 1]);
+        for (int j = i; j + 2 <= argc; ++j)
+            argv[j] = argv[j + 2]; // keeps the closing nullptr where it belongs
+        argc -= 2;
     }
 
     std::string_view first;
@@ -70,6 +75,20 @@ int main(int argc, char **argv)
     if (first == "--help" || first == "-h") {
         print_help();
         return 0;
+    }
+
+    // A word that starts with a dash and is none of the above is a mistake, and the
+    // list of what can be typed is the answer to a mistake. It used to open a window,
+    // which is how `kai-term --confg-dir x` came to look like a working terminal
+    // wearing the wrong settings. (Kaida, 2026-11-20: "using an invalid argument
+    // should open the --help menu listing all possible argument to use with
+    // kai-term".) Qt's own options still reach it the way they always have from a
+    // script and from the tests — through the environment, where `QT_QPA_PLATFORM`
+    // and its neighbours live.
+    if (first.size() > 1 && first[0] == '-' && first != "--attach-to") {
+        std::cerr << "kai-term: unknown option " << first << "\n\n";
+        print_help();
+        return 2;
     }
 
     // Sessions are handled before Qt exists: they are a conversation with a daemon

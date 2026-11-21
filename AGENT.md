@@ -47,6 +47,10 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
   once you walk to it — the mixer titled with the colour it is editing, and the rows a
   couple of pixels apart (`tests/app_window.cpp`; `build/kai-term-panelview` for the
   pictures).
+- Verified by running the real binary: `--help` one row per argument, `<command> --help`
+  and `help <command>` one page each, an unknown dash-word answered with the page and exit
+  2 instead of a window, and `-c FILE` taking its colours from the `theme.conf` beside it
+  (`tests/cli_surface.cpp`, `tests/config.cpp`).
 - Verified offscreen: the two transparency settings reach the window's alpha, the picker
   previews them as they are typed, and they save to `kai-term.conf` as fractions
   (`tests/app_window.cpp`, the transparency block). Not verified on a live compositor —
@@ -448,6 +452,32 @@ test that hangs should still cost a test and not a machine.
   pixels — the sentence is the pixel furthest from the strip's own ground — and ask whether
   the last row sits above the two words; the pixel ones fail without the fix, and the
   row-and-word one fails with the fallback font switched off.
+
+- 2026-11-20: **the command line answers a mistake with the list of what you can type.**
+  IDEA.md asked for `-c /path/to/config.conf`, for an invalid argument to bring up the
+  help, and for that help rewritten with one argument per row and a per-command page
+  (`kai-term list --help`). The old help was two texts — prose in `main.cpp`, a list in
+  `runSessionCommand` — and they had already started to disagree, so there is now one
+  table of commands in `cli.hpp` and both pages are drawn from it; `--help`, `help`,
+  `help <command>` and `<command> --help` are four ways to ask for the same two pages.
+  `-c FILE` reads the settings from FILE and the colours from the `theme.conf` beside it,
+  because one argument should decide one thing; a directory is accepted for it too, since
+  path completion hands over a directory as often as a file, and `setConfigDir` now clears
+  a file named earlier rather than leaving half of the previous answer standing (the first
+  `-c` test caught exactly that).
+  The rule that changes behaviour for a person is the small one: a dash-word the program
+  does not know used to fall through to *"not a session verb, so a window"*, which is how
+  `kai-term --confg-dir x` came to open a working-looking terminal wearing the default
+  settings. It prints the page and exits 2 now. That also meant `help` had to become a
+  routed word — `kai-term help attach` opened a real window during this change, which is
+  the second time this week that a test written before the code it tests has caught
+  something the author had not thought about. Qt's own options are unaffected in the way
+  anyone uses them from here: `QT_QPA_PLATFORM` and its neighbours come through the
+  environment, and `QT_QPA_PLATFORM` is what the whole suite runs on.
+  Fifteen checks in `tests/cli_surface.cpp` and seven in `tests/config.cpp`, each seen to
+  fail with its belt off: with the two guards removed the typo'd option opens a window and
+  is killed for taking too long (`code 200`), and `list --help` errors instead of
+  answering.
 
 - 2026-11-20: **light what the keys are on, and let the rows breathe.** IDEA.md asked for
   three things on the panels: the mixer titled with the colour it is editing, a couple of

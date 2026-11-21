@@ -227,7 +227,51 @@ inline std::string& configDirOverride() {
     static std::string dir;
     return dir;
 }
-inline void setConfigDir(const std::string& dir) { configDirOverride() = dir; }
+// Which file `-c FILE` named, when it named one. Kept apart from the directory
+// because the two say different things: the directory says where both files live,
+// the file says which one holds the settings and leaves the colours to the
+// `theme.conf` that lives beside it.
+inline std::string& configFileOverride() {
+    static std::string file;
+    return file;
+}
+inline void setConfigDir(const std::string& dir) {
+    // The directory is a complete answer on its own, so any file named before it is
+    // forgotten. Two setters that each mean "the configuration lives here" must not
+    // leave a half of the earlier answer standing.
+    configFileOverride().clear();
+    configDirOverride() = dir;
+}
+
+// `-c FILE` / `--config FILE`: the settings come from FILE, and the colours from the
+// `theme.conf` in the same directory — one argument for one decision, which is "run
+// against this configuration". A directory is accepted for the same reason a shell
+// completes one: the question is really where the files are, and the directory answer
+// is the same answer with both files in their usual names.
+// (Kaida, 2026-11-20: "we need a way to select a different config file to read from on
+// launch ... instead of a Dir because theme is now defined in the config".)
+inline void setConfigFile(const std::string& path) {
+    if (path.empty()) {
+        // The way to say "no file", which is also the way to say "no directory":
+        // the two were set together, and an empty directory has always meant the
+        // usual place.
+        configFileOverride().clear();
+        configDirOverride().clear();
+        return;
+    }
+    struct stat status {};
+    if (::stat(path.c_str(), &status) == 0 && S_ISDIR(status.st_mode)) {
+        setConfigDir(path);
+        return;
+    }
+    configFileOverride() = path;
+    const std::size_t slash = path.find_last_of('/');
+    // A bare name means the file sits where the program was started from, so its
+    // theme sits there too. Leaving the directory unset would send the colours off
+    // to the home directory while the settings stayed here, which is two
+    // configurations answering one question.
+    configDirOverride() = slash == std::string::npos ? std::string(".") : path.substr(0, slash);
+}
 
 // Two files, because two kinds of thing get set. `kai-term.conf` is how the
 // program behaves; `theme.conf` is how it looks. The split is not tidiness
@@ -244,6 +288,8 @@ inline void setConfigDir(const std::string& dir) { configDirOverride() = dir; }
 inline std::string settingsFilePath() {
     if (const char* override_path = std::getenv("KAI_TERM_CONFIG"))
         return override_path;
+    if (!configFileOverride().empty())
+        return configFileOverride();
     if (!configDirOverride().empty())
         return configDirOverride() + "/kai-term.conf";
     const std::string root = configRoot();
