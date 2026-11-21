@@ -1449,9 +1449,30 @@ int main(int argc, char** argv) {
             },
             4000);
         expect("and a file that names no shape leaves it a program's to pick", moved);
+        // The blink's default runs the other way round: a file that says nothing blinks,
+        // because that is what a terminal does until its person says otherwise.
+        // (Kaida, 2026-11-21: asked whether the default should blink, and said yes.)
+        expect("and a file that says nothing about the blink blinks",
+               free.cursorBlink() == 500 && free.cursorBlinkRunning());
         free.discardOnClose();
         free.shutdown();
         pump(200);
+
+        // And 0 is an answer rather than an absence: the window that reads it starts no
+        // timer at all, which is the difference between a steady cursor and a terminal
+        // that wakes twice a second to paint nothing.
+        const std::string steady_cfg = root + "/steady-cursor";
+        std::ofstream(steady_cfg) << "font_size = 15\ncursor_blink = 0\n";
+        ::setenv("KAI_TERM_CONFIG", steady_cfg.c_str(), 1);
+        kai::AppWindow steady(kai::startWindowBackend(24, 80));
+        steady.show();
+        pump(200);
+        expect("and a blink of 0 is a cursor that stays lit and no timer running",
+               steady.cursorBlink() == 0 && !steady.cursorBlinkRunning());
+        steady.discardOnClose();
+        steady.shutdown();
+        pump(200);
+        std::remove(steady_cfg.c_str());
         std::remove(all_cfg.c_str());
         std::remove(bare_cfg.c_str());
         ::setenv("KAI_TERM_CONFIG", (root + "/no-such-config").c_str(), 1);

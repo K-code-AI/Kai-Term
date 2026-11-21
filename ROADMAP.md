@@ -332,9 +332,8 @@ plain Ctrl+S still reaches the shell from the window, where it means stop and st
 
 Needed:
 
-- Horizontal and vertical splits, with `setPanes()` called with the cells each pane owns.
-- Pane selection and resizing.
-- Multiple windows and tabs.
+- Horizontal and vertical splits, pane selection and resizing, and multiple windows and
+  tabs — see *Replacing tmux* below, which is the order they go in and why.
 - The attached view's **persistent** status line — which session, what is running in it.
   The escape is built: Ctrl+S leaves the view and keeps the shell, and a notice on entry
   says so. A status line that survives a full-screen program is the harder thing and is
@@ -347,6 +346,54 @@ Needed:
   window with four panes asks once about all four. That wants the tabs and splits above
   to exist first — today a window holds exactly one shell, and asking about all of them
   and asking about this one are the same question.
+### Replacing tmux — agreed with Kaida on 2026-11-21
+
+The goal said out loud, because it changes what several of these features are *for*: kai-term
+is the thing you keep open, and neither `tmux` nor another terminal emulator is needed
+alongside it. That is a different target than "have features like tmux". tmux is useful
+because a session carries the work — including where the work is *arranged* — so the test
+here is not how many commands exist but whether the layout survives the thing showing it.
+
+**The daemon owns the layout.** Decided 2026-11-21, over the alternative that was days
+faster. Splits, tabs, sizes and which pane is focused belong to the session; a window is a
+view of it, and so is an attached terminal. The cost is paid before anything is visible: the
+wire grows layout messages and the daemon grows a record of something it does not draw. What
+it buys is the whole point — attach from a tty, from a second window, or after the window
+that made the layout was closed, and the arrangement is the arrangement. The window-local
+version would have worked quickly and would have left an attached terminal permanently unable
+to show your splits, with a state migration behind it whenever that stopped being true.
+
+The order, and the reason each step is where it is:
+
+1. **Layout in the session record** — windows, each a tree of panes with sizes, plus the
+   protocol to read and change it. Nothing on screen yet. Everything below is a client of
+   this, which is why it cannot come after them.
+2. **Panes in the window** — `setPanes()` with the cells each pane owns, focus, resize, one
+   divider drag at a time. M3 built the pane-scoped selection and clipping in 2026-11 and
+   said out loud that it was waiting for a host that draws splits; this is that host.
+3. **Tabs and windows** — **Ctrl+Shift+N** a new tab, **Ctrl+Shift+H** between side-by-side
+   and a tab view, both reserved since 2026-11-17 so nothing else could take them.
+4. **The attached view emulates the screen instead of relaying bytes.** The status line above
+   already needs it; so do panes in a tty, and the prefix key below. kai-term is in an odd
+   position here — `screen.hpp` and the parser are Qt-free, which is how the tests run
+   headless at all — so what is missing is a raw-mode input loop, a repaint that writes a
+   diff rather than a screen, and keys encoded back out. It is weeks, and it is the biggest
+   single unlock on this list.
+5. **A prefix key in the attached view, chords in the window.** The split is forced, not
+   stylistic: a tty cannot tell Ctrl+Shift+S from Ctrl+S (above), so a chord that works in a
+   window cannot cross that boundary. The window keeps the chords it has; the attached view
+   gets a prefix, which is also the one piece of tmux muscle memory worth importing on
+   purpose.
+6. **The odds and ends people miss on the first day**, each small: copy-mode, per-pane
+   titles, zooming one pane to fill the view, a layout file, `pipe-pane`-style logging.
+   `kai-term send ID TEXT` is already `send-keys`.
+
+Two things this does not decide yet, and both want a conversation rather than a default: the
+shape of the layout record (a tree of splits, which is what falls out of how panes are drawn,
+or a fixed grid with a name), and whether a tab *is* a session or a window of a session that
+itself holds panes. The second one decides what `kai-term attach` shows when the thing you
+attach to has three tabs.
+
 - **A config file, built 2026-11-19** (`src/config/config.hpp`, tested headless in
   `tests/config.cpp` and wired in `tests/app_window.cpp`). key=value, comments allowed,
   unknown keys announced with their line rather than skipped, environment beats file —

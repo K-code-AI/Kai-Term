@@ -265,7 +265,7 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 363 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 365 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
@@ -574,6 +574,7 @@ scrollback     = 1000           # lines a screen remembers above its top edge (0
 padding        = 10             # pixels of air between the grid and the window edge (0-64)
 cursor_style   = underline      # block | bar | underline; named here, the window holds it
 cursor_blink   = 500            # ms each half of a blink lasts; 0 keeps the cursor lit
+                                # (500 is what a window does when the line is absent)
 theme        = Default.conf     # which colours to wear: a name in themes/, or a path
 
 # ~/.config/kai-term/theme.conf
@@ -611,9 +612,10 @@ own shape; `CSI 0 q` and `CSI 9 q`, the standard's "user default", come back to 
 your file said.
 
 **`cursor_blink` is the cursor's own timing.** The number is how long each half lasts: lit
-for that many milliseconds, dark for the same again. `0` — the default — is not a switch
-that happens to be off but the answer *stay lit*, and the window then starts no timer at
-all. A rate is the setting rather than a yes/no because a cursor you cannot find in a full
+for that many milliseconds, dark for the same again, and 500 if the line is absent — because
+a blinking cursor is what a terminal does until its person says otherwise. `0` is not a
+switch that happens to be off but the answer *stay lit*, and the window then starts no timer
+at all. A rate is the setting rather than a yes/no because a cursor you cannot find in a full
 screen and a metronome behind the words you are reading are both complaints about the same
 number. It lives beside `cursor_style` in the settings menu, where the arrows walk it fifty
 milliseconds a press. The blinking shapes of `DECSCUSR` (`CSI 1 q`, `3 q`, `5 q`) still only

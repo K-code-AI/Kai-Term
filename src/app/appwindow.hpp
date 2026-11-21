@@ -220,8 +220,9 @@ public:
             if (config_.cursor_style)
                 setCursorStyle(*config_.cursor_style);
             // The blink, on the same terms as the shape: what the file says is what the
-            // window does, and a file that says nothing says steady.
-            setCursorBlink(config_.cursor_blink.value_or(0));
+            // window does. A file that says nothing says blink, because that is what a
+            // terminal does until its person says otherwise; a file that says 0 means it.
+            setCursorBlink(config_.cursor_blink.value_or(kDefaultCursorBlinkMs));
             if (config_.cols || config_.rows)
                 resize(sizeForGrid(config_.rows.value_or(rows()), config_.cols.value_or(cols())));
         }

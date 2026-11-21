@@ -654,6 +654,12 @@ public:
         screen_.setDefaultCursorShape(shapeFor(style));
         update();
     }
+    // What a window does about the blink when nobody has said: it blinks, like the
+    // terminals everybody arrives from. `cursor_blink = 0` in the file is the word for
+    // steady, and it is a real answer rather than an off switch.
+    // (Kaida, 2026-11-21: asked whether the default should blink, and said yes.)
+    static constexpr int kDefaultCursorBlinkMs = 500;
+
     // The cursor's blink: how long each half lasts in milliseconds, 0 meaning it stays
     // lit. Nothing animated before this — the DECSCUSR blinking shapes chose a shape and
     // left the timing alone — so the rate belongs to the window, in the file, where a

@@ -50,8 +50,8 @@ one a snapshot replays on attach, and the shape that survived a fresh start but 
 session, because starting or moving onto a session builds a new screen and the lock was
 written on the old one. That is why the window keeps the shape it was told, not only the
 screen. Unnamed, a program still picks its own shape and `CSI 0 q` returns to the file's.
-`cursor_blink` is the same cursor's timing: milliseconds per half-blink, `0` meaning it
-stays lit and no timer runs at all. And all twenty-two can be chosen inside the window itself —
+`cursor_blink` is the same cursor's timing: milliseconds per half-blink, 500 when the file
+says nothing, `0` meaning it stays lit and no timer runs at all. And all twenty-two can be chosen inside the window itself —
 **Enter on the settings menu's `theme` row** opens the colour editor over the grid, previews
 on the window as you type, and writes the changed lines back to `theme.conf`. It has no key
 of its own: Ctrl+Shift+P used to jump straight in and is gone, so the colours live where the
@@ -498,7 +498,7 @@ Individual results:
 - `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
 - `./build/tests/kai-term-widget-session` → `PASS: 41 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
-- `./build/tests/kai-term-app-window` → `PASS: 362 application window checks passed`.
+- `./build/tests/kai-term-app-window` → `PASS: 365 application window checks passed`.
 - `./build/tests/kai-term-close-prompt` → `PASS: 24 close prompt checks passed`.
 - `./tests/version.sh ./build/kai-term` → `Kai-Term 0.0.0`.
 - `KAI_TERM_TEST_NO_WINDOW=1 ./build/kai-term --help` → usage text printed; no Qt window opened.
