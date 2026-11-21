@@ -42,6 +42,11 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
 - Seen on the live window: the preview's ground switch — the sentence on the window's own
   background, and the word at the end of the strip walking it to black and white, by
   pointer and by arrow (Kaida, 2026-11-20: "The ground now works I saw it").
+- Verified offscreen: one thing lit per panel and it is the thing the keys are on — the
+  value in the colour list and the settings menu, the colour band in the mixer, the word
+  once you walk to it — the mixer titled with the colour it is editing, and the rows a
+  couple of pixels apart (`tests/app_window.cpp`; `build/kai-term-panelview` for the
+  pictures).
 - Verified offscreen: the two transparency settings reach the window's alpha, the picker
   previews them as they are typed, and they save to `kai-term.conf` as fractions
   (`tests/app_window.cpp`, the transparency block). Not verified on a live compositor —
@@ -443,6 +448,36 @@ test that hangs should still cost a test and not a machine.
   pixels — the sentence is the pixel furthest from the strip's own ground — and ask whether
   the last row sits above the two words; the pixel ones fail without the fix, and the
   row-and-word one fails with the fallback font switched off.
+
+- 2026-11-20: **light what the keys are on, and let the rows breathe.** IDEA.md asked for
+  three things on the panels: the mixer titled with the colour it is editing, a couple of
+  pixels more air between the elements, and "the highlight shouldn't color the whole row,
+  it should look cleaner, and that on all settings page". The rule that fell out of the
+  third one is *light the thing the keys are standing on*: in the colour list and the
+  settings menu that is the value — the six digits, the number — and in the mixer it is the
+  colour band, because there the band and the number are the same value seen two ways and
+  the band is the one you push (Kaida, on what to light instead: "highlight the value being
+  editied except on the colour mixer where the whole color band should be highlighted
+  instead of the numerical value"). The band is painted *behind* the ramp rather than over
+  it, so lighting a band never paints over one of its colours; where a row has no band —
+  the hex row — the digits get it, as everywhere else. A row that *is* the answer keeps its
+  whole-line band: the question overlay and the session list have no value to light, and
+  there "this line" is the true thing to say.
+  Two things the first cut got wrong and the pictures caught. A band sized to the column's
+  widest value gave `font size = 14` a nine-cell bar running into its arrows, which is the
+  same lie as a full-row band and uglier; it is measured against the row's own text now.
+  And the band was being painted after the text that it sits behind, because measuring the
+  text was the reason to compute it early — so `14` disappeared under its own highlight.
+  `kPanelRowGap` is in pixels, not cells, so the air does not shrink away on the very small
+  panel that most needs it; `panelFont` takes the room as `extra_h` so a panel that has to
+  shrink accounts for what it is adding, and the list's `visible` row count divides by
+  `ch + gap` like everything else that measures a row.
+  `OverlayHit` now records `highlight`, the one lit rect, because "only one thing is lit"
+  is a rule worth checking and a test that has to work out where a highlight was drawn is a
+  test that disagrees with the panel about what a row is. Six checks, each confirmed to
+  fail with its belt off: painting the row again loses the value checks in the menu and the
+  list, dropping the band in the mixer and the name from the title lose theirs, and setting
+  the gap to zero loses the air.
 
 - 2026-11-20: **the preview's ground is a choice, not a guess.** The ground that evening
   was decided *for* you: the panel's own ground unless the colour came within a fifth of

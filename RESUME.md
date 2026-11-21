@@ -39,7 +39,8 @@ and writes the changed lines back to `theme.conf`. **Enter on a colour opens the
 the sample sentence painted in the colour you are mixing (the only thing on that menu
 wearing it), six bars (red, green, blue, hue, saturation,
 lightness) you can push or click, and the hex digits for when you already know what you
-want; the window changes while you push, and the list's `save` is what writes the file.
+want; the window changes while you push, and the list's `save` is what writes the file. The
+panel is titled with the colour it is editing — *Mix foreground*, *Mix colour 7*.
 The sentence sits on the window's own ground, at its own opacity, and the word at the end
 of the strip switches between that, black and white — because mixing the background means
 the sentence is the colour of the thing it is written on, and that is worth seeing rather
@@ -51,6 +52,10 @@ that cursor when a typed number wants one; the colour list is the one panel wher
 arrows still choose between six digits. Each panel takes a smaller drawing font until it
 fits the window it is opened in, so a small window gets a whole menu rather than one painted
 off its edges; the terminal's own font is never part of that.
+What is lit is what the keys are on: the value in the colour list and the settings menu, the
+colour band in the mixer. A whole row painted behind it says *which line* when the question
+was *which number*, and rows sit a couple of pixels apart so each reads as a thing you can
+stand on.
 Saving is the word at the bottom of every one of these panels, reached by walking: Enter
 opens what it is standing on and answers a word when it is on one, and Esc cancels from
 anywhere. It is colours and nothing else; how

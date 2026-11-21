@@ -385,6 +385,15 @@ Needed:
   Qt-free and keeps the wheel in tenths so the bars and the wheel stay one colour
   (`rgb → hsl → rgb` is exact for every colour); the app-window test drives a bar with the
   pointer and reads the mixed colour off the disk afterwards.
+- **Light what the keys are on, built 2026-11-20.** The highlight used to fill the row; now
+  it goes behind the value in the colour list and the settings menu, and behind the colour
+  band in the mixer — painted behind the ramp, so lighting a band never paints over one of
+  its colours — and the mixer is titled with the colour it is editing. Rows take two pixels
+  of air between them, in pixels rather than cells so the air survives a small panel, and
+  `panelFont` accounts for them. A row that *is* the answer — a line in the question
+  overlay, a session in the list — keeps its whole-line band, because there "this line" is
+  the true thing to say. `OverlayHit::highlight` records the one lit rect, which is what the
+  checks ask rather than a guess at where a band was drawn.
 - **A menu fits the window it is in, built 2026-11-20.** A panel is measured in cells from
   its own content and knew nothing about the window's size, so a small window got a panel
   painted off both its edges, its hint under its rows and its two words on top of them.

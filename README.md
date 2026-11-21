@@ -541,7 +541,9 @@ lying about where the colour goes. A knob sits where the value is, so the bar re
 something you can push. Pushing
 one changes the window while the button is down, because a preview you have to accept
 before you can judge is not a preview. Enter hands the colour back into the row it came
-from; Esc leaves it as it was; the list's `save` is what writes the file.
+from; Esc leaves it as it was; the list's `save` is what writes the file. The panel is
+titled with the colour it is editing — *Mix foreground*, *Mix cursor*, *Mix colour 7* —
+because a panel that is about one colour should say which.
 
 What the sentence sits on is yours to choose, and the word at the end of the strip is the
 switch: **`background`**, the window's own ground as the window shows it, at
@@ -558,16 +560,21 @@ they walk the three grounds. The colour menu is the one
 place they mean something else: six hex digits to choose between. Where a typed number does
 want a cursor, `Shift+Left` and `Shift+Right` move it.
 
-One thing is lit at a time. The highlight sits on the row the keys are standing on and
-nowhere else, so walking down to `save` takes it off the last row instead of leaving two
-answers on the panel.
+One thing is lit at a time, and what gets lit is the thing the keys are standing on rather
+than the line it sits in: in the colour list and the settings menu that is the value — the
+six digits, the number — and in the mixer it is the colour band itself, which is the same
+value seen as something you push. A row painted from edge to edge says *which line*, when
+the question was always *which number*. Walking down to `save` takes the highlight off the
+table altogether and puts it on the word.
 
 A menu is laid out from its own content — a title, a table, a line of keys along the bottom
 — and none of that content knows how big the window is. So a panel takes a smaller drawing
 font until it fits the window it is in, down to a size below which words stop being words,
 and everything in it is measured in that font. The terminal's own font is never part of
 that: the window got smaller, not your type. A short list still scrolls, and the hint line
-at the bottom gives up its middle before it gives up its place.
+at the bottom gives up its middle before it gives up its place. Rows sit a couple of pixels
+apart rather than exactly one row-height apart, which is what lets each of them read as a
+thing you can stand on.
 
 The panels paint themselves at full strength whatever the transparency settings say.
 Transparency is a decision about the terminal — how much of the desktop shows through the

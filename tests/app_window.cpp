@@ -1152,8 +1152,7 @@ int main(int argc, char** argv) {
         // last row wearing the highlight as well, and a panel with two things lit is
         // a panel with two answers to the same question. (Kaida, 2026-11-20: "the
         // last options of Colors and settings should not stay highlighted when we go
-        // down to save".) The pixel is taken just inside the top of the row, where
-        // the highlight is and the glyphs are not.
+        // down to save".)
         for (int i = 0; i < 3; ++i) { // the first row back to `cancel`, `save`, the last row
             press_key(Qt::Key_Up);
             pump(20);
@@ -1162,12 +1161,37 @@ int main(int argc, char** argv) {
                                                            window.settingsCursor().first ==
                                                                row_count - 1);
         const QRectF last_row = window.settingsRowRect(row_count - 1);
-        const QPoint band(static_cast<int>(last_row.center().x()),
-                          static_cast<int>(last_row.top()) + 2);
-        const QColor lit = window.grab().toImage().pixelColor(band);
+        // What is lit is the value the keys are on, not the line it sits in: a band
+        // across the whole row answers "which line" when the question was "which
+        // number". (Kaida, 2026-11-20: "the highlight shouldn't color the whole row,
+        // it should look cleaner".)
+        const QRectF value_band = window.settingsHighlightRect();
+        expect("what is lit is the value, and only the value",
+               !value_band.isNull() && last_row.contains(value_band) &&
+                   value_band.width() < last_row.width() * 0.6);
+        // A pixel near the right end of the band, past the last glyph, where only a
+        // highlight could be.
+        const QPoint band(static_cast<int>(value_band.right()) - 2,
+                          static_cast<int>(value_band.center().y()));
+        const QColor selection(window.theme().selection.r, window.theme().selection.g,
+                               window.theme().selection.b);
+        expect("and the highlight is really painted there",
+               window.grab().toImage().pixelColor(band) == selection);
         walk(1); // and one step down, onto `save`
-        const QColor dim = window.grab().toImage().pixelColor(band);
-        expect("walking onto `save` takes the highlight off the last row", lit != dim);
+        expect("walking onto `save` takes the highlight off the last row",
+               window.grab().toImage().pixelColor(band) != selection);
+        expect("and puts it on the word, below the table altogether",
+               !window.settingsHighlightRect().isNull() &&
+                   !last_row.intersects(window.settingsHighlightRect()));
+
+        // Rows sit a little apart. Painted exactly one row-height apart they read as
+        // one solid block of text with a highlight somewhere in it. (Kaida,
+        // 2026-11-20: "every elements could do with 1 or 2 px more space in between
+        // them for breathing".)
+        const QRectF first_row = window.settingsRowRect(0);
+        const QRectF second_row = window.settingsRowRect(1);
+        expect("and the rows have air between them",
+               second_row.top() - first_row.bottom() >= 1.5);
 
         open_menu();
         pump(120);
@@ -1308,10 +1332,21 @@ int main(int argc, char** argv) {
         open_picker();
         pump(60);
         expect("the picker is open before the mixer is asked for", window.pickerActive());
+        // In the list the lit thing is the six digits, and the swatch beside them
+        // stays a plain square: it is the colour, not a number anybody is standing
+        // on.
+        expect("the list lights the value and leaves the swatch alone",
+               !window.pickerHighlightRect().isNull() &&
+                   window.pickerRowRect(0).contains(window.pickerHighlightRect()) &&
+                   !window.pickerHighlightRect().intersects(window.pickerSwatchRect(0)));
         press(Qt::Key_Return);
         pump(60);
         expect("Enter opens the mixer for the colour under the highlight",
                window.mixerActive());
+        expect("and it says at the top which colour it is mixing",
+               window.mixerTitleText() == QStringLiteral("Mix foreground"));
+        expect("and the thing lit is the colour band, not the row it hangs in",
+               window.mixerHighlightRect() == window.mixerBarRect(0));
         expect("and the list stays behind it, because mixing is a detour",
                window.pickerActive());
 
