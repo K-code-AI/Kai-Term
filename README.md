@@ -265,7 +265,7 @@ Verified results on this machine:
   including a window switched from one shell to another: the screen it shows is the one
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
-- `kai-term-app-window` prints `PASS: 379 application window checks passed`: a window
+- `kai-term-app-window` prints `PASS: 386 application window checks passed`: a window
   gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
@@ -441,7 +441,14 @@ nothing can be kept.
   walking the list cannot rename the theme you were about to save — and while it is open the
   arrows walk a caret inside the word, a letter lands where the caret is, Backspace takes
   the letter before it, Enter confirms and gets you out, and Esc puts the word back as it
-  was and leaves the panel up. What Enter does there is said along the bottom of the panel when the
+  was and leaves the panel up. The field has a fixed mouth — from the value column to the
+  panel's edge — and a name longer than that scrolls inside it, following the caret while you
+  type and showing the front of the word when the field is shut, with a `…` on whichever end
+  is off-screen. It was drawn at whatever length the name happened to be, which took a long
+  name out through the panel's side and off the window. Only the view scrolls: the whole name
+  is still what the field holds and what a save writes.
+  (Kaida, 2026-11-21: "A theme name that is too long will get out of the window breaking the
+  ui when in the theme editor".) What Enter does there is said along the bottom of the panel when the
   keys are standing on the name, because the line under the panel is where this window says
   its keys — a note written beside the name used to run out of the panel's side. Saving
   under a name that is already a theme asks first: the

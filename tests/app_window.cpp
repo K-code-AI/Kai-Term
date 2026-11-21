@@ -2102,6 +2102,97 @@ int main(int argc, char** argv) {
     }
 
     {
+        // A theme whose name is longer than the field it is shown in. The name was drawn at
+        // whatever length it happened to be, which took it out through the panel's side,
+        // across the terminal and off the window — and this panel is barely wider than the
+        // longest colour name in it, so there was a lot of name to run off with.
+        // (Kaida, 2026-11-21: "A theme name that is too long will get out of the window
+        // breaking the ui when in the theme editor".)
+        const std::string home = root + "/long-name-home";
+        const std::string themes = home + "/kai-term/themes";
+        static_cast<void>(::mkdir(home.c_str(), 0755));
+        static_cast<void>(::mkdir((home + "/kai-term").c_str(), 0755));
+        static_cast<void>(::mkdir(themes.c_str(), 0755));
+        const std::string long_name = "one-that-keeps-going-and-going-past-the-window";
+        std::ofstream(home + "/kai-term/kai-term.conf")
+            << "font_size = 14\ntheme = " << long_name << ".conf\n";
+        std::ofstream(home + "/kai-term/theme.conf") << "background = #102030\n";
+        std::ofstream(themes + "/" + long_name + ".conf")
+            << "background = #050607\nforeground = #f5f6f7\n";
+        ::setenv("XDG_CONFIG_HOME", home.c_str(), 1);
+        ::unsetenv("KAI_TERM_CONFIG");
+        ::unsetenv("KAI_TERM_THEME");
+        kai::AppWindow window(kai::startWindowBackend(24, 80));
+        window.show();
+        static_cast<void>(waitFor([&window] { return !window.sessionName().empty(); }));
+        pump(140);
+        const auto press_key = [&window](int key, const QString& text = QString(),
+                                         Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            QKeyEvent ev(QEvent::KeyPress, key, mods, text);
+            QCoreApplication::sendEvent(&window, &ev);
+        };
+        expect("a window wears the theme with the impossible name",
+               window.theme().background.r == 0x05);
+        press_key(Qt::Key_K, QString(), Qt::ControlModifier | Qt::ShiftModifier);
+        pump(140);
+        const int last_row = window.settingsRowCount() - 1;
+        for (int guard = 0;
+             guard < 24 && (window.settingsCursor().first != last_row ||
+                            window.settingsCursor().second != 0);
+             ++guard) {
+            press_key(Qt::Key_Up);
+            pump(20);
+        }
+        press_key(Qt::Key_Return); // into the editor, on the theme the row names
+        pump(180);
+        expect("the editor opens on that theme", window.pickerActive());
+        // What scrolls is the view of the name. The word itself is untouched, and it is the
+        // word a save writes — a field that elided what it held would save the ellipsis.
+        expect("and the whole name is still the name, shown or not",
+               window.pickerNameText().toStdString() == long_name &&
+                   window.pickerTargetNameText().toStdString() == long_name + ".conf");
+        for (int i = 0; i < 3; ++i)
+            press_key(Qt::Key_Up); // off the first colour: `cancel`, `save`, the name
+        pump(80);
+        const QRectF panel = window.pickerPanelRect();
+        const QRectF name_row = window.pickerNameRect();
+        expect("what is lit is a field, and the field is inside its panel",
+               !panel.isNull() && panel.contains(window.pickerHighlightRect()));
+        // The air to the right of the panel, along the row the name lives on, belongs to the
+        // terminal. Count anything painted out there.
+        const auto ink_outside = [&window, &panel, &name_row] {
+            const QImage shot = window.grab().toImage();
+            const int from = static_cast<int>(panel.right()) + 2;
+            if (from >= shot.width())
+                return 0;
+            const QColor ground = shot.pixelColor(from, static_cast<int>(name_row.center().y()));
+            int painted = 0;
+            for (int x = from; x < shot.width(); ++x) {
+                for (int y = static_cast<int>(name_row.top()); y < name_row.bottom(); ++y) {
+                    if (shot.pixelColor(x, y) != ground)
+                        ++painted;
+                }
+            }
+            return painted;
+        };
+        expect("none of the name is painted outside the panel", ink_outside() == 0);
+        press_key(Qt::Key_Return); // open the field, where the caret goes to the end
+        pump(80);
+        expect("opening it puts the caret at the end of the word",
+               window.pickerEditing() &&
+                   window.pickerCaret() == static_cast<int>(long_name.size()));
+        expect("and the field has scrolled to the caret without leaving the panel",
+               ink_outside() == 0);
+        press_key(Qt::Key_Escape);
+        pump(60);
+        press_key(Qt::Key_Escape);
+        pump(80);
+        window.discardOnClose();
+        window.shutdown();
+        pump(200);
+    }
+
+    {
         // The colour editor is a row of the settings menu now, not a key of its own, and
         // the menu waits behind it with everything you had changed still changed.
         // (Kaida, 2026-11-20: "Instead of having a keybind for the Theme Editor

@@ -1023,3 +1023,14 @@ test that hangs should still cost a test and not a machine.
   the preview is the answer until it is saved; the file is where the answer goes. A panel that
   reads one from each will agree with itself on the themes it was written against and lie on
   every other one.
+
+- A field shows what it can show and says the rest is off-screen; it does not stretch until it
+  leaves the window. A theme's name was drawn at whatever length it happened to be, inside a
+  panel barely wider than the longest colour name in it, so a descriptive name walked out
+  through the panel's side, across the terminal and off the display. The field now has a fixed
+  mouth and the word scrolls inside it — following the caret while you type, showing the front
+  of the word when the field is shut, with a mark on whichever end is out of view. Only the
+  view scrolls: the field still holds the whole name, and a save still writes the whole name,
+  which is the difference between a viewport and a lie.
+  (Kaida, 2026-11-21: "A theme name that is too long will get out of the window breaking the
+  ui when in the theme editor".)

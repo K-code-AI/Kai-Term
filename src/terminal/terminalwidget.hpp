@@ -3793,6 +3793,51 @@ private:
     // more cohesive".)
     QColor band_ink(int alpha = 255) const { return panel_ink(theme_.selection_foreground, alpha); }
 
+    // Which part of a theme's name its field shows, and whether either end is off-screen.
+    // The caret is handed in when the field is open and the window follows it, so the letter
+    // you are about to type next to is never off the panel; a shut field shows the front of
+    // the word, which is the part a person recognises. The room asked for has the ellipses
+    // already taken out of it, so a cut word is shorter rather than overflowing by a mark.
+    struct NameFieldView {
+        int start = 0;
+        int end = 0;
+        bool cut_front = false;
+        bool cut_back = false;
+    };
+
+    static NameFieldView nameFieldView(const QString& name, int caret, double room_px,
+                                       const QFontMetricsF& fm) {
+        NameFieldView view{0, name.size(), false, false};
+        if (name.isEmpty() || fm.horizontalAdvance(name) <= room_px)
+            return view;
+        const auto fits = [&](int from, int to) {
+            return fm.horizontalAdvance(name.mid(from, to - from)) <= room_px;
+        };
+        if (caret < 0) { // shut: the front of the word, and an ellipsis where the rest is
+            int to = 0;
+            while (to < name.size() && fits(0, to + 1))
+                ++to;
+            view.end = to;
+            view.cut_back = to < name.size();
+            return view;
+        }
+        // Slide the window along until it holds the caret with something past it, or until
+        // the caret is the last thing it can hold — which is where a caret at the end of a
+        // word lives.
+        for (int from = 0; from <= caret; ++from) {
+            int to = from;
+            while (to < name.size() && fits(from, to + 1))
+                ++to;
+            view.start = from;
+            view.end = std::max(to, from);
+            if (caret >= from && caret <= to && (to > caret || to == name.size()))
+                break;
+        }
+        view.cut_front = view.start > 0;
+        view.cut_back = view.end < name.size();
+        return view;
+    }
+
     // The mixer's title, naming the colour it is editing. "Mix colour" asks which
     // colour and leaves the question open; the row it came from has a name, and a
     // panel that edits one thing should say which. (Kaida, 2026-11-20: "The Colour
@@ -4146,11 +4191,28 @@ private:
         const double name_y = words_y - name_air - fm.ascent() * 0.15;
         const double value_x = table_x + label_w * cw;
         const QString name_value = picker_name_;
+        // The name is a field with a fixed mouth, not a label that stretches for as long as
+        // the word lets it: from the value column to the panel's own right edge, which is
+        // air the panel already reserves. A theme named for the machine it belongs to is
+        // longer than that, and the word used to be drawn at whatever length it happened to
+        // be — out through the panel's side, across the terminal and off the window, with
+        // the panel's border left somewhere behind it. What does not fit now scrolls, and a
+        // mark says there is more on that side.
+        // (Kaida, 2026-11-21: "A theme name that is too long will get out of the window
+        // breaking the ui when in the theme editor".)
+        const double field_x = value_x - cw * 0.4;
+        const double field_w =
+            std::max(2.0 * cw, panel.x() + panel_w - pad * 0.5 - field_x);
+        const QRectF name_value_box(field_x, name_box.top() + 1.0, field_w, ch - 2.0);
+        const QString ellipsis = QStringLiteral("\u2026");
+        const double ell = fm.horizontalAdvance(ellipsis);
+        const NameFieldView view =
+            nameFieldView(name_value, picker_editing_ ? picker_caret_ : -1,
+                          field_w - cw * 0.8 - 2.0 * ell, fm);
+        const QString shown = name_value.mid(view.start, view.end - view.start);
         // Lit like every other value here is: the thing the keys act on, which in a name
-        // is the name and not the line it sits in.
-        const QRectF name_value_box(value_x - cw * 0.4, name_box.top() + 1.0,
-                                    (fm.horizontalAdvance(name_value) / cw + 0.8) * cw,
-                                    ch - 2.0);
+        // is the name and not the line it sits in. The band is the field rather than the
+        // word, so lighting the row does not change width as the name grows.
         if (picker_focus_ == 3) {
             paintFocusBand(p, name_value_box);
             picker_hit_.highlight = name_value_box;
@@ -4159,7 +4221,14 @@ private:
         p.drawText(QPointF(table_x, name_y),
                    QStringLiteral("theme").leftJustified(label_w, QLatin1Char(' ')));
         p.setPen(picker_focus_ == 3 ? band_ink() : panel_ink(fg));
-        p.drawText(QPointF(value_x, name_y), name_value);
+        const double word_x = field_x + cw * 0.4 + (view.cut_front ? ell : 0.0);
+        p.setClipRect(name_value_box);
+        p.drawText(QPointF(word_x, name_y), shown);
+        p.setClipping(false);
+        if (view.cut_front)
+            p.drawText(QPointF(field_x + cw * 0.2, name_y), ellipsis);
+        if (view.cut_back)
+            p.drawText(QPointF(field_x + field_w - cw * 0.4 - ell, name_y), ellipsis);
         if (picker_focus_ == 3 && picker_editing_) {
             // Where the next character goes. The colour rows show the same rule under a
             // digit; a word has the same rule between its letters, and the arrows move it
@@ -4174,7 +4243,7 @@ private:
             const QColor accent(theme_.accent.r, theme_.accent.g, theme_.accent.b);
             p.setPen(QPen(accent, 1));
             const double caret =
-                value_x + fm.horizontalAdvance(name_value.left(picker_caret_)) + 1.0;
+                word_x + fm.horizontalAdvance(shown.left(picker_caret_ - view.start)) + 1.0;
             p.drawLine(QPointF(caret, name_y + fm.descent() * 0.4),
                        QPointF(caret + cw - 2.0, name_y + fm.descent() * 0.4));
         }
