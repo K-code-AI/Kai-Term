@@ -1095,7 +1095,7 @@ int main(int argc, char** argv) {
         // back. The mouse drives it too: a panel only the keyboard can answer is a
         // panel you cannot finish with the thing your hand is already on.
         const std::string menu_cfg = root + "/menu-settings";
-        std::ofstream(menu_cfg) << "font_size = 12\npadding = 6\n";
+        std::ofstream(menu_cfg) << "font_size = 12\npadding = 6\ncursor_blink = 2000\n";
         ::setenv("KAI_TERM_CONFIG", menu_cfg.c_str(), 1);
         ::setenv("KAI_TERM_THEME", (root + "/no-such-theme").c_str(), 1);
         kai::AppWindow window(kai::startWindowBackend(24, 80));
@@ -1157,10 +1157,23 @@ int main(int argc, char** argv) {
         press_key(Qt::Key_1, "1");
         press_key(Qt::Key_6, "6");
         pump(60);
+        // The blink row gets nudged on the way, so the save is checked against a row
+        // whose value is not the two-digit font size it was already holding.
+        // (Kaida, 2026-11-21: "customizable blink speed ( 0 being no blinking)".)
+        for (int step = 0; step < 6; ++step) {
+            press_key(Qt::Key_Down);
+            pump(20);
+        }
+        const bool on_blink = window.settingsRowKey(window.settingsCursor().first) ==
+                              QStringLiteral("cursor_blink");
+        press_key(Qt::Key_Minus);
+        pump(60);
         click(window.settingsSavePoint());
         pump(100);
         expect("saving writes the font size to the settings file",
                fileText().find("font_size = 16") != std::string::npos);
+        expect("and writes the blink rate the same way",
+               on_blink && fileText().find("cursor_blink = 1950") != std::string::npos);
         expect("the window keeps what was chosen", window.fontPixelSize() == 16);
         expect("a line nobody touched is left alone",
                fileText().find("padding = 6") != std::string::npos);
