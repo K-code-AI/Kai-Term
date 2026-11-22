@@ -1034,3 +1034,17 @@ test that hangs should still cost a test and not a machine.
   which is the difference between a viewport and a lie.
   (Kaida, 2026-11-21: "A theme name that is too long will get out of the window breaking the
   ui when in the theme editor".)
+
+- A cell's colour is two facts, not one: what it looks like, and whose it is. The screen kept
+  the first and filed the second under "exact" whenever a cell had never been coloured, which
+  is a promise that nobody may change it — so a theme change could not reach text already on
+  screen, and a snapshot of a session carried the old theme into the new window. Giving the
+  default its own number and resolving colours at draw time made the whole scrollback follow
+  the theme with no rewrite of the history, and left the one colour that really is final — a
+  triple a program spelled out — exactly as final as it was.
+  (Kaida, 2026-11-21: "would it be possible to repaint the whole scrollback history on theme
+  change ?")
+- Measuring a cell by its pixels needs the cell's corners, not its centres: a box from centre to
+  centre covers half of the line above and half of the line below, and the line below these
+  three happened to be the prompt, which changes colour too. A check that "nothing else moved"
+  failed against a neighbour rather than against the thing it was written about.
