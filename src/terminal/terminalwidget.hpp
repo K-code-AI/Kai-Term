@@ -1831,8 +1831,8 @@ public:
                 if (cell.attr.hidden)
                     continue;
 
-                Color fg = cell.fg;
-                Color bg = cell.bg;
+                Color fg = cellColour(cell.fg, cell.fg_role, true);
+                Color bg = cellColour(cell.bg, cell.bg_role, false);
                 if (cell.attr.reverse)
                     std::swap(fg, bg);
                 if (selectedAt(r, c)) {
@@ -1895,7 +1895,7 @@ public:
                     p.setBrush(ink(theme_.cursor));
                     p.drawRect(QRectF(x, y, span, ch));
                     if (!under.text.empty()) {
-                        p.setPen(ink(under.bg));
+                        p.setPen(ink(cellColour(under.bg, under.bg_role, false)));
                         p.setBrush(Qt::NoBrush);
                         p.drawText(QPointF(x, y + fm.ascent()), QString::fromStdString(under.text));
                     }
@@ -3792,6 +3792,22 @@ private:
     // foreground being the same value as selection_background ... and make the whole thing
     // more cohesive".)
     QColor band_ink(int alpha = 255) const { return panel_ink(theme_.selection_foreground, alpha); }
+
+    // What a cell is wearing right now, which is not always what it was written with.
+    //
+    // A cell nobody coloured wears the screen's own ink and ground, and a cell a program
+    // coloured by number wears whatever that palette entry holds today. Both of those are
+    // the theme's to decide, so both are answered here rather than remembered at the moment
+    // the byte arrived: change the theme and the whole scrollback changes with it, which is
+    // what a person means when they say a theme should change the colours. A colour a
+    // program chose digit by digit is that program's, and stays exactly what it said.
+    Color cellColour(const Color& stored, std::uint8_t role, bool foreground) const {
+        if (role == kDefaultColour)
+            return foreground ? screen_.defaultForeground() : screen_.defaultBackground();
+        if (role < 16)
+            return screen_.paletteColor(role);
+        return stored;
+    }
 
     // Which part of a theme's name its field shows, and whether either end is off-screen.
     // The caret is handed in when the field is open and the window follows it, so the letter

@@ -249,6 +249,41 @@ int main() {
     }
 
     {
+        // A session written while the window wore one theme, restored into a window
+        // wearing another. The plain line is not a colour the session chose, so it has
+        // nothing to say about colour and arrives in the ink of the window that caught it;
+        // the red it asked for by number arrives as the number and takes that window's red;
+        // and the truecolour a program spelled out stays exactly what it said.
+        // (Kaida, 2026-11-21: "The prompt and previous command colors don't update instantly
+        // on theme change. would it be possible to repaint the whole scrollback history on
+        // theme change ?")
+        Screen source(3, 20);
+        source.setDefaults(Color{200, 20, 20}, Color{5, 5, 5}); // the old theme's ink
+        source.feed("plain\r\n");
+        source.feed("\x1b[31mred\x1b[0m\r\n");
+        source.feed("\x1b[38;2;17;222;33mtrue\x1b[0m\r\n");
+        // The theme changes under the session. The screen is told the new colours, and the
+        // line already written keeps the shade it was written in — which is exactly what a
+        // snapshot must not mistake for a colour the session chose.
+        source.setDefaults(Color{10, 200, 10}, Color{5, 5, 5});
+        Screen copy(3, 20);
+        copy.setDefaults(Color{10, 200, 10}, Color{5, 5, 5}); // the new window's own
+        copy.feed(screenSnapshot(source));
+        const Row* plain = copy.historyRow(0);
+        expect("a line written under the old theme arrives in the new window's ink",
+               plain && plain->at(0).fg_role == kDefaultColour &&
+                   plain->at(0).fg == Color{10, 200, 10});
+        // Three lines on a screen three rows tall: only the first was pushed off the top,
+        // so the other two are read off the visible screen.
+        expect("a red asked for by number travels as the number",
+               copy.at(0, 0).text == "r" && copy.at(0, 0).fg_role == 1 &&
+                   copy.at(0, 0).fg == Color{128, 0, 0});
+        expect("and a colour spelled out arrives exactly as it was spelled",
+               copy.at(1, 0).text == "t" && copy.at(1, 0).fg_role == kRgbColour &&
+                   copy.at(1, 0).fg == Color{17, 222, 33});
+    }
+
+    {
         // Re-attaching must not accumulate: the same snapshot replayed twice into one
         // screen still shows the screen, not two copies of it.
         Screen source(5, 25);

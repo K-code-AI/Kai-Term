@@ -25,8 +25,10 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
+#include <map>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
@@ -1004,6 +1006,86 @@ int main(int argc, char** argv) {
         const bool free_again = waitFor(
             [&] { return w.screen().cursorShape() == kai::Screen::CursorShape::Block; }, 2000);
         expect("and with nothing named, a program still picks its own shape", free_again);
+    }
+
+    // Choosing a theme changes the colours of what is already on the screen. A cell keeps a
+    // note of where its colour came from, and the two answers that belong to the theme — the
+    // screen's own ink and a palette entry by number — are resolved when the cell is drawn
+    // rather than remembered when the byte arrived. A colour a program spelled out digit by
+    // digit is that program's business and stays exactly what it said.
+    // (Kaida, 2026-11-21: "The prompt and previous command colors don't update instantly on
+    // theme change. would it be possible to repaint the whole scrollback history on theme
+    // change ?")
+    {
+        sendText(&w, "printf 'plain line\\n\\033[31mred word\\033[0m\\n"
+                     "\\033[38;2;17;222;33mtrue word\\033[0m\\nthe end\\n'");
+        sendKey(&w, Qt::Key_Return);
+        const bool printed = waitFor([&] { return findLine(w, "true word").row >= 0; }, 4000) &&
+                             findLine(w, "plain line").row >= 0 &&
+                             findLine(w, "red word").row >= 0;
+        expect("three lines are on the screen to repaint", printed);
+        if (printed) {
+            // From cell corner to cell corner, not centre to centre: a box between centres
+            // covers the bottom half of the word's line and the top half of the line under it,
+            // and the line under these three is the prompt, which changes colour too.
+            const auto lineBox = [&w](const kai::CellPos& at, int letters) {
+                const QPointF a = w.cellTopLeft(at.row, at.col);
+                const QPointF b = w.cellTopLeft(at.row + 1, at.col + letters);
+                return QRect(static_cast<int>(a.x()), static_cast<int>(a.y()),
+                             static_cast<int>(b.x() - a.x()), static_cast<int>(b.y() - a.y()));
+            };
+            // How many pixels of the line's own rectangle are drawn differently in the two
+            // photographs. Each rectangle is found again in each one — the word is asked where
+            // it is now, because the shell is still drawing when the first photograph is taken
+            // and a screen that shifted a line would otherwise report every line as repainted.
+            const auto redrawn = [&w, &lineBox](const QImage& a, const QImage& b,
+                                                const std::string& word, int letters) {
+                const kai::CellPos at = findLine(w, word);
+                if (at.row < 0)
+                    return -1;
+                const QRect box = lineBox(at, letters);
+                int changed = 0;
+                for (int y = box.top(); y < box.bottom(); ++y) {
+                    for (int x = box.left(); x < box.right(); ++x) {
+                        if (a.pixel(x, y) != b.pixel(x, y))
+                            ++changed;
+                    }
+                }
+                return changed;
+            };
+            // The shell is still drawing when the first photograph is taken — its prompt
+            // arrives after the printed lines and shifts every one of them up a row — and a
+            // screen that moved between two photographs reports every line as repainted. So
+            // the measurement asks for the rows to be where they were, and tries again if
+            // they are not.
+            const kai::TerminalWidget::Theme worn = w.theme();
+            kai::TerminalWidget::Theme repainted = w.theme();
+            repainted.foreground = kai::Color{16, 220, 16};
+            repainted.palette[1] = kai::Color{220, 16, 16};
+            const auto rowsOf = [&w] {
+                return std::array<int, 3>{findLine(w, "plain line").row,
+                                          findLine(w, "red word").row,
+                                          findLine(w, "true word").row};
+            };
+            std::array<int, 3> changed{-1, -1, -1};
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                const auto rows = rowsOf();
+                const QImage before = grabImage(&w);
+                w.applyTheme(attempt % 2 == 0 ? repainted : worn, true);
+                pump(250);
+                const QImage after = grabImage(&w);
+                if (rowsOf() != rows)
+                    continue; // the shell moved the lines; ask again of two still photographs
+                changed = {redrawn(before, after, "plain line", 10),
+                           redrawn(before, after, "red word", 8),
+                           redrawn(before, after, "true word", 9)};
+                break;
+            }
+            expect("the line nobody coloured is drawn again in the new ink", changed[0] > 20);
+            expect("a red asked for by number follows the theme's new red", changed[1] > 20);
+            expect("and a colour a program spelled out is left exactly as it was",
+                   changed[2] == 0);
+        }
     }
 
     w.shutdown();

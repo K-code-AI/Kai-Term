@@ -491,10 +491,10 @@ Individual results:
 - `./build/tests/kai-term-mouse` → `PASS: 40 mouse encodings match the expected PTY bytes`.
 - `./build/tests/kai-term-selection` → `PASS: 119 selection and text-extraction checks passed`.
 - `./build/tests/kai-term-mouse-app` → `PASS: 8 mouse checks passed against a running btop (no visual inspection performed)`. With btop absent it prints that the checks were not exercised; with the pre-fix encoder it fails, which is the point of it.
-- `./build/tests/kai-term-widget-smoke` → `PASS: 124 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
+- `./build/tests/kai-term-widget-smoke` → `PASS: 128 offscreen widget checks passed (no visual inspection performed) [this platform has no separate X11-style selection: only the clipboard copy was exercised]`. The bracketed part is the test reporting what it could not run.
 - `./build/tests/kai-term-ipc` → `PASS: 43 protocol framing and field checks passed`.
 - `./build/tests/kai-term-sockets` → `PASS: 44 unix socket checks passed`.
-- `./build/tests/kai-term-snapshot` → `PASS: 64 screen snapshot checks passed`.
+- `./build/tests/kai-term-snapshot` → `PASS: 86 screen snapshot checks passed`.
 - `./build/tests/kai-term-session` → `PASS: 109 session daemon checks passed`.
 - `./build/tests/kai-term-widget-session` → `PASS: 41 window-showing-a-session checks passed`.
 - `./build/tests/kai-term-widget-panes` → `PASS: 24 pane-scoped selection checks passed`.
@@ -610,8 +610,10 @@ press goes to the program instead of selecting; a paste is still a paste, and wi
   the compositor supporting primary selection, because nothing copies automatically
   any more. Ctrl+Shift+C is the explicit copy and always works.
 - A selection is kept in *display* coordinates and shifted to follow its text, so a selection whose lines have been dropped by the 1000-line scrollback cap is cleared rather than copied from memory. Anchoring to absolute buffer lines would remove that limit.
-- Cells store a resolved RGB colour, not a palette index, so `OSC 4` and `OSC 10/11`
-  recolour what is written from then on and leave what is already on screen alone.
+- A cell stores its resolved RGB *and* where that colour came from, and the colour is
+  resolved again when it is drawn: a palette entry by number and the terminal's own ink
+  follow `OSC 4` and `OSC 10/11` even for text already on screen, and only a colour spelled
+  out as `38;2;r;g;b` is frozen at what the program said.
 - `OSC 8` hyperlinks are parsed and discarded: the text renders and cannot be followed.
 - Cursor blink is accepted and ignored, because nothing animates yet: DECSCUSR's
   blinking variants select their steady shape, and SGR 5 and 6 set a flag no timer

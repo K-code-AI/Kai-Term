@@ -246,12 +246,12 @@ Verified results on this machine:
 - `kai-term-mouse-app` prints `PASS: 8 mouse checks passed against a running btop (no visual
   inspection performed)`. When btop is not installed it prints that the checks were not
   exercised instead of pretending to pass.
-- `kai-term-widget-smoke` prints `PASS: 124 offscreen widget checks passed (no visual inspection
+- `kai-term-widget-smoke` prints `PASS: 128 offscreen widget checks passed (no visual inspection
   performed) [this platform has no separate X11-style selection: only the clipboard copy was
   exercised]`. The bracketed note is the test being honest about the platform it ran on.
 - `kai-term-ipc` prints `PASS: 43 protocol framing and field checks passed`.
 - `kai-term-sockets` prints `PASS: 44 unix socket checks passed`.
-- `kai-term-snapshot` prints `PASS: 64 screen snapshot checks passed`. A snapshot fed
+- `kai-term-snapshot` prints `PASS: 86 screen snapshot checks passed`. A snapshot fed
   into a fresh screen model reproduces it cell for cell, which is the property that makes
   "attach and be shown the screen" true.
 - `kai-term-session` prints `PASS: 109 session daemon checks passed`, over a real pty and
@@ -618,9 +618,22 @@ guessed `tomato` is worse than a line that says what it wanted. The environment 
 the file — `KAI_CONFIRM_QUIT=never ./kai-term` is the setting you are holding in your
 hand right now, and a decision you made months ago should not outrank it.
 
-A theme colours the screen a window *starts*: cells already on screen keep the colours
-they were written with, exactly like an escape-sequence recolour. **A colour you put in
-your config wins over the session** — it holds when the shell writes its own background at
+A theme colours the whole screen, not only what is written after it. Every cell keeps a
+note of where its colour came from, and the three answers behave differently. The
+terminal's own ink and ground, and a palette entry asked for by number, belong to the
+theme, so they are looked up when the cell is drawn rather than remembered when the byte
+arrived: change the theme and the line you printed an hour ago changes with it, the
+scrollback included. A colour a program spelled out digit by digit (`38;2;r;g;b`) is that
+program's and stays exactly what it said — a highlighter chose those numbers for a reason,
+and a theme that overruled them would be repainting somebody else's work. A snapshot of a
+session follows the same split: an index travels as an index and a default travels as a
+default, so a session restored into a window wearing a new theme arrives wearing that
+theme rather than the one it was written in.
+(Kaida, 2026-11-21: "The prompt and previous command colors don't update instantly on
+theme change. would it be possible to repaint the whole scrollback history on theme
+change ?")
+
+**A colour you put in your config wins over the session** — it holds when the shell writes its own background at
 startup (`OSC 10/11`), and it holds on a window attached to a running session, so an old
 session comes back wearing your theme rather than the colours it happened to save. A
 colour you did *not* name stays the session's to recolour, so a program that legitimately

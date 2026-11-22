@@ -37,6 +37,57 @@ bool rgb(const Color& c, int r, int g, int b) {
 } // namespace
 
 int main() {
+    // Who owns a colour that is already on the screen. A cell keeps a note of where its
+    // colour came from, and there are three answers: a palette entry, an exact triple a
+    // program spelled out, and nobody-asked-me-to. The third is the screen's own ink, and it
+    // is the one a theme change is asking about — so it needs a number of its own rather than
+    // being filed under "exact", which is a promise that the colour is final.
+    // (Kaida, 2026-11-21: "The prompt and previous command colors don't update instantly on
+    // theme change. would it be possible to repaint the whole scrollback history on theme
+    // change ?")
+    {
+        Screen s(4, 40);
+        s.feed("plain");
+        expect("text nobody coloured wears the screen's own ink",
+               s.at(0, 0).fg_role == kDefaultColour);
+        expect("and the ground under it is the screen's own as well",
+               s.at(0, 0).bg_role == kDefaultColour);
+        s.feed("\x1b[31mred\x1b[0m");
+        expect("a colour asked for by number says which number",
+               s.at(0, 5).fg_role == 1 && s.at(0, 5).bg_role == kDefaultColour);
+        s.feed("\x1b[38;2;10;20;30mexact\x1b[0m");
+        expect("a colour chosen digit by digit says it is exact",
+               s.at(0, 9).fg_role == kRgbColour && rgb(s.at(0, 9).fg, 10, 20, 30));
+        s.feed("\x1b[31m\x1b[39mx");
+        expect("and SGR 39 puts the screen's own ink back on",
+               s.at(0, 14).fg_role == kDefaultColour);
+        s.feed("\x1b[41m\x1b[49mx");
+        expect("and SGR 49 its own ground", s.at(0, 15).bg_role == kDefaultColour);
+        s.feed("\x1b[31;42m\x1b[0mx");
+        expect("a full reset returns both to the screen's own",
+               s.at(0, 16).fg_role == kDefaultColour && s.at(0, 16).bg_role == kDefaultColour);
+        // The screen's own colour and an exact colour that happens to look identical are not
+        // the same thing, and the encoding must not collapse them: one is the theme's to
+        // change and the other is the program's.
+        s.feed("\r\n\x1b[38;2;220;220;220mmatching");
+        expect("the screen's own ink and an exact colour that matches it are told apart",
+               s.at(1, 0).fg_role != s.at(0, 0).fg_role &&
+                   rgb(s.at(1, 0).fg, 220, 220, 220));
+        // The colour a cell carries is the one it was written with; whose it is, is a
+        // separate question, and it is the answer that lets the whole screen be repainted.
+        s.setDefaults(Color{9, 99, 199}, Color{1, 2, 3});
+        expect("the ink it was written in is still what the cell says",
+               rgb(s.at(0, 0).fg, 220, 220, 220));
+        expect("and the role says the screen owns the argument",
+               s.at(0, 0).fg_role == kDefaultColour);
+        expect("a locked default outranks a program's colour and stays the screen's own", [] {
+            Screen locked(2, 20);
+            locked.lockDefaults(Color{0, 240, 160}, Color{2, 34, 35});
+            locked.feed("\x1b[38;2;1;2;3mx");
+            return locked.at(0, 0).fg_role == kRgbColour; // the program did ask for it
+        }());
+    }
+
     // A locked default outranks OSC 10/11; an unlocked one does not.
     {
         Screen s(10, 40);

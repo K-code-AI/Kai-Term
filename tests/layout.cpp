@@ -1,0 +1,403 @@
+// The shape of a session's screen: the tree of panes, where the dividers land, and whose
+// size a session takes when more than one view is looking.
+//
+// None of this is drawn here. That is the point — the arrangement is arithmetic, and the
+// promises worth pinning down are the ones a person feels without being able to name: that
+// the screen is tiled with no hole in it, that a divider stops rather than eating a pane,
+// that closing a pane gives its room back to the one that shared it, and that a preset
+// saved today reads back as the same arrangement tomorrow.
+//
+// No Qt in the model, so no Qt here: it runs headless in a fraction of a second.
+
+#include "../src/session/layout.hpp"
+
+#include <algorithm>
+#include <iostream>
+#include <string>
+#include <string_view>
+#include <vector>
+
+using namespace kai;
+
+namespace {
+
+int checks = 0;
+int failures = 0;
+
+void expect(std::string_view what, bool value) {
+    ++checks;
+    if (value)
+        return;
+    ++failures;
+    std::cerr << "FAIL: " << what << "\n";
+}
+
+// Every cell of the area, counted: how many panes claim it, and how many are claimed by
+// nothing. A layout that overlaps two panes or leaves a band of the screen unassigned is
+// the failure mode of every tiling scheme ever written, and it is much easier to see here
+// than in a screenshot.
+struct Coverage {
+    int holes = 0;
+    int overlaps = 0;
+    int dividers = 0;
+};
+
+Coverage cover(const std::vector<CellRect>& rects, int rows, int cols, int divider_cells) {
+    std::vector<int> claim(static_cast<size_t>(rows * cols), 0);
+    for (const CellRect& r : rects) {
+        for (int row = r.top; row < r.top + r.rows; ++row) {
+            for (int col = r.left; col < r.left + r.cols; ++col) {
+                if (row < 0 || row >= rows || col < 0 || col >= cols)
+                    continue; // counted as a hole below, since it covers nothing real
+                ++claim[static_cast<size_t>(row * cols + col)];
+            }
+        }
+    }
+    Coverage out;
+    for (const int n : claim) {
+        if (n == 0)
+            ++out.holes;
+        if (n > 1)
+            ++out.overlaps;
+    }
+    out.dividers = divider_cells;
+    return out;
+}
+
+bool tiles(const std::vector<CellRect>& rects, int rows, int cols, int divider_cells) {
+    const Coverage c = cover(rects, rows, cols, divider_cells);
+    return c.holes == 0 && c.overlaps == 0;
+}
+
+bool mentions(const std::vector<std::string>& problems, std::string_view needle) {
+    for (const std::string& p : problems) {
+        if (p.find(std::string(needle)) != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+int main() {
+    {
+        // One pane is not a special case bolted on afterwards; it is what every window
+        // starts as, and it gets the whole screen.
+        const Layout one;
+        expect("a window that has never been split has one pane", one.paneCount() == 1);
+        expect("and that pane is the focused one", one.focused() == 0);
+        expect("and it has no divider to drag", one.splitCount() == 0);
+        const std::vector<CellRect> whole = one.rects(24, 80);
+        expect("and it is given all of the screen",
+               whole.size() == 1 && whole[0] == CellRect{0, 0, 24, 80});
+        expect("with nothing to divide it", one.dividerCells(24, 80) == 0);
+        expect("and a pane nobody asked about has no rectangle at all",
+               one.rectOf(41, 24, 80).empty());
+    }
+
+    {
+        // Two panes, the two ways, with the divider costing a cell of its own.
+        Layout side_by_side;
+        const int right = side_by_side.splitPane(0, Split::LeftRight, 24, 80);
+        expect("a split hands back the new pane", right == 1);
+        const std::vector<CellRect> pair = side_by_side.rects(24, 80);
+        expect("two panes side by side fill the width with a divider between them",
+               pair.size() == 2 && pair[0].left == 0 && pair[0].rows == 24 &&
+                   pair[1].left == pair[0].cols + 1 && pair[1].rows == 24);
+        expect("and 80 columns of that is 39, a line, and 40",
+               pair[0].cols == 39 && pair[1].cols == 40);
+        expect("so the screen is tiled, not holed", tiles(pair, 24, 80, 1));
+        expect("and the divider is counted", side_by_side.dividerCells(24, 80) == 1);
+
+        Layout stacked;
+        stacked.splitPane(0, Split::UpDown, 24, 80);
+        const std::vector<CellRect> stack = stacked.rects(24, 80);
+        expect("two panes stacked split the rows the same way",
+               stack.size() == 2 && stack[0].top == 0 && stack[0].cols == 80 &&
+                   stack[1].top == stack[0].rows + 1 && stack[1].cols == 80);
+        expect("and that is 11 rows, a line, and 12",
+               stack[0].rows == 11 && stack[1].rows == 12);
+        expect("tiled as well", tiles(stack, 24, 80, 1));
+    }
+
+    {
+        // The arrangement from the request, word for word: one pane on the left half and
+        // two stacked on the right. A record that could only hold a grid could not hold
+        // this, which is the reason it is a tree.
+        // (Kaida, 2026-11-21: "1 pane using the half left of the screen and 2 pane
+        // horizontally spliting the right side".)
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 24, 80);
+        const int lower_right = l.splitPane(right, Split::UpDown, 24, 80);
+        expect("the right side splits into two", lower_right == 2);
+        expect("so there are three panes", l.paneCount() == 3);
+        const std::vector<CellRect> r = l.rects(24, 80);
+        expect("the left pane is the whole height", r.size() == 3 && r[0].rows == 24);
+        expect("and the two on the right share the right-hand width",
+               r[1].left == r[2].left && r[1].left > r[0].left && r[1].cols == r[2].cols);
+        expect("stacked one above the other", r[1].top == 0 && r[2].top > r[1].top);
+        expect("with the left pane still half the window", r[0].cols == 39);
+        expect("and no hole anywhere in it", tiles(r, 24, 80, 2));
+        expect("counting both dividers", l.dividerCells(24, 80) == 2);
+    }
+
+    {
+        // A 4x4 is what happens when the same split is asked for evenly: sixteen panes, and
+        // the odd cell from an indivisible width going somewhere sensible rather than to
+        // the last pane as a bonus.
+        const Layout grid = Layout::grid(4, 4);
+        expect("a grid of four by four has sixteen panes", grid.paneCount() == 16);
+        const std::vector<CellRect> r = grid.rects(24, 80);
+        bool all_reachable = r.size() == 16;
+        for (const CellRect& one : r) {
+            if (one.rows < 1 || one.cols < 1)
+                all_reachable = false;
+        }
+        expect("every one of them has room to be seen", all_reachable);
+        expect("and the screen is still tiled, thirteen lines and all",
+               tiles(r, 24, 80, grid.dividerCells(24, 80)));
+        int smallest_rows = 99;
+        int smallest_cols = 99;
+        for (const CellRect& one : r) {
+            smallest_rows = std::min(smallest_rows, one.rows);
+            smallest_cols = std::min(smallest_cols, one.cols);
+        }
+        expect("none of them is a sliver at this size",
+               smallest_rows >= 4 && smallest_cols >= 15);
+        expect("and they are as even as 21 rows can be", smallest_rows >= 4 &&
+                                                            smallest_rows <= 6);
+    }
+
+    {
+        // Closing gives the room back to whoever shared the split, which is the difference
+        // between a collapse and a hole.
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 24, 80);
+        const int lower_right = l.splitPane(right, Split::UpDown, 24, 80);
+        expect("closing the bottom-right pane is allowed", l.closePane(lower_right));
+        expect("and two panes are left", l.paneCount() == 2);
+        const std::vector<CellRect> r = l.rects(24, 80);
+        expect("the one above it takes the whole right side",
+               r.size() == 2 && r[1].rows == 24 && r[1].cols == 40);
+        expect("so the screen is still tiled", tiles(r, 24, 80, 1));
+        expect("closing either of the last two leaves one", l.closePane(r.size() == 2 ? 2 : 1));
+        expect("and the last pane cannot be closed", !l.closePane(0));
+        expect("which is one pane, not none", l.paneCount() == 1);
+    }
+
+    {
+        // Numbers are not handed out twice. The daemon has the same rule for sessions, and
+        // for the same reason: a number that came back after its pane was closed would
+        // point at a pane that is not the one somebody typed the number for.
+        Layout l;
+        const int a = l.splitPane(0, Split::LeftRight, 24, 80);
+        l.closePane(a);
+        const int b = l.splitPane(0, Split::LeftRight, 24, 80);
+        expect("a closed pane's number is not given to the next one", b != a);
+        expect("and the new pane really exists", l.hasPane(b));
+        expect("while the closed one does not", !l.hasPane(a));
+    }
+
+    {
+        // Dragging a divider. It moves by cells because a pointer moves by pixels and a
+        // terminal is cells; it stops at both ends; and it never takes a pane to nothing,
+        // because a pane at zero cells cannot be dragged back — there is nothing left to
+        // point at.
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 24, 80);
+        expect("a divider moves", l.resizeDivider(right, 10, 24, 80));
+        expect("and the panes are 49 and 30 now",
+               l.rectOf(0, 24, 80).cols == 49 && l.rectOf(right, 24, 80).cols == 30);
+        expect("moving it back returns the width", l.resizeDivider(right, -10, 24, 80));
+        expect("and it stops at the left edge", l.resizeDivider(right, -1000, 24, 80));
+        expect("leaving the first pane one cell", l.rectOf(0, 24, 80).cols == 1);
+        expect("and the other pane everything else", l.rectOf(right, 24, 80).cols == 78);
+        expect("pushing further right stops too", l.resizeDivider(right, 5000, 24, 80));
+        expect("with the far pane down to one cell", l.rectOf(right, 24, 80).cols == 1);
+        expect("tiled the whole way down the range",
+               tiles(l.rects(24, 80), 24, 80, 1));
+        Layout solo;
+        expect("and a window with one pane has no divider to move",
+               !solo.resizeDivider(0, 1, 24, 80));
+    }
+
+    {
+        // Equalise is what "unstick this" means.
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 24, 80);
+        static_cast<void>(l.resizeDivider(right, 25, 24, 80));
+        l.equalise();
+        expect("equalising puts the divider back in the middle",
+               l.rectOf(0, 24, 80).cols == 39);
+        expect("and the tiles still add up", tiles(l.rects(24, 80), 24, 80, 1));
+    }
+
+    {
+        // No room is a real answer. A split that produced a zero-cell pane would be a pane
+        // that cannot be seen, reached by keys, or closed by pointing at.
+        Layout l;
+        expect("a two-column window has no room to split side by side",
+               l.splitPane(0, Split::LeftRight, 24, 2) == -1);
+        expect("and a three-column one just does", l.splitPane(0, Split::LeftRight, 24, 3) == 1);
+        const Layout three = Layout::grid(1, 3);
+        expect("a window too narrow for three panes keeps them all",
+               three.paneCount() == 3);
+        expect("at one cell each where it must be",
+               three.rects(24, 3)[0].cols >= 1);
+        expect("and a pane asked for in a direction with no room is refused, not squashed",
+               l.splitPane(99, Split::LeftRight, 24, 80) == -1);
+    }
+
+    {
+        // Walking panes with the keys: reading order, wrapping at the ends.
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 24, 80);
+        const int lower_right = l.splitPane(right, Split::UpDown, 24, 80);
+        const std::vector<int> order = l.panes();
+        expect("panes are listed top to bottom, left to right",
+               order.size() == 3 && order[0] == 0 && order[1] == right && order[2] == lower_right);
+        expect("the new pane starts focused", l.focused() == lower_right);
+        expect("one step left goes to the pane above it on the right",
+               l.focusStep(-1) == right);
+        expect("and stepping off the front arrives at the back",
+               l.focusStep(-1) == 0 && l.focusStep(-1) == lower_right);
+        l.focus(0);
+        expect("a pane can be chosen by number", l.focused() == 0);
+        l.focus(77);
+        expect("and a number that is not a pane changes nothing", l.focused() == 0);
+    }
+
+    {
+        // A preset is written by the window and may be edited by a person, so the words
+        // have to survive both.
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 24, 80);
+        static_cast<void>(l.resizeDivider(right, -8, 24, 80));
+        static_cast<void>(l.splitPane(right, Split::UpDown, 24, 80, 0.6));
+        const std::string text = l.toText();
+        std::vector<std::string> problems;
+        const Layout back = Layout::fromText(text, problems);
+        expect("a layout written out reads back with no complaints",
+               problems.empty() && back.paneCount() == 3);
+        expect("at the same sizes", back.rects(24, 80) == l.rects(24, 80));
+        expect("and the ratios are in the words, not guessed",
+               text.find("split left-right 0.400") != std::string::npos);
+
+        // The arrangement from the request, written by hand.
+        std::vector<std::string> handwritten;
+        const Layout written = Layout::fromText(
+            "split left-right 0.5\n  pane\n  split up-down 0.5\n    pane\n    pane\n",
+            handwritten);
+        expect("a hand-written preset builds the arrangement it describes",
+               handwritten.empty() && written.paneCount() == 3);
+        expect("and it is the one Kaida described: left half, right half in two",
+               written.rects(24, 80)[0].rows == 24 && written.rects(24, 80)[1].left > 0);
+
+        std::vector<std::string> none;
+        expect("an empty preset is one pane",
+               Layout::fromText("", none).paneCount() == 1 && none.empty());
+
+        std::vector<std::string> bad;
+        const Layout wrong = Layout::fromText("pane\nsplit sideways 0.5\n  pane\n  pane\n", bad);
+        expect("a direction that is not one of the two is refused by name",
+               mentions(bad, "left-right") && mentions(bad, "line 2"));
+        expect("and what is left is still a layout rather than nothing",
+               wrong.paneCount() >= 1);
+
+        std::vector<std::string> ratio_out;
+        static_cast<void>(Layout::fromText("split up-down 1.5\n  pane\n  pane\n", ratio_out));
+        expect("a ratio outside the range says so", mentions(ratio_out, "between 0 and 1"));
+
+        std::vector<std::string> nonsense;
+        static_cast<void>(Layout::fromText("pane\ngrid 4\n", nonsense));
+        expect("a word that means nothing here is said back with its line",
+               mentions(nonsense, "line 2") && mentions(nonsense, "grid 4"));
+
+        std::vector<std::string> lopsided;
+        const Layout one_child =
+            Layout::fromText("split left-right 0.5\n  pane\n", lopsided);
+        expect("a split with only one thing under it is not a split",
+               one_child.paneCount() == 1 && one_child.splitCount() == 0);
+
+        std::vector<std::string> commented;
+        const Layout with_comments = Layout::fromText(
+            "# my work layout\n\nsplit left-right 0.5\n  pane\n  pane\n", commented);
+        expect("comments and blank lines are allowed and quiet",
+               commented.empty() && with_comments.paneCount() == 2);
+    }
+
+    {
+        // Tabs: the level between a session and its panes, which is what makes attaching to
+        // a session with three tabs mean arriving at the one that was showing.
+        SessionLayout s;
+        expect("a session starts with one tab", s.count() == 1);
+        expect("and that tab has a pane in it", s.current().layout.paneCount() == 1);
+        const int second = s.addWindow("build");
+        expect("a tab can be added and named", second == 1 && s.windows[1].name == "build");
+        expect("and it is the one showing", s.active == 1);
+        static_cast<void>(s.current().layout.splitPane(
+            s.current().layout.focused(), Split::LeftRight, 24, 80));
+        expect("splitting the showing tab does not touch the other",
+               s.windows[0].layout.paneCount() == 1 && s.windows[1].layout.paneCount() == 2);
+        s.active = 0;
+        expect("the last tab cannot be closed", !s.removeWindow(0));
+        expect("and closing a tab that is not showing keeps the showing one showing",
+               s.removeWindow(0) && s.count() == 1 && s.windows[0].name == "build");
+        static_cast<void>(s.addWindow("third"));
+        const bool on_third = s.active == 1;
+        const bool dropped = s.removeWindow(1);
+        expect("closing the tab you are on leaves you on what is left",
+               on_third && dropped && s.count() == 1 && s.active == 0);
+    }
+
+    {
+        // A preset file can hold a whole session, tabs and all — which is what
+        // `kai-term --preset work` will load.
+        SessionLayout s;
+        s.windows[0].name = "main";
+        static_cast<void>(s.current().layout.splitPane(0, Split::LeftRight, 24, 80));
+        s.addWindow("build");
+        static_cast<void>(s.current().layout.splitPane(0, Split::UpDown, 24, 80));
+        const std::string text = s.toText();
+        std::vector<std::string> problems;
+        const SessionLayout back = SessionLayout::fromText(text, problems);
+        expect("a session preset reads back with no complaints",
+               problems.empty() && back.count() == 2);
+        expect("with its tabs named",
+               back.windows[0].name == "main" && back.windows[1].name == "build");
+        expect("and each tab's panes where they were",
+               back.windows[0].layout.rects(24, 80) == s.windows[0].layout.rects(24, 80) &&
+                   back.windows[1].layout.rects(24, 80) == s.windows[1].layout.rects(24, 80));
+        expect("so a saved arrangement really is the arrangement again",
+               text.find("window main") != std::string::npos &&
+                   text.find("window build") != std::string::npos);
+    }
+
+    {
+        // Whose size a session takes when more than one view is looking at it. Chosen over
+        // the last-one-to-speak rule the daemon has had from the start, because that made
+        // the screen mean whatever arrived last rather than what everybody could show.
+        // (Kaida, 2026-11-21: the smallest view wins.)
+        const ViewSize big{50, 200};
+        const ViewSize small{24, 80};
+        const ViewSize middle{30, 120};
+        expect("one view's size is the session's size",
+               smallestView({big}, {24, 80}).rows == 50);
+        expect("two views give the session the smaller of them",
+               smallestView({big, small}, {24, 80}) == small);
+        expect("in any order", smallestView({small, big}, {24, 80}) == small);
+        expect("and the narrowest when the heights tie",
+               smallestView({middle, {30, 90}}, {24, 80}) == ViewSize{30, 90});
+        expect("a view that has not said its size is nobody's limit",
+               smallestView({{0, 0}, middle}, {24, 80}) == middle);
+        expect("and with nobody looking the fallback answers",
+               smallestView({}, {40, 132}) == ViewSize{40, 132});
+    }
+
+    if (failures == 0) {
+        std::cout << "PASS: " << checks << " layout checks passed\n";
+        return 0;
+    }
+    std::cout << "FAIL: " << failures << " of " << checks << " layout checks failed\n";
+    return 1;
+}

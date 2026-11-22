@@ -39,8 +39,15 @@ struct Attr {
 
 // A colour asked for by palette index says which index here, for as long as the
 // cell lives. `kRgbColour` means the cell wears an exact colour — a truecolour a
-// program chose, or the screen's own default — and nothing downstream is
-// entitled to reinterpret it.
+// program chose digit by digit — and nothing downstream is entitled to
+// reinterpret it.
+//
+// `kDefaultColour` is the third answer, and for a while it had no number of its
+// own: a cell nobody coloured was filed under "exact", which is a promise that
+// the colour is final. Both readings are honest about the colour a cell was
+// written with and only differ about the colour it belongs to, and that is the
+// one a theme change is asking about. So: cells start at the default, SGR 0 puts
+// them back there, and 39 and 49 are the two that name it by itself.
 //
 // The colour itself is kept as RGB, because that is what painting needs; the
 // role is kept beside it because RGB alone cannot say which of the two a colour
@@ -51,6 +58,7 @@ struct Attr {
 // the session. Sending the index lets each view answer for itself, which is what
 // a person means when they say their theme should win.
 inline constexpr std::uint8_t kRgbColour = 0xFF;
+inline constexpr std::uint8_t kDefaultColour = 0xFE;
 
 struct Cell {
     std::string text;
@@ -58,9 +66,10 @@ struct Cell {
     Color fg{220, 220, 220};
     Color bg{30, 30, 30};
     Attr attr{};
-    // 0..15 for a palette entry, `kRgbColour` for an exact colour.
-    std::uint8_t fg_role = kRgbColour;
-    std::uint8_t bg_role = kRgbColour;
+    // 0..15 for a palette entry, `kRgbColour` for an exact colour,
+    // `kDefaultColour` for the screen's own — which is what a cell with nothing on it wears.
+    std::uint8_t fg_role = kDefaultColour;
+    std::uint8_t bg_role = kDefaultColour;
 };
 
 inline bool operator==(const Color& a, const Color& b) {
@@ -662,8 +671,8 @@ public:
         c.fg = defaultForeground();
         c.bg = defaultBackground();
         // A blank wears the default, which is not a palette entry — see SGR 39.
-        c.fg_role = kRgbColour;
-        c.bg_role = kRgbColour;
+        c.fg_role = kDefaultColour;
+        c.bg_role = kDefaultColour;
         c.attr = Attr{};
     }
 
@@ -848,10 +857,11 @@ private:
     std::vector<std::string> title_stack_;
     Color current_fg_{220, 220, 220};
     Color current_bg_{30, 30, 30};
-    // Which palette entry the current colour was asked for, or `kRgbColour`.
-    // Travels with the colour into every cell it paints.
-    std::uint8_t current_fg_role_ = kRgbColour;
-    std::uint8_t current_bg_role_ = kRgbColour;
+    // Which palette entry the current colour was asked for, `kRgbColour` for an
+    // exact one, or `kDefaultColour` for the screen's own. Travels with the colour
+    // into every cell it paints.
+    std::uint8_t current_fg_role_ = kDefaultColour;
+    std::uint8_t current_bg_role_ = kDefaultColour;
     Attr current_attr_{};
     bool cursor_visible_ = true;
     bool application_cursor_keys_ = false;
@@ -866,8 +876,8 @@ private:
     bool bracketed_paste_ = false;
     Color saved_fg_{220, 220, 220};
     Color saved_bg_{30, 30, 30};
-    std::uint8_t saved_fg_role_ = kRgbColour;
-    std::uint8_t saved_bg_role_ = kRgbColour;
+    std::uint8_t saved_fg_role_ = kDefaultColour;
+    std::uint8_t saved_bg_role_ = kDefaultColour;
     Attr saved_attr_{};
     bool saved_autowrap_ = true;
     CursorShape cursor_shape_ = CursorShape::Underline;
@@ -1384,9 +1394,9 @@ private:
                 current_bg_ = defaultBackground();
                 // Back to the default is not a palette entry. The default is the
                 // screen's own colour and every view has its own answer for it,
-                // so it travels as no role at all and is resolved on arrival.
-                current_fg_role_ = kRgbColour;
-                current_bg_role_ = kRgbColour;
+                // so it travels as its own role and is resolved on arrival.
+                current_fg_role_ = kDefaultColour;
+                current_bg_role_ = kDefaultColour;
                 current_attr_ = Attr{};
             } else if (v == 1) {
                 current_attr_.bold = true;
@@ -1434,10 +1444,10 @@ private:
                 current_attr_.overline = false;
             } else if (v == 39) {
                 current_fg_ = defaultForeground();
-                current_fg_role_ = kRgbColour;
+                current_fg_role_ = kDefaultColour;
             } else if (v == 49) {
                 current_bg_ = defaultBackground();
-                current_bg_role_ = kRgbColour;
+                current_bg_role_ = kDefaultColour;
             } else if (v >= 30 && v <= 37) {
                 current_fg_ = paletteColor(v - 30);
                 current_fg_role_ = static_cast<std::uint8_t>(v - 30);
@@ -1537,8 +1547,8 @@ private:
         default_bg_ = Color{30, 30, 30};
         current_fg_ = defaultForeground();
         current_bg_ = defaultBackground();
-        current_fg_role_ = kRgbColour;
-        current_bg_role_ = kRgbColour;
+        current_fg_role_ = kDefaultColour;
+        current_bg_role_ = kDefaultColour;
         current_attr_ = Attr{};
         cursor_visible_ = true;
         application_cursor_keys_ = false;

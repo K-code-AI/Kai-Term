@@ -61,15 +61,26 @@ inline std::string colourHex(const Color& c) {
 // remember, say — the RGB on the screen is the truth and travels.
 inline int colourRole(const Screen& screen, const Color& colour, std::uint8_t role) {
     if (role >= 16)
-        return -1; // an exact colour, or the default: no index answers for it
+        return -1; // an exact colour: no index answers for it
     return screen.paletteColor(role) == colour ? static_cast<int>(role) : -1;
 }
+
+// True of a cell wearing the screen's own ink or ground. Such a cell has nothing to say in a
+// rendition: the receiver's default is the colour its own config file locked, which is the
+// whole point of sending the screen's colour as a role rather than as a triple.
+inline bool isDefaultColour(std::uint8_t role) { return role == kDefaultColour; }
 
 // The SGR that puts one colour on, in the form that keeps it a role: an index
 // when the program asked for one, the exact triple when it did not. `group` is 38
 // for a foreground and 48 for a background.
 inline std::string colourSgr(const Screen& screen, int group, const Color& colour,
                              std::uint8_t role) {
+    if (isDefaultColour(role))
+        // Asked for by name rather than by number, which is what 39 and 49 are. Reached when
+        // a caller writes a colour out without the surrounding check below — and worth
+        // emitting properly rather than as a triple, because a triple is a promise that the
+        // colour is final, and this colour is the one a theme change moves.
+        return std::to_string(group == 38 ? 39 : 49);
     const int index = colourRole(screen, colour, role);
     if (index >= 0)
         return std::to_string(group) + ";5;" + std::to_string(index);
@@ -111,9 +122,14 @@ inline std::string rendition(const Screen& screen, const Cell& cell,
     // A cell wearing the default colour says nothing here, which is the point:
     // the `CSI 0` below leaves the receiver on its own default, and its own
     // default is the colour its config file locked.
-    if (cell.fg != default_fg)
+    //
+    // The role decides that, not the RGB. A cell written under an older theme still carries
+    // that older shade and differs from the default it is asked to compare against, and the
+    // triple that would have come out of it is a claim that the shade is final — which is how
+    // a session restored into a window wearing a new theme arrived wearing the old one.
+    if (!isDefaultColour(cell.fg_role) && cell.fg != default_fg)
         add(colourSgr(screen, 38, cell.fg, cell.fg_role));
-    if (cell.bg != default_bg)
+    if (!isDefaultColour(cell.bg_role) && cell.bg != default_bg)
         add(colourSgr(screen, 48, cell.bg, cell.bg_role));
     if (codes.empty())
         return "\x1b[0m";
