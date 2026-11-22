@@ -942,10 +942,30 @@ private:
         grid_[scroll_top_] = blankRow();
     }
 
+    // A region that leaves the cursor below its bottom margin is a leftover: on the
+    // shell's own screen nothing ever asks for one, so whatever set it is gone — a
+    // program that died with a region still set, a region handed back by an
+    // alternate-screen switch this window never saw the start of, a window that
+    // joined a running session partway through. Left alone it pins the shell to one
+    // row, because a newline there can neither move the cursor nor scroll, and every
+    // command is then written over the line before it while nothing reaches the
+    // history. Widening the region hands the shell a screen it can scroll on.
+    //
+    // The check is scoped to the shell screen because tmux does keep a region on
+    // purpose and draws its status line below it: repairing inside the alternate
+    // screen would scroll tmux's whole window where it means to scroll one pane.
+    void healStaleRegion() {
+        if (!alternate_valid_ && cursor_y_ > scroll_bottom_) {
+            scroll_top_ = 0;
+            scroll_bottom_ = rows_ - 1;
+        }
+    }
+
     // Index (LF without CR semantics): move down one line; when the cursor sits
     // on the bottom margin, scroll the region instead of moving.
     void index() {
         pending_wrap_ = false;
+        healStaleRegion();
         if (cursor_y_ == scroll_bottom_)
             scrollUpInRegion();
         else if (cursor_y_ < rows_ - 1)
@@ -956,6 +976,7 @@ private:
     // scroll the region down instead of moving.
     void reverseIndex() {
         pending_wrap_ = false;
+        healStaleRegion();
         if (cursor_y_ == scroll_top_)
             scrollDownInRegion();
         else if (cursor_y_ > 0)

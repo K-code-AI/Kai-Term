@@ -146,6 +146,46 @@ int main() {
                "after nano 12");
     }
 
+    // ---- A leftover region on the shell's screen cannot pin the shell -------
+    {
+        // Handing the saved region back was one way to get here, and it is fixed,
+        // but it is not the only way: a program that sets a region and dies leaves
+        // one, and so does a missed or unmatched pair of alternate-screen switches
+        // on a window that joined a running session partway through. Kaida hit it
+        // again on 2026-11-22 with that fix in place, so the state itself is now
+        // refused: with the cursor below the bottom margin of its own screen, the
+        // shell is given a screen it can scroll on.
+        kai::Screen s(6, 20);
+        s.feed("\x1b[2;4r");   // a region that stops two rows short, left behind
+        s.feed("\x1b[6;1H");   // the shell's cursor, below it, on the last row
+        for (int i = 1; i <= 8; ++i)
+            s.feed("stuck " + std::to_string(i) + "\r\n");
+        expectTrue("a shell below a leftover region scrolls again", s.historySize() > 0);
+        expect("the leftover region reaches the bottom", std::to_string(s.scrollRegionBottom()),
+               "5");
+        expect("the leftover region reaches the top", std::to_string(s.scrollRegionTop()), "0");
+        expect("the newest line is the last thing on the screen", screenRowText(s, 4),
+               "stuck 8");
+    }
+
+    // ---- ...but an application keeps the region it asked for ----------------
+    {
+        // tmux sets a region for its pane area and draws its status line below it on
+        // purpose. The repair above is a shell-screen rule for exactly that reason:
+        // widening a region inside the alternate screen would push tmux's status
+        // line into the pane and scroll the whole window instead of the pane.
+        kai::Screen s(6, 20);
+        s.feed("\x1b[?1049h");
+        s.feed("\x1b[1;4r");
+        s.feed("\x1b[6;1H");
+        for (int i = 1; i <= 8; ++i)
+            s.feed("pane " + std::to_string(i) + "\r\n");
+        expect("an application keeps its own bottom margin",
+               std::to_string(s.scrollRegionBottom()), "3");
+        expect("an application still writes nothing to the shell's history",
+               std::to_string(s.historySize()), "0");
+    }
+
     // ---- Explicit clears drop history; ordinary clears do not -------------
     {
         kai::Screen s(3, 10);

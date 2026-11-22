@@ -1066,3 +1066,19 @@ test that hangs should still cost a test and not a machine.
   before it. A program that takes the screen whole gets to set its margins; a program that
   gives it back leaves the shell the whole screen, which is what a resize there already does
   and what `reset` does when all else fails.
+- Fixing one road to a bad state is not the same as making the bad state impossible, and the
+  difference shows up as the same report coming back. The scroll region handed back by the
+  alternate screen was a real fault and the fix was right; it was also one of several ways to
+  end up with a shell whose cursor sat below a margin nobody wanted. The second change was the
+  one Kaida actually asked for — not "why did this happen" but "I do not want to fix it by hand
+  every time" — and it was the smaller of the two: refuse the state where it shows up, at the
+  one operation that goes wrong, instead of tracing every path that can reach it. When a bug
+  comes back after being fixed, the goal has changed from the path to the state, and the fix
+  should say so in the shape of the code.
+- A long-lived process is old code wearing a current version number. The daemon is exec'd from
+  `/proc/self/exe`, outlives every window, and is only turned away when the *wire format*
+  changed; a rebuild that changes what the terminal model does leaves a running daemon doing
+  the old thing while the window beside it does the new one. So "I rebuilt and it is still
+  broken" has a second answer besides "the fix is wrong": `kai-term shutdown`, relaunch, ask
+  again. Check which process is actually running the code before believing a reproduction —
+  or an attempted fix — done against a daemon that predates the commit.
