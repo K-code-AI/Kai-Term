@@ -109,6 +109,43 @@ int main() {
                    !screenRowText(s, 0).empty());
     }
 
+    // ---- A program hands the screen back without a scroll region -----------
+    {
+        // A scroll region is a pair of row numbers belonging to the program that
+        // set it, and that program is gone when it hands the screen back. Handing
+        // the saved region back as well leaves the shell with margins it never
+        // asked for, and once the shell's cursor is below the bottom margin there
+        // is nothing left for it to do: index() neither moves the cursor nor
+        // scrolls, so the prompt pins itself to one row, every command is written
+        // over the last one, and no line reaches the history, so the scrollback
+        // stops working. `reset` was the only thing that cleared it. Reported by
+        // Kaida on 2026-11-21 after leaving nano, whose own region outlived it.
+        kai::Screen s(6, 20);
+        s.feed("\x1b[1;4r");   // a region on the shell's screen, left behind by something
+        s.feed("\x1b[5;1H");   // the prompt sits below it, where the shell left the cursor
+        s.feed("\x1b[?1049h"); // a program takes the screen...
+        s.feed("\x1b[1;3r");   // ...sets a region for itself...
+        s.feed("\x1b[?1049l"); // ...and gives the screen back
+
+        expect("the shell gets the whole screen back from the top",
+               std::to_string(s.scrollRegionTop()), "0");
+        expect("the shell gets the whole screen back to the bottom",
+               std::to_string(s.scrollRegionBottom()), "5");
+
+        for (int i = 1; i <= 12; ++i)
+            s.feed("after nano " + std::to_string(i) + "\r\n");
+        expectTrue("the shell scrolls again once the program is gone", s.historySize() > 0);
+        expect("the newest line is the last thing on the screen", screenRowText(s, 4),
+               "after nano 12");
+
+        // The symptom Kaida described: each new line written over the one before
+        // it, because the cursor had nowhere to go.
+        s.feed("new prompt");
+        expect("the prompt lands on a line of its own", screenRowText(s, 5), "new prompt");
+        expect("the line above it is the one before the prompt", screenRowText(s, 4),
+               "after nano 12");
+    }
+
     // ---- Explicit clears drop history; ordinary clears do not -------------
     {
         kai::Screen s(3, 10);

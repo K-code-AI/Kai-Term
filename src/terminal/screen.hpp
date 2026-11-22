@@ -1497,12 +1497,17 @@ private:
         scrollback_ = std::move(alternate_scrollback_);
         cursor_x_ = std::min(alternate_cursor_x_, cols_ - 1);
         cursor_y_ = std::min(alternate_cursor_y_, rows_ - 1);
-        scroll_top_ = std::min(alternate_scroll_top_, rows_ - 1);
-        scroll_bottom_ = std::min(alternate_scroll_bottom_, rows_ - 1);
-        if (scroll_top_ > scroll_bottom_) {
-            scroll_top_ = 0;
-            scroll_bottom_ = rows_ - 1;
-        }
+        // A scroll region belongs to the program that set it, and that program is
+        // gone. Restoring the region saved on entry hands the shell margins it never
+        // asked for, and once the shell's cursor is below the bottom margin it has
+        // nowhere to go: index() neither moves the cursor nor scrolls, so the prompt
+        // pins itself to one row, every command is written over the line before it,
+        // and nothing reaches the history — which is how it read when Kaida left nano
+        // on 2026-11-21, with `reset` the only thing that would clear it. The shell
+        // gets the whole screen back, for the same reason a resize resets the region
+        // above: the rows a region names are rows in a screen that has since moved.
+        scroll_top_ = 0;
+        scroll_bottom_ = rows_ - 1;
         alternate_valid_ = false;
         alternate_grid_.clear();
         alternate_scrollback_.clear();

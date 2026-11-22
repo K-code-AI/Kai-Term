@@ -1048,3 +1048,21 @@ test that hangs should still cost a test and not a machine.
   centre covers half of the line above and half of the line below, and the line below these
   three happened to be the prompt, which changes colour too. A check that "nothing else moved"
   failed against a neighbour rather than against the thing it was written about.
+- When a bug will not reproduce, the questions worth asking are the ones whose answers split
+  the space, not the ones that ask for more detail. A dozen faithful attempts to leave nano
+  came out right, so the next thing was three questions the person looking at the broken
+  screen could answer in twenty seconds: does `reset` fix it where `clear` does not, can you
+  scroll back, does the command print at all. All three named the same mechanism — a scroll
+  region that no longer reached the bottom row, which left the cursor below it, where a
+  newline can neither move it nor scroll the screen — and the fix was one line. `clear` wipes
+  a region's contents, `reset` throws the region away; that difference is a diagnosis, and
+  "the scrollback stopped working" is the same fact seen from the other end.
+  (Kaida, 2026-11-21: "yes reset fixes it ... I can't scroll back")
+- Saving and restoring is the symmetric thing, which is not the same as the correct thing. The
+  alternate screen saved the scroll region on entry and gave it back on leave, and every part
+  of that is defensible except the whole: a region is a claim about row numbers made by a
+  program for its own lifetime, and the program is gone, and the window has changed height
+  since. What came back was a shell pinned to one row, writing each command over the line
+  before it. A program that takes the screen whole gets to set its margins; a program that
+  gives it back leaves the shell the whole screen, which is what a resize there already does
+  and what `reset` does when all else fails.
