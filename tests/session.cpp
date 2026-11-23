@@ -609,33 +609,38 @@ int main() {
         std::string text;
         expect("a session has an arrangement from the moment it exists",
                createSession("arranged") && askLayout("arranged", text));
-        expect("a session nobody has split is one window holding one pane",
-               text == "window window-1\n  pane\n");
+        expect("a session nobody has split is one pane, shown side by side",
+               text == "view side-by-side\npane\n");
 
-        std::string message = giveLayout(
-            "arranged", "window build\nsplit left-right 0.5\n  pane\n  pane\n");
+        std::string message =
+            giveLayout("arranged", "split left-right 0.5\n  pane\n  pane\n");
         expect("an arrangement can be handed to a session (" + message + ")", message.empty());
         expect("and reads back as the same arrangement",
-               askLayout("arranged", text) && text ==
-                   "window build\n  split left-right 0.500000\n    pane\n    pane\n");
+               askLayout("arranged", text) &&
+                   text == "view side-by-side\nsplit left-right 0.500000\n  pane\n  pane\n");
 
-        // Tabs travel with the session, so `attach` from a tty arrives at the tab that was
-        // showing rather than whichever was made first.
+        // Panes and the view they are shown in travel with the session, so a second window
+        // — or a tty, or the window opened after this one closed — arrives at the same
+        // arrangement rather than at whatever the terminal happens to be.
         message = giveLayout("arranged",
-                             "window build\npane\n\nwindow logs\nsplit up-down 0.25\n  pane\n  pane\n");
-        expect("a session can carry more than one tab (" + message + ")", message.empty());
-        expect("and both of them come back",
-               askLayout("arranged", text) && text.find("window build") != std::string::npos &&
-                   text.find("window logs") != std::string::npos);
+                             "view tabs\nsplit left-right 0.5\n  pane\n  split up-down 0.25\n"
+                             "    pane\n    pane\n");
+        expect("a session can carry several panes and the view they are shown in (" +
+                   message + ")",
+               message.empty());
+        expect("and all three panes come back, in tab view",
+               askLayout("arranged", text) && text.find("view tabs") == 0 &&
+                   text.find("split up-down 0.250000") != std::string::npos);
 
         // The words are the record's only shape, so a typo has to be a refusal at the door
         // rather than a session quietly rearranged into something nobody asked for.
-        message = giveLayout("arranged", "window x\nsplit sideways\n  pane\n  pane\n");
+        message = giveLayout("arranged", "split sideways\n  pane\n  pane\n");
         expect("a split that is not a direction is refused (" + message + ")",
                !message.empty() && message.find("left-right") != std::string::npos);
         expect("and the arrangement that was there is still there",
-               askLayout("arranged", text) && text.find("window logs") != std::string::npos);
-        message = giveLayout("arranged", "window x\nsplit left-right 1.5\n  pane\n  pane\n");
+               askLayout("arranged", text) && text.find("view tabs") == 0 &&
+                   text.find("split up-down") != std::string::npos);
+        message = giveLayout("arranged", "split left-right 1.5\n  pane\n  pane\n");
         expect("so is a share that is not a share (" + message + ")",
                !message.empty() && message.find("between 0 and 1") != std::string::npos);
         message = giveLayout("arranged", "");

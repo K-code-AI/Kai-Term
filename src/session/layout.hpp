@@ -312,7 +312,10 @@ public:
     // Written by hand, or saved from a running session, and read back the same either way.
     std::string toText() const {
         std::ostringstream text;
-        writeNode(root_, 1, text);
+        // Flush left: this tree is the whole arrangement, not a body written under a
+        // heading. (It used to start one level in, under the `window` line that a session
+        // put above it; the reading side ignores leading spaces either way.)
+        writeNode(root_, 0, text);
         return text.str();
     }
 
@@ -695,117 +698,106 @@ private:
 };
 
 // A tab: a name, a tree of panes, and which of them the keys are standing in.
-struct WindowLayout {
-    std::string name;
-    Layout layout;
-};
+// How a session's panes are shown to a window. Nothing else about the session changes:
+// the same panes, the same shells inside them, the same tree. In side-by-side the tree is
+// drawn as it is; in tab view the pane being looked at takes the whole window and the
+// others wait behind a bar of tabs, one per pane, the way a browser holds its pages.
+// (Kaida, 2026-11-23, with photographs of both states: "same thing but we add a tab view
+// where each pane can use the full window and we can switch from tabs to tabs".)
+enum class ViewMode { SideBySide, Tabs };
 
-// A session: its tabs, and which one is showing. The level between a session and its panes
-// is what makes `kai-term attach` mean something when the session it reaches has three
-// tabs: it arrives at the tab that was showing, not at whichever was made first.
-// (Kaida, 2026-11-21, on whether a tab is a session or a window of one: a window inside a
-// session, the shape tmux users already have in their hands.)
-struct SessionLayout {
-    std::vector<WindowLayout> windows;
-    int active = 0;
+inline std::string textFor(ViewMode mode) {
+    return mode == ViewMode::Tabs ? "tabs" : "side-by-side";
+}
 
-    SessionLayout() { windows.push_back(WindowLayout{}); }
-
-    int count() const { return static_cast<int>(windows.size()); }
-
-    WindowLayout& current() {
-        if (windows.empty())
-            windows.push_back(WindowLayout{});
-        active = std::clamp(active, 0, static_cast<int>(windows.size()) - 1);
-        return windows[static_cast<size_t>(active)];
-    }
-
-    const WindowLayout& current() const {
-        static const WindowLayout none{};
-        if (windows.empty())
-            return none;
-        return windows[static_cast<size_t>(
-            std::clamp(active, 0, static_cast<int>(windows.size()) - 1))];
-    }
-
-    int addWindow(std::string name) {
-        WindowLayout fresh;
-        fresh.name = std::move(name);
-        windows.push_back(std::move(fresh));
-        active = static_cast<int>(windows.size()) - 1;
-        return active;
-    }
-
-    // The last tab cannot be closed, for the reason the last pane cannot: what is left
-    // would be a session with nothing to show.
-    bool removeWindow(int at) {
-        if (windows.size() <= 1 || at < 0 || at >= static_cast<int>(windows.size()))
-            return false;
-        windows.erase(windows.begin() + at);
-        active = std::clamp(active - (at < active ? 1 : 0), 0,
-                            static_cast<int>(windows.size()) - 1);
+inline bool viewModeFromText(std::string_view word, ViewMode& mode) {
+    if (word == "side-by-side") {
+        mode = ViewMode::SideBySide;
         return true;
     }
+    if (word == "tabs") {
+        mode = ViewMode::Tabs;
+        return true;
+    }
+    return false;
+}
+
+// A session: its panes, each one holding a shell of its own, and how they are being
+// shown. There is deliberately no level above the panes — a tab *is* a pane, so a session
+// with four panes has four tabs and four shells, and switching between the two views
+// neither moves a shell nor makes the person arrange anything twice.
+// (Kaida, 2026-11-23: "each pane hold it's own shell. The session hold how many pane and
+// shell there is ... it's just a different view layout".)
+struct SessionLayout {
+    Layout layout;
+    ViewMode mode = ViewMode::SideBySide;
+
+    int paneCount() const { return layout.paneCount(); }
+
+    // The tab bar, in the order the panes sit in the tree: left before right, top before
+    // bottom. It is the same list in both views, which is what makes switching views a
+    // change of picture rather than a change of session.
+    std::vector<int> tabs() const { return layout.panes(); }
+
+    int active() const { return layout.focused(); }
+    void focus(int pane) { layout.focus(pane); }
+
+    // Along the tab bar, wrapping at both ends: a person pressing the key twice at the
+    // last tab should land on the second one, not be stuck.
+    int focusStep(int delta) { return layout.focusStep(delta); }
 
     std::string toText() const {
         std::ostringstream text;
-        for (size_t i = 0; i < windows.size(); ++i) {
-            const std::string name =
-                windows[i].name.empty() ? "window-" + std::to_string(i + 1) : windows[i].name;
-            text << "window " << name << "\n";
-            text << windows[i].layout.toText();
-            if (i + 1 < windows.size())
-                text << "\n";
-        }
+        text << "view " << textFor(mode) << "\n";
+        text << layout.toText();
         return text.str();
     }
 
     static SessionLayout fromText(std::string_view text, std::vector<std::string>& problems) {
         SessionLayout out;
-        out.windows.clear();
-        const std::string all(text);
+        std::string body;
         size_t start = 0;
-        std::string chunk;
-        std::string name;
-        // Whether a `window` line has been read whose body has not been turned into a tab
-        // yet. A tab and its panes are separate lines, so "has nothing under it" and "has
-        // not got anything under it yet" look the same until the header is remembered.
-        bool open = false;
-        auto flush = [&]() {
-            WindowLayout w;
-            w.name = name;
-            w.layout = Layout::fromText(chunk, problems);
-            out.windows.push_back(std::move(w));
-            chunk.clear();
-            name.clear();
-            open = false;
-        };
+        int line_no = 0;
+        const std::string all(text);
         while (start <= all.size()) {
             const size_t end = all.find('\n', start);
             const std::string line = all.substr(
                 start, end == std::string::npos ? std::string::npos : end - start);
             start = end == std::string::npos ? all.size() + 1 : end + 1;
-            std::string body = line;
+            ++line_no;
+            std::string words = line;
             size_t lead = 0;
-            while (lead < body.size() && body[lead] == ' ')
+            while (lead < words.size() && words[lead] == ' ')
                 ++lead;
-            body = body.substr(lead);
-            if (body.empty() || body.front() == '#')
+            words = words.substr(lead);
+            if (words.empty() || words.front() == '#')
                 continue;
-            if (body == "window" || body.rfind("window ", 0) == 0) {
-                if (!chunk.empty() || open)
-                    flush();
-                name = trimLayout(body.substr(6));
-                open = true;
+            if (words == "view" || words.rfind("view ", 0) == 0) {
+                const std::string mode_word = trimLayout(words.substr(4));
+                ViewMode mode = out.mode;
+                if (!viewModeFromText(mode_word, mode)) {
+                    problems.push_back("line " + std::to_string(line_no) +
+                                       ": view wants side-by-side or tabs, got '" + mode_word +
+                                       "'");
+                    continue;
+                }
+                out.mode = mode;
                 continue;
             }
-            chunk += line;
-            chunk += '\n';
+            // Named rather than left to the tree's own complaint, because this shape was
+            // in the record until the question was settled today, and a file written
+            // against the old idea of a tab holding panes deserves to be told what
+            // changed rather than that a word is unrecognised.
+            if (words == "window" || words.rfind("window ", 0) == 0) {
+                problems.push_back("line " + std::to_string(line_no) +
+                                   ": a session has one set of panes now; a tab is a pane, "
+                                   "so there is nothing for a `window` line to open");
+                continue;
+            }
+            body += line;
+            body += '\n';
         }
-        if (!chunk.empty() || open)
-            flush();
-        if (out.windows.empty())
-            out.windows.push_back(WindowLayout{});
+        out.layout = Layout::fromText(body, problems);
         return out;
     }
 };

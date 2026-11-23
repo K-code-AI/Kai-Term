@@ -661,24 +661,24 @@ int main() {
         }
         const Run shown = run({"layout", sid}, here);
         expect(shown.code == 0, "its arrangement can be read: " + shown.out);
-        expect(contains(shown.out, "window window-1") && contains(shown.out, "pane"),
-               "a shell nobody has split is one window holding one pane: " + shown.out);
+        expect(contains(shown.out, "view side-by-side") && contains(shown.out, "pane"),
+               "a shell nobody has split is one pane shown side by side: " + shown.out);
 
         const Run given = run({"set-layout", sid}, here,
-                              "window build\n  split left-right 0.5\n    pane\n    pane\n");
+                              "view tabs\nsplit left-right 0.5\n  pane\n  pane\n");
         expect(given.code == 0 && contains(given.out, "arranged session"),
                "an arrangement can be handed over: " + given.out);
         const Run holding = run({"layout", sid}, here);
-        expect(contains(holding.out, "window build") &&
+        expect(contains(holding.out, "view tabs") &&
                    contains(holding.out, "split left-right 0.500000"),
-               "and the shell holds it, down to where the divider sits: " + holding.out);
+               "and the shell holds it, view and divider and all: " + holding.out);
 
-        const Run bad = run({"set-layout", sid}, here,
-                            "window x\n  split sideways\n    pane\n    pane\n");
+        const Run bad = run({"set-layout", sid}, here, "split sideways\n  pane\n  pane\n");
         expect(bad.code != 0 && contains(bad.out, "left-right"),
                "a split that is not a direction is refused, and says what would be: " + bad.out);
         const Run still_there = run({"layout", sid}, here);
-        expect(contains(still_there.out, "window build"),
+        expect(contains(still_there.out, "view tabs") &&
+                   contains(still_there.out, "split left-right"),
                "and the arrangement that was there is still there: " + still_there.out);
 
         const Run nothing = run({"set-layout", sid}, here);

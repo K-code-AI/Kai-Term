@@ -354,63 +354,75 @@ int main() {
     }
 
     {
-        // Tabs: the level between a session and its panes, which is what makes attaching to
-        // a session with three tabs mean arriving at the one that was showing.
+        // A session's panes and how they are shown. A tab *is* a pane (Kaida, 2026-11-23),
+        // so the tab bar is the list of panes and switching views moves nothing: the same
+        // shells, arranged at once or waiting behind a bar one at a time.
         SessionLayout s;
-        expect("a session starts with one tab", s.count() == 1);
-        expect("and that tab has a pane in it", s.current().layout.paneCount() == 1);
-        const int second = s.addWindow("build");
-        expect("a tab can be added and named", second == 1 && s.windows[1].name == "build");
-        expect("and it is the one showing", s.active == 1);
-        static_cast<void>(s.current().layout.splitPane(
-            s.current().layout.focused(), Split::LeftRight, 24, 80));
-        expect("splitting the showing tab does not touch the other",
-               s.windows[0].layout.paneCount() == 1 && s.windows[1].layout.paneCount() == 2);
-        s.active = 0;
-        expect("closing one of two tabs is allowed", s.removeWindow(0));
-        expect("and closing a tab that is not showing keeps the showing one showing",
-               s.count() == 1 && s.windows[0].name == "build" && s.active == 0);
-        expect("the last tab cannot be closed", !s.removeWindow(0));
-        expect("so a session is never left with nowhere to look", s.count() == 1);
-        static_cast<void>(s.addWindow("third"));
-        const bool on_third = s.active == 1;
-        const bool dropped = s.removeWindow(1);
-        expect("closing the tab you are on leaves you on what is left",
-               on_third && dropped && s.count() == 1 && s.active == 0);
+        expect("a session starts with one pane, which is one tab",
+               s.paneCount() == 1 && s.tabs().size() == 1);
+        expect("and shows them side by side until told otherwise",
+               s.mode == ViewMode::SideBySide);
+        const int second = s.layout.splitPane(0, Split::LeftRight, 24, 80);
+        const int third = s.layout.splitPane(s.active(), Split::UpDown, 24, 80);
+        expect("splitting a pane adds a tab, because a tab is a pane",
+               second >= 0 && third >= 0 && s.paneCount() == 3 && s.tabs().size() == 3);
+        expect("the bar is the panes, in the order they sit in the tree",
+               s.tabs() == s.layout.panes());
+
+        const std::vector<CellRect> before = s.layout.rects(24, 80);
+        const std::vector<int> listed_before = s.tabs();
+        const int shown_before = s.active();
+        s.mode = ViewMode::Tabs;
+        expect("switching to tab view moves not one cell of the tree",
+               s.layout.rects(24, 80) == before);
+        expect("and the same shells are on the bar in either view", s.tabs() == listed_before);
+        expect("with the same one being looked at", s.active() == shown_before);
+        s.mode = ViewMode::SideBySide;
+        expect("and back again without a complaint", s.layout.rects(24, 80) == before);
+
+        s.focus(s.tabs()[0]);
+        expect("along the bar lands on the next pane", s.focusStep(1) == s.tabs()[1]);
+        expect("and back off it lands where it came from", s.focusStep(-1) == s.tabs()[0]);
+        expect("the bar wraps at both ends instead of sticking",
+               s.focusStep(-1) == s.tabs()[2] && s.focusStep(1) == s.tabs()[0]);
+        const int to_close = s.tabs()[1];
+        expect("closing a pane closes its tab with it", s.layout.closePane(to_close));
+        expect("and the bar is one tab shorter", s.tabs().size() == 2);
+        expect("with nobody looking at a closed pane", s.active() != to_close);
     }
 
     {
-        // A preset file can hold a whole session, tabs and all — which is what
-        // `kai-term --preset work` will load.
+        // The words an arrangement is saved as, which is what `kai-term layout` prints and
+        // a preset file holds.
         SessionLayout s;
-        s.windows[0].name = "main";
-        static_cast<void>(s.current().layout.splitPane(0, Split::LeftRight, 24, 80));
-        s.addWindow("build");
-        static_cast<void>(s.current().layout.splitPane(0, Split::UpDown, 24, 80));
+        static_cast<void>(s.layout.splitPane(0, Split::LeftRight, 24, 80));
+        s.mode = ViewMode::Tabs;
         const std::string text = s.toText();
         std::vector<std::string> problems;
         const SessionLayout back = SessionLayout::fromText(text, problems);
         expect("a session preset reads back with no complaints",
-               problems.empty() && back.count() == 2);
-        expect("with its tabs named",
-               back.windows[0].name == "main" && back.windows[1].name == "build");
-        expect("and each tab's panes where they were",
-               back.windows[0].layout.rects(24, 80) == s.windows[0].layout.rects(24, 80) &&
-                   back.windows[1].layout.rects(24, 80) == s.windows[1].layout.rects(24, 80));
-        expect("so a saved arrangement really is the arrangement again",
-               text.find("window main") != std::string::npos &&
-                   text.find("window build") != std::string::npos);
+               problems.empty() && back.paneCount() == 2);
+        expect("with its panes where they were",
+               back.layout.rects(24, 80) == s.layout.rects(24, 80));
+        expect("and in the view it was saved in", back.mode == ViewMode::Tabs);
+        expect("because the view is a word in the file, not a guess",
+               text.rfind("view tabs", 0) == 0);
 
-        // A file that names a tab and says nothing about its panes is somebody starting one
-        // by hand. The name is the part they typed, so it is the part that has to survive;
-        // and a tab with nothing under it is still a tab with a shell to put somewhere.
         problems.clear();
-        const SessionLayout named_only = SessionLayout::fromText("window notes\n", problems);
-        expect("a tab named with nothing under it is no complaint", problems.empty());
-        expect("and keeps the name that was typed for it",
-               named_only.count() == 1 && named_only.windows[0].name == "notes");
-        expect("and has somewhere to put the shell",
-               named_only.windows[0].layout.paneCount() == 1);
+        const SessionLayout sideways = SessionLayout::fromText("view sideways\npane\n", problems);
+        expect("a view that is neither is refused",
+               !problems.empty() &&
+                   problems[0].find("side-by-side or tabs") != std::string::npos);
+        expect("and the panes that could be read are still read",
+               sideways.paneCount() == 1);
+
+        // The shape this record had that morning, when a tab was a level holding panes.
+        // Refusing the word is worth the words to say why: a file written against the old
+        // idea is somebody's work, and "I do not know 'window'" tells them nothing.
+        problems.clear();
+        static_cast<void>(SessionLayout::fromText("window build\n  pane\n", problems));
+        expect("the old `window` shape is refused as the change it is",
+               !problems.empty() && problems[0].find("a tab is a pane") != std::string::npos);
     }
 
     {
