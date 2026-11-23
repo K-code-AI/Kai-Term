@@ -44,6 +44,9 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -87,6 +90,25 @@ public:
             cursor_lit_ = !cursor_lit_;
             repaintCursorCell();
         });
+
+        // A state diary, for a broken screen that only happens in front of someone
+        // else. With KAI_TERM_STATE_FILE set, this widget writes what it currently
+        // believes — geometry, grid, cursor, scroll, and the rows that have text on
+        // them — every second and a half, and whenever the window is resized or a
+        // program takes or gives up the screen. Unset, it writes nothing and costs
+        // nothing. It exists because a picture of a bug and a description of one are
+        // both worse than the numbers behind it.
+        if (const char* diary = std::getenv("KAI_TERM_STATE_FILE"); diary && *diary) {
+            diary_alt_ = screen_.inAlternateScreen();
+            connect(&state_diary_timer_, &QTimer::timeout, this, [this] {
+                const bool alt = screen_.inAlternateScreen();
+                writeStateDiary(alt == diary_alt_ ? "tick"
+                                                  : (alt ? "screen taken" : "screen given back"));
+                diary_alt_ = alt;
+            });
+            state_diary_timer_.start(1500);
+            writeStateDiary("start");
+        }
         font_ = QFont("Monospace");
         font_.setPixelSize(14);
         updateCellPixels();
@@ -1038,6 +1060,51 @@ public:
     // Shift+PageUp, dragging the thumb, dragging to an edge — asks this rather than the
     // model, which is why it is one function and not a check in each place.
     int scrollRange() const { return screen_.inAlternateScreen() ? 0 : screen_.historySize(); }
+
+    // Write what this widget currently believes, to the file KAI_TERM_STATE_FILE names.
+    // Every number the screen's position depends on goes in — the window's pixels, the
+    // cell's pixels, the grid's rows and columns, the padding the grid is inset by, the
+    // top-left corner of the first row and of the last one, the cursor, the scroll
+    // region, whose screen is on, the history and how far back the view is — followed by
+    // the rows that carry text. That last part is the point: a picture shows where the
+    // text looks like it is, and this shows where the terminal thinks it is, and the gap
+    // between the two is the bug.
+    void writeStateDiary(const char* why) const {
+        const char* path = std::getenv("KAI_TERM_STATE_FILE");
+        if (!path || !*path)
+            return;
+        std::ofstream out(path, std::ios::app);
+        if (!out)
+            return;
+        const QPointF first = cellTopLeft(0, 0);
+        const QPointF last = cellTopLeft(std::max(0, rows_ - 1), 0);
+        out << why
+            << " | window " << width() << "x" << height()
+            << " | cell " << cellSize().width() << "x" << cellSize().height()
+            << " | grid " << rows_ << "x" << cols_
+            << " | model " << screen_.rows() << "x" << screen_.cols()
+            << " | pad " << activePadding()
+            << " | y0 " << first.y() << " ylast " << last.y()
+            << " | cursor " << screen_.cursorY() << "," << screen_.cursorX()
+            << " | region " << screen_.scrollRegionTop() << ".." << screen_.scrollRegionBottom()
+            << " | origin " << (screen_.originMode() ? 1 : 0)
+            << " | alt " << (screen_.inAlternateScreen() ? 1 : 0)
+            << " | history " << screen_.historySize()
+            << " | offset " << scroll_offset_ << "/" << scrollRange()
+            << "\n";
+        for (int r = 0; r < rows_ && r < screen_.rows(); ++r) {
+            std::string text;
+            for (int c = 0; c < cols_ && c < screen_.cols(); ++c) {
+                const std::string& cell = screen_.at(r, c).text;
+                text += cell.empty() ? " " : cell;
+            }
+            while (!text.empty() && text.back() == ' ')
+                text.pop_back();
+            if (!text.empty())
+                out << "   r" << r << "|" << text.substr(0, 100) << "\n";
+        }
+        out.flush();
+    }
 
     // Say where the panes are, so a drag stays inside the one it started in. An empty
     // list is the ordinary terminal: one pane, the whole screen. A host drawing its own
@@ -4715,6 +4782,10 @@ private:
     // 0 is no blink at all, and then the timer never runs — a terminal that wakes twice
     // a second to paint nothing is a laptop that runs down.
     QTimer cursor_blink_timer_;
+    // The state diary described at `writeStateDiary`: the timer, and the screen mode as
+    // of the last line written, so a change of hands is worth a line of its own.
+    QTimer state_diary_timer_;
+    bool diary_alt_ = false;
     int cursor_blink_ms_ = 0;
     bool cursor_lit_ = true;
     bool closing_on_close_ = false;
