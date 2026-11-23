@@ -1119,3 +1119,19 @@ test that hangs should still cost a test and not a machine.
   zero that joined two lines instead of deleting two characters. Before believing a
   reproduction in either direction, confirm the binary, the session and the exact
   keystrokes that ran.
+- Give myself an oracle I did not write. Guessing at why a line displayed wrong went nowhere for
+  two nights; feeding the same recorded byte stream to tmux and diffing its screen against ours
+  settled it in minutes. tmux said `windowsi>`, we said `windowsis`, and bisecting the recording
+  for the first byte where the two disagreed landed on a 45-byte window containing the one
+  sequence we never implemented. A reference emulator costs one `tmux new-session` and turns "I
+  think the model is wrong somewhere" into "here is the byte".
+- My own expectation was the weakest instrument in the room, twice. I compared the screen with the
+  file's text and called nano's soft-wrap marker a stale character, then wrote a test on a screen
+  too narrow for the column it addressed and "proved" the new code was wrong. Check a screen
+  against what the program meant to draw, not against the file it opened; and check that the test's
+  grid is big enough to hold the position it names.
+- A sequence we do not implement must move nothing and draw nothing, and most of them do something.
+  `ESC[?u` was "unsupported" and still moved the cursor, because it shared a final byte with
+  restore-cursor; `ESC[Z` was dropped entirely and left a redraw a column right for the rest of the
+  file. When a final byte has no handler the question is not "do I need this feature" but "what
+  does the program now believe happened".

@@ -1259,12 +1259,13 @@ private:
 
         cursor_x_ += w;
         if (cursor_x_ >= cols_) {
-            if (autowrap_) {
-                cursor_x_ = cols_; // one-past representation of the wrap flag
-                pending_wrap_ = true;
-            } else {
-                cursor_x_ = cols_ - 1;
-            }
+            // The cursor stays on the last cell and the pending-wrap flag carries
+            // the wrap on its own. A column past the end is not a place: nothing
+            // can be erased from it, nothing can be deleted there, and a program
+            // asking where the cursor is would be told about a column that is not
+            // on the screen.
+            cursor_x_ = cols_ - 1;
+            pending_wrap_ = autowrap_;
         }
     }
 
@@ -2158,6 +2159,17 @@ private:
                 pending_wrap_ = false;
                 cursor_x_ = std::min(cols_ - 1, cursor_x_ + get(0, 1));
                 break;
+            case 'Z': {
+                // CBT: back to the previous tab stop, the mirror of the tab that
+                // moves forward by the same spacing. A stop counts only when it is
+                // strictly behind the cursor, so a cursor sitting on one moves to
+                // the one before it. A program redrawing a line from a stop relies
+                // on this: leave the cursor where it was and every character that
+                // follows lands a column to the right of where it belongs.
+                pending_wrap_ = false;
+                cursor_x_ = cursor_x_ > 0 ? ((cursor_x_ - 1) / 8) * 8 : 0;
+                break;
+            }
             case 'D':
             case '`':
                 pending_wrap_ = false;

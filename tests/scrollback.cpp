@@ -325,6 +325,79 @@ int main() {
         }
     }
 
+    // ---- A cursor waiting to wrap is still on the last column -------------
+    // Writing into the last column leaves the terminal waiting to wrap on the next
+    // character, but the cursor is not standing in a column that does not exist.
+    // It sits on the last cell with a pending-wrap flag beside it, and every edit
+    // there acts on that cell. Holding the cursor one column past the end instead
+    // makes an erase or a delete at the end of a full row land on nothing: a
+    // program redrawing a line out to its edge asks for the last character to go
+    // and it stays, and a query for the cursor answers with a column the terminal
+    // does not have.
+    {
+        kai::Screen s(3, 10);
+        s.feed("0123456789");
+        expect("a cursor waiting to wrap stays on the last column",
+               std::to_string(s.cursorX()), "9");
+        s.feed("\x1b[K");
+        expect("erasing from there takes the last character", screenRowText(s, 0),
+               "012345678");
+    }
+    {
+        kai::Screen s(3, 10);
+        s.feed("0123456789\x1b[P");
+        expect("deleting at the end of a full row deletes the last character",
+               screenRowText(s, 0), "012345678");
+    }
+    {
+        kai::Screen s(3, 10);
+        s.feed("0123456789\x1b[X");
+        expect("erasing characters at the end of a full row erases one",
+               screenRowText(s, 0), "012345678");
+    }
+    {
+        kai::Screen s(3, 10);
+        s.feed("0123456789\x1b[6n");
+        expect("a cursor position query names a column that exists", s.takeResponse(),
+               "\x1b[1;10R");
+    }
+    {
+        // The wrap itself still happens: the flag is only deferred, not lost.
+        kai::Screen s(3, 10);
+        s.feed("0123456789AB");
+        expect("and the next character still wraps to the row below",
+               screenRowText(s, 1), "AB");
+    }
+
+    // ---- A backward tab finds the stop behind it -------------------------
+    // `ESC [ Z` moves to the previous tab stop. Ignoring it leaves the cursor one
+    // column ahead of where the program believes it is, and every character that
+    // redraw writes after it lands a column to the right — which is how nano came
+    // to paint a letter into the soft-wrap marker at the end of a long line and
+    // leave it there for good: the program never redraws that cell, because as far
+    // as it is concerned nothing was ever written in it.
+    {
+        kai::Screen s(3, 80); // wide enough that the column below is not clamped
+        s.feed("\x1b[1;42H\x1b[Z"); // column 41, then back
+        expect("a backward tab moves to the stop behind the cursor",
+               std::to_string(s.cursorX()), "40");
+        s.feed("\x1b[Z");
+        expect("and again moves to the stop before that", std::to_string(s.cursorX()),
+               "32");
+        s.feed("\x1b[Z\x1b[Z\x1b[Z\x1b[Z\x1b[Z");
+        expect("repeatedly, until it cannot go further", std::to_string(s.cursorX()),
+               "0");
+        s.feed("\x1b[Z");
+        expect("and not past the first column", std::to_string(s.cursorX()), "0");
+    }
+    {
+        kai::Screen s(2, 40);
+        s.feed("0123456789\x1b[Z"); // ten columns in, back to the stop at 8
+        s.feed("X");
+        expect("and what is written next lands on the stop", screenRowText(s, 0),
+               "01234567X9");
+    }
+
     // ---- The shell screen behind an application reflows too --------------
     {
         kai::Screen s(4, 10);

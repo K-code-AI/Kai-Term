@@ -185,13 +185,12 @@ void Screen::feed(std::string_view bytes) {
         if (raw == 0x09) {
             flushPendingReplacement();
             pending_wrap_ = false;
-            cursor_x_ = std::min(cols_, ((cursor_x_ / 8) + 1) * 8);
+            cursor_x_ = ((cursor_x_ / 8) + 1) * 8;
             if (cursor_x_ >= cols_) {
-                cursor_x_ = cols_;
-                if (autowrap_)
-                    pending_wrap_ = true;
-                else
-                    cursor_x_ = cols_ - 1;
+                // No tab stop left on the line: the cursor goes to its last cell
+                // and waits there, as a character written at the edge does.
+                cursor_x_ = cols_ - 1;
+                pending_wrap_ = autowrap_;
             }
             continue;
         }

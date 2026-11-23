@@ -211,7 +211,7 @@ int main() {
         bool lok = true;
         kai::Screen y(3, 4);
         y.feed("abcd");
-        lok &= (y.cursorX() == 4);
+        lok &= (y.cursorX() == 3); // on the last cell, not past it
         lok &= y.at(1, 0).text.empty();
         y.feed("e");
         lok &= (lineText(y, 0) == "abcd");
@@ -398,15 +398,16 @@ int main() {
     }
 
     // A column number past the right edge puts the cursor on the last column.
-    // It used to land one past it, which is the position deferred autowrap uses
-    // to mean "wrap on the next character" — so the next printable character was
-    // written outside the grid and took the process down with it.
+    // It used to land one past it, which is where deferred autowrap kept its own
+    // cursor — so the next printable character was written outside the grid and
+    // took the process down with it. Deferred autowrap now keeps its cursor on the
+    // last cell too, so there is no one-past position for anything to land on.
     {
         bool lok = true;
         kai::Screen cup(3, 10);
         cup.feed("\x1b[1;99HX"); // CUP far past the right edge, then type
         lok &= (lineText(cup, 0) == "         X");
-        lok &= (cup.cursorX() == cup.cols()); // legitimately one-past now
+        lok &= (cup.cursorX() == cup.cols() - 1); // the last cell, and no further
         cup.feed("Y"); // ... and the character after it still wraps
         lok &= (lineText(cup, 1) == "Y");
         if (!lok) fail("CUP past the right edge");
