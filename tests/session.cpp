@@ -871,7 +871,7 @@ int main() {
         }
         expect("and the answer says so", answer.kind == MsgKind::Error);
         expect("in words that name the pane ([" + answer.body + "])",
-               fieldValue(decodeFields(answer.body), "reason").find("pane") !=
+               fieldValue(decodeFields(answer.body), "message").find("pane") !=
                    std::string::npos);
 
         // And when the pane a view was looking at stops existing — the arrangement shrank
@@ -978,7 +978,7 @@ int main() {
                 Frame frame;
                 while (viewer.reader.pop(frame)) {
                     if (frame.kind == MsgKind::Error &&
-                        fieldValue(decodeFields(frame.body), "reason").find(about) !=
+                        fieldValue(decodeFields(frame.body), "message").find(about) !=
                             std::string::npos)
                         return true;
                 }

@@ -104,6 +104,12 @@ public:
             }
             if (ended_)
                 return 0;
+            // Something the window asks about has arrived, and there is nothing to read.
+            // Sitting here waiting for bytes would keep it from the window until the shell
+            // next talked — and a session at an idle prompt never talks. A refusal that
+            // appears only once something else happens is a refusal that appears never.
+            if (!refusal_.empty() || tabs_changed_)
+                return kNothingRightNow;
             bool hung_up = false;
             if (!client_.readNow(hung_up)) {
                 ended_ = true;
@@ -154,7 +160,7 @@ public:
 
     // The refusal, once. Taken rather than read because a message somebody has already
     // seen should not be shown again on the next look.
-    bool takeRefusal(std::string& out) {
+    bool takeRefusal(std::string& out) override {
         if (refusal_.empty())
             return false;
         out = std::exchange(refusal_, std::string {});

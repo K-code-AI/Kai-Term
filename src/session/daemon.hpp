@@ -1366,7 +1366,7 @@ private:
                         // when the truth is one wrong number.
                         static_cast<void>(detail::sendFrame(
                             fd, MsgKind::Error,
-                            encodeFields({{"reason", "no pane " + std::to_string(slot) +
+                            encodeFields({{"message", "no pane " + std::to_string(slot) +
                                                     " in that session; it has " +
                                                     std::to_string(places)}})));
                         break;
@@ -1447,7 +1447,7 @@ private:
                         // says on purpose.
                         static_cast<void>(detail::sendFrame(
                             fd, MsgKind::Error,
-                            encodeFields({{"reason",
+                            encodeFields({{"message",
                                            "that is the last pane in the session; ending the "
                                            "session is what closes it"}})));
                         break;
@@ -1486,7 +1486,7 @@ private:
                     else {
                         static_cast<void>(detail::sendFrame(
                             fd, MsgKind::Error,
-                            encodeFields({{"reason",
+                            encodeFields({{"message",
                                            "the view is either side-by-side or tabs, not '" +
                                                wanted + "'"}})));
                         break;

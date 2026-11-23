@@ -33,6 +33,14 @@
 namespace kai {
 
 class TerminalBackend {
+  public:
+    // What `read` gives back when the program at the other end is simply quiet and there is
+    // nothing to hand over — which is not the same as its having gone away, and must not be
+    // answered by closing the window. A session idle at a prompt is the ordinary case for
+    // this, and it is also the case in which a tab bar change or a refusal is all that has
+    // happened.
+    static constexpr ssize_t kNothingRightNow = -2;
+
 public:
     virtual ~TerminalBackend() = default;
 
@@ -106,6 +114,14 @@ public:
     // Another place to work, the place in hand ended, and a different way of looking at the
     // places there are. Only a session has places; a window holding a shell started here has
     // the one it is showing, and says nothing when asked.
+    // The last thing the session refused to do, in its own words, taken once so that a
+    // message somebody has already read is not read again. Only a session can disagree; a
+    // window holding a shell started here has nobody to argue with.
+    virtual bool takeRefusal(std::string& out) {
+        out.clear();
+        return false;
+    }
+
     virtual void newPane() {}
     virtual void closePane() {}
     virtual void setViewMode(bool /*tabs*/) {}

@@ -788,6 +788,12 @@ public:
                 // session gaining a pane prints nothing at all on the pane being looked
                 // at. Asking on every turn of the loop is what notices, and the wait below
                 // already wakes five times a second by itself.
+                std::string refusal;
+                if (backend->takeRefusal(refusal)) {
+                    const std::string said = refusal;
+                    QMetaObject::invokeMethod(this, [this, said] { showNotice(said); },
+                                              Qt::QueuedConnection);
+                }
                 TerminalBackend::TabBar bar;
                 if (backend->takeTabBar(bar)) {
                     QCoreApplication::postEvent(this,
@@ -823,6 +829,8 @@ public:
                     break;
                 }
                 ssize_t n = backend->read(buf, sizeof(buf));
+                if (n == TerminalBackend::kNothingRightNow)
+                    continue; // quiet rather than gone: the turn round asks about the bar again
                 if (n <= 0) {
                     // The shell closed the terminal. Collect it here so the exit
                     // status means something; the master stays open until
@@ -1252,6 +1260,25 @@ public:
     }
     bool viewIsTabs() const { return view_tabs_; }
 
+    // Something the session refused, said where it can be read: along the bottom of the
+    // window, gone on its own after a few seconds, and gone the moment a key is typed. A
+    // refusal nobody sees is a refusal that gets pressed again, and again.
+    void showNotice(std::string_view text, int ms = 4000) {
+        notice_ = QString::fromStdString(std::string(text));
+        ++notice_revision_;
+        update();
+        if (ms > 0) {
+            const int revision = notice_revision_;
+            QTimer::singleShot(ms, this, [this, revision] {
+                if (revision != notice_revision_)
+                    return; // a newer notice owns the screen now
+                notice_.clear();
+                update();
+            });
+        }
+    }
+    std::string notice() const { return notice_.toStdString(); }
+
     // Where the tab slots begin and end, as fractions of the bar's width. Equal when the
     // places are shown one at a time, because then the bar is a list and no place is more
     // important than another. Proportional to the cells when they are shown side by side,
@@ -1500,6 +1527,12 @@ public:
         const Qt::KeyboardModifiers mods = ev->modifiers();
         const int key = ev->key();
         const bool shift = mods.testFlag(Qt::ShiftModifier);
+        // The next thing being typed is worth more of the screen than the last thing that
+        // did not happen.
+        if (!notice_.isEmpty()) {
+            notice_.clear();
+            ++notice_revision_;
+        }
 
         // Ctrl+Shift+Left and Right step along the tab bar, wrapping at both ends: the
         // places are numbered, so there is nothing to remember about which is which, and
@@ -2233,6 +2266,23 @@ public:
         // are mixing; it is back the moment the mixer closes. (Kaida, 2026-11-20:
         // "don't show the color menu when in the color picker, it looks clustered
         // underneath".)
+        // A refusal, along the bottom of the window where the line between the work and its
+        // edge already is. tmux says these in its status line; there is no status line here,
+        // and a refusal that only exists in a log is one nobody learns from. Centred, and
+        // under the dialogs: a question being asked is worth more of the screen than a thing
+        // that failed.
+        if (!notice_.isEmpty()) {
+            const double row = cellHeight();
+            const double text_w = QFontMetricsF(font()).horizontalAdvance(notice_);
+            const double box =
+                std::min(static_cast<double>(width()) - 2.0 * grid_pad,
+                         text_w + 2.0 * std::max(1.0, cellWidth()));
+            const QRectF strip((width() - box) / 2.0, height() - grid_pad - row, box, row);
+            p.fillRect(strip, ground(default_bg, 235));
+            p.setPen(ink(theme_.foreground, 255));
+            p.drawText(strip, Qt::AlignCenter, notice_);
+        }
+
         if (!mixer_)
             paintPicker(p);
         paintSettings(p);
@@ -5031,6 +5081,10 @@ private:
     bool view_tabs_ = false;
     // Where each place sits, as the session last said. Empty until it says.
     std::vector<PaneRect> tab_cells_;
+    // The refusal currently on screen, and which one it is: a notice that has been replaced
+    // must not be cleared by the timer belonging to the one before it.
+    QString notice_;
+    int notice_revision_ = 0;
 
     // Rows moved by one wheel notch, and how far the view is scrolled back from
     // the live bottom in lines. Zero means "following the shell".

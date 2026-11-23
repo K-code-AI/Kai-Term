@@ -8,6 +8,8 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QImage>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QString>
 #include <chrono>
@@ -367,6 +369,58 @@ int main(int argc, char** argv) {
     }
 
     w.shutdown();
+
+    {
+        // A refusal has to be readable. tmux says them in its status line; there is no
+        // status line here, and a refusal that only exists in the daemon's log is a refusal
+        // nobody learns from — they press the key again, and again.
+        kai::TerminalWidget w(24, 80, "/bin/sh");
+        w.resize(900, 500);
+        w.show();
+        pump(200);
+
+        w.showNotice("no room in this window for another pane");
+        pump(60);
+        expect("a refusal is put where it can be read",
+               w.notice() == "no room in this window for another pane");
+
+        // On screen, near the bottom, where the line between the work and the edge already
+        // is — and lit enough to see out of the corner of an eye.
+        const QImage before = w.grab().toImage();
+        w.showNotice("");
+        pump(60);
+        const QImage blank = w.grab().toImage();
+        w.showNotice("no room in this window for another pane");
+        pump(60);
+        const QImage shown = w.grab().toImage();
+        int bottom_changed = 0;
+        for (int y = shown.height() - 30; y < shown.height(); ++y)
+            for (int x = 0; x < shown.width(); x += 4)
+                if (shown.pixelColor(x, y) != blank.pixelColor(x, y))
+                    ++bottom_changed;
+        expect("it is drawn along the bottom of the window", bottom_changed > 200);
+        int top_changed = 0;
+        for (int y = 0; y < shown.height() - 60; y += 2)
+            for (int x = 0; x < shown.width(); x += 8)
+                if (shown.pixelColor(x, y) != blank.pixelColor(x, y))
+                    ++top_changed;
+        expect("and it covers nothing else on the screen", top_changed < 40);
+
+        // Gone by itself, because a notice that stays is a thing to clean up; and gone the
+        // moment they carry on typing, because the next thing they do is worth more screen
+        // than the last thing that did not happen.
+        w.showNotice("a short-lived refusal", 120);
+        pump(400);
+        expect("it goes away on its own", w.notice().empty());
+        w.showNotice("here until the next key");
+        pump(60);
+        expect("it is there to be seen", !w.notice().empty());
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, "a");
+        QApplication::sendEvent(&w, &press);
+        pump(60);
+        expect("and the next key typed clears it", w.notice().empty());
+    }
+
 
     if (failures == 0) {
         std::cout << "PASS: " << checks << " pane-scoped selection checks passed\n";

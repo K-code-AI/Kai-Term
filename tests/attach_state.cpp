@@ -443,6 +443,15 @@ int main(int argc, char** argv) {
     // the shell can print the whole word: this window is eighty columns wide and repeats
     // back whatever it is typed into, and a check that accepts the echo of what it sent is
     // checking that a terminal can repeat itself.
+    // And the words themselves make the whole way: from the daemon, over the wire, into the
+    // window. Each end is tested on its own, which is exactly how a seam in the middle gets
+    // left untested.
+    // The notice travels while the session says nothing at all: the shell is sitting at its
+    // prompt, printing nothing, which is the ordinary state of an idle window and was enough
+    // to keep a refusal from ever being seen.
+    pump(1200);
+    expect("and what the session said is said in the window (said: [" + sole.notice() + "])",
+           sole.notice().find("last pane") != std::string::npos);
     static_cast<void>(daemon.type("single", "echo REFU\"\"SAL\n"));
     expect("a window told no is not told the session ended",
            waitFor([&sole] { return onScreen(sole).find("REFUSAL") != std::string::npos; },
