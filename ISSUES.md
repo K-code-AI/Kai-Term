@@ -13,6 +13,7 @@
 
 ## Known limitations
 
+- **A view that stops reading can stall the session it is looking at.** The daemon writes a view's frames itself, on the thread that produced them, and a socket whose buffer is full blocks that thread until the view reads — including the fresh screen sent to every view after a resize. A window that stops taking input (stopped in a debugger, a machine swapping hard) therefore holds up the session's other views until its own thread notices. The tests found this by hanging: a check that attaches two views and never reads them stalls the daemon's accept loop, so nothing new can connect at all. Giving each view its own queue, or dropping a stale screen for a view that is not keeping up, is the fix; neither is done.
 - The primary screen's cursor shape and visibility are not saved when an alternate screen is active; the current modes are restored, not the pre-alternate ones.
 - Only the last 2000 history rows are sent in a snapshot. The model caps history at 1000 rows, so this is not reached in practice.
 - No visual verification on a live Wayland/X11 session has been done on this machine.

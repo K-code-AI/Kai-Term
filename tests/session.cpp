@@ -200,6 +200,19 @@ std::vector<SessionInfo> listed() {
     return none;
 }
 
+// The size a session carries, once the daemon has had a moment to settle on one. Sizes
+// move on a message rather than in this thread, so a check waits rather than guessing.
+bool settles(const std::string& name, int rows, int cols) {
+    for (int attempt = 0; attempt < 60; ++attempt) {
+        for (const SessionInfo& info : listed()) {
+            if (info.name == name && info.rows == rows && info.cols == cols)
+                return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return false;
+}
+
 // Attach and leave the client connected; the caller decides when it goes away.
 bool attach(TestClient& client, const std::string& name, int rows, int cols,
             std::string& snapshot, std::string* error = nullptr) {
@@ -488,6 +501,66 @@ int main() {
                returned.send(MsgKind::Data, "echo after-detach\n"));
         expect("still answering",
                returned.waitFor("after-detach").find("after-detach") != std::string::npos);
+    }
+
+    {
+        // Two views of one session. The size the session carries is the size every view
+        // looking at it can show, not the size of whoever spoke last: with the last-one-to-
+        // speak rule a small window and a big one on the same session reflowed it every time
+        // the other was touched, so neither window got to keep a screen and the shell
+        // reflowed twice for one gesture. (Kaida, 2026-11-21: the smallest view wins.)
+        expect("a session starts with nobody looking at it", createSession("shared"));
+        TestClient small_view;
+        TestClient big_view;
+        std::string snapshot;
+        expect("a small view attaches", attach(small_view, "shared", 24, 80, snapshot));
+        expect("and a bigger one joins it", attach(big_view, "shared", 50, 200, snapshot));
+        expect("the session keeps the smaller of the two, not the last one to arrive",
+               settles("shared", 24, 80));
+
+        expect("the small view growing lets the session grow to the next smallest",
+               small_view.send(MsgKind::Resize, encodeFields({{"rows", "30"},
+                                                              {"cols", "100"}})) &&
+                   settles("shared", 30, 100));
+
+        // The reason this is not simply "the size of the first window": a limit stops being
+        // a limit when the thing imposing it goes away, and a session that stayed small
+        // after its small window closed would keep every window that came after it small.
+        ::close(small_view.fd);
+        small_view.fd = -1;
+        expect("and when the limiting view goes away the session grows to the one left",
+               settles("shared", 50, 200));
+
+        // Nobody looking is not a reason to resize: the shell's screen is what it is, and a
+        // session that picked a default the moment the last window closed would throw away
+        // the layout it was keeping for the next one.
+        ::close(big_view.fd);
+        big_view.fd = -1;
+        bool quiet = false;
+        for (int attempt = 0; attempt < 20 && !quiet; ++attempt) {
+            quiet = settles("shared", 50, 200);
+            if (!quiet)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        expect("with nobody looking the session keeps the size it had", quiet);
+
+        // Leave the room as it was found: the blocks after this one count the sessions the
+        // daemon is holding and take the first of them as theirs, so one left over here
+        // gets counted as theirs and they fail for a reason that is not in them.
+        TestClient tidying;
+        if (tidying.connect()) {
+            static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "shared"}}));
+            Frame ack;
+            static_cast<void>(tidying.reply(ack));
+        }
+        for (int attempt = 0; attempt < 60; ++attempt) {
+            bool still_there = false;
+            for (const SessionInfo& info : listed())
+                still_there = still_there || info.name == "shared";
+            if (!still_there)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
     }
 
     {

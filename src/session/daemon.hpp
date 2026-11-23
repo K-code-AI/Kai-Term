@@ -45,6 +45,7 @@
 #include "../ipc/socket.hpp"
 #include "../process/job.hpp"
 #include "../process/pty.hpp"
+#include "../session/layout.hpp"
 #include "../session/snapshot.hpp"
 #include "../terminal/screen.hpp"
 
@@ -664,6 +665,11 @@ private:
         std::unique_ptr<Screen> screen;
         mutable std::mutex screen_mutex;
         std::vector<int> clients;
+        // What each view looking at this session said its window is, by descriptor. The
+        // session's size is worked out from all of them together — see `settleSessionSize`
+        // — rather than from whoever sent a message last, and a view that goes away takes
+        // its limit with it. Guarded by `clients_mutex` along with the list it parallels.
+        std::map<int, ViewSize> views;
         // A listing reads the client count while a view is being added or dropped, so
         // the locks have to be taken through a const record.
         mutable std::mutex clients_mutex;
@@ -829,8 +835,33 @@ private:
                 record.clients.erase(
                     std::remove(record.clients.begin(), record.clients.end(), fd),
                     record.clients.end());
+                // Its size stops counting here even though the session is not resettled
+                // from inside this lock. The thread that owned it is being woken and will
+                // settle things on its way out; holding the lock to do it sooner would be
+                // resizing while writing screens to the very list being resized for.
+                record.views.erase(fd);
             }
         }
+    }
+
+    // Settle the session's size from the views looking at it: the size every one of them
+    // can show, which is the smallest. With nobody looking there is nothing to be the
+    // smallest of, and the session keeps the size it had — a screen that shrank to a
+    // default when the last window closed would throw away the very thing a keep is for.
+    //
+    // Takes no lock and must be called from outside one: settling resizes, and resizing
+    // writes a fresh screen to every view, which cannot happen while the list of views is
+    // held shut.
+    void settleSessionSize(const std::shared_ptr<Record>& record) {
+        ViewSize settled {record->rows.load(), record->cols.load()};
+        {
+            std::lock_guard<std::mutex> lock(record->clients_mutex);
+            std::vector<ViewSize> sizes;
+            for (const auto& view : record->views)
+                sizes.push_back(view.second);
+            settled = smallestView(sizes, settled);
+        }
+        resizeSession(*record, settled.rows, settled.cols);
     }
 
     void resizeSession(Record& record, int rows, int cols) {
@@ -876,10 +907,17 @@ private:
         }
         const int rows = std::stoi(fieldValue(hello, "rows", "0"));
         const int cols = std::stoi(fieldValue(hello, "cols", "0"));
-        // The view's size is the session's size. With two views of different sizes
-        // the last one to speak wins, which is what tmux does with windows nobody is
-        // watching and what makes the screen mean one thing.
-        resizeSession(*record, rows, cols);
+        // This window's size is one more thing the session has to fit, not an order to
+        // resize. Whoever spoke last used to win, which meant two windows on one session
+        // reflowed the screen every time the other was touched, and neither got to keep
+        // the layout it was showing.
+        {
+            std::lock_guard<std::mutex> lock(record->clients_mutex);
+            record->views[fd] = ViewSize {rows, cols};
+        }
+        // Before the screen is sent, so that what a new view is shown is the screen at the
+        // size it is about to be told about.
+        settleSessionSize(record);
 
         std::string snapshot;
         {
@@ -929,9 +967,15 @@ private:
                     record->clients.erase(std::remove(record->clients.begin(),
                                                       record->clients.end(), fd),
                                           record->clients.end());
+                    record->views.erase(fd);
                 }
-                if (*closing && !record->saved)
+                if (*closing && !record->saved) {
                     daemon.destroy(record);
+                    return;
+                }
+                // A limit stops being a limit when the thing imposing it goes away: the
+                // windows still looking at this session get the size they were waiting for.
+                daemon.settleSessionSize(record);
             }
         } guard{*this, record, fd, &closing_on_purpose};
 
@@ -943,8 +987,13 @@ private:
                     break;
                 case MsgKind::Resize: {
                     const Fields fields = decodeFields(frame.body);
-                    resizeSession(*record, std::stoi(fieldValue(fields, "rows", "0")),
-                                  std::stoi(fieldValue(fields, "cols", "0")));
+                    const int want_rows = std::stoi(fieldValue(fields, "rows", "0"));
+                    const int want_cols = std::stoi(fieldValue(fields, "cols", "0"));
+                    {
+                        std::lock_guard<std::mutex> lock(record->clients_mutex);
+                        record->views[fd] = ViewSize {want_rows, want_cols};
+                    }
+                    settleSessionSize(record);
                     break;
                 }
                 case MsgKind::Detach:
