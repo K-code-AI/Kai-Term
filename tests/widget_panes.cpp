@@ -253,6 +253,64 @@ int main(int argc, char** argv) {
         w.setPanes({});
     }
 
+    {
+        // A tab bar is drawn where a session has more than one place to look at, and the
+        // grid moves down to make room for it instead of being painted over.
+        const int rows_before = w.rows();
+        const double first_row_before = w.cellTopLeft(0, 0).y();
+        const double row_height = w.cellTopLeft(1, 0).y() - w.cellTopLeft(0, 0).y();
+
+        w.setTabBar(1, 0);
+        pump(60);
+        expect("one place to look at is not a bar of tabs",
+               w.paneCount() == 1 && w.rows() == rows_before &&
+                   qAbs(w.cellTopLeft(0, 0).y() - first_row_before) < 0.5);
+
+        w.setTabBar(3, 0);
+        pump(200);
+        expect("three places take a row off the grid", w.rows() == rows_before - 1);
+        expect("and the grid begins a row lower than it did",
+               qAbs(w.cellTopLeft(0, 0).y() - first_row_before - row_height) < 0.5);
+
+        // The pointer has to keep landing on the character it is over. A bar that moved
+        // what is drawn without moving what is clicked would put the highlight a line
+        // above the word a person is looking at, which reads as a broken selection rather
+        // than as a missing row.
+        drag(&w, line.row, at_three, line.row, at_three + 8);
+        expectStr("a drag after the bar appeared still lands on the words under it",
+                  w.selectedText(), rtrim(text.substr(at_three, 8)));
+
+        // A press in the strip belongs to the bar and not to the grid: it changes which
+        // place is being looked at, and it selects nothing. Where the strip is comes out of
+        // the same arithmetic that draws it, so this says the bar is where it is drawn too.
+        const double bar_left = w.cellTopLeft(0, 0).x();
+        const double bar_width = w.width() - 2.0 * bar_left;
+        const QPointF second_tab(bar_left + bar_width * 0.6, // well inside the second tab
+                                 first_row_before + row_height * 0.5);
+        const std::string before = w.selectedText(); // whatever the drag above left
+        sendMouse(&w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton, second_tab);
+        sendMouse(&w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, second_tab);
+        expect("a press on the second tab looks at the second place", w.shownPane() == 1);
+        expect("and does not start a selection over the grid", w.selectedText() == before);
+
+        w.showPaneAt(2);
+        expect("asking to be shown another place is remembered", w.shownPane() == 2);
+        w.showPaneAt(9);
+        expect("a place past the end of the bar is not looked at", w.shownPane() == 2);
+        w.showPaneAt(-1);
+        expect("nor is a place before the first one", w.shownPane() == 2);
+
+        w.setTabBar(2, 0);
+        expect("a bar that shrinks leaves the window looking at a place that exists",
+               w.paneCount() == 2 && w.shownPane() < 2);
+
+        w.setTabBar(0, 0);
+        pump(200);
+        expect("and a session with no tabs left gives the row back",
+               w.rows() == rows_before &&
+                   qAbs(w.cellTopLeft(0, 0).y() - first_row_before) < 0.5);
+    }
+
     w.shutdown();
 
     if (failures == 0) {

@@ -64,6 +64,16 @@ struct TerminalOutputEvent : QEvent {
     int generation;
 };
 
+// The session's tab bar, as the daemon last described it. Not output: a session gaining a
+// pane prints nothing on the pane being looked at, so nothing else would ever say so.
+struct TerminalTabsEvent : QEvent {
+    TerminalTabsEvent(int panes, int focused, int generation)
+        : QEvent(QEvent::None), panes(panes), focused(focused), generation(generation) {}
+    int panes;
+    int focused;
+    int generation;
+};
+
 struct TerminalExitEvent : QEvent {
     explicit TerminalExitEvent(int generation)
         : QEvent(QEvent::None), generation(generation) {}
@@ -766,6 +776,15 @@ public:
         reader_ = std::thread([this, backend, generation] {
             char buf[4096];
             while (running_ && shell_alive_) {
+                // The tab bar is not output, so it does not arrive through read(): a
+                // session gaining a pane prints nothing at all on the pane being looked
+                // at. Asking on every turn of the loop is what notices, and the wait below
+                // already wakes five times a second by itself.
+                TerminalBackend::TabBar bar;
+                if (backend->takeTabBar(bar)) {
+                    QCoreApplication::postEvent(
+                        this, new TerminalTabsEvent(bar.panes, bar.focused, generation));
+                }
                 // Bytes the backend is already holding are not waiting on the
                 // descriptor to become readable, so they are taken without asking.
                 // A session restored into a window arrives in the handshake that
@@ -1163,8 +1182,48 @@ public:
     }
     QPointF cellTopLeft(int row, int col) const {
         const double pad = activePadding();
-        return QPointF(pad + col * cellWidth(), pad + row * cellHeight());
+        return QPointF(pad + col * cellWidth(), gridTop() + row * cellHeight());
     }
+
+    // The strip along the top that a tab bar is drawn in, in pixels. Nothing while this
+    // window has one place to look at — a bar with a single tab in it is a border that
+    // lies about having tabs — and one row's height from two places onwards.
+    double tabStrip() const { return tab_panes_ > 1 ? cellHeight() : 0.0; }
+
+    // Where the first row of the grid is drawn, below the bar when there is one. The
+    // height the grid is counted at comes from here as well, so the program inside is
+    // told about the room the bar took rather than promised a row it will never see.
+    double gridTop() const { return activePadding() + tabStrip(); }
+
+    // What the session's tab bar holds. The count is the daemon's business; which tab is
+    // lit is this window's, because two windows on one session can be looking at two
+    // different places and both are right.
+    void setTabBar(int panes, int focused) {
+        if (panes == tab_panes_ && (tab_chosen_ || focused == tab_focused_))
+            return;
+        tab_panes_ = std::max(0, panes);
+        if (!tab_chosen_)
+            tab_focused_ = std::clamp(focused, 0, std::max(0, tab_panes_ - 1));
+        else if (tab_focused_ >= tab_panes_)
+            tab_focused_ = std::max(0, tab_panes_ - 1);
+        applyGridGeometry(); // the bar takes a row's height the moment it appears
+        update();
+    }
+
+    // Look at another place in the session. The daemon sends the screen that belongs there
+    // and starts carrying this window's typing to the same program; nothing here needs to
+    // know what the other places contain.
+    void showPaneAt(int pane) {
+        if (pane < 0 || pane >= tab_panes_ || pane == tab_focused_)
+            return;
+        tab_focused_ = pane;
+        tab_chosen_ = true;
+        update();
+        if (backend_)
+            backend_->showPane(pane);
+    }
+    int shownPane() const { return tab_focused_; }
+    int paneCount() const { return tab_panes_; }
 
     // How far the grid is inset right now. An ordinary shell keeps the margin:
     // a borderless Wayland window has rounded corners, and a glyph in the corner
@@ -1241,6 +1300,12 @@ public:
     }
 
     bool event(QEvent* e) override {
+        if (auto* tabs = dynamic_cast<TerminalTabsEvent*>(e)) {
+            if (tabs->generation != generation_)
+                return true; // about a session this window no longer shows
+            setTabBar(tabs->panes, tabs->focused);
+            return true;
+        }
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
             if (out->generation != generation_)
                 return true; // belongs to a shell this window no longer shows
@@ -1356,6 +1421,17 @@ public:
         const Qt::KeyboardModifiers mods = ev->modifiers();
         const int key = ev->key();
         const bool shift = mods.testFlag(Qt::ShiftModifier);
+
+        // Ctrl+Shift+Left and Right step along the tab bar, wrapping at both ends: the
+        // places are numbered, so there is nothing to remember about which is which, and
+        // the point is to look at the other program without letting go of this one.
+        if (tab_panes_ > 1 && mods.testFlag(Qt::ControlModifier) && shift &&
+            (key == Qt::Key_Left || key == Qt::Key_Right)) {
+            showPaneAt((tab_focused_ + (key == Qt::Key_Right ? 1 : tab_panes_ - 1)) %
+                       tab_panes_);
+            ev->accept();
+            return;
+        }
 
         // A modifier pressed on its own is not a key press in any sense: it is
         // the first half of a chord. Qt delivers it as Key_Control, Key_Shift and
@@ -1476,6 +1552,16 @@ public:
         // is never a selection drag or a scroll-bar grab pretending not to be.
         if (overlay_.active) {
             overlayPress(ev->position());
+            return;
+        }
+        // A press on the tab bar asks to be shown that pane, and is never the start of a
+        // selection: the strip is above the grid, so there is nothing up there to select.
+        if (tab_panes_ > 1 && ev->position().y() >= activePadding() &&
+            ev->position().y() < gridTop()) {
+            const double tab_w = (width() - 2.0 * activePadding()) / tab_panes_;
+            showPaneAt(tab_w > 0.0 ? static_cast<int>((ev->position().x() - activePadding()) /
+                                                      tab_w)
+                                   : -1);
             return;
         }
         if (mixer_) {
@@ -1835,7 +1921,10 @@ public:
         const double pad = padding_;
         geometry_padding_ = activePadding(); // where that grid is drawn right now
         const int new_cols = std::max(1, static_cast<int>((width() - 2.0 * pad) / cw));
-        const int new_rows = std::max(1, static_cast<int>((height() - 2.0 * pad) / ch));
+        // The tab bar's strip comes off the height the grid is counted at, so that the
+        // size promised to the program is the room it is actually drawn in.
+        const int new_rows =
+            std::max(1, static_cast<int>((height() - 2.0 * pad - tabStrip()) / ch));
         if (new_rows == rows_ && new_cols == cols_) {
             update();
             return;
@@ -1885,10 +1974,33 @@ public:
         // Where the grid starts: inset for a shell, flush for the application
         // holding the alternate screen.
         const double grid_pad = activePadding();
+        const double grid_top = gridTop();
         // Selection is drawn as a solid band with light text so it stays legible
         // whatever colours the application had chosen for those cells.
         const Color selection_bg = theme_.selection;
         const Color selection_fg = theme_.selection_foreground;
+
+        // The tab bar: one place to look at per tab, with the one this window is looking
+        // at marked. The tabs are numbered rather than named after the program inside them,
+        // because the program changes a dozen times an afternoon and the place does not.
+        if (tab_panes_ > 1) {
+            const double strip = tabStrip();
+            const double bar_w = width() - 2.0 * grid_pad;
+            const double tab_w = bar_w / tab_panes_;
+            p.fillRect(QRectF(grid_pad, grid_pad, bar_w, strip), ground(default_bg, 40));
+            for (int pane = 0; pane < tab_panes_; ++pane) {
+                const QRectF slot(grid_pad + pane * tab_w, grid_pad, tab_w, strip);
+                const bool looked_at = pane == tab_focused_;
+                if (looked_at)
+                    p.fillRect(slot, ground(default_bg, 110));
+                p.setPen(ink(theme_.foreground, looked_at ? 255 : 140));
+                p.drawText(slot, Qt::AlignCenter, QString::number(pane + 1));
+            }
+            // A rule under the bar, so the strip reads as something the grid sits on
+            // rather than as a row of the grid that failed to draw.
+            p.fillRect(QRectF(grid_pad, grid_pad + strip, bar_w, 1.0),
+                             ink(theme_.foreground, 46));
+        }
 
         for (int r = 0; r < rows_; ++r) {
             const Row& line = displayRow(r);
@@ -1898,7 +2010,7 @@ public:
             for (int c = 0; c < line_cols; ++c) {
                 const Cell& cell = line[c];
                 const double x = grid_pad + c * cw;
-                const double y = grid_pad + r * ch;
+                const double y = grid_top + r * ch;
 
                 // Blank cells are skipped below, so the highlight for them has
                 // to be painted here or a dragged band would show gaps.
@@ -1963,7 +2075,7 @@ public:
             const int cy = std::clamp(screen_.cursorY(), 0, rows_ - 1);
             const Cell& under = screen_.at(cy, cx);
             const double x = grid_pad + cx * cw;
-            const double y = grid_pad + cy * ch;
+            const double y = grid_top + cy * ch;
             const double span = cw * std::max(1, under.width);
             p.setPen(Qt::NoPen);
             switch (screen_.cursorShape()) {
@@ -4816,6 +4928,12 @@ private:
     // edge to edge — and the thing `syncGridToScreen()` compares against to
     // notice that the screen changed hands.
     double geometry_padding_ = padding_;
+    // The session's tab bar. Zero panes is a window holding a shell started here, with
+    // nothing to switch between; `tab_chosen_` says this window picked a place to look at,
+    // after which the session's own focus no longer moves the lit tab.
+    int tab_panes_ = 0;
+    int tab_focused_ = 0;
+    bool tab_chosen_ = false;
 
     // Rows moved by one wheel notch, and how far the view is scrolled back from
     // the live bottom in lines. Zero means "following the shell".
@@ -4969,7 +5087,7 @@ private:
         // full-screen application's frame lands on the character it is on.
         const double pad = activePadding();
         CellPos out;
-        out.row = std::clamp(static_cast<int>((pos.y() - pad) / ch), 0, rows_ - 1);
+        out.row = std::clamp(static_cast<int>((pos.y() - gridTop()) / ch), 0, rows_ - 1);
         // A click in the right-hand margin selects up to the end of the row,
         // which is column count, one past the last cell.
         out.col = std::clamp(static_cast<int>((pos.x() - pad) / cw), 0, cols_);

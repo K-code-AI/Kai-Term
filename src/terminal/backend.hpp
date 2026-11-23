@@ -85,6 +85,19 @@ public:
     // way. For a session owned by the daemon it is the whole question: a view that
     // merely stops watching leaves the shell alone, and a view that is being closed
     // takes an unsaved shell with it.
+    // The session's tab bar, when it has changed since the last time it was asked for.
+    // A window holding a shell started here has no tab bar to speak of — one program, one
+    // screen — and says so by never filling any of this in.
+    struct TabBar {
+        int panes = 0;   // how many places there are to look at
+        int focused = 0; // the one a view lands on when it arrives
+    };
+    virtual bool takeTabBar(TabBar& /*bar*/) { return false; }
+
+    // "Show me that pane." Only a session has panes to look between; a window holding a
+    // shell of its own is already looking at the only one there is.
+    virtual void showPane(int /*pane*/) {}
+
     virtual void stopProcess(bool /*closing*/ = false) {}
     virtual void release() {}
 

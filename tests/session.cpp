@@ -782,6 +782,27 @@ int main() {
                attach(viewer, "look-here", 24, 80, shown) &&
                    TestClient::render(shown, 24, 80).find("LEFT-TAB") != std::string::npos);
 
+        // A window opening onto a session that already has tabs draws them on its first
+        // paint, which means the tab bar travels with the welcome rather than only with a
+        // change nobody has made yet.
+        {
+            TestClient joiner;
+            std::string joined;
+            expect("a view arrives at a session with two places",
+                   attach(joiner, "look-here", 24, 80, joined));
+            bool told = false;
+            Frame frame;
+            for (int attempt = 0; attempt < 80 && !told; ++attempt) {
+                while (joiner.reader.pop(frame))
+                    told = frame.kind == MsgKind::Tabs &&
+                           fieldValue(decodeFields(frame.body), "panes", "0") == "2";
+                if (!told)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+            expect("and is handed the tab bar as it arrives", told);
+        }
+
+
         expect("asking to be shown the other pane is taken",
                viewer.send(MsgKind::ShowPane, encodeFields({{"pane", "1"}})));
         expect("and the view is given that pane's screen",
@@ -1125,8 +1146,22 @@ int main() {
                               return c.reply(reply) && reply.kind == MsgKind::Ack;
                           }();
                }());
+        // Read until the session says it ended. Whatever else was on the way — the tab bar
+        // it was handed on arrival, output that had not been taken yet — a client keeps
+        // reading past, and a check that looks only at the next frame is checking the order
+        // things happened to arrive in.
         Frame exit_frame;
-        expect("the view is told the session ended", viewer.reply(exit_frame));
+        bool told = false;
+        for (int attempt = 0; attempt < 100 && !told; ++attempt) {
+            Frame frame;
+            if (!viewer.reply(frame))
+                break;
+            if (frame.kind == MsgKind::Exit) {
+                exit_frame = frame;
+                told = true;
+            }
+        }
+        expect("the view is told the session ended", told);
         expect("with an exit frame", exit_frame.kind == MsgKind::Exit);
         expect("carrying how it ended",
                decodeFields(exit_frame.body).size() == 2);

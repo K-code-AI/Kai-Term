@@ -132,6 +132,21 @@ public:
     bool alive() const override { return !ended_; }
     bool answersQueries() const override { return false; }
 
+    bool takeTabBar(TabBar& bar) override {
+        if (!tabs_changed_)
+            return false;
+        tabs_changed_ = false;
+        bar = tabs_;
+        return true;
+    }
+
+    // Asking to be shown a pane is asking the daemon, which is where the panes are; this
+    // window holds one screen and no notion of what the others contain.
+    void showPane(int pane) override {
+        static_cast<void>(client_.send(MsgKind::ShowPane,
+                                       encodeFields({{"pane", std::to_string(pane)}})));
+    }
+
     std::vector<Screen::ClipboardRequest> takeClipboardRequests() override {
         std::vector<Screen::ClipboardRequest> out;
         out.swap(copies_);
@@ -159,6 +174,15 @@ public:
     int exitCode() const { return exit_code_; }
 
 private:
+    // A number off the wire, with anything that is not one read as zero: a tab bar that
+    // cannot be counted is drawn as no tabs, which is the screen from before there were
+    // any tabs to draw.
+    static int number(const std::string& text) {
+        if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+            return 0;
+        return std::atoi(text.c_str());
+    }
+
     void ingest(const Frame& frame) {
         switch (frame.kind) {
             case MsgKind::Data:
@@ -172,6 +196,15 @@ private:
                 request.primary = fieldValue(fields, "primary") == "1";
                 request.query = fieldValue(fields, "query") == "1";
                 copies_.push_back(request);
+                break;
+            }
+            case MsgKind::Tabs: {
+                // The bar a window draws comes from here rather than from what the window
+                // last saw, because a pane can appear while this window is open.
+                const Fields fields = decodeFields(frame.body);
+                tabs_.panes = number(fieldValue(fields, "panes", "0"));
+                tabs_.focused = number(fieldValue(fields, "focused", "0"));
+                tabs_changed_ = true;
                 break;
             }
             case MsgKind::Exit: {
@@ -191,6 +224,8 @@ private:
     std::string name_;
     DaemonClient client_;
     std::string pending_;
+    TabBar tabs_;
+    bool tabs_changed_ = false;
     std::vector<Screen::ClipboardRequest> copies_;
     bool ended_ = false;
     int exit_code_ = -1;

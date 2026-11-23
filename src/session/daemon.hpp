@@ -1067,6 +1067,7 @@ private:
             // The session goes on around it: the views looking at that place are moved to
             // what the session is focused on now, and the shell comes off the list so that
             // the count a listing gives is the number of programs actually running.
+            const std::vector<int> stranded = record->clientsSeeing(shell->pane);
             record->moveViewsOff(shell->pane);
             {
                 std::lock_guard<std::mutex> lock(record->shells_mutex);
@@ -1079,6 +1080,16 @@ private:
             // Said after the list is let go of: the announcement counts the shells, and a
             // lock taken twice by one thread is a thread that never wakes up again.
             announceTabs(record);
+            // And the screen they are looking at now. A view left holding the last picture
+            // of a program that has exited is worse than one moved: it shows a prompt that
+            // answers nothing, and the person types into it.
+            const std::shared_ptr<Record::Shell> now =
+                shellAt(record, record->focus_slot.load());
+            if (now) {
+                const std::string screen = snapshotOf(*now);
+                for (const int fd : stranded)
+                    static_cast<void>(detail::sendFrame(fd, MsgKind::Snapshot, screen));
+            }
             return;
         }
         record->dead = true;
@@ -1219,8 +1230,23 @@ private:
         {
             std::lock_guard<std::mutex> lock(record->clients_mutex);
             record->clients.push_back(fd);
+            // The tab bar comes with the welcome, not only when it changes: a window
+            // opening onto a session that has had three panes since this morning should
+            // draw three tabs on its first paint, not after somebody adds a fourth.
+            int announced_panes = 0;
+            {
+                std::lock_guard<std::mutex> shell_lock(record->shells_mutex);
+                announced_panes = static_cast<int>(record->shells.size());
+            }
+            const std::string tabs =
+                encodeFields({{"panes", std::to_string(announced_panes)},
+                              {"focused", std::to_string(record->focus_slot.load())}});
+            // After the screen, not before it: a client that reads the welcome and then
+            // takes the next frame as the screen is a reasonable thing to write, and the
+            // tab bar is not the screen.
             if (!detail::sendFrame(fd, MsgKind::Welcome, welcome) ||
-                !detail::sendFrame(fd, MsgKind::Snapshot, snapshot)) {
+                !detail::sendFrame(fd, MsgKind::Snapshot, snapshot) ||
+                !detail::sendFrame(fd, MsgKind::Tabs, tabs)) {
                 record->clients.erase(
                     std::remove(record->clients.begin(), record->clients.end(), fd),
                     record->clients.end());
