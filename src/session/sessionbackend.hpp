@@ -152,6 +152,15 @@ public:
             MsgKind::SetViewMode, encodeFields({{"mode", tabs ? "tabs" : "side-by-side"}})));
     }
 
+    // The refusal, once. Taken rather than read because a message somebody has already
+    // seen should not be shown again on the next look.
+    bool takeRefusal(std::string& out) {
+        if (refusal_.empty())
+            return false;
+        out = std::exchange(refusal_, std::string {});
+        return true;
+    }
+
     void showPane(int pane) override {
         static_cast<void>(client_.send(MsgKind::ShowPane,
                                        encodeFields({{"pane", std::to_string(pane)}})));
@@ -256,7 +265,13 @@ private:
                 break;
             }
             case MsgKind::Error:
-                ended_ = true;
+                // A refusal, not an ending. The session is still there and everything
+                // running in it is too; what failed was the asking. This used to say
+                // "ended", which closed a window over a "no" — and a window closing because
+                // it was refused takes the session down with it when nothing else is looking
+                // at it. Kept aside to be said out loud instead.
+                refusal_ = fieldValue(decodeFields(frame.body), "message",
+                                      "the session said no");
                 break;
             default:
                 break;
@@ -270,6 +285,8 @@ private:
     bool tabs_changed_ = false;
     std::vector<Screen::ClipboardRequest> copies_;
     bool ended_ = false;
+    // The last thing the session refused to do, in its own words.
+    std::string refusal_;
     int exit_code_ = -1;
 };
 

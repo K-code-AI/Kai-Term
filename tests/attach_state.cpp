@@ -423,6 +423,32 @@ int main(int argc, char** argv) {
            waitFor([&narrow] { return onScreen(narrow).find("STILL-OPEN") != std::string::npos; },
                    6000));
 
+    // A refusal is not the session ending. Ending the one place in a session is refused
+    // outright — finishing a session is something a person says on purpose — and a window
+    // that heard that "no" as "it is over" closed itself. A window closing because it was
+    // refused takes the session down with it when nothing else is looking at it, which is
+    // what a vanished window and a disappeared session look like from the outside.
+    SessionSpec single;
+    single.name = "single";
+    single.rows = 24;
+    single.cols = 80;
+    expect("a session with one place in it starts", daemon.create(single, error));
+    kai::TerminalWidget sole(24, 80, std::make_unique<SessionBackend>("single", 24, 80));
+    sole.resize(900, 500);
+    sole.show();
+    pump(500);
+    sole.closeTab();
+    pump(700);
+    // The marker is written with nothing between its halves but empty quotes, so that only
+    // the shell can print the whole word: this window is eighty columns wide and repeats
+    // back whatever it is typed into, and a check that accepts the echo of what it sent is
+    // checking that a terminal can repeat itself.
+    static_cast<void>(daemon.type("single", "echo REFU\"\"SAL\n"));
+    expect("a window told no is not told the session ended",
+           waitFor([&sole] { return onScreen(sole).find("REFUSAL") != std::string::npos; },
+                   6000));
+    static_cast<void>(daemon.type("single", "exit\n"));
+
     second.shutdown();
     daemon.stop();
     serving.join();
