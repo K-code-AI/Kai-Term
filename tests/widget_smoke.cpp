@@ -293,7 +293,7 @@ int main(int argc, char** argv) {
     bool selection_supported = true;
 
     kai::TerminalWidget w(6, 40, "/bin/sh");
-    w.resize(700, 500);
+    w.resize(700, 620);
     w.show();
     pump(200);
 
@@ -338,8 +338,11 @@ int main(int argc, char** argv) {
     // Keyboard scrollback: Shift+PageUp scrolls the view, Shift+End returns it,
     // and neither key is sent to the shell.
     sendKey(&w, Qt::Key_PageUp, Qt::ShiftModifier);
+    // A page is a screenful, and the oldest line is as far up as a screenful goes:
+    // ask for whichever is nearer, so a taller window with the same history cannot
+    // fail for want of lines to scroll on to.
     expect("Shift+PageUp scrolls back by about a screen",
-           w.scrollOffset() >= std::max(1, w.rows() - 1));
+           w.scrollOffset() >= std::max(1, std::min(w.rows() - 1, w.scrollRange())));
     sendKey(&w, Qt::Key_Home, Qt::ShiftModifier);
     expectEq("Shift+Home reaches the oldest line", w.scrollOffset(), w.scrollRange());
     expect("the oldest line is paintable", w.screen().historyRow(0) != nullptr);
@@ -374,13 +377,18 @@ int main(int argc, char** argv) {
     // The margin around the grid exists to keep a shell's glyphs out of the
     // rounded corners of a borderless window. A program drawing its own frame
     // does not want it — and takes it personally when its colours clash with
-    // the terminal's, because the margin is the terminal's background — so it
-    // goes to zero while the alternate screen holds the window, and the grid
-    // grows into the room the margin used to hold.
+    // the terminal's, because the margin is the terminal's background — so the
+    // inset goes to zero while it holds the window. What does not go with it is
+    // the size: the pty was told that number, and it cannot depend on whose turn
+    // it is to draw. A shell told its terminal grew and then shrank again, while
+    // every line it drew was going to the hidden screen, repaints itself when it
+    // gets the screen back — and fish repaints with `ESC[3J`, which throws the
+    // user's scrollback away for the crime of having opened nano.
     expect("the grid starts at the window's own edge now",
            waitFor([&] { return w.cellTopLeft(0, 0).x() == 0.0 && w.cellTopLeft(0, 0).y() == 0.0; },
                    2000));
-    expect("and took the freed room", w.cols() >= cols_at_prompt && w.rows() >= rows_at_prompt);
+    expectEq("taking the screen does not change the columns", w.cols(), cols_at_prompt);
+    expectEq("taking the screen does not change the rows", w.rows(), rows_at_prompt);
     expectEq("the model and the shell were told the same", w.screen().cols(), w.cols());
     expectEq("the view sits where the program is drawing", w.scrollOffset(), 0);
     expectEq("there is nothing for this view to scroll", w.scrollRange(), 0);
@@ -401,7 +409,8 @@ int main(int argc, char** argv) {
            waitFor([&] { return !w.screen().inAlternateScreen(); }, 3000));
     expect("the margin came back with the shell",
            waitFor([&] { return w.cellTopLeft(0, 0).x() > 0.0; }, 2000));
-    expectEq("and the grid gave the room back", w.cols(), cols_at_prompt);
+    expectEq("and there was no room to give back", w.cols(), cols_at_prompt);
+    expectEq("nor rows to give back", w.rows(), rows_at_prompt);
     expect("the shell's scrollback is where it was",
            waitFor([&] { return w.scrollRange() > 0; }, 2000));
     expect("the scroll bar is offered again", w.scrollIndicator().visible);

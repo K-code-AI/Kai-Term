@@ -1822,8 +1822,18 @@ public:
             return;
         updateCellPixels(); // the cell size may have changed with a different font
 
-        const double pad = activePadding();
-        geometry_padding_ = pad;
+        // The size of the screen is worked out from the margin the shell is drawn
+        // inside, never from the inset whoever holds the screen is drawing under right
+        // now. The two differ — a program painting its own frame starts at the window's
+        // edge, so its inset is zero — and a grid that followed the inset would gain a
+        // row and a column every time a program took the screen and lose them again
+        // when it gave the screen back. The pty is told this number, so the shell would
+        // hear that its terminal had grown and shrunk while every line it drew was
+        // going to the hidden screen; fish answers that by repainting with `ESC[3J`,
+        // and the user loses their scrollback to an afternoon of nano sessions. A size
+        // is not a drawing detail: it is a promise to another process.
+        const double pad = padding_;
+        geometry_padding_ = activePadding(); // where that grid is drawn right now
         const int new_cols = std::max(1, static_cast<int>((width() - 2.0 * pad) / cw));
         const int new_rows = std::max(1, static_cast<int>((height() - 2.0 * pad) / ch));
         if (new_rows == rows_ && new_cols == cols_) {
@@ -1844,14 +1854,17 @@ public:
     }
 
     // The screen changing hands between the shell and an application taking the
-    // whole thing over changes the room the grid has, because the margin comes
-    // and goes with it. Called after anything that feeds the model, and cheap
-    // when nobody changed hands: one comparison against the padding the
-    // geometry was last built for.
+    // whole thing over moves the inset the grid is drawn at, because the margin comes
+    // and goes with it. Nothing else follows: the size of the screen belongs to the
+    // shell and stays put, so this is a repaint at the new inset and no more. Called
+    // after anything that feeds the model, and cheap when nobody changed hands — one
+    // comparison against the inset the last paint used, which is either the margin
+    // itself or zero, never something computed.
     void syncGridToScreen() {
-        if (screen_.inAlternateScreen() == (geometry_padding_ == 0.0))
+        if (geometry_padding_ == activePadding())
             return;
-        applyGridGeometry();
+        geometry_padding_ = activePadding();
+        update();
     }
 
     void paintEvent(QPaintEvent*) override {
