@@ -297,7 +297,11 @@ kai-term start | shutdown | serve      automatic now; kept for debugging and lab
 
 Keys reserved while this is being built, so that a later feature does not quietly take
 one that has become somebody else's: **Ctrl+Shift+F** file manager, **Ctrl+Shift+N**
-new tab, **Ctrl+Shift+H** switch between side-by-side panes and a tab view.
+new tab, **Ctrl+Shift+H** switch between side-by-side panes and a tab view. The last two
+have had their keys since 2026-11-23: they ask the session, which owns the panes, and the
+answer comes back on the tab bar to every window looking at it. **H** changes the mode and
+every window learns it, but the window still draws one place at a time — the picture of
+several at once is the rest of step 2 below.
 
 The rules behind it:
 
@@ -392,7 +396,11 @@ The order, and the reason each step is where it is:
    Still here: two panes' screens drawn in one window at once, the dividers from
    `dividerRects()`, and a drag of one divider at a time going to `resizeDivider`.
 3. **Tabs and windows** — **Ctrl+Shift+N** a new tab, **Ctrl+Shift+H** between side-by-side
-   and a tab view, both reserved since 2026-11-17 so nothing else could take them.
+   and a tab view, both reserved since 2026-11-17 so nothing else could take them. Both keys
+   are wired (2026-11-23): `NewPane`, `ClosePane` and `SetViewMode` on the wire, refused out
+   loud when asked for something that is not there — the last place in a session, or a mode
+   that is neither of the two. What is left of this step is the drawing that follows
+   **Ctrl+Shift+H**.
 4. **The attached view emulates the screen instead of relaying bytes.** The status line above
    already needs it; so do panes in a tty, and the prefix key below. kai-term is in an odd
    position here — `screen.hpp` and the parser are Qt-free, which is how the tests run
