@@ -767,6 +767,93 @@ int main() {
     }
 
     {
+        // A tab IS a pane, so switching tabs is one question to the daemon — "show me that
+        // one" — rather than the window holding its own notion of what is running. A view
+        // still looks at one pane at a time; what changes is which.
+        expect("a session to look around in", createSession("look-here"));
+        static_cast<void>(
+            giveLayout("look-here", "split left-right 0.5\n  pane\n  pane\n"));
+        static_cast<void>(sendPane("look-here", 0, "echo LEFT-TAB\n"));
+        static_cast<void>(sendPane("look-here", 1, "echo RIGHT-TAB\n"));
+
+        TestClient viewer;
+        std::string shown;
+        expect("a view arrives looking at the pane the session is looking at",
+               attach(viewer, "look-here", 24, 80, shown) &&
+                   TestClient::render(shown, 24, 80).find("LEFT-TAB") != std::string::npos);
+
+        expect("asking to be shown the other pane is taken",
+               viewer.send(MsgKind::ShowPane, encodeFields({{"pane", "1"}})));
+        expect("and the view is given that pane's screen",
+               TestClient::render(viewer.waitFor("RIGHT-TAB", 4000), 24, 80)
+                   .find("RIGHT-TAB") != std::string::npos);
+
+        // A second view, still on the first pane, is what shows that the move was a move
+        // and not a copy: one program's output reaching two screens would be the mixing
+        // that a split exists to stop.
+        TestClient other;
+        std::string other_shown;
+        expect("another view can be looking at the first pane",
+               attach(other, "look-here", 24, 80, other_shown) &&
+                   TestClient::render(other_shown, 24, 80).find("LEFT-TAB") != std::string::npos);
+        static_cast<void>(viewer.send(MsgKind::Data, "echo TYPED-ON-THE-RIGHT\n"));
+        expect("what a view types goes to the pane it is looking at",
+               TestClient::render(viewer.waitFor("TYPED-ON-THE-RIGHT", 4000), 24, 80)
+                   .find("TYPED-ON-THE-RIGHT") != std::string::npos);
+        expect("and not to the one it came away from",
+               TestClient::render(other.waitFor("TYPED-ON-THE-RIGHT", 1000), 24, 80)
+                   .find("TYPED-ON-THE-RIGHT") == std::string::npos);
+
+        // A pane number past the end of the tab bar is refused rather than obeyed. A view
+        // that asked for pane 9 and was given a blank screen would be reported as a broken
+        // terminal, when the truth is a wrong number.
+        // Whatever the switch left unread comes off first: the thing being looked for is
+        // the answer to this question, not the last piece of news about the previous one.
+        static_cast<void>(viewer.waitFor("", 150));
+        expect("a pane that is not in the tab bar is asked for anyway",
+               viewer.send(MsgKind::ShowPane, encodeFields({{"pane", "9"}})));
+        Frame answer;
+        bool answered = false;
+        for (int attempt = 0; attempt < 40 && !answered; ++attempt) {
+            struct pollfd pfd {viewer.fd, POLLIN, 0};
+            if (::poll(&pfd, 1, 100) > 0) {
+                char buf[8192];
+                const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                if (n > 0)
+                    viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+            }
+            Frame frame;
+            while (viewer.reader.pop(frame)) {
+                // Output keeps arriving while a person works; only an answer counts.
+                if (frame.kind == MsgKind::Error || frame.kind == MsgKind::Exit) {
+                    answer = frame;
+                    answered = true;
+                }
+            }
+        }
+        expect("and the answer says so", answer.kind == MsgKind::Error);
+        expect("in words that name the pane ([" + answer.body + "])",
+               fieldValue(decodeFields(answer.body), "reason").find("pane") !=
+                   std::string::npos);
+
+        // And when the pane a view was looking at stops existing — the arrangement shrank
+        // and its program went with it — the view is left looking at a live program rather
+        // than at the last picture of a dead one.
+        static_cast<void>(giveLayout("look-here", "pane\n"));
+        static_cast<void>(viewer.send(MsgKind::Data, "echo STILL-READING\n"));
+        expect("a view whose pane went away is moved to one that is still running",
+               TestClient::render(viewer.waitFor("STILL-READING", 4000), 24, 80)
+                   .find("STILL-READING") != std::string::npos);
+
+        TestClient tidying;
+        if (tidying.connect()) {
+            static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "look-here"}}));
+            Frame ack;
+            static_cast<void>(tidying.reply(ack));
+        }
+    }
+
+    {
         TestClient lost;
         std::string snapshot;
         std::string error;

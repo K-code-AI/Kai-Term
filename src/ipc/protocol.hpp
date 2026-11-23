@@ -50,6 +50,11 @@ enum class MsgKind : std::uint8_t {
     Detach = 4, // this client is leaving; the session stays
     Kill = 5,   // fields: name
     List = 6,   // no body
+    // "Show me that pane." A view looks at one pane at a time, so what a tab switch means
+    // is this: the daemon sends the screen of the pane named and starts carrying that
+    // view's typing there. The window keeps no copy of what is running, so it does not
+    // need to be told anything about the panes beyond which one it asked for.
+    ShowPane = 7, // fields: pane
 
     // daemon -> client
     Welcome = 10,   // fields: name, id, rows, cols, pid, shell, created

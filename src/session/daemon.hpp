@@ -1247,6 +1247,40 @@ private:
                     settleSessionSize(record);
                     break;
                 }
+                case MsgKind::ShowPane: {
+                    // Which place in the tab bar this view is looking at. The window keeps
+                    // no copy of what is running, so a tab switch is this: remember the
+                    // place for this descriptor, and send the screen of what is running
+                    // there. From here the view's own typing follows it.
+                    const Fields fields = decodeFields(frame.body);
+                    const int slot = std::stoi(fieldValue(fields, "pane", "-1"));
+                    int places = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(record->shells_mutex);
+                        places = static_cast<int>(record->shells.size());
+                    }
+                    if (slot < 0 || slot >= places) {
+                        // Refused out loud. A view that asked for pane 9 and was quietly
+                        // left where it was would look like a tab bar that does not work,
+                        // when the truth is one wrong number.
+                        static_cast<void>(detail::sendFrame(
+                            fd, MsgKind::Error,
+                            encodeFields({{"reason", "no pane " + std::to_string(slot) +
+                                                    " in that session; it has " +
+                                                    std::to_string(places)}})));
+                        break;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(record->clients_mutex);
+                        record->view_slot[fd] = slot;
+                    }
+                    const std::shared_ptr<Record::Shell> shell = shellAt(record, slot);
+                    if (shell) {
+                        static_cast<void>(detail::sendFrame(fd, MsgKind::Snapshot,
+                                                            snapshotOf(*shell)));
+                    }
+                    break;
+                }
                 case MsgKind::Detach:
                 case MsgKind::Exit: {
                     // `discard=1` is a window saying it is being closed and this shell
