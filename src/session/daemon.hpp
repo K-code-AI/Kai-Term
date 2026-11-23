@@ -142,6 +142,11 @@ struct SessionInfo {
     int rows = 0;
     int cols = 0;
     int clients = 0;
+    // How many shells the session is running, and which of them a view is looking at. A
+    // listing that said three while the machine ran one would be the worst kind of lie, so
+    // these are counted from the shells rather than read off the arrangement.
+    int panes = 1;
+    int focused = 0;
     long long started = 0; // seconds since the epoch
     bool alive = true;
     bool saved = true;
@@ -156,6 +161,8 @@ inline Fields encodeSessionInfo(const SessionInfo& info) {
         {"rows", std::to_string(info.rows)},
         {"cols", std::to_string(info.cols)},
         {"clients", std::to_string(info.clients)},
+        {"panes", std::to_string(info.panes)},
+        {"focused", std::to_string(info.focused)},
         {"started", std::to_string(info.started)},
         {"alive", info.alive ? "1" : "0"},
         {"saved", info.saved ? "1" : "0"},
@@ -171,6 +178,8 @@ inline SessionInfo decodeSessionInfo(const Fields& fields) {
     info.rows = std::stoi(fieldValue(fields, "rows", "0"));
     info.cols = std::stoi(fieldValue(fields, "cols", "0"));
     info.clients = std::stoi(fieldValue(fields, "clients", "0"));
+    info.panes = std::stoi(fieldValue(fields, "panes", "1"));
+    info.focused = std::stoi(fieldValue(fields, "focused", "0"));
     info.started = std::stoll(fieldValue(fields, "started", "0"));
     info.alive = fieldValue(fields, "alive", "1") != "0";
     info.saved = fieldValue(fields, "saved", "1") != "0";
@@ -417,6 +426,21 @@ public:
     }
 
     // Control interface, used both by the protocol and by the tests.
+    // How far back a session remembers, from the same file the window reads. The daemon is
+    // where the history a snapshot is built from actually lives, so a deep scrollback means
+    // nothing unless it is honoured here too: a view asking for 20000 lines behind a daemon
+    // still trimming at a thousand would get a thousand and no explanation why. Read once
+    // per daemon, because a person editing the file mid-session is not going to rewrite the
+    // history that has already been kept.
+    static std::size_t scrollbackLimit() {
+        static const std::size_t limit = [] {
+            const Config config = loadConfig();
+            return config.scrollback ? static_cast<std::size_t>(*config.scrollback)
+                                     : Screen::kMaxHistory;
+        }();
+        return limit;
+    }
+
     bool create(const SessionSpec& spec, std::string& error, int* created_id = nullptr) {
         if (!sessionNameOk(spec.name)) {
             error = "not a usable session name: " + spec.name;
@@ -441,8 +465,6 @@ public:
         // carries it: `KAI_SESSION` in the child's environment is what lets an
         // argument-free `save` or `detach` know which session it is standing in.
         const int session_id = next_id_++;
-        auto pty = std::make_unique<Pty>(spec.rows, spec.cols, spec.shell, spec.cwd,
-                                         std::to_string(session_id));
         // The child starts in the directory it was given, rather than being sent a
         // `cd` command after it has started. Typing a command for the person is not
         // the same as starting the shell there, and a shell that rejects the directory
@@ -451,11 +473,8 @@ public:
         auto record = std::make_shared<Record>();
         record->id = session_id;
         record->name = spec.name;
-        auto shell = std::make_shared<Record::Shell>();
-        shell->pty = std::move(pty);
-        shell->screen = std::make_unique<Screen>(spec.rows, spec.cols);
-        shell->rows = spec.rows;
-        shell->cols = spec.cols;
+        record->shell_program = spec.shell;
+        record->working_directory = spec.cwd;
         // How far back a session remembers, from the same file the window reads.
         // The daemon is where the history a snapshot is built from actually lives,
         // so a deep scrollback means nothing unless it is honoured here too: a view
@@ -463,14 +482,9 @@ public:
         // get a thousand and no explanation why. Read once per daemon, because a
         // person editing the file mid-session is not going to rewrite the history
         // that has already been kept.
-        static const std::size_t history_limit = [] {
-            const Config config = loadConfig();
-            return config.scrollback ? static_cast<std::size_t>(*config.scrollback)
-                                     : Screen::kMaxHistory;
-        }();
-        shell->screen->setHistoryLimit(history_limit);
-        // The one leaf of a new session's tree is pane 0, and it is the session's first
-        // shell. Every leaf the person adds later gets one of these the same way.
+        // The one leaf of a new session's tree is the first place in the tab bar, and it
+        // gets its shell the same way every later one will.
+        auto shell = makeShell(*record, 0, spec.rows, spec.cols);
         record->shells.push_back(shell);
         record->rows = spec.rows;
         record->cols = spec.cols;
@@ -527,14 +541,20 @@ public:
     }
 
     // Type into a session without becoming a view of it.
-    bool type(const std::string& name, const std::string& text) {
+    // Type into a session. `pane` is a place in its tab bar, or -1 for the one it is
+    // looking at: a script typing into a session with three panes has to be able to say
+    // which one, or it is typing into whichever a person happened to click last.
+    bool type(const std::string& name, const std::string& text, int pane = -1) {
         std::shared_ptr<Record> record;
         {
             std::lock_guard<std::mutex> lock(table_mutex_);
             record = resolveLocked(name);
         }
-        const std::shared_ptr<Record::Shell> shell = record ? record->onlyShell() : nullptr;
-        if (!record || record->dead || !shell)
+        if (!record || record->dead)
+            return false;
+        const std::shared_ptr<Record::Shell> shell =
+            shellAt(record, pane < 0 ? record->focus_slot.load() : pane);
+        if (!shell)
             return false;
         return shell->pty->write(text);
     }
@@ -688,11 +708,51 @@ private:
         std::vector<std::shared_ptr<Shell>> shells;
         mutable std::mutex shells_mutex;
 
+        // The descriptors looking at one place in the tab bar.
+        std::vector<int> clientsSeeing(int slot) const {
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            std::vector<int> out;
+            for (const int fd : clients) {
+                const auto seen = view_slot.find(fd);
+                if ((seen == view_slot.end() ? focus_slot.load() : seen->second) == slot)
+                    out.push_back(fd);
+            }
+            return out;
+        }
+
+        // A view whose place in the tab bar has gone away — the pane was closed, or its
+        // program exited — looks at what the session is focused on now rather than at
+        // nothing. Whoever moves it sends the screen it is moving to.
+        void moveViewsOff(int slot) {
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            for (auto& view : view_slot) {
+                if (view.second == slot)
+                    view.second = focus_slot.load();
+            }
+        }
+
+        int slotOf(int fd) const {
+            std::lock_guard<std::mutex> lock(clients_mutex);
+            const auto seen = view_slot.find(fd);
+            return seen == view_slot.end() ? focus_slot.load() : seen->second;
+        }
+
         std::shared_ptr<Shell> onlyShell() const {
             std::lock_guard<std::mutex> lock(shells_mutex);
             return shells.empty() ? nullptr : shells.front();
         }
 
+        // What the shells were started with, so that a pane added later starts the same
+        // program in the same directory as the first one: a split is a place to work, not a
+        // different kind of place.
+        std::string shell_program;
+        std::string working_directory;
+        // Which place in the tab bar a view is looking at. A view shows one pane at a time,
+        // because a pane is a program and two programs' output interleaved onto one screen
+        // is unreadable rather than twice as informative. A view that has never said is
+        // taken to be looking at the pane the session is focused on.
+        std::map<int, int> view_slot;
+        std::atomic<int> focus_slot{0};
         std::vector<int> clients;
         // What each view looking at this session said its window is, by descriptor. The
         // session's size is worked out from all of them together — see `settleSessionSize`
@@ -746,6 +806,11 @@ private:
         {
             std::lock_guard<std::mutex> lock(record.clients_mutex);
             info.clients = static_cast<int>(record.clients.size());
+        {
+            std::lock_guard<std::mutex> lock(record.shells_mutex);
+            info.panes = static_cast<int>(record.shells.size());
+        }
+        info.focused = record.focus_slot;
         }
         // The reader thread reaps, so by the time anyone asks the child may be gone;
         // a listing that shows the pid of something already reaped would be a pid
@@ -789,6 +854,125 @@ private:
 
     // Reads one shell to the end. Every pane has a thread doing this for it, which is what
     // lets one pane's program block, print, or exit without holding up its neighbours.
+    // One pane's worth of program, at the size its cell is.
+    std::shared_ptr<Record::Shell> makeShell(Record& record, int slot, int rows, int cols) const {
+        auto shell = std::make_shared<Record::Shell>();
+        shell->pane = slot;
+        shell->pty = std::make_unique<Pty>(rows, cols, record.shell_program,
+                                          record.working_directory, std::to_string(record.id));
+        shell->screen = std::make_unique<Screen>(rows, cols);
+        shell->screen->setHistoryLimit(scrollbackLimit());
+        shell->rows = rows;
+        shell->cols = cols;
+        return shell;
+    }
+
+    std::shared_ptr<Record::Shell> shellAt(const std::shared_ptr<Record>& record, int slot) const {
+        std::lock_guard<std::mutex> lock(record->shells_mutex);
+        for (const std::shared_ptr<Record::Shell>& shell : record->shells) {
+            if (shell->pane == slot)
+                return shell;
+        }
+        return nullptr;
+    }
+
+    static std::string snapshotOf(const Record::Shell& shell) {
+        std::lock_guard<std::mutex> lock(shell.screen_mutex);
+        return screenSnapshot(*shell.screen);
+    }
+
+    // Bring the session's shells in line with its arrangement: every place in the tab bar
+    // has a shell, a place that has gone loses its shell, and every shell is told the size
+    // of the cell it owns — a shell told the window's width would wrap somewhere the window
+    // does not, which makes a split a picture of a division rather than a division.
+    //
+    // A shell belongs to a *place* rather than to a node of the tree, because an arrangement
+    // is rewritten wholesale (a preset, `set-layout`, a renumbering after a close) while the
+    // work inside the shells goes on. Rebuilding the tree must not be a way of killing every
+    // program in the session.
+    void reconcileShells(const std::shared_ptr<Record>& record) {
+        const std::vector<int> leaves = record->layout.layout.panes();
+        const std::vector<CellRect> cells =
+            record->layout.layout.rects(record->rows.load(), record->cols.load());
+
+        std::vector<std::shared_ptr<Record::Shell>> fresh;
+        std::vector<std::shared_ptr<Record::Shell>> retired;
+        {
+            std::lock_guard<std::mutex> lock(record->shells_mutex);
+            while (record->shells.size() < leaves.size()) {
+                const int slot = static_cast<int>(record->shells.size());
+                const CellRect cell = static_cast<size_t>(slot) < cells.size()
+                                          ? cells[static_cast<size_t>(slot)]
+                                          : CellRect{record->rows.load(), record->cols.load(),
+                                                     record->rows.load(), record->cols.load()};
+                fresh.push_back(makeShell(*record, slot, cell.rows, cell.cols));
+                record->shells.push_back(fresh.back());
+            }
+            // Places that no longer exist. Truncating rather than hunting: the tab bar is
+            // the list, so anything past its end has no tab to belong to.
+            retired.assign(record->shells.begin() + static_cast<long>(leaves.size()),
+                           record->shells.end());
+            record->shells.erase(record->shells.begin() + static_cast<long>(leaves.size()),
+                                 record->shells.end());
+            for (size_t slot = 0; slot < record->shells.size() && slot < cells.size(); ++slot) {
+                const std::shared_ptr<Record::Shell>& shell = record->shells[slot];
+                shell->pane = static_cast<int>(slot);
+                const CellRect& cell = cells[slot];
+                if (cell.rows < 1 || cell.cols < 1 ||
+                    (cell.rows == shell->rows && cell.cols == shell->cols))
+                    continue;
+                // The pty before the screen: a program inside asks the terminal how wide it
+                // is, so the model should agree with what the program is about to be told.
+                shell->pty->resize(cell.rows, cell.cols);
+                shell->rows = cell.rows;
+                shell->cols = cell.cols;
+                std::lock_guard<std::mutex> screen_lock(shell->screen_mutex);
+                shell->screen->resize(cell.rows, cell.cols);
+            }
+        }
+
+        // The pane the session is focused on, named by place rather than by tree node.
+        const int focused_leaf = record->layout.layout.focused();
+        int focus = 0;
+        for (size_t i = 0; i < leaves.size(); ++i) {
+            if (leaves[i] == focused_leaf)
+                focus = static_cast<int>(i);
+        }
+        record->focus_slot = focus;
+        {
+            std::lock_guard<std::mutex> lock(record->clients_mutex);
+            for (auto& view : record->view_slot) {
+                if (view.second >= static_cast<int>(leaves.size()))
+                    view.second = focus;
+            }
+        }
+
+        for (const std::shared_ptr<Record::Shell>& shell : retired) {
+            // Ended rather than orphaned: a program with no place in the tab bar can never
+            // be shown again, and its own reader thread is what takes it away.
+            shell->pty->terminate();
+        }
+
+        // Every view gets the screen of the place it is looking at, at the size that place
+        // now has. A resize throws away what a screen was, and only the daemon can say what
+        // the same work looks like afterwards.
+        for (size_t slot = 0; slot < leaves.size(); ++slot) {
+            const std::shared_ptr<Record::Shell> shell = shellAt(record, static_cast<int>(slot));
+            if (!shell)
+                continue;
+            const std::string snapshot = snapshotOf(*shell);
+            if (snapshot.empty())
+                continue;
+            for (const int fd : record->clientsSeeing(static_cast<int>(slot)))
+                static_cast<void>(detail::sendFrame(fd, MsgKind::Snapshot, snapshot));
+        }
+
+        // A thread per pane, which is what lets one program block, print, or exit without
+        // holding up its neighbours.
+        for (const std::shared_ptr<Record::Shell>& shell : fresh)
+            std::thread([this, record, shell] { readShell(record, shell); }).detach();
+    }
+
     void readShell(std::shared_ptr<Record> record, std::shared_ptr<Record::Shell> shell) {
         char buf[16384];
         for (;;) {
@@ -815,6 +999,10 @@ private:
             // program gets two replies and takes the wrong one.
             if (!answer.empty())
                 static_cast<void>(shell->pty->write(answer));
+            // One pane's output goes to the views looking at that pane, and nowhere else:
+            // a pane is a program, and two programs' output interleaved onto one screen is
+            // unreadable rather than twice as informative.
+            const std::vector<int> watching = record->clientsSeeing(shell->pane);
             for (const Screen::ClipboardRequest& request : copies) {
                 // Which clipboard it came from travels with it, so a view can put the
                 // text where the program asked for it to go.
@@ -828,7 +1016,9 @@ private:
                                         // person's clipboard.
                                         {"query", request.query ? "1" : "0"}}));
             }
-            broadcast(*record, MsgKind::Data, std::string(chunk));
+            const std::string bytes(chunk);
+            for (const int fd : watching)
+                static_cast<void>(detail::sendFrame(fd, MsgKind::Data, bytes));
         }
         static_cast<void>(shell->pty->reap());
         shell->dead = true;
@@ -844,7 +1034,15 @@ private:
                     last_one = false;
         }
         if (!last_one) {
+            // The session goes on around it: the views looking at that place are moved to
+            // what the session is focused on now, and the shell comes off the list so that
+            // the count a listing gives is the number of programs actually running.
+            record->moveViewsOff(shell->pane);
             std::lock_guard<std::mutex> lock(record->shells_mutex);
+            const auto keep = std::remove_if(
+                record->shells.begin(), record->shells.end(),
+                [&shell](const std::shared_ptr<Record::Shell>& s) { return s == shell; });
+            record->shells.erase(keep, record->shells.end());
             shell->pty->closeMaster();
             return;
         }
@@ -921,44 +1119,22 @@ private:
                 sizes.push_back(view.second);
             settled = smallestView(sizes, settled);
         }
-        resizeSession(*record, settled.rows, settled.cols);
+        resizeSession(record, settled.rows, settled.cols);
     }
 
-    void resizeSession(Record& record, int rows, int cols) {
+    void resizeSession(const std::shared_ptr<Record>& record, int rows, int cols) {
         if (rows < 1 || cols < 1)
             return;
-        if (rows == record.rows && cols == record.cols)
+        if (rows == record->rows && cols == record->cols)
             return;
         // A screen is a thing of a size, so a resize throws away what every view of it
         // was shown, and only the daemon can say what the same screen looks like at the
         // new size.
-        std::string snapshot;
-        record.rows = rows;
-        record.cols = cols;
-        // The pty first: a program inside asks the terminal for its size, so the
-        // model should agree with what the program is about to be told, not with what
-        // it was a moment ago.
-        std::lock_guard<std::mutex> lock(record.shells_mutex);
-        for (const std::shared_ptr<Record::Shell>& shell : record.shells) {
-            shell->pty->resize(rows, cols);
-            shell->rows = rows;
-            shell->cols = cols;
-            std::lock_guard<std::mutex> screen_lock(shell->screen_mutex);
-            shell->screen->resize(rows, cols);
-            // One snapshot for the session while it has one shell; with several panes each
-            // one has its own screen to be shown again, and this loop will say which.
-            snapshot = screenSnapshot(*shell->screen);
-        }
-        if (snapshot.empty())
-            return;
-        // Every view gets it, the one that asked included. A view that grew keeps a
-        // screen painted for the size it was, and until now nothing ever corrected
-        // that — the snapshot was a thing the attach handshake did once, which made the
-        // size of a window and the contents of a screen depend on each other for the
-        // first and only time.
-        std::lock_guard<std::mutex> clients_lock(record.clients_mutex);
-        for (const int client : record.clients)
-            static_cast<void>(detail::sendFrame(client, MsgKind::Snapshot, snapshot));
+        record->rows = rows;
+        record->cols = cols;
+        // Every shell takes the cell its pane owns and every view is given the screen of the
+        // place it is looking at, which is what reconciling does.
+        reconcileShells(record);
     }
 
     void attach(int fd, FrameReader& reader, const Fields& hello, const std::string& name) {
@@ -988,11 +1164,10 @@ private:
 
         std::string snapshot;
         {
-            const std::shared_ptr<Record::Shell> shell = record->onlyShell();
-            if (shell) {
-                std::lock_guard<std::mutex> lock(shell->screen_mutex);
-                snapshot = screenSnapshot(*shell->screen);
-            }
+            const std::shared_ptr<Record::Shell> shell =
+                shellAt(record, record->focus_slot.load());
+            if (shell)
+                snapshot = snapshotOf(*shell);
         }
         const std::string welcome = encodeFields(encodeSessionInfo(describe(*record)));
         // Joining the list and being shown the screen happen under one lock, which is
@@ -1055,7 +1230,8 @@ private:
                 case MsgKind::Data: {
                     // The pane this view is looking at, which until the window can show
                     // more than one of them is the session's only pane.
-                    const std::shared_ptr<Record::Shell> shell = record->onlyShell();
+                    const std::shared_ptr<Record::Shell> shell =
+                        shellAt(record, record->slotOf(fd));
                     if (shell)
                         static_cast<void>(shell->pty->write(frame.body));
                     break;
@@ -1221,7 +1397,8 @@ private:
             // wants to type into a shell should not have to become a window first,
             // and a window that attached only to type a line would show the answer to
             // nobody.
-            if (!type(name, fieldValue(fields, "text"))) {
+            if (!type(name, fieldValue(fields, "text"),
+                      std::stoi(fieldValue(fields, "pane", "-1")))) {
                 static_cast<void>(detail::sendFrame(
                     fd, MsgKind::Error,
                     encodeFields({{"message", "the session would not take the text"}})));
@@ -1302,6 +1479,10 @@ private:
                 std::lock_guard<std::mutex> lock(record->layout_mutex);
                 record->layout = replacement;
             }
+            // The arrangement decides how many programs the session runs, which is the whole
+            // reason it is worth saving: a record of panes with one shell behind it is a
+            // picture of a workspace rather than one.
+            reconcileShells(record);
             static_cast<void>(detail::sendFrame(
                 fd, MsgKind::Ack, encodeFields({{"what", "layout"}})));
             return;

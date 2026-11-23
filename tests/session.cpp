@@ -252,6 +252,38 @@ std::string giveLayout(const std::string& name, const std::string& text) {
     return fieldValue(decodeFields(reply.body), "message", "refused");
 }
 
+// How many shells a session is running, and which of them a view is looking at. Both are
+// listed because a person standing outside the session has no other way to ask, and because
+// "the record says three and the machine runs one" is exactly the kind of lie a listing can
+// tell.
+int listedPanes(const std::string& name) {
+    for (const SessionInfo& info : listed()) {
+        if (info.name == name)
+            return info.panes;
+    }
+    return -1;
+}
+
+int listedFocused(const std::string& name) {
+    for (const SessionInfo& info : listed()) {
+        if (info.name == name)
+            return info.focused;
+    }
+    return -1;
+}
+
+// Type into one named pane rather than whichever the session happens to be looking at.
+bool sendPane(const std::string& name, int pane, const std::string& text) {
+    TestClient client;
+    if (!client.connect() || !client.hello({{"command", "send"},
+                                            {"name", name},
+                                            {"text", text},
+                                            {"pane", std::to_string(pane)}}))
+        return false;
+    Frame reply;
+    return client.reply(reply) && reply.kind == MsgKind::Ack;
+}
+
 // Attach and leave the client connected; the caller decides when it goes away.
 bool attach(TestClient& client, const std::string& name, int rows, int cols,
             std::string& snapshot, std::string* error = nullptr) {
@@ -651,6 +683,84 @@ int main() {
         TestClient tidying;
         if (tidying.connect()) {
             static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "arranged"}}));
+            Frame ack;
+            static_cast<void>(tidying.reply(ack));
+        }
+    }
+
+    {
+        // A split means a second program. The record has said how many panes a session has
+        // since step 1; this is the daemon honouring it, which is the difference between a
+        // split and a mirror.
+        std::string message;
+        expect("a session to split", createSession("split-me"));
+        expect("one pane is one shell", listedPanes("split-me") == 1 &&
+                                              listedFocused("split-me") == 0);
+
+        message = giveLayout("split-me", "split left-right 0.5\n  pane\n  pane\n");
+        expect("an arrangement with two panes is accepted (" + message + ")", message.empty());
+        expect("and the session is running two shells", listedPanes("split-me") == 2);
+        expect("with one of them being looked at", listedFocused("split-me") == 0);
+
+        // Each pane's program is its own: what one prints is not in the other, and what one
+        // is told about the window is its own cell rather than the whole of it.
+        expect("typing into the left pane is taken by the left pane",
+               sendPane("split-me", 0, "echo ZERO-ONLY\n"));
+        expect("and the right pane has its own", sendPane("split-me", 1, "echo ONE-ONLY\n"));
+        TestClient watcher;
+        std::string shown;
+        expect("a view attaches to see the pane being looked at",
+               attach(watcher, "split-me", 24, 80, shown));
+        std::string text = TestClient::render(shown, 24, 80);
+        // The pane the session is focused on, which an arrangement read from words puts at
+        // the start of the tab bar: the left one. Not whichever shell was started last —
+        // "what you are looking at" and "what appeared last" are different questions, and a
+        // view that answered the second would move under a person whenever a pane started
+        // something in the background.
+        expect("and sees that pane's shell", text.find("ZERO-ONLY") != std::string::npos);
+        expect("without the other pane's output mixed into it",
+               text.find("ONE-ONLY") == std::string::npos);
+        // 80 columns split left-right at half is 39, a divider, and 40. A shell told the
+        // window's width would wrap where the window does not, which makes the split a
+        // picture of a division rather than a division. Asked over the wire, so the answer
+        // arrives on a frame of its own whenever the shell gets round to it.
+        // What a shell was told about its size is what it answers, so ask it — but ask
+        // once it is actually reading. A command typed while a shell is still starting is
+        // typed at nothing, and a check that blames the terminal for that is blaming the
+        // wrong thing: say something, wait to see it come back, then ask the question.
+        std::string raw = shown;
+        auto asked_and_saw = [&](const char* command, const char* answer) {
+            static_cast<void>(sendPane("split-me", 0, command));
+            // Reading is its own step: a daemon that has written something is not the same
+            // as a view that has seen it, and a check that only looks in its own queue
+            // would wait forever on bytes still in the socket.
+            raw += watcher.waitFor(answer, 4000);
+            text = TestClient::render(raw, 24, 80);
+            return text.find(answer) != std::string::npos;
+        };
+        expect("and the shell is reading what is typed to it",
+               asked_and_saw("echo READY-PANE-0\n", "READY-PANE-0"));
+        // 80 columns split left-right at half is 39, a divider, and 40. A shell told the
+        // window's width would wrap where the window does not, which makes a split a
+        // picture of a division rather than a division.
+        expect("and the shell was told its own width [" + text + "]",
+               asked_and_saw("stty size\n", "24 39") && text.find("80") == std::string::npos);
+
+        // Going back to one pane keeps the shell that still has a place in the tab bar,
+        // because a shell belongs to a place rather than to a node of the tree.
+        message = giveLayout("split-me", "pane\n");
+        expect("an arrangement with one pane is accepted (" + message + ")", message.empty());
+        expect("and the session is running one shell again", listedPanes("split-me") == 1);
+        // The screen a view is handed after the change is a snapshot, not the bytes it has
+        // been sent so far, so the surviving pane is read from what arrives now.
+        text = TestClient::render(watcher.waitFor("ZERO-ONLY", 2000), 24, 80);
+        expect("and the shell that still has a place is the one still there",
+               text.find("ZERO-ONLY") != std::string::npos);
+        expect("with the other one gone", text.find("ONE-ONLY") == std::string::npos);
+
+        TestClient tidying;
+        if (tidying.connect()) {
+            static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "split-me"}}));
             Frame ack;
             static_cast<void>(tidying.reply(ack));
         }
@@ -1101,7 +1211,15 @@ int main() {
                createSession(std::to_string(top), 24, 80));
         expect("killing that number kills the one that was named",
                daemon.kill(std::to_string(top), error));
-        expect("the named one is gone", !listed_have(std::to_string(top)));
+        // A kill says so before the shell's own reader thread has taken it out of the
+        // listing, so this waits rather than reading a moment that has not happened yet.
+        bool named_gone = false;
+        for (int attempt = 0; attempt < 60 && !named_gone; ++attempt) {
+            named_gone = !listed_have(std::to_string(top));
+            if (!named_gone)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        expect("the named one is gone", named_gone);
         expect("and the shell that was number " + std::to_string(top) + " is still here",
                listed_have(top_name));
         expect("nothing else went with it", listed().size() == all.size());
