@@ -893,13 +893,26 @@ private:
             std::lock_guard<std::mutex> lock(record.shells_mutex);
             panes = static_cast<int>(record.shells.size());
         }
+        std::string cells;
         {
             std::lock_guard<std::mutex> lock(record.layout_mutex);
             mode = record.layout.mode == ViewMode::Tabs ? "tabs" : "side-by-side";
+            // Where each place sits, in cells, in tab order — `top,left,rows,cols` apart.
+            // The window drawing the places side by side needs this now rather than on
+            // request: the arrangement and the screen it is being drawn onto change
+            // together, and a window that had to ask would paint one frame at the old size.
+            for (const CellRect& cell :
+                 record.layout.layout.rects(record.rows.load(), record.cols.load())) {
+                if (!cells.empty())
+                    cells += ";";
+                cells += std::to_string(cell.top) + "," + std::to_string(cell.left) + "," +
+                         std::to_string(cell.rows) + "," + std::to_string(cell.cols);
+            }
         }
         return encodeFields({{"panes", std::to_string(panes)},
                              {"focused", std::to_string(record.focus_slot.load())},
-                             {"mode", mode}});
+                             {"mode", mode},
+                             {"cells", cells}});
     }
 
     // Tell everyone looking at a session what its tab bar holds now. This goes to every

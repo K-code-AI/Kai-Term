@@ -215,6 +215,37 @@ private:
                 tabs_.panes = number(fieldValue(fields, "panes", "0"));
                 tabs_.focused = number(fieldValue(fields, "focused", "0"));
                 tabs_.tabs = fieldValue(fields, "mode") == "tabs";
+                tabs_.cells.clear();
+                // `top,left,rows,cols` apart, in the order the places are listed. Anything
+                // that does not parse is left out rather than guessed at: a bar drawn from
+                // half-understood sizes is a map with rooms in the wrong places.
+                {
+                    const std::string text = fieldValue(fields, "cells");
+                    std::size_t at = 0;
+                    while (at < text.size()) {
+                        const std::size_t next = text.find(';', at);
+                        const std::string one =
+                            text.substr(at, next == std::string::npos ? std::string::npos
+                                                                      : next - at);
+                        at = next == std::string::npos ? text.size() : next + 1;
+                        std::size_t mark = 0;
+                        PaneRect cell;
+                        int* const parts[4] = {&cell.row, &cell.col, &cell.rows, &cell.cols};
+                        bool read = true;
+                        for (int* part : parts) {
+                            const std::size_t comma = one.find(',', mark);
+                            const std::string piece = one.substr(
+                                mark, comma == std::string::npos ? std::string::npos
+                                                                 : comma - mark);
+                            if (comma == std::string::npos && mark + 1 < one.size())
+                                read = false;
+                            *part = number(piece);
+                            mark = comma == std::string::npos ? one.size() : comma + 1;
+                        }
+                        if (read && cell.valid())
+                            tabs_.cells.push_back(cell);
+                    }
+                }
                 tabs_changed_ = true;
                 break;
             }

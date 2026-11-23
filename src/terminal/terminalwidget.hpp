@@ -67,15 +67,18 @@ struct TerminalOutputEvent : QEvent {
 // The session's tab bar, as the daemon last described it. Not output: a session gaining a
 // pane prints nothing on the pane being looked at, so nothing else would ever say so.
 struct TerminalTabsEvent : QEvent {
-    TerminalTabsEvent(int panes, int focused, bool tabs, int generation)
+    TerminalTabsEvent(int panes, int focused, bool tabs, std::vector<PaneRect> cells,
+                      int generation)
         : QEvent(QEvent::None),
           panes(panes),
           focused(focused),
           tabs(tabs),
+          cells(std::move(cells)),
           generation(generation) {}
     int panes;
     int focused;
     bool tabs;
+    std::vector<PaneRect> cells;
     int generation;
 };
 
@@ -789,7 +792,8 @@ public:
                 if (backend->takeTabBar(bar)) {
                     QCoreApplication::postEvent(this,
                                                 new TerminalTabsEvent(bar.panes, bar.focused,
-                                                                      bar.tabs, generation));
+                                                                      bar.tabs, bar.cells,
+                                                                      generation));
                 }
                 // Bytes the backend is already holding are not waiting on the
                 // descriptor to become readable, so they are taken without asking.
@@ -1204,12 +1208,13 @@ public:
     // What the session's tab bar holds. The count is the daemon's business; which tab is
     // lit is this window's, because two windows on one session can be looking at two
     // different places and both are right.
-    void setTabBar(int panes, int focused, bool tabs) {
-        if (panes == tab_panes_ && view_tabs_ == tabs &&
+    void setTabBar(int panes, int focused, bool tabs, std::vector<PaneRect> cells = {}) {
+        if (panes == tab_panes_ && view_tabs_ == tabs && cells == tab_cells_ &&
             (tab_chosen_ || focused == tab_focused_))
             return;
         tab_panes_ = std::max(0, panes);
         view_tabs_ = tabs;
+        tab_cells_ = std::move(cells);
         if (!tab_chosen_)
             tab_focused_ = std::clamp(focused, 0, std::max(0, tab_panes_ - 1));
         else if (tab_focused_ >= tab_panes_)
@@ -1246,6 +1251,56 @@ public:
             backend_->setViewMode(!view_tabs_);
     }
     bool viewIsTabs() const { return view_tabs_; }
+
+    // Where the tab slots begin and end, as fractions of the bar's width. Equal when the
+    // places are shown one at a time, because then the bar is a list and no place is more
+    // important than another. Proportional to the cells when they are shown side by side,
+    // with the dividers left as gaps — the bar is a map of where the work is, and a map
+    // that lies about the sizes of rooms is worse than no map at all.
+    std::vector<double> tabEdges() const {
+        std::vector<double> edges;
+        if (tab_panes_ <= 0)
+            return edges;
+        const bool proportional =
+            !view_tabs_ && static_cast<int>(tab_cells_.size()) == tab_panes_;
+        double total = 0.0;
+        std::vector<double> widths;
+        for (int pane = 0; pane < tab_panes_; ++pane) {
+            const double w = proportional ? std::max(1, tab_cells_[pane].cols) : 1.0;
+            widths.push_back(w);
+            total += w;
+        }
+        const double gap = proportional ? 1.0 : 0.0; // a divider's worth, between places
+        total += gap * (tab_panes_ - 1);
+        edges.push_back(0.0);
+        double used = 0.0;
+        for (int pane = 0; pane < tab_panes_; ++pane) {
+            used += widths[pane] / total;
+            edges.push_back(used);
+            if (pane + 1 < tab_panes_) {
+                used += gap / total;
+                edges.push_back(used);
+            }
+        }
+        edges.back() = 1.0;
+        return edges;
+    }
+
+    // Which place a point on the bar is over. A point in a divider belongs to no place, so
+    // it changes nothing rather than picking the neighbour a hand was closest to.
+    int tabSlotAt(double x, double bar_left, double bar_width) const {
+        const std::vector<double> edges = tabEdges();
+        if (edges.size() < 2 || bar_width <= 0.0)
+            return -1;
+        const double at = std::clamp((x - bar_left) / bar_width, 0.0, 1.0);
+        for (int pane = 0; pane + 1 < static_cast<int>(edges.size()); ++pane) {
+            // Odd boundaries are the far edge of a place, even ones the near edge; the
+            // entries between them are the gaps left by dividers.
+            if ((pane % 2) == 0 && at >= edges[pane] && at < edges[pane + 1])
+                return pane / 2;
+        }
+        return -1;
+    }
     int shownPane() const { return tab_focused_; }
     int paneCount() const { return tab_panes_; }
 
@@ -1327,7 +1382,7 @@ public:
         if (auto* tabs = dynamic_cast<TerminalTabsEvent*>(e)) {
             if (tabs->generation != generation_)
                 return true; // about a session this window no longer shows
-            setTabBar(tabs->panes, tabs->focused, tabs->tabs);
+            setTabBar(tabs->panes, tabs->focused, tabs->tabs, tabs->cells);
             return true;
         }
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
@@ -1595,10 +1650,8 @@ public:
         // selection: the strip is above the grid, so there is nothing up there to select.
         if (tab_panes_ > 1 && ev->position().y() >= activePadding() &&
             ev->position().y() < gridTop()) {
-            const double tab_w = (width() - 2.0 * activePadding()) / tab_panes_;
-            showPaneAt(tab_w > 0.0 ? static_cast<int>((ev->position().x() - activePadding()) /
-                                                      tab_w)
-                                   : -1);
+            const double bar_left = activePadding();
+            showPaneAt(tabSlotAt(ev->position().x(), bar_left, width() - 2.0 * bar_left));
             return;
         }
         if (mixer_) {
@@ -2023,15 +2076,18 @@ public:
         if (tab_panes_ > 1) {
             const double strip = tabStrip();
             const double bar_w = width() - 2.0 * grid_pad;
-            const double tab_w = bar_w / tab_panes_;
             p.fillRect(QRectF(grid_pad, grid_pad, bar_w, strip), ground(default_bg, 40));
-            for (int pane = 0; pane < tab_panes_; ++pane) {
-                const QRectF slot(grid_pad + pane * tab_w, grid_pad, tab_w, strip);
-                const bool looked_at = pane == tab_focused_;
+            const std::vector<double> edges = tabEdges();
+            for (int pane = 0; pane + 1 < static_cast<int>(edges.size()); ++pane) {
+                if ((pane % 2) != 0)
+                    continue; // the gap a divider leaves, which is left as the bar's ground
+                const QRectF slot(grid_pad + edges[pane] * bar_w, grid_pad,
+                                  (edges[pane + 1] - edges[pane]) * bar_w, strip);
+                const bool looked_at = pane / 2 == tab_focused_;
                 if (looked_at)
                     p.fillRect(slot, ground(default_bg, 110));
                 p.setPen(ink(theme_.foreground, looked_at ? 255 : 140));
-                p.drawText(slot, Qt::AlignCenter, QString::number(pane + 1));
+                p.drawText(slot, Qt::AlignCenter, QString::number(pane / 2 + 1));
             }
             // A rule under the bar, so the strip reads as something the grid sits on
             // rather than as a row of the grid that failed to draw.
@@ -4973,6 +5029,8 @@ private:
     bool tab_chosen_ = false;
     // Whether the session's places are shown one at a time with tabs, or side by side.
     bool view_tabs_ = false;
+    // Where each place sits, as the session last said. Empty until it says.
+    std::vector<PaneRect> tab_cells_;
 
     // Rows moved by one wheel notch, and how far the view is scrolled back from
     // the live bottom in lines. Zero means "following the shell".

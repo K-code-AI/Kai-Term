@@ -125,6 +125,13 @@ struct PaneRect {
 
     bool valid() const { return rows > 0 && cols > 0; }
 
+    // Two panes are the same pane when they cover the same cells. Asked because a view is
+    // told its tab bar now and then, and a bar that has not moved should not be redrawn,
+    // resized, or announced as news.
+    friend bool operator==(const PaneRect& a, const PaneRect& b) {
+        return a.row == b.row && a.col == b.col && a.rows == b.rows && a.cols == b.cols;
+    }
+
     bool contains(int r, int c) const {
         return r >= firstRow() && r <= lastRow() && c >= firstCol() && c < endCol();
     }

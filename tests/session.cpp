@@ -927,6 +927,28 @@ int main() {
             }
             return false;
         };
+        // The next Tabs frame about a bar of `panes` places, whole, so that more than one
+        // thing about it can be looked at without racing the announcement twice.
+        auto await_tabs = [](TestClient& viewer, int panes) {
+            for (int attempt = 0; attempt < 80; ++attempt) {
+                struct pollfd pfd {viewer.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[8192];
+                    const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (viewer.reader.pop(frame)) {
+                    if (frame.kind == MsgKind::Tabs &&
+                        fieldValue(decodeFields(frame.body), "panes", "0") ==
+                            std::to_string(panes))
+                        return decodeFields(frame.body);
+                }
+            }
+            return Fields{};
+        };
+
         auto refused_with = [](TestClient& viewer, const std::string& about) {
             for (int attempt = 0; attempt < 80; ++attempt) {
                 struct pollfd pfd {viewer.fd, POLLIN, 0};
@@ -961,7 +983,15 @@ int main() {
         expect("a new tab is asked for", window.send(MsgKind::NewPane));
         expect("and the session is running another program",
                listedPanes("tab-keys") == 2);
-        expect("the window is told the tab bar grew", tabs_say(window, 2, ""));
+        const Fields grown = await_tabs(window, 2);
+        expect("the window is told the tab bar grew", fieldValue(grown, "panes") == "2");
+        // Where each place sits, in cells: 80 columns split at half is 39, a divider, and
+        // 40. A window drawing the places side by side has to know that without going and
+        // asking the session's layout for it, because the layout is the daemon's and the
+        // drawing is now.
+        expect("and where each place sits on the screen ([" + fieldValue(grown, "cells") +
+                   "])",
+               fieldValue(grown, "cells") == "0,0,24,39;0,40,24,40");
         // A key that says "new" should land you in the new thing. Staying where you were
         // would mean a second keystroke every single time, on the one key whose whole job
         // is getting you out of the way you were in.

@@ -326,6 +326,46 @@ int main(int argc, char** argv) {
         expect("and changes no view it does not have", !w.viewIsTabs());
     }
 
+    {
+        // What Ctrl+Shift+H changes. Side by side, the bar is a map of the places, so a
+        // place ten columns wide does not get half of it; in tab view the bar is a list, and
+        // every place is as important as any other. The two answer the same press
+        // differently, which is the whole point of having two views.
+        const double bar_left = w.cellTopLeft(0, 0).x();
+        const double bar_width = w.width() - 2.0 * bar_left;
+        const std::vector<kai::PaneRect> uneven{{0, 0, 24, 10}, {0, 11, 24, 70}};
+
+        w.setTabBar(2, 0, false, uneven);
+        pump(60);
+        const std::vector<double> split = w.tabEdges();
+        // Two places and the divider between them: an edge at the start and end of each.
+        expect("side by side, the bar carries the divider as well as the places",
+               split.size() == 4 && split.back() == 1.0);
+        expect("so the narrow place gets its tenth of the bar",
+               split[1] > 0.05 && split[1] < 0.2);
+        expect("and a press a quarter along it is the wide place",
+               w.tabSlotAt(bar_left + bar_width * 0.25, bar_left, bar_width) == 1);
+        const double in_divider = bar_left + bar_width * ((split[1] + split[2]) / 2.0);
+        expect("while a press on the divider is no place at all",
+               w.tabSlotAt(in_divider, bar_left, bar_width) == -1);
+
+        w.setTabBar(2, 0, true, uneven);
+        pump(60);
+        const std::vector<double> listed = w.tabEdges();
+        expect("in tab view the bar is an even list", qAbs(listed[1] - 0.5) < 0.001);
+        expect("so the same press is the first place instead",
+               w.tabSlotAt(bar_left + bar_width * 0.25, bar_left, bar_width) == 0);
+
+        // Sizes the session did not say about a bar of that many places are not invented:
+        // the bar falls back to an even list rather than drawing rooms of made-up widths.
+        w.setTabBar(3, 0, false, uneven);
+        pump(60);
+        expect("and a bar whose sizes do not match its places is drawn even",
+               qAbs(w.tabEdges()[1] - 1.0 / 3.0) < 0.001);
+        w.setTabBar(0, 0, false, {});
+        pump(120);
+    }
+
     w.shutdown();
 
     if (failures == 0) {

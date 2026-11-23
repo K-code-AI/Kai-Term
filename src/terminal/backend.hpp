@@ -28,6 +28,7 @@
 #include "../process/job.hpp"
 #include "../process/pty.hpp"
 #include "../terminal/screen.hpp"
+#include "../terminal/selection.hpp"
 
 namespace kai {
 
@@ -92,6 +93,9 @@ public:
         int panes = 0;   // how many places there are to look at
         int focused = 0; // the one a view lands on when it arrives
         bool tabs = false; // one at a time with tabs, rather than all of them at once
+        // Where each place sits, in cells, in the same order as the places. Empty when the
+        // session has said nothing about sizes, which is the same as saying they are equal.
+        std::vector<PaneRect> cells;
     };
     virtual bool takeTabBar(TabBar& /*bar*/) { return false; }
 
