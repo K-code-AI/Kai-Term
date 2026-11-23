@@ -369,7 +369,9 @@ The order, and the reason each step is where it is:
    protocol to read and change it. Nothing on screen yet. Everything below is a client of
    this, which is why it cannot come after them.
 2. **Panes in the window** — `setPanes()` with the cells each pane owns, focus, resize, one
-   divider drag at a time. M3 built the pane-scoped selection and clipping in 2026-11 and
+   divider drag at a time, and **one shell per pane**: the record has always said how many
+   panes there are, and the daemon still runs one shell regardless, so this is where a split
+   starts meaning a second program rather than a second copy of one. M3 built the pane-scoped selection and clipping in 2026-11 and
    said out loud that it was waiting for a host that draws splits; this is that host.
 3. **Tabs and windows** — **Ctrl+Shift+N** a new tab, **Ctrl+Shift+H** between side-by-side
    and a tab view, both reserved since 2026-11-17 so nothing else could take them.
@@ -394,9 +396,17 @@ divider, and a session holding its tabs and which one is showing. It writes itse
 and reads those words back, which is what makes one shape serve as a preset file, as the
 answer to `kai-term layout`, and as a wire message, instead of three. The two questions this
 section left open were answered by building it: the shape is a tree of splits, because a
-divider being dragged is a share moving between two areas and a fixed grid cannot say that;
-and a tab is a window *inside* a session (Kaida, 2026-11-21), so attaching to a session with
-three tabs arrives at the tab that was showing rather than whichever was made first.
+divider being dragged is a share moving between two areas and a fixed grid cannot say that.
+
+**A tab IS a pane** (Kaida, 2026-11-23, settling it the same day with photographs of both
+states). A session holds one tree of panes, each pane holding a shell of its own, and the
+record also says how they are being shown: `view side-by-side` draws the tree, `view tabs`
+gives the pane being looked at the whole window with a bar along it, one tab per pane,
+switched the way a browser switches pages. The same shells either way, so switching views
+moves nothing and nobody arranges the same work twice. The level this section first assumed
+— tabs each holding their own tree of panes, which is tmux's windows — was built, tested,
+and taken out the same day: a session with four panes has four tabs and four shells, and
+nothing wants one tab to be split while the others are not.
 
 The daemon holds one per session and answers for it — `command=layout` reads it,
 `command=set-layout` replaces it, and both are on the command line as `kai-term layout ID`
