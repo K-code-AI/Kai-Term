@@ -72,6 +72,11 @@ enum class MsgKind : std::uint8_t {
     // a second window, or a tty, or the window made after the one that arranged it, all see
     // the same one. (Replacing tmux, step 1.)
     Layout = 17, // fields: name, text
+    // The session's tab bar, to everyone looking at it: how many places there are and
+    // which one a new view lands on. A window draws its tabs from this rather than from
+    // what it last saw, because a pane can appear from another window, or from a
+    // `set-layout` in a terminal, while this one is open.
+    Tabs = 18, // fields: panes, focused
 };
 
 // A session's whole screen is small; 16 MiB is far above any snapshot or history

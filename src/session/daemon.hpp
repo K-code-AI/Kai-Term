@@ -753,6 +753,9 @@ private:
         // taken to be looking at the pane the session is focused on.
         std::map<int, int> view_slot;
         std::atomic<int> focus_slot{0};
+        // The tab bar as last announced, so a resize does not repeat a number nobody
+        // asked about. Read and written under the same lock as the client list.
+        std::pair<int, int> tabs_sent{-1, -1};
         std::vector<int> clients;
         // What each view looking at this session said its window is, by descriptor. The
         // session's size is worked out from all of them together — see `settleSessionSize`
@@ -881,6 +884,31 @@ private:
         return screenSnapshot(*shell.screen);
     }
 
+    // Tell everyone looking at a session what its tab bar holds now. This goes to every
+    // view rather than to the views on one pane, because the bar is one thing shared by
+    // whoever is watching: a pane added from a second window, or from `set-layout` in a
+    // terminal, has to appear in the first window too.
+    void announceTabs(const std::shared_ptr<Record>& record) {
+        int panes = 0;
+        {
+            std::lock_guard<std::mutex> lock(record->shells_mutex);
+            panes = static_cast<int>(record->shells.size());
+        }
+        const int focus = record->focus_slot.load();
+        std::vector<int> every;
+        {
+            std::lock_guard<std::mutex> lock(record->clients_mutex);
+            if (record->tabs_sent.first == panes && record->tabs_sent.second == focus)
+                return;
+            record->tabs_sent = {panes, focus};
+            every = record->clients;
+        }
+        const std::string body = encodeFields({{"panes", std::to_string(panes)},
+                                               {"focused", std::to_string(focus)}});
+        for (const int fd : every)
+            static_cast<void>(detail::sendFrame(fd, MsgKind::Tabs, body));
+    }
+
     // Bring the session's shells in line with its arrangement: every place in the tab bar
     // has a shell, a place that has gone loses its shell, and every shell is told the size
     // of the cell it owns — a shell told the window's width would wrap somewhere the window
@@ -971,6 +999,8 @@ private:
         // holding up its neighbours.
         for (const std::shared_ptr<Record::Shell>& shell : fresh)
             std::thread([this, record, shell] { readShell(record, shell); }).detach();
+
+        announceTabs(record);
     }
 
     void readShell(std::shared_ptr<Record> record, std::shared_ptr<Record::Shell> shell) {
@@ -1038,12 +1068,17 @@ private:
             // what the session is focused on now, and the shell comes off the list so that
             // the count a listing gives is the number of programs actually running.
             record->moveViewsOff(shell->pane);
-            std::lock_guard<std::mutex> lock(record->shells_mutex);
-            const auto keep = std::remove_if(
-                record->shells.begin(), record->shells.end(),
-                [&shell](const std::shared_ptr<Record::Shell>& s) { return s == shell; });
-            record->shells.erase(keep, record->shells.end());
-            shell->pty->closeMaster();
+            {
+                std::lock_guard<std::mutex> lock(record->shells_mutex);
+                const auto keep = std::remove_if(
+                    record->shells.begin(), record->shells.end(),
+                    [&shell](const std::shared_ptr<Record::Shell>& s) { return s == shell; });
+                record->shells.erase(keep, record->shells.end());
+                shell->pty->closeMaster();
+            }
+            // Said after the list is let go of: the announcement counts the shells, and a
+            // lock taken twice by one thread is a thread that never wakes up again.
+            announceTabs(record);
             return;
         }
         record->dead = true;
@@ -1253,7 +1288,14 @@ private:
                     // place for this descriptor, and send the screen of what is running
                     // there. From here the view's own typing follows it.
                     const Fields fields = decodeFields(frame.body);
-                    const int slot = std::stoi(fieldValue(fields, "pane", "-1"));
+                    // Asked for by number, and a number is not guaranteed: something on
+                    // the other end of the socket could send anything, and a daemon that
+                    // threw on `pane=banana` would take every session down with it.
+                    const std::string wanted = fieldValue(fields, "pane", "-1");
+                    const bool a_number = !wanted.empty() &&
+                                          wanted.find_first_not_of("-0123456789") ==
+                                              std::string::npos;
+                    const int slot = a_number ? std::atoi(wanted.c_str()) : -1;
                     int places = 0;
                     {
                         std::lock_guard<std::mutex> lock(record->shells_mutex);
@@ -1431,8 +1473,13 @@ private:
             // wants to type into a shell should not have to become a window first,
             // and a window that attached only to type a line would show the answer to
             // nobody.
+            // Same care as everywhere the wire is read: a pane that is not a number is
+            // not a pane, and the answer is a refusal rather than a crashed daemon.
+            const std::string asked = fieldValue(fields, "pane", "-1");
+            const bool numeric = asked.size() > 0 &&
+                                 asked.find_first_not_of("-0123456789") == std::string::npos;
             if (!type(name, fieldValue(fields, "text"),
-                      std::stoi(fieldValue(fields, "pane", "-1")))) {
+                      numeric ? std::atoi(asked.c_str()) : -1)) {
                 static_cast<void>(detail::sendFrame(
                     fd, MsgKind::Error,
                     encodeFields({{"message", "the session would not take the text"}})));

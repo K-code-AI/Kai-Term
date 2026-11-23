@@ -845,6 +845,40 @@ int main() {
                TestClient::render(viewer.waitFor("STILL-READING", 4000), 24, 80)
                    .find("STILL-READING") != std::string::npos);
 
+        // The tab bar a window draws is the session's, not the window's: a pane added from
+        // a second window, or from `set-layout` in a terminal, has to show up in the first
+        // one. So the daemon says so, to everyone looking, whenever the tab bar changes.
+        {
+            TestClient watcher;
+            std::string watcher_shown;
+            expect("a view is watching the tab bar",
+                   attach(watcher, "look-here", 24, 80, watcher_shown));
+            static_cast<void>(
+                giveLayout("look-here", "split left-right 0.5\n  pane\n  pane\n"));
+            Frame news;
+            bool heard = false;
+            for (int attempt = 0; attempt < 40 && !heard; ++attempt) {
+                struct pollfd pfd {watcher.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[8192];
+                    const ssize_t n = readSome(watcher.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        watcher.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (watcher.reader.pop(frame)) {
+                    if (frame.kind == MsgKind::Tabs) {
+                        news = frame;
+                        heard = true;
+                    }
+                }
+            }
+            expect("and is told when a pane appears ([" + news.body + "])", heard);
+            const Fields bar = decodeFields(news.body);
+            expect("the tab bar now has two places", fieldValue(bar, "panes", "0") == "2");
+            expect("with the first one looked at", fieldValue(bar, "focused", "-1") == "0");
+        }
+
         TestClient tidying;
         if (tidying.connect()) {
             static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "look-here"}}));

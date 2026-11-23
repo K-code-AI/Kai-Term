@@ -801,13 +801,16 @@ inline const std::vector<CommandHelp>& commandHelp() {
          "  ID                   which shell; the one you are standing in otherwise\n"
          "  NAME                 what to call it\n"},
         {"send",
-         "send ID TEXT [--enter]",
+         "send ID TEXT [--enter] [--pane N]",
          "type into a shell without watching it",
          "What the shell sees is what it would have seen from a keyboard, prompt\n"
-         "redrawing itself and all.\n",
+         "redrawing itself and all. A shell with more than one pane runs a program\n"
+         "in each of them, so `send` says which one it means; without `--pane` it\n"
+         "types into the pane that session is looking at.\n",
          "  ID                   which shell\n"
          "  TEXT                 what to type, as one argument\n"
-         "  --enter              press Enter after it\n"},
+         "  --enter              press Enter after it\n"
+         "  --pane N             which pane, counted from 0\n"},
         {"kill",
          "kill ID",
          "end a shell",
@@ -969,6 +972,9 @@ inline int runSessionCommand(int argc, char** argv) {
     std::string named;
     bool use_window = false;
     bool enter = false;
+    // Which pane of a session to type into. By default the one it is looking at, because
+    // that is the pane a person means when they say "type into that session".
+    std::string pane = "-1";
     for (int i = 2; i < argc; ++i) {
         const std::string word = argv[i];
         if (word == "-n" || word == "--name") {
@@ -981,6 +987,19 @@ inline int runSessionCommand(int argc, char** argv) {
             use_window = true;
         } else if (word == "--enter") {
             enter = true;
+        } else if (word == "--pane") {
+            if (i + 1 >= argc) {
+                std::cerr << "kai-term: " << word << " needs a value\n";
+                return 2;
+            }
+            pane = argv[++i];
+            if (pane.empty() || pane.find_first_not_of("0123456789") != std::string::npos) {
+                // Counted from zero, and counted in whole panes: a session cannot be asked
+                // what pane 1.5 is, and answering nothing at all is worse than saying so.
+                std::cerr << "kai-term: --pane wants a number counted from 0, not '"
+                          << pane << "'\n";
+                return 2;
+            }
         } else if (word == "-h" || word == "--help") {
             // The page for the command that was actually asked for, which is what
             // `kai-term list --help` means.
@@ -1208,7 +1227,11 @@ inline int runSessionCommand(int argc, char** argv) {
         const std::string text =
             verb == "send" ? positional[1] + (enter ? "\n" : "") : "";
         Frame reply;
-        if (!oneCommand({{"command", verb}, {"name", handle}, {"text", text}}, reply) ||
+        if (!oneCommand({{"command", verb},
+                         {"name", handle},
+                         {"text", text},
+                         {"pane", verb == "send" ? pane : "-1"}},
+                        reply) ||
             refused(reply))
             return fail();
         if (verb == "send")
