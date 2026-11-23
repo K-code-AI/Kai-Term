@@ -373,6 +373,24 @@ The order, and the reason each step is where it is:
    panes there are, and the daemon still runs one shell regardless, so this is where a split
    starts meaning a second program rather than a second copy of one. M3 built the pane-scoped selection and clipping in 2026-11 and
    said out loud that it was waiting for a host that draws splits; this is that host.
+
+   Built on 2026-11-23, in this order because each needed the one before it: the shells follow
+   the arrangement (`reconcileShells`), so a pane added starts the same program in the same
+   directory at the size of the cell it owns — `stty size` inside the left half of an
+   80-column split answers 39, not 80 — and a pane removed takes its program with it while the
+   shells that still have a tab carry on, because **a shell belongs to a place in the tab bar,
+   not to a node of the tree**. A view looks at one place at a time and is routed both ways: a
+   pane's output goes only to the views looking at it, and its typing goes to the program it
+   can see. `ShowPane {pane}` switches a view, refused out loud when the number is past the end
+   of the bar. The bar travels on the wire (`Tabs {panes, focused}`, with the welcome and
+   whenever it changes) because it is the session's bar: a pane added from a second window, or
+   from `set-layout` in a terminal, appears in the first one. A window draws it — numbered tabs,
+   the one it is looking at lit, **Ctrl+Shift+Left** and **Right** to step along them, a press
+   on a tab to jump — and the grid gives up a row to make room, with the click mapping moved to
+   match so a press still lands on the character under the pointer.
+
+   Still here: two panes' screens drawn in one window at once, the dividers from
+   `dividerRects()`, and a drag of one divider at a time going to `resizeDivider`.
 3. **Tabs and windows** — **Ctrl+Shift+N** a new tab, **Ctrl+Shift+H** between side-by-side
    and a tab view, both reserved since 2026-11-17 so nothing else could take them.
 4. **The attached view emulates the screen instead of relaying bytes.** The status line above
@@ -412,8 +430,10 @@ The daemon holds one per session and answers for it — `command=layout` reads i
 `command=set-layout` replaces it, and both are on the command line as `kai-term layout ID`
 and `kai-term set-layout ID < FILE`. A whole arrangement is read before any of it is applied,
 so a file with a typo in it is refused and names the line, and the session keeps what it had.
-Nothing on screen follows the arrangement yet; step 2 is the window taking its panes from
-here, which is also what `dividerRects()` is for.
+What follows it now: the daemon runs a program per pane, a view is routed to the one it is
+looking at, and a window draws a tab bar for the session's places. Drawing several panes at
+once, and the dividers between them, are the rest of step 2 — which is also what
+`dividerRects()` is for.
 
 The size of a session went with it: **the smallest view wins**, retiring the rule the daemon
 had from the beginning, that the last view to speak decides. Two windows on one session used
