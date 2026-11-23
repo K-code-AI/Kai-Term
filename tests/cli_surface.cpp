@@ -54,11 +54,27 @@ struct Run {
 };
 
 // Run the real binary with the given words and extra environment, with stdin at
-// /dev/null, and collect everything it prints. A command that has not finished
+// /dev/null (or holding `stdin_text`), and collect everything it prints. A command that has not finished
 // in fifteen seconds is not slow, it is stuck, and a stuck test is a hung suite.
 // The exit status is taken exactly once, from the one wait() that gets it.
-Run run(const std::vector<std::string>& args, const std::vector<std::string>& env = {}) {
+//
+// `stdin_text` is there because some commands take several lines, and the way a person
+// hands several lines to a program is a redirect. A check that wants to exercise that has
+// to hand them over the same way, not through a flag nobody would ever type.
+Run run(const std::vector<std::string>& args, const std::vector<std::string>& env = {},
+        const std::string& stdin_text = {}) {
     Run result;
+    int input_fd = -1;
+    if (!stdin_text.empty()) {
+        char name[] = "/tmp/kai-cli-stdin-XXXXXX";
+        const int fd = ::mkstemp(name);
+        if (fd >= 0) {
+            static_cast<void>(::write(fd, stdin_text.data(), stdin_text.size()));
+            ::lseek(fd, 0, SEEK_SET);
+            input_fd = fd;
+        }
+        ::unlink(name); // the descriptor stays open for the child; the name need not
+    }
     int pipe_fd[2];
     if (::pipe(pipe_fd) != 0) {
         result.out = "pipe failed";
@@ -76,11 +92,16 @@ Run run(const std::vector<std::string>& args, const std::vector<std::string>& en
         ::dup2(pipe_fd[1], STDERR_FILENO);
         ::close(pipe_fd[0]);
         ::close(pipe_fd[1]);
-        const int devnull = ::open("/dev/null", O_RDONLY);
-        if (devnull >= 0) {
-            ::dup2(devnull, STDIN_FILENO);
-            if (devnull > 2)
-                ::close(devnull);
+        if (input_fd >= 0) {
+            ::dup2(input_fd, STDIN_FILENO);
+            ::close(input_fd);
+        } else {
+            const int devnull = ::open("/dev/null", O_RDONLY);
+            if (devnull >= 0) {
+                ::dup2(devnull, STDIN_FILENO);
+                if (devnull > 2)
+                    ::close(devnull);
+            }
         }
         for (const std::string& assignment : env) {
             const std::size_t eq = assignment.find('=');
@@ -98,6 +119,8 @@ Run run(const std::vector<std::string>& args, const std::vector<std::string>& en
         _exit(127);
     }
     ::close(pipe_fd[1]);
+    if (input_fd >= 0)
+        ::close(input_fd); // the child has its own copy; ours is nobody's business
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     for (;;) {
@@ -619,11 +642,58 @@ int main() {
         expect(done.code == 0, "and stops again: " + done.out);
     }
 
+    // The arrangement a session carries, read and written from a shell. Nothing on screen
+    // follows these words yet — that is the next step of "Replacing tmux" — so what is
+    // checked here is that the words survive the trip out of the daemon and back, and that
+    // a bad one is refused rather than half applied.
+    {
+        const Run mk = run({"new", "arranged"}, here);
+        expect(mk.code == 0, "a shell to arrange: " + mk.out);
+        std::string sid;
+        {
+            const std::string pre = "started session ";
+            const std::size_t p = mk.out.find(pre);
+            if (p != std::string::npos) {
+                const std::size_t s = p + pre.size();
+                const std::size_t e = mk.out.find_first_not_of("0123456789", s);
+                sid = mk.out.substr(s, e - s);
+            }
+        }
+        const Run shown = run({"layout", sid}, here);
+        expect(shown.code == 0, "its arrangement can be read: " + shown.out);
+        expect(contains(shown.out, "window window-1") && contains(shown.out, "pane"),
+               "a shell nobody has split is one window holding one pane: " + shown.out);
+
+        const Run given = run({"set-layout", sid}, here,
+                              "window build\n  split left-right 0.5\n    pane\n    pane\n");
+        expect(given.code == 0 && contains(given.out, "arranged session"),
+               "an arrangement can be handed over: " + given.out);
+        const Run holding = run({"layout", sid}, here);
+        expect(contains(holding.out, "window build") &&
+                   contains(holding.out, "split left-right 0.500000"),
+               "and the shell holds it, down to where the divider sits: " + holding.out);
+
+        const Run bad = run({"set-layout", sid}, here,
+                            "window x\n  split sideways\n    pane\n    pane\n");
+        expect(bad.code != 0 && contains(bad.out, "left-right"),
+               "a split that is not a direction is refused, and says what would be: " + bad.out);
+        const Run still_there = run({"layout", sid}, here);
+        expect(contains(still_there.out, "window build"),
+               "and the arrangement that was there is still there: " + still_there.out);
+
+        const Run nothing = run({"set-layout", sid}, here);
+        expect(nothing.code != 0 && contains(nothing.out, "no arrangement"),
+               "and saying nothing at all is not an arrangement: " + nothing.out);
+
+        static_cast<void>(run({"kill", sid}, here));
+    }
+
     // The help a person reads before typing anything.
     {
         const Run h = run({"--help"}, here);
         expect(h.code == 0 && contains(h.out, "attach ID"), "help shows the surface: " + h.out);
         expect(contains(h.out, "save [ID] [NAME]"), "help shows the argument-free save");
+        expect(contains(h.out, "set-layout ID < FILE"), "help shows how an arrangement comes in");
     }
 
     ::rmdir(runtime_dir.c_str());

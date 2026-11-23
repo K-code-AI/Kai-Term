@@ -61,6 +61,12 @@ enum class MsgKind : std::uint8_t {
     // A program inside a session asked for its text to be copied (OSC 52). The daemon
     // has no clipboard to put it in, so it hands the request to whoever is looking.
     Clipboard = 16, // body: the text to copy
+    // How a session is arranged: its tabs, each one a tree of panes with sizes, carried as
+    // the words that describe it. Read with `command=layout`, replaced with
+    // `command=set-layout`. Nothing draws it yet — the daemon holds the arrangement so that
+    // a second window, or a tty, or the window made after the one that arranged it, all see
+    // the same one. (Replacing tmux, step 1.)
+    Layout = 17, // fields: name, text
 };
 
 // A session's whole screen is small; 16 MiB is far above any snapshot or history

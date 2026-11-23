@@ -814,6 +814,21 @@ inline const std::vector<CommandHelp>& commandHelp() {
          "Whatever window or terminal is watching it finds out the way it would find out\n"
          "about a shell that exited on its own.\n",
          "  ID                   which shell\n"},
+        {"layout",
+         "layout ID",
+         "how a shell is arranged: its tabs, and the panes inside each",
+         "The arrangement belongs to the shell rather than to the window showing it, so\n"
+         "a second window or a terminal over ssh finds the one that is already there.\n"
+         "It is written as words: a `window` line per tab, then that tab's tree of\n"
+         "`split` lines and `pane` leaves. Nothing on screen follows these words yet.\n",
+         "  ID                   which shell\n"},
+        {"set-layout",
+         "set-layout ID < FILE",
+         "arrange a shell from the words `layout` prints",
+         "The whole arrangement is read before any of it is applied, so a file with a\n"
+         "typo in it is refused and says which line, and the shell keeps the arrangement\n"
+         "it had. Several lines come in the way several lines usually do: redirected.\n",
+         "  ID                   which shell\n"},
         {"start",
          "start",
          "start the daemon, if it is not already running",
@@ -1200,6 +1215,47 @@ inline int runSessionCommand(int argc, char** argv) {
             std::cout << "typed into session " << handle << "\n";
         else
             std::cout << "ended session " << handle << "\n";
+        return 0;
+    }
+
+    if (verb == "layout" || verb == "set-layout") {
+        if (positional.size() != 1) {
+            std::cerr << "kai-term: " << verb
+                      << " needs a session id; `kai-term list` shows them\n";
+            return 2;
+        }
+        const std::string handle = positional[0];
+        if (verb == "layout") {
+            Frame reply;
+            if (!oneCommand({{"command", "layout"}, {"name", handle}}, reply))
+                return fail();
+            // `refused` knows the answers that mean "here you are", and an arrangement is
+            // one of them now: asking for one and being told "no such session" has to print
+            // what the daemon said, not what the first word of the answer looked like.
+            if (reply.kind != MsgKind::Layout) {
+                static_cast<void>(refused(reply));
+                return fail();
+            }
+            // The words exactly as the daemon holds them, newline and all: the usual next
+            // move is `> file`, and a file that reads back as the arrangement is the point
+            // of writing them as words in the first place.
+            std::cout << fieldValue(decodeFields(reply.body), "text", "");
+            return 0;
+        }
+        // From stdin, because an arrangement is several lines and a shell argument is one
+        // word. Nothing typed at a terminal arrives here — that would be a person waiting
+        // for a prompt that never comes — so an empty input says so rather than quietly
+        // arranging a shell into a single pane.
+        std::string text;
+        for (std::string line; std::getline(std::cin, line);) {
+            text += line;
+            text += '\n';
+        }
+        Frame reply;
+        if (!oneCommand({{"command", "set-layout"}, {"name", handle}, {"text", text}}, reply) ||
+            refused(reply))
+            return fail();
+        std::cout << "arranged session " << handle << "\n";
         return 0;
     }
 

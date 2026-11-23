@@ -677,6 +677,13 @@ private:
         std::atomic<bool> dead{false};
         std::atomic<int> rows{24};
         std::atomic<int> cols{80};
+        // How the session is arranged: its tabs, each a tree of panes with sizes. The
+        // session owns this rather than any window showing it, so that a second window, or
+        // a tty, or the window opened after the one that arranged it, all find the same
+        // arrangement. Nothing draws it yet — the window takes its panes from here in the
+        // next step — which is why it can be read and changed before it is visible.
+        SessionLayout layout;
+        mutable std::mutex layout_mutex;
         long long started = 0;
     };
 
@@ -1161,6 +1168,74 @@ private:
             // person reading a page for ten minutes is not a dead connection.
             static_cast<void>(setReadTimeout(fd, 0));
             attach(fd, reader, fields, name);
+            return;
+        }
+        if (command == "layout") {
+            std::shared_ptr<Record> record;
+            {
+                std::lock_guard<std::mutex> lock(table_mutex_);
+                record = resolveLocked(name);
+            }
+            if (!record) {
+                static_cast<void>(detail::sendFrame(
+                    fd, MsgKind::Error,
+                    encodeFields({{"message", "no such session: " + name}})));
+                return;
+            }
+            std::string text;
+            {
+                std::lock_guard<std::mutex> lock(record->layout_mutex);
+                text = record->layout.toText();
+            }
+            static_cast<void>(detail::sendFrame(
+                fd, MsgKind::Layout, encodeFields({{"name", record->name}, {"text", text}})));
+            return;
+        }
+        if (command == "set-layout") {
+            std::shared_ptr<Record> record;
+            {
+                std::lock_guard<std::mutex> lock(table_mutex_);
+                record = resolveLocked(name);
+            }
+            if (!record) {
+                static_cast<void>(detail::sendFrame(
+                    fd, MsgKind::Error,
+                    encodeFields({{"message", "no such session: " + name}})));
+                return;
+            }
+            const std::string text = fieldValue(fields, "text");
+            // Said out loud rather than read as "the default arrangement, please": empty
+            // words parse into a window holding a pane, which is a thing to say but not a
+            // thing anybody means by sending nothing.
+            if (text.find_first_not_of(" \t\r\n") == std::string::npos) {
+                static_cast<void>(detail::sendFrame(
+                    fd, MsgKind::Error,
+                    encodeFields({{"message", "no arrangement in those words"}})));
+                return;
+            }
+            // Read whole before anything is replaced. Half a layout accepted, with the
+            // rest of it dropped, is a session quietly rearranged into something nobody
+            // asked for — so the complaints come back instead, and the session goes on
+            // carrying what it had.
+            std::vector<std::string> problems;
+            const SessionLayout replacement = SessionLayout::fromText(text, problems);
+            if (!problems.empty()) {
+                std::string why;
+                for (const std::string& problem : problems) {
+                    if (!why.empty())
+                        why += "; ";
+                    why += problem;
+                }
+                static_cast<void>(
+                    detail::sendFrame(fd, MsgKind::Error, encodeFields({{"message", why}})));
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(record->layout_mutex);
+                record->layout = replacement;
+            }
+            static_cast<void>(detail::sendFrame(
+                fd, MsgKind::Ack, encodeFields({{"what", "layout"}})));
             return;
         }
         if (command == "shutdown") {

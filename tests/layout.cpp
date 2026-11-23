@@ -400,6 +400,17 @@ int main() {
         expect("so a saved arrangement really is the arrangement again",
                text.find("window main") != std::string::npos &&
                    text.find("window build") != std::string::npos);
+
+        // A file that names a tab and says nothing about its panes is somebody starting one
+        // by hand. The name is the part they typed, so it is the part that has to survive;
+        // and a tab with nothing under it is still a tab with a shell to put somewhere.
+        problems.clear();
+        const SessionLayout named_only = SessionLayout::fromText("window notes\n", problems);
+        expect("a tab named with nothing under it is no complaint", problems.empty());
+        expect("and keeps the name that was typed for it",
+               named_only.count() == 1 && named_only.windows[0].name == "notes");
+        expect("and has somewhere to put the shell",
+               named_only.windows[0].layout.paneCount() == 1);
     }
 
     {

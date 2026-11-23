@@ -388,11 +388,28 @@ The order, and the reason each step is where it is:
    titles, zooming one pane to fill the view, a layout file, `pipe-pane`-style logging.
    `kai-term send ID TEXT` is already `send-keys`.
 
-Two things this does not decide yet, and both want a conversation rather than a default: the
-shape of the layout record (a tree of splits, which is what falls out of how panes are drawn,
-or a fixed grid with a name), and whether a tab *is* a session or a window of a session that
-itself holds panes. The second one decides what `kai-term attach` shows when the thing you
-attach to has three tabs.
+**Step 1 is built, 2026-11-23.** `src/session/layout.hpp` is the record: a tree of splits per
+tab, each branch naming which way it divides and what share lies to the left of or above the
+divider, and a session holding its tabs and which one is showing. It writes itself as words
+and reads those words back, which is what makes one shape serve as a preset file, as the
+answer to `kai-term layout`, and as a wire message, instead of three. The two questions this
+section left open were answered by building it: the shape is a tree of splits, because a
+divider being dragged is a share moving between two areas and a fixed grid cannot say that;
+and a tab is a window *inside* a session (Kaida, 2026-11-21), so attaching to a session with
+three tabs arrives at the tab that was showing rather than whichever was made first.
+
+The daemon holds one per session and answers for it — `command=layout` reads it,
+`command=set-layout` replaces it, and both are on the command line as `kai-term layout ID`
+and `kai-term set-layout ID < FILE`. A whole arrangement is read before any of it is applied,
+so a file with a typo in it is refused and names the line, and the session keeps what it had.
+Nothing on screen follows the arrangement yet; step 2 is the window taking its panes from
+here, which is also what `dividerRects()` is for.
+
+The size of a session went with it: **the smallest view wins**, retiring the rule the daemon
+had from the beginning, that the last view to speak decides. Two windows on one session used
+to reflow it every time the other was touched, and a session stayed small for every window
+after the small one that closed. Nothing looking is not a reason to resize, so a session with
+no views keeps the size it had.
 
 - **A config file, built 2026-11-19** (`src/config/config.hpp`, tested headless in
   `tests/config.cpp` and wired in `tests/app_window.cpp`). key=value, comments allowed,

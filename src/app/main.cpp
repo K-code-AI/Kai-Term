@@ -23,10 +23,11 @@ static void print_help()
 // `kai-term help` should get a page rather than a window.
 static bool is_session_verb(std::string_view word)
 {
-    static const std::string_view verbs[] = {"list",   "new",     "attach", "detach",
-                                             "save",   "send",    "kill",   "start",
-                                             "shutdown", "serve", "session", "open",
-                                             "help"};
+    static const std::string_view verbs[] = {"list",       "new",     "attach",
+                                             "detach",     "save",    "send",
+                                             "kill",       "layout",  "set-layout",
+                                             "start",      "shutdown", "serve",
+                                             "session",    "open",    "help"};
     for (const std::string_view verb : verbs)
         if (word == verb)
             return true;

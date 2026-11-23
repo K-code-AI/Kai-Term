@@ -767,6 +767,10 @@ struct SessionLayout {
         size_t start = 0;
         std::string chunk;
         std::string name;
+        // Whether a `window` line has been read whose body has not been turned into a tab
+        // yet. A tab and its panes are separate lines, so "has nothing under it" and "has
+        // not got anything under it yet" look the same until the header is remembered.
+        bool open = false;
         auto flush = [&]() {
             WindowLayout w;
             w.name = name;
@@ -774,6 +778,7 @@ struct SessionLayout {
             out.windows.push_back(std::move(w));
             chunk.clear();
             name.clear();
+            open = false;
         };
         while (start <= all.size()) {
             const size_t end = all.find('\n', start);
@@ -788,15 +793,16 @@ struct SessionLayout {
             if (body.empty() || body.front() == '#')
                 continue;
             if (body == "window" || body.rfind("window ", 0) == 0) {
-                if (!chunk.empty())
+                if (!chunk.empty() || open)
                     flush();
                 name = trimLayout(body.substr(6));
+                open = true;
                 continue;
             }
             chunk += line;
             chunk += '\n';
         }
-        if (!chunk.empty())
+        if (!chunk.empty() || open)
             flush();
         if (out.windows.empty())
             out.windows.push_back(WindowLayout{});

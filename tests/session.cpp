@@ -213,6 +213,45 @@ bool settles(const std::string& name, int rows, int cols) {
     return false;
 }
 
+// What a session's arrangement is, and a new one for it to carry. Both are one-shot control
+// commands, the same shape as `list`: say what you want in the hello, read the answer, hang
+// up. Nothing draws the arrangement yet, which is the point of asking for it first: every
+// later step is a client of the record the daemon holds.
+bool askLayout(const std::string& name, std::string& text, std::string* error = nullptr) {
+    TestClient client;
+    if (!client.connect() || !client.hello({{"command", "layout"}, {"name", name}})) {
+        if (error)
+            *error = "cannot ask the daemon";
+        return false;
+    }
+    Frame reply;
+    if (!client.reply(reply)) {
+        if (error)
+            *error = "the daemon said nothing";
+        return false;
+    }
+    if (reply.kind != MsgKind::Layout) {
+        if (error)
+            *error = fieldValue(decodeFields(reply.body), "message", "refused");
+        return false;
+    }
+    text = fieldValue(decodeFields(reply.body), "text", "");
+    return true;
+}
+
+std::string giveLayout(const std::string& name, const std::string& text) {
+    TestClient client;
+    if (!client.connect() ||
+        !client.hello({{"command", "set-layout"}, {"name", name}, {"text", text}}))
+        return "cannot reach the daemon";
+    Frame reply;
+    if (!client.reply(reply))
+        return "the daemon said nothing";
+    if (reply.kind == MsgKind::Ack)
+        return "";
+    return fieldValue(decodeFields(reply.body), "message", "refused");
+}
+
 // Attach and leave the client connected; the caller decides when it goes away.
 bool attach(TestClient& client, const std::string& name, int rows, int cols,
             std::string& snapshot, std::string* error = nullptr) {
@@ -560,6 +599,55 @@ int main() {
             if (!still_there)
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+
+    {
+        // The arrangement a session carries, which is step 1 of replacing tmux: the session
+        // holds where the work is, not the window that happens to be showing it. Nothing
+        // draws this yet — everything after is a client of it, which is why it comes first.
+        std::string text;
+        expect("a session has an arrangement from the moment it exists",
+               createSession("arranged") && askLayout("arranged", text));
+        expect("a session nobody has split is one window holding one pane",
+               text == "window window-1\n  pane\n");
+
+        std::string message = giveLayout(
+            "arranged", "window build\nsplit left-right 0.5\n  pane\n  pane\n");
+        expect("an arrangement can be handed to a session (" + message + ")", message.empty());
+        expect("and reads back as the same arrangement",
+               askLayout("arranged", text) && text ==
+                   "window build\n  split left-right 0.500000\n    pane\n    pane\n");
+
+        // Tabs travel with the session, so `attach` from a tty arrives at the tab that was
+        // showing rather than whichever was made first.
+        message = giveLayout("arranged",
+                             "window build\npane\n\nwindow logs\nsplit up-down 0.25\n  pane\n  pane\n");
+        expect("a session can carry more than one tab (" + message + ")", message.empty());
+        expect("and both of them come back",
+               askLayout("arranged", text) && text.find("window build") != std::string::npos &&
+                   text.find("window logs") != std::string::npos);
+
+        // The words are the record's only shape, so a typo has to be a refusal at the door
+        // rather than a session quietly rearranged into something nobody asked for.
+        message = giveLayout("arranged", "window x\nsplit sideways\n  pane\n  pane\n");
+        expect("a split that is not a direction is refused (" + message + ")",
+               !message.empty() && message.find("left-right") != std::string::npos);
+        expect("and the arrangement that was there is still there",
+               askLayout("arranged", text) && text.find("window logs") != std::string::npos);
+        message = giveLayout("arranged", "window x\nsplit left-right 1.5\n  pane\n  pane\n");
+        expect("so is a share that is not a share (" + message + ")",
+               !message.empty() && message.find("between 0 and 1") != std::string::npos);
+        message = giveLayout("arranged", "");
+        expect("and so is nothing at all (" + message + ")", !message.empty());
+
+        expect("a session that is not there is said so", !askLayout("nowhere", text));
+
+        TestClient tidying;
+        if (tidying.connect()) {
+            static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "arranged"}}));
+            Frame ack;
+            static_cast<void>(tidying.reply(ack));
         }
     }
 
