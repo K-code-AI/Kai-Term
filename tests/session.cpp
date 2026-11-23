@@ -1066,6 +1066,34 @@ int main() {
                        .find("STILL-HERE") != std::string::npos;
                }());
 
+        // A place shown on its own fills the window. The cells belong to the view where the
+        // places share the screen; a shell told the width of the cell it would have side by
+        // side wraps its lines at forty columns in a window ninety wide, which is what makes
+        // a prompt look like it is shrinking for no reason at all. (The window is thirty
+        // lines by ninety columns from the resize above.)
+        static_cast<void>(window.send(MsgKind::NewPane));
+        expect("a second place is made to measure", await_tabs(window, 2).size() > 0);
+        // What the program inside its own pane says the terminal measures, which is the only
+        // width that decides where the lines it prints wrap.
+        auto stty_size = [&window]() {
+            static_cast<void>(window.send(MsgKind::Data, "clear; stty size\n"));
+            const std::string text = TestClient::render(window.waitFor("30 ", 4000), 30, 90);
+            const std::size_t at = text.rfind("30 ");
+            return at == std::string::npos ? std::string("nothing") : text.substr(at, 5);
+        };
+        static_cast<void>(
+            window.send(MsgKind::SetViewMode, encodeFields({{"mode", "tabs"}})));
+        expect("the session is looked at one place at a time", tabs_say(window, 2, "tabs"));
+        expect("and the place being looked at is as wide as the window (stty: " + stty_size() +
+                   ")",
+               stty_size() == "30 90");
+        static_cast<void>(
+            window.send(MsgKind::SetViewMode, encodeFields({{"mode", "side-by-side"}})));
+        expect("the session is looked at side by side", tabs_say(window, 2, "side-by-side"));
+        const std::string shared = stty_size();
+        expect("and the place takes only the width it now has to share (stty: " + shared + ")",
+               shared.starts_with("30 ") && shared != "30 90");
+
         TestClient tidying;
         if (tidying.connect()) {
             static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "tab-keys"}}));

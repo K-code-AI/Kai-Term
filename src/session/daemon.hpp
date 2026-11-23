@@ -953,8 +953,22 @@ private:
     // program in the session.
     void reconcileShells(const std::shared_ptr<Record>& record) {
         const std::vector<int> leaves = record->layout.layout.panes();
-        const std::vector<CellRect> cells =
+        bool one_at_a_time = false;
+        {
+            std::lock_guard<std::mutex> lock(record->layout_mutex);
+            one_at_a_time = record->layout.mode == ViewMode::Tabs;
+        }
+        // Looked at one at a time, every place fills the window, because the window is not
+        // sharing itself with anything: a shell told the width of the cell it would have side
+        // by side wraps its lines at forty-five columns in a window ninety wide, and a person
+        // watching it sees a prompt that has started shrinking for no reason they can see.
+        // The cells are the arrangement for the view where the places do share the screen.
+        const CellRect whole{0, 0, record->rows.load(), record->cols.load()};
+        const std::vector<CellRect> laid_out =
             record->layout.layout.rects(record->rows.load(), record->cols.load());
+        std::vector<CellRect> cells = one_at_a_time
+                                          ? std::vector<CellRect>(leaves.size(), whole)
+                                          : laid_out;
 
         std::vector<std::shared_ptr<Record::Shell>> fresh;
         std::vector<std::shared_ptr<Record::Shell>> retired;
@@ -1495,6 +1509,11 @@ private:
                         std::lock_guard<std::mutex> lock(record->layout_mutex);
                         record->layout.mode = mode;
                     }
+                    // The sizes go with the view: places that were sharing the window take it
+                    // whole, and places that had it to themselves give most of it back. This
+                    // is also what tells the programs inside, since a program asks the
+                    // terminal how wide it is rather than watching the window.
+                    reconcileShells(record);
                     announceTabs(record);
                     break;
                 }
