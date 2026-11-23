@@ -2117,9 +2117,23 @@ public:
                 const QRectF slot(grid_pad + edges[pane] * bar_w, grid_pad,
                                   (edges[pane + 1] - edges[pane]) * bar_w, strip);
                 const bool looked_at = pane / 2 == tab_focused_;
-                if (looked_at)
+                if (looked_at) {
                     p.fillRect(slot, ground(default_bg, 110));
-                p.setPen(ink(theme_.foreground, looked_at ? 255 : 140));
+                    // The accent, which is the colour a dialog puts on the answer its focus
+                    // is on: the one colour in a theme that means "here", and which place a
+                    // window is looking at is precisely the thing worth saying out loud. A
+                    // lit rectangle of grey says only that something is selected, which every
+                    // selected row everywhere already says.
+                    const QColor accent_ink(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+                    p.fillRect(slot, QColor(accent_ink.red(), accent_ink.green(),
+                                            accent_ink.blue(), 46));
+                    p.setPen(QPen(accent_ink, 2.0));
+                    p.drawLine(QPointF(slot.left(), slot.bottom() - 1.0),
+                               QPointF(slot.right(), slot.bottom() - 1.0));
+                    p.setPen(accent_ink);
+                } else {
+                    p.setPen(ink(theme_.foreground, 140));
+                }
                 p.drawText(slot, Qt::AlignCenter, QString::number(pane / 2 + 1));
             }
             // A rule under the bar, so the strip reads as something the grid sits on

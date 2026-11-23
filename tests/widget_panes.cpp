@@ -8,6 +8,7 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QColor>
 #include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -364,6 +365,24 @@ int main(int argc, char** argv) {
         pump(60);
         expect("and a bar whose sizes do not match its places is drawn even",
                qAbs(w.tabEdges()[1] - 1.0 / 3.0) < 0.001);
+        // The place this window is looking at is marked in the theme's accent — the same
+        // colour a dialog puts on the answer its focus is on, and the one colour in a theme
+        // that means "here".
+        {
+            pump(120);
+            const QImage bar = w.grab().toImage();
+            int accent_pixels = 0;
+            const int bar_bottom = static_cast<int>(w.cellTopLeft(0, 0).y());
+            for (int y = 0; y < bar_bottom; ++y)
+                for (int x = 0; x < bar.width(); x += 2) {
+                    const QColor c = bar.pixelColor(x, y);
+                    if (c.blue() > c.red() + 30 && c.blue() > 120)
+                        ++accent_pixels;
+                }
+            expect("the place being looked at is marked in the accent colour",
+                   accent_pixels > 20);
+        }
+
         w.setTabBar(0, 0, false, {});
         pump(120);
     }
