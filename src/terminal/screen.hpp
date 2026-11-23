@@ -2141,17 +2141,24 @@ private:
                     saveCursor();
                 break;
             case 'u':
-                if (params == "?") {
-                    // The kitty keyboard protocol query. This terminal does not
-                    // implement that protocol; saying so with a reply of no flags
-                    // is what lets an application get on with starting up rather
-                    // than waiting for an answer that never comes. It is not a
-                    // cursor restore, whatever the final byte would otherwise mean.
+                // The kitty keyboard protocol, in every shape it arrives in:
+                // `CSI ? u` asks which flags are set, and `CSI u`, `CSI > Ps u`,
+                // `CSI = Ps u` and `CSI < u` push, set and pop them. This terminal
+                // implements none of that protocol, so the question is answered
+                // with no flags — which is what lets an application get on with
+                // starting up rather than waiting for an answer that never comes —
+                // and the rest are heard and dropped.
+                //
+                // What none of them is, in any shape, is a cursor restore. That
+                // sequence is `ESC 8`. Reading a `u` as one means that every time
+                // fish draws a prompt it silently teleports the cursor to wherever
+                // the last full-screen program left a saved cursor: nano saves one
+                // at the bottom of its screen, hands the screen back, and fish's
+                // question about keyboard flags prints its prompt forty rows down
+                // with a blank band where the shell's screen used to be. `reset`
+                // appears to fix it because `reset` forgets the saved cursor too.
+                if (params == "?")
                     response_out_ += "\x1b[?0u";
-                    break;
-                }
-                if (params.empty() || params[0] == '>' || params[0] == '=')
-                    restoreCursor();
                 break;
             case 'q': {
                 // DECSCUSR, `CSI Ps SP q`, picks the cursor shape. The space is an

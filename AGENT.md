@@ -1082,3 +1082,26 @@ test that hangs should still cost a test and not a machine.
   broken" has a second answer besides "the fix is wrong": `kai-term shutdown`, relaunch, ask
   again. Check which process is actually running the code before believing a reproduction —
   or an attempted fix — done against a daemon that predates the commit.
+- A negative experiment the user reports is the strongest data in the report, and the easiest
+  to argue with. `printf '\033[r'` did nothing to Kaida's broken screen, which meant the bug
+  was not a scroll region — and two scroll-region fixes went out anyway, because the theory
+  was comfortable and the broken screen looked the way a region problem looks. When the
+  user's own test contradicts the theory, drop the theory in that turn; every fix built on a
+  theory the user already falsified costs an hour and some of their patience.
+- Drive the real thing, at the speed a person works at. The stranded prompt vanished when
+  keys arrived in one burst and appeared every time when they arrived one at a time, because
+  the bug is a race between the shell's redraw and the program still holding the screen — a
+  burst is not a keyboard. The headless harness could not show it at any size or in any
+  shell; the answer came from a window in his own compositor with input paced and the byte
+  stream recorded. "Cannot reproduce" usually means "reproducing it wrong".
+- Trust the instrument before believing the data. The first byte trace printed digits where
+  the escape sequences should have been, and for a while it pointed at a parser fault that
+  the mangling had invented; dumping every byte as fixed-width hex is what made the real
+  culprit readable, and the culprit was one byte. A debug printer is part of the code under
+  test: write it the boring way and check it against a string whose bytes you already know.
+- "We do not implement that protocol" has to mean *do nothing*, not *do whatever the final
+  byte suggests in some other protocol*. The keyboard-protocol question was answered
+  correctly and then acted on: `u` also meant restore-cursor, so every prompt fish drew
+  teleported the cursor to wherever the last full-screen program had saved one. A question in
+  a byte stream changes state only if the implementation lets it, and the test for that is
+  the dull one — feed the question, assert that nothing moved.

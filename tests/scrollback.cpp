@@ -405,6 +405,44 @@ int main() {
         expectTrue("hard reset ends a synchronized block", !s.synchronizedOutput());
     }
 
+    // ---- A keyboard question must not be read as a cursor move -------------
+    // `CSI u` and its `>` and `=` forms are the kitty keyboard protocol's push,
+    // set and query, and fish asks one every time it draws a prompt. Restoring
+    // the cursor is `ESC 8` and nothing else. Reading the question as a restore
+    // was Kaida's stranded prompt, 2026-11-22: nano saved a cursor at the bottom
+    // of its screen, fish came back from it asking about keyboard flags, and the
+    // answer we were not asked for moved the cursor to where nano had left it —
+    // the prompt then printed forty rows below the command that ran nano.
+    {
+        kai::Screen s(6, 10);
+        s.feed("one\r\ntwo\r\nthree\r\n"); // cursor on row 3
+        s.feed("\x1b[s");                  // save it there
+        s.feed("\x1b[1;1H");               // and go back to the top
+
+        s.feed("\x1b[?u"); // the query form
+        expectTrue("a keyboard query leaves the cursor alone", s.cursorY() == 0);
+        expect("a keyboard query is answered with no flags", s.takeResponse(),
+               std::string("\x1b[?0u"));
+
+        s.feed("\x1b[=5u"); // fish's query, with the '=' marker
+        expectTrue("the '=' form leaves the cursor alone", s.cursorY() == 0);
+        s.feed("\x1b[>1u"); // push flags
+        expectTrue("the '>' form leaves the cursor alone", s.cursorY() == 0);
+        s.feed("\x1b[u"); // push, no parameters
+        expectTrue("a bare `CSI u` leaves the cursor alone", s.cursorY() == 0);
+        s.feed("\x1b[<u"); // pop flags
+        expectTrue("a pop leaves the cursor alone", s.cursorY() == 0);
+        s.feed("\x1b[5u"); // set flags by number
+        expectTrue("setting flags leaves the cursor alone", s.cursorY() == 0);
+
+        // The other half: the sequence that really does restore still does.
+        s.feed("\x1b[2;3H");
+        expectTrue("the cursor moved away from the saved spot", s.cursorY() == 1);
+        s.feed("\x1b""8");
+        expect("ESC 8 restores the saved cursor", std::to_string(s.cursorY()),
+               std::string("3"));
+    }
+
     if (failures == 0) {
         std::cout << "PASS: " << checks
                   << " scrollback, cursor-mode and mouse-mode checks passed\n";
