@@ -97,11 +97,6 @@ public:
     // A pane smaller than this is a pane you cannot read, and a divider that takes a whole
     // pane away is not a divider.
     static constexpr int kMinPaneCells = 1;
-    // The ratio's own limits, for a divider dragged with a pointer: a pane keeps some
-    // presence at the far end of a drag, because a pane that vanished with no obvious way
-    // back looks like a bug rather than a choice.
-    static constexpr double kMinRatio = 0.05;
-    static constexpr double kMaxRatio = 0.95;
 
     // A window that has never been split: one pane, focused, filling whatever it is given.
     Layout() {
@@ -189,7 +184,7 @@ public:
         if (above == kNil)
             root_ = branch_at;
         else
-            reparent(at, branch_at);
+            reparentChild(above, at, branch_at);
         focused_ = fresh.pane; // the pane somebody just asked for is the one they want
         return fresh.pane;
     }
@@ -210,7 +205,7 @@ public:
         if (root_ == parent)
             root_ = sibling;
         else
-            reparent(parent, sibling);
+            reparentChild(parentOf(parent), parent, sibling);
         if (focused_ == pane) {
             const std::vector<int> left = panes();
             focused_ = left.empty() ? kNil : left.front();
@@ -268,6 +263,19 @@ public:
                 return all[i];
         }
         return CellRect{};
+    }
+
+    // Where the dividers are, as cells of the screen. The window has to draw them and the
+    // pointer has to know when it is on one, and a check that adds the screen up needs them
+    // too: a divider is the one cell that belongs to no pane, which is not the same as
+    // belonging to nothing. Computed in the same walk that places the panes, so a divider
+    // cannot disagree with the panes either side of it.
+    std::vector<CellRect> dividerRects(int rows, int cols) const {
+        std::vector<CellRect> out;
+        std::vector<CellRect> by_node(nodes_.size(), CellRect{});
+        if (rows > 0 && cols > 0)
+            rectsNode(root_, CellRect{0, 0, rows, cols}, by_node, &out);
+        return out;
     }
 
     // How many cells the dividers take at this size — the difference between a tiled screen
@@ -428,8 +436,18 @@ private:
             second = 0;
             return;
         }
-        const int got = std::clamp(static_cast<int>(std::floor(shared * clampRatio(ratio))), 1,
-                                   shared - 1);
+        // Draw what the record says. The bounds on a ratio belong where a ratio is
+        // accepted — a split asked for, a preset read in — and not here: a divider dragged
+        // near the edge stores the ratio that puts it there, and clamping it again on the
+        // way to the screen would leave the record describing one divider and the window
+        // drawing another, which is a lie that survives a save and reload. A ratio that is
+        // not a fraction at all is nobody's intention, so it lands in the middle.
+        const double honest = (ratio > 0.0 && ratio < 1.0) ? ratio : 0.5;
+        // Floored, so an even split of an odd extent gives the smaller half to the pane on
+        // the left or the top: 80 columns are 39, a line, and 40, which is how every other
+        // terminal counts them.
+        const int got = std::clamp(static_cast<int>(std::floor(shared * honest)), kMinPaneCells,
+                                   shared - kMinPaneCells);
         first = got;
         second = shared - got;
     }
@@ -437,19 +455,32 @@ private:
     // A divider only exists where there is something on both sides of it.
     static int dividerCost(int extent) { return extent >= 2 * kMinPaneCells + 1 ? 1 : 0; }
 
+    // A ratio is the share of an area that lies on one side of a divider, so the only
+    // bounds it can have are the ones that make it a share at all. How thin a pane may get
+    // is a question about cells, answered where the cells are counted (`kMinPaneCells`) and
+    // not here: a divider dragged near the edge has to be able to say where it is, or the
+    // record describes one divider and the window draws another.
     static double clampRatio(double ratio) {
-        if (!(ratio > 0.0))
+        if (!(ratio > 0.0 && ratio < 1.0))
             return 0.5;
-        return std::clamp(ratio, kMinRatio, kMaxRatio);
+        return ratio;
     }
 
     // ---- walking the tree ----------------------------------------------------
-    int nodeIndexOfPane(int pane) const {
-        for (size_t i = 0; i < nodes_.size(); ++i) {
-            if (nodes_[i].leaf && nodes_[i].pane == pane)
-                return static_cast<int>(i);
-        }
-        return kNil;
+    // Only the panes still on the tree. A closed pane's node stays in the array — a
+    // number is never handed out twice, so its number is gone for good — and answering
+    // from the array would keep saying that a pane which is not on the screen anywhere
+    // still exists.
+    int nodeIndexOfPane(int pane) const { return nodeIndexOfPaneFrom(root_, pane); }
+
+    int nodeIndexOfPaneFrom(int at, int pane) const {
+        if (at == kNil)
+            return kNil;
+        const Node& n = nodes_[static_cast<size_t>(at)];
+        if (n.leaf)
+            return n.pane == pane ? at : kNil;
+        const int first = nodeIndexOfPaneFrom(n.first, pane);
+        return first != kNil ? first : nodeIndexOfPaneFrom(n.second, pane);
     }
 
     void collect(int at, std::vector<int>& out) const {
@@ -477,35 +508,47 @@ private:
         collectRects(n.second, by_node, out);
     }
 
-    int parentOf(int at) const {
-        for (size_t i = 0; i < nodes_.size(); ++i) {
-            const Node& n = nodes_[i];
-            if (!n.leaf && (n.first == at || n.second == at))
-                return static_cast<int>(i);
-        }
-        return kNil;
-    }
+    int parentOf(int at) const { return parentOfFrom(root_, kNil, at); }
 
-    // Hand `from`'s place to `to`. The node taking it is skipped: the branch that was just
-    // made to hold the split pane has that pane as a child, and rewriting its own pointer
-    // to itself is a tree with a loop where a pane used to be.
-    void reparent(int from, int to) {
-        for (Node& n : nodes_) {
-            if (&n == &nodes_[static_cast<size_t>(to)])
-                continue;
-            if (n.first == from)
-                n.first = to;
-            if (n.second == from)
-                n.second = to;
-        }
-    }
-
-    void rectsNode(int at, const CellRect& area, std::vector<CellRect>& out) const {
+    // Only branches still on the tree have a child. A closed pane's parent stays in the
+    // array for good — a pane number is never handed out twice — and a detached branch that
+    // still points at a live pane would answer as its parent a second time: the split made
+    // for that pane would hang off the dead branch and never be reachable again.
+    int parentOfFrom(int at, int parent, int target) const {
+        if (at == kNil)
+            return kNil;
+        if (at == target)
+            return parent;
         const Node& n = nodes_[static_cast<size_t>(at)];
-        if (n.leaf) {
-            out[static_cast<size_t>(at)] = area;
+        if (n.leaf)
+            return kNil;
+        const int in_first = parentOfFrom(n.first, at, target);
+        return in_first != kNil ? in_first : parentOfFrom(n.second, at, target);
+    }
+
+    // Hand `from`'s place under `parent` to `to`. The parent is named rather than hunted
+    // for: the branch that was just made to hold a split pane has that pane as a child too,
+    // and rewriting that pointer is a tree with a loop where a pane used to be.
+    void reparentChild(int parent, int from, int to) {
+        if (parent == kNil)
             return;
-        }
+        Node& n = nodes_[static_cast<size_t>(parent)];
+        if (n.first == from)
+            n.first = to;
+        else if (n.second == from)
+            n.second = to;
+    }
+
+    void rectsNode(int at, const CellRect& area, std::vector<CellRect>& out,
+                   std::vector<CellRect>* dividers = nullptr) const {
+        const Node& n = nodes_[static_cast<size_t>(at)];
+        // Every node keeps the area it was handed, not just the panes. A split is a place
+        // too — it is the place the divider sits in — and asking a branch for its rect has
+        // to answer with that area or the divider in it counts as nothing and a drag of it
+        // finds no room to move in.
+        out[static_cast<size_t>(at)] = area;
+        if (n.leaf)
+            return;
         CellRect a = area;
         CellRect b = area;
         if (n.split == Split::LeftRight) {
@@ -515,6 +558,8 @@ private:
             a.cols = first;
             b.left = area.left + first + dividerCost(area.cols);
             b.cols = second;
+            if (dividers != nullptr && dividerCost(area.cols) > 0 && first > 0 && second > 0)
+                dividers->push_back(CellRect{area.top, area.left + first, area.rows, 1});
         } else {
             int first = 0;
             int second = 0;
@@ -522,12 +567,14 @@ private:
             a.rows = first;
             b.top = area.top + first + dividerCost(area.rows);
             b.rows = second;
+            if (dividers != nullptr && dividerCost(area.rows) > 0 && first > 0 && second > 0)
+                dividers->push_back(CellRect{area.top + first, area.left, 1, area.cols});
         }
         if (!b.empty())
-            rectsNode(n.second, b, out);
+            rectsNode(n.second, b, out, dividers);
         else
             out[static_cast<size_t>(n.second)] = CellRect{}; // no room left: empty, not wrong
-        rectsNode(n.first, a, out);
+        rectsNode(n.first, a, out, dividers);
     }
 
     CellRect rectOfNode(int at, int rows, int cols) const {
@@ -623,8 +670,12 @@ private:
         }
         std::ostringstream ratio;
         ratio.setf(std::ios::fixed);
-        ratio.precision(3);
-        ratio << n.ratio;
+        ratio.precision(6);
+        // Rounded *up* at the sixth place rather than to nearest. The split floors, so a
+        // ratio written a hair under the stored one divides to one cell fewer on the way
+        // back in, and a divider that shifts a cell when a preset is reloaded is a preset
+        // that does not save the arrangement.
+        ratio << std::ceil(n.ratio * 1000000.0) / 1000000.0;
         text << pad << "split " << textFor(n.split) << " " << ratio.str() << "\n";
         writeNode(n.first, depth + 1, text);
         writeNode(n.second, depth + 1, text);

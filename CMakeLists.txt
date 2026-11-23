@@ -195,6 +195,10 @@ add_executable(kai-term-close-prompt tests/close_prompt.cpp)
 add_test(NAME close-prompt COMMAND kai-term-close-prompt)
 add_executable(kai-term-config tests/config.cpp)
 add_test(NAME config COMMAND kai-term-config)
+# The session's layout record: a tree of splits, Qt-free, so the arrangement a tty attach
+# sees is tested without anyone having to draw it.
+add_executable(kai-term-layout tests/layout.cpp)
+add_test(NAME layout COMMAND kai-term-layout)
 add_executable(kai-term-theme-picker tests/theme_picker.cpp)
 add_test(NAME theme-picker COMMAND kai-term-theme-picker)
 add_executable(kai-term-settings-picker tests/settings_picker.cpp)
@@ -261,6 +265,7 @@ set(KAI_TEST_TARGETS
     kai-term-app-window
     kai-term-close-prompt
     kai-term-config
+    kai-term-layout
     kai-term-theme-picker
     kai-term-settings-picker
     kai-term-color-mixer
