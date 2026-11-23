@@ -451,8 +451,11 @@ public:
         auto record = std::make_shared<Record>();
         record->id = session_id;
         record->name = spec.name;
-        record->pty = std::move(pty);
-        record->screen = std::make_unique<Screen>(spec.rows, spec.cols);
+        auto shell = std::make_shared<Record::Shell>();
+        shell->pty = std::move(pty);
+        shell->screen = std::make_unique<Screen>(spec.rows, spec.cols);
+        shell->rows = spec.rows;
+        shell->cols = spec.cols;
         // How far back a session remembers, from the same file the window reads.
         // The daemon is where the history a snapshot is built from actually lives,
         // so a deep scrollback means nothing unless it is honoured here too: a view
@@ -465,7 +468,10 @@ public:
             return config.scrollback ? static_cast<std::size_t>(*config.scrollback)
                                      : Screen::kMaxHistory;
         }();
-        record->screen->setHistoryLimit(history_limit);
+        shell->screen->setHistoryLimit(history_limit);
+        // The one leaf of a new session's tree is pane 0, and it is the session's first
+        // shell. Every leaf the person adds later gets one of these the same way.
+        record->shells.push_back(shell);
         record->rows = spec.rows;
         record->cols = spec.cols;
         record->started = static_cast<long long>(std::time(nullptr));
@@ -492,7 +498,7 @@ public:
         had_session_ = true;
         if (created_id)
             *created_id = record->id;
-        std::thread([this, record] { readSession(record); }).detach();
+        std::thread([this, record, shell] { readShell(record, shell); }).detach();
         return true;
     }
 
@@ -527,9 +533,10 @@ public:
             std::lock_guard<std::mutex> lock(table_mutex_);
             record = resolveLocked(name);
         }
-        if (!record || record->dead)
+        const std::shared_ptr<Record::Shell> shell = record ? record->onlyShell() : nullptr;
+        if (!record || record->dead || !shell)
             return false;
-        return record->pty->write(text);
+        return shell->pty->write(text);
     }
 
     // Keep this one. A window's shell is unsaved until a person says otherwise, and
@@ -661,9 +668,31 @@ private:
         // shells inside open windows: kept alive by the daemon so a crash cannot take
         // them, but destroyed when the window says it is closing.
         std::atomic<bool> saved{true};
-        std::unique_ptr<Pty> pty;
-        std::unique_ptr<Screen> screen;
-        mutable std::mutex screen_mutex;
+        // One pane's shell: a program, the screen it is writing, and the size it was
+        // told. A session used to *be* one of these; a pane is a shell (Kaida, 2026-11-23),
+        // so a session holds one per pane and this is the thing that grows and shrinks when
+        // the arrangement does.
+        struct Shell {
+            int pane = 0; // the leaf of the session's tree this shell was made for
+            std::unique_ptr<Pty> pty;
+            std::unique_ptr<Screen> screen;
+            mutable std::mutex screen_mutex;
+            std::atomic<int> rows{24};
+            std::atomic<int> cols{80};
+            std::atomic<bool> dead{false};
+        };
+
+        // One shell per pane. Exactly one today, because the session's tree has one leaf
+        // until somebody splits it, which is why the accessor below is allowed to mean "the"
+        // shell: the moment the tree can hold a second leaf, callers name the one they want.
+        std::vector<std::shared_ptr<Shell>> shells;
+        mutable std::mutex shells_mutex;
+
+        std::shared_ptr<Shell> onlyShell() const {
+            std::lock_guard<std::mutex> lock(shells_mutex);
+            return shells.empty() ? nullptr : shells.front();
+        }
+
         std::vector<int> clients;
         // What each view looking at this session said its window is, by descriptor. The
         // session's size is worked out from all of them together — see `settleSessionSize`
@@ -721,14 +750,17 @@ private:
         // The reader thread reaps, so by the time anyone asks the child may be gone;
         // a listing that shows the pid of something already reaped would be a pid
         // that could belong to anything by then.
-        if (record.pty->alive())
-            info.pid = record.pty->child();
+        const std::shared_ptr<Record::Shell> shell = record.onlyShell();
+        if (shell && shell->pty && shell->pty->alive())
+            info.pid = shell->pty->child();
         info.id = record.id;
         info.saved = record.saved;
         // Asked for on every listing, which is how often anyone looks. Asking the
         // kernel costs a syscall and answers a question no amount of bookkeeping
         // inside the daemon could: whether something is running out there right now.
-        info.foreground = foregroundJob(record.pty->master(), record.pty->child());
+        info.foreground = shell && shell->pty
+                              ? foregroundJob(shell->pty->master(), shell->pty->child())
+                              : std::string();
         return info;
     }
 
@@ -749,14 +781,18 @@ private:
 
     void halt(Record& record) {
         record.stopping = true;
-        if (record.pty)
-            record.pty->terminate();
+        std::lock_guard<std::mutex> lock(record.shells_mutex);
+        for (const std::shared_ptr<Record::Shell>& shell : record.shells)
+            if (shell->pty)
+                shell->pty->terminate();
     }
 
-    void readSession(std::shared_ptr<Record> record) {
+    // Reads one shell to the end. Every pane has a thread doing this for it, which is what
+    // lets one pane's program block, print, or exit without holding up its neighbours.
+    void readShell(std::shared_ptr<Record> record, std::shared_ptr<Record::Shell> shell) {
         char buf[16384];
         for (;;) {
-            const ssize_t got = record->pty->read(buf, sizeof(buf));
+            const ssize_t got = shell->pty->read(buf, sizeof(buf));
             if (got == 0 || (got < 0 && errno != EINTR))
                 break; // the shell closed the terminal, or it is gone
             if (got < 0)
@@ -765,10 +801,10 @@ private:
             std::string answer;
             std::vector<Screen::ClipboardRequest> copies;
             {
-                std::lock_guard<std::mutex> lock(record->screen_mutex);
-                record->screen->feed(chunk);
-                answer = record->screen->takeResponse();
-                copies = record->screen->takeClipboardRequests();
+                std::lock_guard<std::mutex> lock(shell->screen_mutex);
+                shell->screen->feed(chunk);
+                answer = shell->screen->takeResponse();
+                copies = shell->screen->takeClipboardRequests();
             }
             // The daemon is the terminal as far as the program inside is concerned, so
             // it is the daemon that has to answer when one asks what kind of terminal
@@ -778,7 +814,7 @@ private:
             // all. A view that attaches later must not answer these as well, or the
             // program gets two replies and takes the wrong one.
             if (!answer.empty())
-                static_cast<void>(record->pty->write(answer));
+                static_cast<void>(shell->pty->write(answer));
             for (const Screen::ClipboardRequest& request : copies) {
                 // Which clipboard it came from travels with it, so a view can put the
                 // text where the program asked for it to go.
@@ -794,14 +830,31 @@ private:
             }
             broadcast(*record, MsgKind::Data, std::string(chunk));
         }
-        static_cast<void>(record->pty->reap());
+        static_cast<void>(shell->pty->reap());
+        shell->dead = true;
+        // A session is over when its last pane is. With one pane that is every time, and
+        // with several it is the reason closing one pane's program must not be mistaken for
+        // the shell having exited: the others are still running.
+        bool last_one = false;
+        {
+            std::lock_guard<std::mutex> lock(record->shells_mutex);
+            last_one = true;
+            for (const std::shared_ptr<Record::Shell>& other : record->shells)
+                if (!other->dead)
+                    last_one = false;
+        }
+        if (!last_one) {
+            std::lock_guard<std::mutex> lock(record->shells_mutex);
+            shell->pty->closeMaster();
+            return;
+        }
         record->dead = true;
 
         // Tell the views before letting go, and wake them so they do not sit waiting
         // for output that will never come.
         const Fields exit_fields = {
-            {"code", std::to_string(record->pty->exitCode())},
-            {"signal", std::to_string(record->pty->exitSignal())},
+            {"code", std::to_string(shell->pty->exitCode())},
+            {"signal", std::to_string(shell->pty->exitSignal())},
         };
         const std::string exit_body = encodeFields(exit_fields);
         {
@@ -823,7 +876,7 @@ private:
         }
         // Closing here, on the thread that was reading, is the only point at which
         // nothing else can be waiting on that descriptor.
-        record->pty->closeMaster();
+        shell->pty->closeMaster();
     }
 
     void broadcast(Record& record, MsgKind kind, const std::string& body) {
@@ -885,10 +938,17 @@ private:
         // The pty first: a program inside asks the terminal for its size, so the
         // model should agree with what the program is about to be told, not with what
         // it was a moment ago.
-        record.pty->resize(rows, cols);
-        std::lock_guard<std::mutex> lock(record.screen_mutex);
-        record.screen->resize(rows, cols);
-        snapshot = screenSnapshot(*record.screen);
+        std::lock_guard<std::mutex> lock(record.shells_mutex);
+        for (const std::shared_ptr<Record::Shell>& shell : record.shells) {
+            shell->pty->resize(rows, cols);
+            shell->rows = rows;
+            shell->cols = cols;
+            std::lock_guard<std::mutex> screen_lock(shell->screen_mutex);
+            shell->screen->resize(rows, cols);
+            // One snapshot for the session while it has one shell; with several panes each
+            // one has its own screen to be shown again, and this loop will say which.
+            snapshot = screenSnapshot(*shell->screen);
+        }
         if (snapshot.empty())
             return;
         // Every view gets it, the one that asked included. A view that grew keeps a
@@ -928,8 +988,11 @@ private:
 
         std::string snapshot;
         {
-            std::lock_guard<std::mutex> lock(record->screen_mutex);
-            snapshot = screenSnapshot(*record->screen);
+            const std::shared_ptr<Record::Shell> shell = record->onlyShell();
+            if (shell) {
+                std::lock_guard<std::mutex> lock(shell->screen_mutex);
+                snapshot = screenSnapshot(*shell->screen);
+            }
         }
         const std::string welcome = encodeFields(encodeSessionInfo(describe(*record)));
         // Joining the list and being shown the screen happen under one lock, which is
@@ -989,9 +1052,14 @@ private:
         Frame frame;
         while (detail::nextFrame(fd, reader, frame)) {
             switch (frame.kind) {
-                case MsgKind::Data:
-                    static_cast<void>(record->pty->write(frame.body));
+                case MsgKind::Data: {
+                    // The pane this view is looking at, which until the window can show
+                    // more than one of them is the session's only pane.
+                    const std::shared_ptr<Record::Shell> shell = record->onlyShell();
+                    if (shell)
+                        static_cast<void>(shell->pty->write(frame.body));
                     break;
+                }
                 case MsgKind::Resize: {
                     const Fields fields = decodeFields(frame.body);
                     const int want_rows = std::stoi(fieldValue(fields, "rows", "0"));
