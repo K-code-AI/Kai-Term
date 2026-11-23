@@ -793,11 +793,28 @@ int main() {
             bool told = false;
             Frame frame;
             for (int attempt = 0; attempt < 80 && !told; ++attempt) {
-                while (joiner.reader.pop(frame))
-                    told = frame.kind == MsgKind::Tabs &&
-                           fieldValue(decodeFields(frame.body), "panes", "0") == "2";
-                if (!told)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                // Read before popping. The tab bar travels just after the screen, so on a
+                // quiet machine it is already in the buffer when the attach returns and on a
+                // busy one it is still on its way; a check that only looks at what has
+                // already arrived passes or fails depending on how loaded the machine is,
+                // which is not a fact about the daemon.
+                struct pollfd pfd {joiner.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 25) > 0) {
+                    char buf[8192];
+                    const ssize_t n = readSome(joiner.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        joiner.reader.append(
+                            std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                while (joiner.reader.pop(frame)) {
+                    // Set, never assigned: the tab bar is followed immediately by whatever
+                    // the shell is printing, and a check that lets the next frame answer the
+                    // question the tab bar already answered fails depending on how fast the
+                    // machine is.
+                    if (frame.kind == MsgKind::Tabs &&
+                        fieldValue(decodeFields(frame.body), "panes", "0") == "2")
+                        told = true;
+                }
             }
             expect("and is handed the tab bar as it arrives", told);
         }
@@ -1556,6 +1573,63 @@ int main() {
         expect("and pwd says the user's home", text.find(home) != std::string::npos);
         ::close(view.fd);
         view.fd = -1;
+    }
+
+    {
+        // A layout can be handed to a session whole, and a whole layout can be deeper than
+        // the window is wide: twenty columns divided four times over leaves rooms two columns
+        // across, then one, then none at all. A shell started in a room with no columns in it
+        // has a screen with no line in it, and the first character its program writes walks
+        // off the end of a vector — which does not close a pane politely. It takes the daemon
+        // down, and every window on every session with it.
+        expect("a session to crowd", createSession("crowded", 24, 20));
+        TestClient crowd;
+        std::string crowd_screen;
+        expect("with a view looking at it", attach(crowd, "crowded", 24, 20, crowd_screen));
+        // Six panes across twenty columns, divided one after another: the rooms get to two
+        // columns, then one, and the last division has nothing left to divide.
+        const std::string deep =
+            "split left-right\n"
+            "  split left-right\n"
+            "    split left-right\n"
+            "      split left-right\n"
+            "        split left-right\n"
+            "          pane\n"
+            "          pane\n"
+            "        pane\n"
+            "      pane\n"
+            "    pane\n"
+            "  pane\n"
+            "pane\n";
+        const std::string refused = giveLayout("crowded", deep);
+        // The reason has to be the one that is true — there is no room — because a person
+        // reading it needs to know to widen the window rather than send it again.
+        expect("an arrangement with no room in it is refused (said: " + refused + ")",
+               !refused.empty() && refused.find("no room") != std::string::npos);
+        expect("and the session is left carrying what it had",
+               listedPanes("crowded") == 1);
+        expect("the daemon is still standing", listedPanes("crowded") >= 1);
+        // The marker is written as two halves with nothing between them, so that the only
+        // place the whole word can appear is where the shell printed it. Typed at twenty
+        // columns the command itself wraps, and a check that accepts the echo of what it sent
+        // is checking that the terminal can repeat itself.
+        expect("the view is still looking at a program that answers",
+               [&crowd]() {
+                   static_cast<void>(crowd.send(MsgKind::Data, "echo AFTER-\"\"DEEP\n"));
+                   return TestClient::render(crowd.waitFor("AFTER-DEEP", 5000), 24, 20)
+                       .find("AFTER-DEEP") != std::string::npos;
+               }());
+        // And one that does fit is still taken: refusing what has no room must not turn into
+        // refusing to divide at all.
+        expect("an arrangement with room in it is still taken",
+               giveLayout("crowded",
+                          "split left-right\n"
+                          "  pane\n"
+                          "  pane\n")
+                   .empty());
+        expect("and the session runs the programs it was given", listedPanes("crowded") == 2);
+        ::close(crowd.fd);
+        crowd.fd = -1;
     }
 
     {

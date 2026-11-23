@@ -398,6 +398,31 @@ int main(int argc, char** argv) {
     expect("and a window shown after the screen arrived still paints it, without a keypress",
            lit > 200);
 
+    // A window too small for another place in it. The session answers "no" — and a window
+    // used to hear every "no" as "the session is over": it closed, and a window that closes
+    // because it was refused takes the session down with it when nothing else is looking at
+    // it. Kaida pressed Ctrl+Shift+N in a narrow window and called it a crash, which is
+    // exactly what it looks like from the outside.
+    SessionSpec cramped;
+    cramped.name = "cramped";
+    cramped.rows = 24;
+    cramped.cols = 2;
+    expect("a session two columns wide starts", daemon.create(cramped, error));
+    kai::TerminalWidget narrow(24, 2, std::make_unique<SessionBackend>("cramped", 24, 2));
+    narrow.resize(60, 300);
+    narrow.show();
+    pump(500);
+    narrow.newTab();
+    pump(700);
+    // Room is made afterwards so that something can be printed without it wrapping into
+    // ribbons across a two-column screen.
+    narrow.resize(700, 300);
+    pump(500);
+    static_cast<void>(daemon.type("cramped", "echo STILL-OPEN\n"));
+    expect("a window told there is no room is not told the session ended",
+           waitFor([&narrow] { return onScreen(narrow).find("STILL-OPEN") != std::string::npos; },
+                   6000));
+
     second.shutdown();
     daemon.stop();
     serving.join();

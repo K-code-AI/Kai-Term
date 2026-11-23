@@ -860,6 +860,12 @@ private:
     // One pane's worth of program, at the size its cell is.
     std::shared_ptr<Record::Shell> makeShell(Record& record, int slot, int rows, int cols) const {
         auto shell = std::make_shared<Record::Shell>();
+        // At least one line and one column, whatever the arrangement asked for. A screen
+        // with nothing in it is not a small terminal but a shape no program can be run in:
+        // the first character its program writes walks off the end of a vector, and that is
+        // not a pane failing quietly, it is the daemon going down with every session on it.
+        rows = std::max(1, rows);
+        cols = std::max(1, cols);
         shell->pane = slot;
         shell->pty = std::make_unique<Pty>(rows, cols, record.shell_program,
                                           record.working_directory, std::to_string(record.id));
@@ -958,8 +964,8 @@ private:
                 const int slot = static_cast<int>(record->shells.size());
                 const CellRect cell = static_cast<size_t>(slot) < cells.size()
                                           ? cells[static_cast<size_t>(slot)]
-                                          : CellRect{record->rows.load(), record->cols.load(),
-                                                     record->rows.load(), record->cols.load()};
+                                          : CellRect{0, 0, record->rows.load(),
+                                                     record->cols.load()};
                 fresh.push_back(makeShell(*record, slot, cell.rows, cell.cols));
                 record->shells.push_back(fresh.back());
             }
@@ -1395,7 +1401,11 @@ private:
                     if (made < 0) {
                         static_cast<void>(detail::sendFrame(
                             fd, MsgKind::Error,
-                            encodeFields({{"reason", "that place cannot be divided"}})));
+                            encodeFields({{"message",
+                                           "no room in a " + std::to_string(record->rows.load()) +
+                                               "x" + std::to_string(record->cols.load()) +
+                                               " window to divide that pane any further. "
+                                               "Widen the window first."}})));
                         break;
                     }
                     reconcileShells(record);
@@ -1643,11 +1653,36 @@ private:
             const std::string asked = fieldValue(fields, "pane", "-1");
             const bool numeric = asked.size() > 0 &&
                                  asked.find_first_not_of("-0123456789") == std::string::npos;
-            if (!type(name, fieldValue(fields, "text"),
-                      numeric ? std::atoi(asked.c_str()) : -1)) {
-                static_cast<void>(detail::sendFrame(
-                    fd, MsgKind::Error,
-                    encodeFields({{"message", "the session would not take the text"}})));
+            const int pane_asked_for = numeric ? std::atoi(asked.c_str()) : -1;
+            if (!type(name, fieldValue(fields, "text"), pane_asked_for)) {
+                std::string why = "the session would not take the text";
+                if (pane_asked_for >= 0) {
+                    // Saying how many panes there are, and from where they are counted, is
+                    // the difference between a typo and a session smaller than the script
+                    // thought it was. Whoever reads this is holding a number that did not
+                    // work, and "the session would not take the text" does not tell them
+                    // whether to fix the number or make another pane first.
+                    std::shared_ptr<Record> target;
+                    {
+                        std::lock_guard<std::mutex> lock(table_mutex_);
+                        target = resolveLocked(name);
+                    }
+                    if (!target) {
+                        why = "no session " + name + " to type into";
+                    } else {
+                        int places = 0;
+                        {
+                            std::lock_guard<std::mutex> shells(target->shells_mutex);
+                            places = static_cast<int>(target->shells.size());
+                        }
+                        why = "that session has " + std::to_string(places) +
+                              (places == 1 ? " pane" : " panes") +
+                              ", counted from 0, so there is no pane " +
+                              std::to_string(pane_asked_for);
+                    }
+                }
+                static_cast<void>(
+                    detail::sendFrame(fd, MsgKind::Error, encodeFields({{"message", why}})));
                 return;
             }
             static_cast<void>(detail::sendFrame(fd, MsgKind::Ack));
@@ -1719,6 +1754,29 @@ private:
                 }
                 static_cast<void>(
                     detail::sendFrame(fd, MsgKind::Error, encodeFields({{"message", why}})));
+                return;
+            }
+            // Room is asked about before anything is replaced. The arrangement knows how
+            // many panes it wants and nothing about the window they are being put into, and
+            // an arrangement that does not fit is not applied halfway and not applied
+            // silently either: the pane left with no cells in it would be a place nobody can
+            // see, type into, or close, so the whole thing is refused with the reason that is
+            // true — which of the panes has nowhere to go.
+            int cramped = -1;
+            {
+                std::lock_guard<std::mutex> lock(record->layout_mutex);
+                cramped = replacement.layout.slotWithNoRoom(record->rows.load(),
+                                                            record->cols.load());
+            }
+            if (cramped >= 0) {
+                static_cast<void>(detail::sendFrame(
+                    fd, MsgKind::Error,
+                    encodeFields({{"message",
+                                  "no room in a " + std::to_string(record->rows.load()) + "x" +
+                                      std::to_string(record->cols.load()) +
+                                      " window for that arrangement: the pane in place " +
+                                      std::to_string(cramped + 1) + " would have nothing to "
+                                      "draw in. Widen the window, or take a pane out."}})));
                 return;
             }
             {

@@ -189,6 +189,24 @@ public:
         return fresh.pane;
     }
 
+    // The first pane that would be left with nothing to draw in, at the size given, as its
+    // place in the tab bar; -1 when every pane has at least one cell.
+    //
+    // Asked because an arrangement can be handed to a session whole — a preset, or
+    // `set-layout` from a terminal — and a whole arrangement knows how many panes it wants
+    // without knowing how big the window is. Twenty columns divided four times over leaves
+    // rooms of no columns at all: places nobody can see, type into, or close by pointing at,
+    // and a screen with no line in it for a program to write its first character onto.
+    int slotWithNoRoom(int rows, int cols) const {
+        const std::vector<int> list = panes();
+        const std::vector<CellRect> where = rects(rows, cols);
+        for (size_t i = 0; i < list.size() && i < where.size(); ++i) {
+            if (where[i].rows < 1 || where[i].cols < 1)
+                return static_cast<int>(i);
+        }
+        return kNil;
+    }
+
     // Close a pane and give its area back to whatever shared the split with it. The last
     // pane cannot be closed: a window with no pane is not a window holding nothing, it is a
     // window that cannot show anything at all.
