@@ -271,6 +271,60 @@ int main() {
         expect("leaving the joined line whole", std::to_string(s.row(1).size()), "20");
     }
 
+    // ---- A double-width glyph is destroyed as a pair ----------------------
+    // The glyph lives in the left cell and reserves the one after it, so the two
+    // are only ever right together or gone together. Writing a character on the
+    // right half, or erasing from it, has to take the whole glyph with it —
+    // otherwise a half is left standing, and everything after it is out of step
+    // with what the application is drawing. Kaida's nano, 2026-11-23: a line the
+    // buffer held as `語のテXYスト line two` was drawn as `a o e a XY ꜱ ᴛ line two`.
+    // Deleting or inserting at a right half follows the same rule: the pair is
+    // broken up rather than split, because a screen showing half a glyph is
+    // showing something nobody typed.
+    {
+        const std::string wide = "\xe6\xbc\xa2"; // 全, two columns
+        {
+            kai::Screen s(2, 10);
+            s.feed("1234" + wide); // text in 0-3, the glyph in 4 and 5
+            s.feed("\x1b[1;6H");   // onto its right half
+            s.feed("X");
+            expect("writing on a right half erases the glyph it sits in",
+                   screenRowText(s, 0), "1234 X");
+        }
+        {
+            kai::Screen s(2, 10);
+            s.feed("1234" + wide + "ab");
+            s.feed("\x1b[1;6H");
+            s.feed("\x1b[K"); // erase from here to the end of the line
+            expect("erasing from a right half takes the whole glyph",
+                   screenRowText(s, 0), "1234");
+        }
+        {
+            kai::Screen s(2, 10);
+            s.feed("1234" + wide + "ab");
+            s.feed("\x1b[2K"); // erase the whole line, cursor wherever it likes
+            expect("erasing a line leaves no half of a glyph behind",
+                   screenRowText(s, 0), "");
+        }
+        {
+            kai::Screen s(2, 10);
+            s.feed("1234" + wide + "ab");
+            s.feed("\x1b[1;6H");
+            s.feed("\x1b[P"); // delete the character under the cursor
+            expect("deleting at a right half removes the whole character",
+                   screenRowText(s, 0), "1234ab");
+        }
+        {
+            kai::Screen s(2, 10);
+            s.feed("1234" + wide + "ab");
+            s.feed("\x1b[1;6H");
+            s.feed("\x1b[2@"); // make room for two characters
+            expect("inserting at a right half gives up the glyph rather than "
+                   "splitting it",
+                   screenRowText(s, 0), "1234    ab");
+        }
+    }
+
     // ---- The shell screen behind an application reflows too --------------
     {
         kai::Screen s(4, 10);

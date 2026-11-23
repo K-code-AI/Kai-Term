@@ -66,10 +66,15 @@ Implemented:
 - Arrow keys are sent to fish as ANSI cursor bindings (`ESC[A]`, `ESC[B]`, `ESC[C]`, `ESC[D]`); fish moves its own command-line cursor and updates autosuggestions. A visible cursor marker follows the screen cursor.
 - Rendering has a small padding buffer around the glyph grid, to keep a shell's
   glyphs out of the rounded corners of a borderless window. A full-screen
-  application holding the alternate screen gets the whole window instead: the
-  inset goes to zero while it holds the screen and its grid grows into the room,
-  because it paints its own frame and the margin is the terminal's background —
-  btop's blue inside a grey-black ring is two programs drawing one window.
+  application holding the alternate screen is drawn from the very edge instead:
+  it paints its own frame and the margin is the terminal's background, so btop's
+  blue inside a grey-black ring is two programs drawing one window. What does not
+  move with the margin is the size. The rows and columns were told to the shell,
+  and a terminal that gained a row and a column every time a program took the
+  screen — then lost them again when it gave the screen back — would be telling
+  the shell to redraw at a moment it cannot see its own screen, and a shell that
+  repaints blind repaints wrong.
+- A double-width glyph occupies two cells and carries its text in the left one, so the two are only ever right together or gone together. Writing a character on the right half erases the glyph that lived there; erasing from the right half takes the whole glyph; inserting or deleting at one gives the glyph up rather than moving one half of it. A left half left standing is a character on the screen that nobody typed, and it drags every cell after it out of step with what the application is drawing.
 - Alternate screen buffers (`ESC[?1049h` / `ESC[?1049l`) are supported; `ESC[3J` clears the screen and scrollback. Lines that scroll off the alternate screen are discarded instead of entering the shell's history, and resizing while an alternate-screen application is running preserves the primary screen and its scrollback.
 - Scroll regions (`ESC[...r]`) and scroll-content-up/down (`ESC[...S]` / `ESC[...T]`) are supported for tmux-style layouts, including a region given on one side only (`ESC[3r`) and a bottom bound past the last row. Lines SU pushes off the top of a whole screen go into the scrollback, as a newline's would. A region belongs to the program that set it, so it is not handed back when an alternate-screen program gives the screen up: a shell left with margins it never asked for pins its prompt to one row and writes every command over the line before it. A region left behind on the shell's screen some other way — a program that died with one set, a window that joined a session partway through a program's screen switch — is dropped the first time the shell needs a line below it, so the shell can always scroll. Inside the alternate screen a program keeps whatever region it set, because that is how tmux draws a status line below its pane.
 - OSC sequences that applications send and expect an answer from: window and icon title (`OSC 0/1/2`, with `OSC 23;1` and the `ESC[22 t` / `ESC[23 t` title stack), the working directory (`OSC 7`, percent-decoded), the clipboard (`OSC 52`, both set and query — a program inside the terminal can copy text out, and can read the clipboard when it asks), the default foreground and background (`OSC 10/11`) and palette entries (`OSC 4`, reset by `OSC 104`).

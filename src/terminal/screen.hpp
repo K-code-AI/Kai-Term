@@ -676,15 +676,58 @@ public:
         c.attr = Attr{};
     }
 
+    // A double-width glyph lives in the left cell and reserves the cell after it,
+    // which carries nothing at all. The pair is only ever right together or gone
+    // together, so anything that clears, overwrites or moves one of them has to
+    // take the other with it. A left half left standing is a character on the
+    // screen that nobody typed, and it drags every cell after it out of step with
+    // the application drawing the same line — which is how nano came to show
+    // `a o e a XY ꜱ ᴛ line two` for a buffer holding `語のテXYスト line two`.
+    bool rightHalfOf(int row, int x) const {
+        return x > 0 && grid_[row][x].text.empty() && grid_[row][x].width == 0 &&
+               grid_[row][x - 1].width == 2;
+    }
+
+    // Clear the cell at x, and its partner if x was only half of a glyph.
+    void clearCellPair(int row, int x) {
+        if (rightHalfOf(row, x))
+            clearCell(grid_[row][x - 1]);
+        if (grid_[row][x].width == 2 && x + 1 < cols_)
+            clearCell(grid_[row][x + 1]);
+        clearCell(grid_[row][x]);
+    }
+
+    // After anything that slides cells sideways, a wide glyph can find its right
+    // half somewhere else. The pair cannot be trusted back into shape — the
+    // halves do not know about each other beyond adjacency — so the glyph is
+    // dropped and the text next to it is kept: the characters a program wrote
+    // matter more than the emoji it drew between them.
+    void repairWidePairs(int row) {
+        for (int x = 0; x < cols_; ++x) {
+            Cell& c = grid_[static_cast<std::size_t>(row)][static_cast<std::size_t>(x)];
+            if (c.width != 2)
+                continue;
+            if (x + 1 >= cols_) {
+                c.width = 1; // the row ends under the glyph; it stands in one cell
+                continue;
+            }
+            Cell& next = grid_[static_cast<std::size_t>(row)][static_cast<std::size_t>(x + 1)];
+            if (next.text.empty() && next.width == 0)
+                continue; // still the pair it was
+            clearCell(c);
+            c.width = 1; // a plain blank, not the second half of anything
+        }
+    }
+
     void eraseLine(int mode) {
         pending_wrap_ = false;
         const int x = std::min(cursor_x_, cols_ - 1);
         if (mode == 0) {
             for (int c = cursor_x_; c < cols_; ++c)
-                clearCell(grid_[cursor_y_][c]);
+                clearCellPair(cursor_y_, c);
         } else if (mode == 1) {
             for (int c = 0; c <= x; ++c)
-                clearCell(grid_[cursor_y_][c]);
+                clearCellPair(cursor_y_, c);
         } else {
             for (auto& c : grid_[cursor_y_])
                 clearCell(c);
@@ -1185,6 +1228,12 @@ private:
             cursor_x_ = cols_ - 1;
 
         Cell& c = grid_[cursor_y_][cursor_x_];
+        // Writing on the right half of a double-width glyph takes the glyph with
+        // it: the left cell would otherwise go on drawing underneath the new
+        // character, and the two would be one glyph and one letter sharing a space.
+        if (rightHalfOf(cursor_y_, cursor_x_))
+            clearCell(grid_[cursor_y_][cursor_x_ - 1]);
+        const bool was_wide = c.width == 2;
         c.text = encodeUtf8(cp);
         c.width = w;
         c.fg = current_fg_;
@@ -1192,6 +1241,10 @@ private:
         c.fg_role = current_fg_role_;
         c.bg_role = current_bg_role_;
         c.attr = current_attr_;
+
+        if (was_wide && w == 1 && cursor_x_ + 1 < cols_ &&
+            grid_[cursor_y_][cursor_x_ + 1].text.empty())
+            clearCell(grid_[cursor_y_][cursor_x_ + 1]); // the old glyph's other half
 
         if (w == 2 && cursor_x_ + 1 < cols_) {
             Cell& cont = grid_[cursor_y_][cursor_x_ + 1];
@@ -1251,31 +1304,45 @@ private:
         pending_wrap_ = false;
         if (cursor_x_ >= cols_)
             return;
+        // Making room in the middle of a glyph would move one half of it and not
+        // the other, so the glyph is given up first and the room is made around it.
+        if (rightHalfOf(cursor_y_, cursor_x_))
+            clearCellPair(cursor_y_, cursor_x_);
         n = std::min(n, cols_ - cursor_x_);
         Row& line = grid_[cursor_y_];
         for (int c = cols_ - 1; c >= cursor_x_ + n; --c)
             line[c] = line[c - n];
         for (int c = cursor_x_; c < cursor_x_ + n; ++c)
             clearCell(line[c]);
+        repairWidePairs(cursor_y_);
     }
 
     void deleteChars(int n) {
         pending_wrap_ = false;
         if (cursor_x_ >= cols_)
             return;
-        n = std::min(n, cols_ - cursor_x_);
+        int from = cursor_x_;
+        // The cursor is on the right half of a glyph: the character being deleted
+        // is the whole glyph, so the deletion starts one cell earlier and covers
+        // one cell more.
+        if (rightHalfOf(cursor_y_, from)) {
+            --from;
+            ++n;
+        }
+        n = std::min(n, cols_ - from);
         Row& line = grid_[cursor_y_];
-        for (int c = cursor_x_; c + n < cols_; ++c)
+        for (int c = from; c + n < cols_; ++c)
             line[c] = line[c + n];
-        for (int c = std::max(cols_ - n, cursor_x_); c < cols_; ++c)
+        for (int c = std::max(cols_ - n, from); c < cols_; ++c)
             clearCell(line[c]);
+        repairWidePairs(cursor_y_);
     }
 
     void eraseChars(int n) {
         pending_wrap_ = false;
         Row& line = grid_[cursor_y_];
         for (int c = cursor_x_; c < std::min(cols_, cursor_x_ + n); ++c)
-            clearCell(line[c]);
+            clearCellPair(cursor_y_, c);
     }
 
     static int parseNumber(std::string_view s) {

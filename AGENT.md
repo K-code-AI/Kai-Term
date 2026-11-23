@@ -1105,3 +1105,17 @@ test that hangs should still cost a test and not a machine.
   teleported the cursor to wherever the last full-screen program had saved one. A question in
   a byte stream changes state only if the implementation lets it, and the test for that is
   the dull one — feed the question, assert that nothing moved.
+- A picture at thumbnail size is not evidence. I read tofu boxes — the empty
+  rectangles a font draws when it has no glyph for a character — as "half-rendered
+  CJK", found the bug I had come to look for, and very nearly reported it as the
+  fix for Kaida's artefact. Cropping that same rectangle and looking at it took one
+  command and changed the story: the machine has no CJK font installed at all, so
+  the boxes are honest. Zoom before you conclude, and check that what the picture
+  shows is the thing you have a name for.
+- When my own harness says "reproduced" once and "cannot reproduce" minutes later,
+  something moved that is not the code. Three times in one night it was me: a live
+  run against a binary I had only rebuilt for a test target, a session I had just
+  shut down from under the window I was screenshotting, and a Backspace at column
+  zero that joined two lines instead of deleting two characters. Before believing a
+  reproduction in either direction, confirm the binary, the session and the exact
+  keystrokes that ran.
