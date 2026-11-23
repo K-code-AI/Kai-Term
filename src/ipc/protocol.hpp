@@ -55,6 +55,19 @@ enum class MsgKind : std::uint8_t {
     // view's typing there. The window keeps no copy of what is running, so it does not
     // need to be told anything about the panes beyond which one it asked for.
     ShowPane = 7, // fields: pane
+    // Make another place to work. The pane the view is looking at is the one divided, and
+    // the view is moved onto the new place: a key that says "new" should land you in the
+    // new thing rather than leave you where you were.
+    NewPane = 8, // no body
+    // End the program in the place the view is looking at. The last place in a session is
+    // not closed — that is what ending the session is for.
+    ClosePane = 9, // no body
+    // "Show the places side by side" / "one at a time with tabs". The view mode belongs to
+    // the session, so that two windows on it and a tty all agree on how the work is laid
+    // out. 19 rather than the next number up because 10 through 18 belong to the other
+    // direction, and a number meaning two things depending on who sent it is a bug waiting
+    // to be written.
+    SetViewMode = 19, // fields: mode
 
     // daemon -> client
     Welcome = 10,   // fields: name, id, rows, cols, pid, shell, created

@@ -900,6 +900,133 @@ int main() {
             expect("with the first one looked at", fieldValue(bar, "focused", "-1") == "0");
         }
 
+    {
+        // The two keys a person reaches for: another place to work, and a different way of
+        // looking at the places there are. Both are the session's business, since the
+        // session is what owns the panes — a window that kept its own notion of how many
+        // tabs there were would disagree with the next window the first time one of them
+        // added one.
+        auto tabs_say = [](TestClient& viewer, int panes, const std::string& mode) {
+            for (int attempt = 0; attempt < 80; ++attempt) {
+                struct pollfd pfd {viewer.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[8192];
+                    const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (viewer.reader.pop(frame)) {
+                    if (frame.kind != MsgKind::Tabs)
+                        continue;
+                    const Fields fields = decodeFields(frame.body);
+                    if (fieldValue(fields, "panes", "0") == std::to_string(panes) &&
+                        (mode.empty() || fieldValue(fields, "mode") == mode))
+                        return true;
+                }
+            }
+            return false;
+        };
+        auto refused_with = [](TestClient& viewer, const std::string& about) {
+            for (int attempt = 0; attempt < 80; ++attempt) {
+                struct pollfd pfd {viewer.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[8192];
+                    const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (viewer.reader.pop(frame)) {
+                    if (frame.kind == MsgKind::Error &&
+                        fieldValue(decodeFields(frame.body), "reason").find(about) !=
+                            std::string::npos)
+                        return true;
+                }
+            }
+            return false;
+        };
+
+        expect("a session to add tabs to", createSession("tab-keys"));
+        TestClient window;
+        std::string shown;
+        expect("with a window looking at it", attach(window, "tab-keys", 24, 80, shown));
+        expect("and the tab bar as it stands", tabs_say(window, 1, "side-by-side"));
+
+        static_cast<void>(window.send(MsgKind::Data, "echo FIRST-PLACE-MARKER\n"));
+        expect("the window is looking at the first place",
+               TestClient::render(window.waitFor("FIRST-PLACE-MARKER", 4000), 24, 80)
+                   .find("FIRST-PLACE-MARKER") != std::string::npos);
+
+        expect("a new tab is asked for", window.send(MsgKind::NewPane));
+        expect("and the session is running another program",
+               listedPanes("tab-keys") == 2);
+        expect("the window is told the tab bar grew", tabs_say(window, 2, ""));
+        // A key that says "new" should land you in the new thing. Staying where you were
+        // would mean a second keystroke every single time, on the one key whose whole job
+        // is getting you out of the way you were in.
+        static_cast<void>(window.send(MsgKind::Data, "echo IN-NEW-PLACE\n"));
+        expect("and the window is looking at the new place",
+               TestClient::render(window.waitFor("IN-NEW-PLACE", 4000), 24, 80)
+                   .find("IN-NEW-PLACE") != std::string::npos);
+
+        // The view mode is a fact about the session, said back with the tab bar, so that a
+        // second window opens already knowing whether it is looking at tabs or splits.
+        // Asked in this order because the session starts side by side: a change that is not
+        // a change is not announced, and a check that waits on it is waiting for a message
+        // nobody promised.
+        expect("the window asks for one place at a time",
+               window.send(MsgKind::SetViewMode, encodeFields({{"mode", "tabs"}})));
+        expect("and the tab bar carries that mode", tabs_say(window, 2, "tabs"));
+        expect("the places side by side is asked for",
+               window.send(MsgKind::SetViewMode, encodeFields({{"mode", "side-by-side"}})));
+        expect("and comes back on the tab bar", tabs_say(window, 2, "side-by-side"));
+        expect("a mode that is neither is refused",
+               window.send(MsgKind::SetViewMode, encodeFields({{"mode", "diagonal"}})));
+        expect("naming the two there are (so the words are learnable)",
+               refused_with(window, "side-by-side or tabs"));
+
+        expect("the place being looked at is closed", window.send(MsgKind::ClosePane));
+        expect("and the session runs one program again", listedPanes("tab-keys") == 1);
+        expect("closing the last place is refused rather than emptying the session",
+               window.send(MsgKind::ClosePane));
+        expect("with a word about what to do instead (end the session)",
+               refused_with(window, "last"));
+
+        // A program that exits stops being a place in the tab bar, rather than staying on
+        // the books as a place with nothing in it — which the next resize would fill with a
+        // fresh program nobody asked for.
+        static_cast<void>(window.send(MsgKind::NewPane));
+        expect("a place is made to watch one leave", listedPanes("tab-keys") == 2);
+        static_cast<void>(window.send(MsgKind::Data, "exit\n"));
+        bool one_again = false;
+        for (int attempt = 0; attempt < 120 && !one_again; ++attempt) {
+            one_again = listedPanes("tab-keys") == 1;
+            if (!one_again)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        expect("the place whose program exited is gone from the tab bar", one_again);
+        // A resize is the daemon laying the panes out again, which is exactly where a place
+        // still listed but empty would come back to life.
+        static_cast<void>(
+            window.send(MsgKind::Resize, encodeFields({{"rows", "30"}, {"cols", "90"}})));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        expect("and a resize does not bring it back", listedPanes("tab-keys") == 1);
+        expect("the window is still looking at a program that answers",
+               [&]() {
+                   static_cast<void>(window.send(MsgKind::Data, "echo STILL-HERE\n"));
+                   return TestClient::render(window.waitFor("STILL-HERE", 4000), 24, 80)
+                       .find("STILL-HERE") != std::string::npos;
+               }());
+
+        TestClient tidying;
+        if (tidying.connect()) {
+            static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "tab-keys"}}));
+            Frame ack;
+            static_cast<void>(tidying.reply(ack));
+        }
+    }
+
         TestClient tidying;
         if (tidying.connect()) {
             static_cast<void>(tidying.hello({{"command", "kill"}, {"name", "look-here"}}));

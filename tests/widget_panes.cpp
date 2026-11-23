@@ -260,13 +260,13 @@ int main(int argc, char** argv) {
         const double first_row_before = w.cellTopLeft(0, 0).y();
         const double row_height = w.cellTopLeft(1, 0).y() - w.cellTopLeft(0, 0).y();
 
-        w.setTabBar(1, 0);
+        w.setTabBar(1, 0, false);
         pump(60);
         expect("one place to look at is not a bar of tabs",
                w.paneCount() == 1 && w.rows() == rows_before &&
                    qAbs(w.cellTopLeft(0, 0).y() - first_row_before) < 0.5);
 
-        w.setTabBar(3, 0);
+        w.setTabBar(3, 0, false);
         pump(200);
         expect("three places take a row off the grid", w.rows() == rows_before - 1);
         expect("and the grid begins a row lower than it did",
@@ -300,15 +300,30 @@ int main(int argc, char** argv) {
         w.showPaneAt(-1);
         expect("nor is a place before the first one", w.shownPane() == 2);
 
-        w.setTabBar(2, 0);
+        w.setTabBar(2, 0, false);
         expect("a bar that shrinks leaves the window looking at a place that exists",
                w.paneCount() == 2 && w.shownPane() < 2);
 
-        w.setTabBar(0, 0);
+        w.setTabBar(0, 0, false);
         pump(200);
         expect("and a session with no tabs left gives the row back",
                w.rows() == rows_before &&
                    qAbs(w.cellTopLeft(0, 0).y() - first_row_before) < 0.5);
+
+        // Ctrl+Shift+N and Ctrl+Shift+H ask the session for a place and for a way of looking
+        // at them. This window is holding a shell started here, with no session behind it,
+        // so the honest expectation is that nothing happens: no place appears, no view
+        // changes, and nothing crashes on the way to not happening.
+        w.setTabBar(2, 0, true);
+        expect("a session showing one place at a time says so", w.viewIsTabs());
+        w.setTabBar(2, 0, false);
+        expect("and a session showing them side by side says that instead",
+               !w.viewIsTabs());
+        w.newTab();
+        w.toggleViewMode();
+        pump(120);
+        expect("a window with a shell of its own makes no new place", w.paneCount() == 2);
+        expect("and changes no view it does not have", !w.viewIsTabs());
     }
 
     w.shutdown();

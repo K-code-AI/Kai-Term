@@ -91,12 +91,20 @@ public:
     struct TabBar {
         int panes = 0;   // how many places there are to look at
         int focused = 0; // the one a view lands on when it arrives
+        bool tabs = false; // one at a time with tabs, rather than all of them at once
     };
     virtual bool takeTabBar(TabBar& /*bar*/) { return false; }
 
     // "Show me that pane." Only a session has panes to look between; a window holding a
     // shell of its own is already looking at the only one there is.
     virtual void showPane(int /*pane*/) {}
+
+    // Another place to work, the place in hand ended, and a different way of looking at the
+    // places there are. Only a session has places; a window holding a shell started here has
+    // the one it is showing, and says nothing when asked.
+    virtual void newPane() {}
+    virtual void closePane() {}
+    virtual void setViewMode(bool /*tabs*/) {}
 
     virtual void stopProcess(bool /*closing*/ = false) {}
     virtual void release() {}

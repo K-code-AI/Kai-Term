@@ -755,7 +755,7 @@ private:
         std::atomic<int> focus_slot{0};
         // The tab bar as last announced, so a resize does not repeat a number nobody
         // asked about. Read and written under the same lock as the client list.
-        std::pair<int, int> tabs_sent{-1, -1};
+        std::string tabs_sent;
         std::vector<int> clients;
         // What each view looking at this session said its window is, by descriptor. The
         // session's size is worked out from all of them together — see `settleSessionSize`
@@ -884,27 +884,41 @@ private:
         return screenSnapshot(*shell.screen);
     }
 
+    // What the tab bar is, in the words it travels in: how many places, which one a view
+    // lands on, and whether the places are shown side by side or one at a time.
+    static std::string tabsBody(const Record& record) {
+        std::string mode = "side-by-side";
+        int panes = 0;
+        {
+            std::lock_guard<std::mutex> lock(record.shells_mutex);
+            panes = static_cast<int>(record.shells.size());
+        }
+        {
+            std::lock_guard<std::mutex> lock(record.layout_mutex);
+            mode = record.layout.mode == ViewMode::Tabs ? "tabs" : "side-by-side";
+        }
+        return encodeFields({{"panes", std::to_string(panes)},
+                             {"focused", std::to_string(record.focus_slot.load())},
+                             {"mode", mode}});
+    }
+
     // Tell everyone looking at a session what its tab bar holds now. This goes to every
     // view rather than to the views on one pane, because the bar is one thing shared by
     // whoever is watching: a pane added from a second window, or from `set-layout` in a
     // terminal, has to appear in the first window too.
     void announceTabs(const std::shared_ptr<Record>& record) {
-        int panes = 0;
-        {
-            std::lock_guard<std::mutex> lock(record->shells_mutex);
-            panes = static_cast<int>(record->shells.size());
-        }
-        const int focus = record->focus_slot.load();
+        const std::string body = tabsBody(*record);
         std::vector<int> every;
         {
             std::lock_guard<std::mutex> lock(record->clients_mutex);
-            if (record->tabs_sent.first == panes && record->tabs_sent.second == focus)
+            // Compared as the words it travels in, so a change of view mode is announced as
+            // readily as a change of count: deduplicating on the count alone would swallow
+            // the one message that says the panes are side by side now.
+            if (record->tabs_sent == body)
                 return;
-            record->tabs_sent = {panes, focus};
+            record->tabs_sent = body;
             every = record->clients;
         }
-        const std::string body = encodeFields({{"panes", std::to_string(panes)},
-                                               {"focused", std::to_string(focus)}});
         for (const int fd : every)
             static_cast<void>(detail::sendFrame(fd, MsgKind::Tabs, body));
     }
@@ -1067,8 +1081,17 @@ private:
             // The session goes on around it: the views looking at that place are moved to
             // what the session is focused on now, and the shell comes off the list so that
             // the count a listing gives is the number of programs actually running.
-            const std::vector<int> stranded = record->clientsSeeing(shell->pane);
-            record->moveViewsOff(shell->pane);
+            // The arrangement still lists the place whose program has gone. Left alone, the
+            // next resize would start another program in it, because reconciling counts the
+            // leaves it is told about — and a process coming back in a pane nobody opened is
+            // not what "the shell exited" is supposed to mean.
+            {
+                std::lock_guard<std::mutex> lock(record->layout_mutex);
+                const std::vector<int> leaves = record->layout.layout.panes();
+                if (shell->pane >= 0 && static_cast<size_t>(shell->pane) < leaves.size())
+                    static_cast<void>(
+                        record->layout.layout.closePane(leaves[static_cast<size_t>(shell->pane)]));
+            }
             {
                 std::lock_guard<std::mutex> lock(record->shells_mutex);
                 const auto keep = std::remove_if(
@@ -1077,19 +1100,18 @@ private:
                 record->shells.erase(keep, record->shells.end());
                 shell->pty->closeMaster();
             }
-            // Said after the list is let go of: the announcement counts the shells, and a
-            // lock taken twice by one thread is a thread that never wakes up again.
-            announceTabs(record);
-            // And the screen they are looking at now. A view left holding the last picture
-            // of a program that has exited is worse than one moved: it shows a prompt that
-            // answers nothing, and the person types into it.
-            const std::shared_ptr<Record::Shell> now =
-                shellAt(record, record->focus_slot.load());
-            if (now) {
-                const std::string screen = snapshotOf(*now);
-                for (const int fd : stranded)
-                    static_cast<void>(detail::sendFrame(fd, MsgKind::Snapshot, screen));
+            // Places are numbered, and one has gone, so every view goes back to the place
+            // the session is focused on. A view left on the number it asked for would find
+            // itself looking at a different program than the one it chose; a view left on
+            // the number that went away would be staring at the last picture of a program
+            // that is not there, into a prompt that answers nothing.
+            {
+                std::lock_guard<std::mutex> lock(record->clients_mutex);
+                record->view_slot.clear();
             }
+            // Reconciling sizes what is left to what is left, hands every view the screen of
+            // the place it is now looking at, and says what the tab bar holds.
+            reconcileShells(record);
             return;
         }
         record->dead = true;
@@ -1232,15 +1254,7 @@ private:
             record->clients.push_back(fd);
             // The tab bar comes with the welcome, not only when it changes: a window
             // opening onto a session that has had three panes since this morning should
-            // draw three tabs on its first paint, not after somebody adds a fourth.
-            int announced_panes = 0;
-            {
-                std::lock_guard<std::mutex> shell_lock(record->shells_mutex);
-                announced_panes = static_cast<int>(record->shells.size());
-            }
-            const std::string tabs =
-                encodeFields({{"panes", std::to_string(announced_panes)},
-                              {"focused", std::to_string(record->focus_slot.load())}});
+            const std::string tabs = tabsBody(*record);
             // After the screen, not before it: a client that reads the welcome and then
             // takes the next frame as the screen is a reasonable thing to write, and the
             // tab bar is not the screen.
@@ -1347,6 +1361,118 @@ private:
                         static_cast<void>(detail::sendFrame(fd, MsgKind::Snapshot,
                                                             snapshotOf(*shell)));
                     }
+                    break;
+                }
+                case MsgKind::NewPane: {
+                    // Divide the place this view is looking at. The others keep the cells
+                    // they have, which is the whole reason a new tab splits the pane in hand
+                    // rather than rebuilding the tree: nobody else's work moves.
+                    const std::vector<int> before = record->layout.layout.panes();
+                    const int slot = record->slotOf(fd);
+                    const int leaf = slot >= 0 && static_cast<size_t>(slot) < before.size()
+                                         ? before[static_cast<size_t>(slot)]
+                                         : record->layout.layout.focused();
+                    int made = -1;
+                    {
+                        std::lock_guard<std::mutex> lock(record->layout_mutex);
+                        made = record->layout.layout.splitPane(leaf, Split::LeftRight,
+                                                               record->rows.load(),
+                                                               record->cols.load());
+                    }
+                    if (made < 0) {
+                        static_cast<void>(detail::sendFrame(
+                            fd, MsgKind::Error,
+                            encodeFields({{"reason", "that place cannot be divided"}})));
+                        break;
+                    }
+                    reconcileShells(record);
+                    // Move the asking view onto the place it made. A key that says "new"
+                    // should land you in the new thing rather than leave you where you were,
+                    // with a second keystroke needed every single time.
+                    const std::vector<int> after = record->layout.layout.panes();
+                    int made_slot = static_cast<int>(after.size()) - 1;
+                    for (size_t i = 0; i < after.size(); ++i) {
+                        if (after[i] == made)
+                            made_slot = static_cast<int>(i);
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(record->clients_mutex);
+                        record->view_slot[fd] = made_slot;
+                    }
+                    const std::shared_ptr<Record::Shell> shell = shellAt(record, made_slot);
+                    if (shell) {
+                        static_cast<void>(detail::sendFrame(fd, MsgKind::Snapshot,
+                                                            snapshotOf(*shell)));
+                    }
+                    announceTabs(record);
+                    break;
+                }
+                case MsgKind::ClosePane: {
+                    const std::vector<int> leaves = record->layout.layout.panes();
+                    const int slot = record->slotOf(fd);
+                    const int leaf = slot >= 0 && static_cast<size_t>(slot) < leaves.size()
+                                         ? leaves[static_cast<size_t>(slot)]
+                                         : record->layout.layout.focused();
+                    bool closed = false;
+                    {
+                        std::lock_guard<std::mutex> lock(record->layout_mutex);
+                        closed = record->layout.layout.closePane(leaf);
+                    }
+                    if (!closed) {
+                        // Refused, not obeyed. A session with no panes has nothing to show
+                        // and nothing to attach to; ending it is a different thing somebody
+                        // says on purpose.
+                        static_cast<void>(detail::sendFrame(
+                            fd, MsgKind::Error,
+                            encodeFields({{"reason",
+                                           "that is the last pane in the session; ending the "
+                                           "session is what closes it"}})));
+                        break;
+                    }
+                    // Places are numbered, and closing one moves the numbers along. A view
+                    // left on the number it asked for would find itself looking at a
+                    // different program than the one it chose, so everyone goes back to the
+                    // place the session is focused on and is shown it.
+                    {
+                        std::lock_guard<std::mutex> lock(record->clients_mutex);
+                        record->view_slot.clear();
+                    }
+                    reconcileShells(record);
+                    const std::shared_ptr<Record::Shell> now =
+                        shellAt(record, record->focus_slot.load());
+                    if (now) {
+                        const std::string screen = snapshotOf(*now);
+                        for (const int viewer : record->clientsSeeing(record->focus_slot.load()))
+                            static_cast<void>(detail::sendFrame(viewer, MsgKind::Snapshot,
+                                                                screen));
+                    }
+                    announceTabs(record);
+                    break;
+                }
+                case MsgKind::SetViewMode: {
+                    // Side by side, or one at a time with tabs. The choice belongs to the
+                    // session so that two windows and a tty agree on how the work is laid
+                    // out, rather than each remembering its own preference.
+                    const std::string wanted =
+                        fieldValue(decodeFields(frame.body), "mode");
+                    ViewMode mode;
+                    if (wanted == "tabs")
+                        mode = ViewMode::Tabs;
+                    else if (wanted == "side-by-side")
+                        mode = ViewMode::SideBySide;
+                    else {
+                        static_cast<void>(detail::sendFrame(
+                            fd, MsgKind::Error,
+                            encodeFields({{"reason",
+                                           "the view is either side-by-side or tabs, not '" +
+                                               wanted + "'"}})));
+                        break;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(record->layout_mutex);
+                        record->layout.mode = mode;
+                    }
+                    announceTabs(record);
                     break;
                 }
                 case MsgKind::Detach:

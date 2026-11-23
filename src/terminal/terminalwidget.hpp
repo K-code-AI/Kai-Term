@@ -67,10 +67,15 @@ struct TerminalOutputEvent : QEvent {
 // The session's tab bar, as the daemon last described it. Not output: a session gaining a
 // pane prints nothing on the pane being looked at, so nothing else would ever say so.
 struct TerminalTabsEvent : QEvent {
-    TerminalTabsEvent(int panes, int focused, int generation)
-        : QEvent(QEvent::None), panes(panes), focused(focused), generation(generation) {}
+    TerminalTabsEvent(int panes, int focused, bool tabs, int generation)
+        : QEvent(QEvent::None),
+          panes(panes),
+          focused(focused),
+          tabs(tabs),
+          generation(generation) {}
     int panes;
     int focused;
+    bool tabs;
     int generation;
 };
 
@@ -782,8 +787,9 @@ public:
                 // already wakes five times a second by itself.
                 TerminalBackend::TabBar bar;
                 if (backend->takeTabBar(bar)) {
-                    QCoreApplication::postEvent(
-                        this, new TerminalTabsEvent(bar.panes, bar.focused, generation));
+                    QCoreApplication::postEvent(this,
+                                                new TerminalTabsEvent(bar.panes, bar.focused,
+                                                                      bar.tabs, generation));
                 }
                 // Bytes the backend is already holding are not waiting on the
                 // descriptor to become readable, so they are taken without asking.
@@ -1198,10 +1204,12 @@ public:
     // What the session's tab bar holds. The count is the daemon's business; which tab is
     // lit is this window's, because two windows on one session can be looking at two
     // different places and both are right.
-    void setTabBar(int panes, int focused) {
-        if (panes == tab_panes_ && (tab_chosen_ || focused == tab_focused_))
+    void setTabBar(int panes, int focused, bool tabs) {
+        if (panes == tab_panes_ && view_tabs_ == tabs &&
+            (tab_chosen_ || focused == tab_focused_))
             return;
         tab_panes_ = std::max(0, panes);
+        view_tabs_ = tabs;
         if (!tab_chosen_)
             tab_focused_ = std::clamp(focused, 0, std::max(0, tab_panes_ - 1));
         else if (tab_focused_ >= tab_panes_)
@@ -1222,6 +1230,22 @@ public:
         if (backend_)
             backend_->showPane(pane);
     }
+    // The keys, as methods so a check can press them without a window manager.
+    void newTab() {
+        if (backend_)
+            backend_->newPane();
+    }
+    void closeTab() {
+        if (backend_)
+            backend_->closePane();
+    }
+    // One place at a time with tabs, or all of them at once. The session decides and says so
+    // back on the tab bar, which is how a second window on the same session finds out.
+    void toggleViewMode() {
+        if (backend_)
+            backend_->setViewMode(!view_tabs_);
+    }
+    bool viewIsTabs() const { return view_tabs_; }
     int shownPane() const { return tab_focused_; }
     int paneCount() const { return tab_panes_; }
 
@@ -1303,7 +1327,7 @@ public:
         if (auto* tabs = dynamic_cast<TerminalTabsEvent*>(e)) {
             if (tabs->generation != generation_)
                 return true; // about a session this window no longer shows
-            setTabBar(tabs->panes, tabs->focused);
+            setTabBar(tabs->panes, tabs->focused, tabs->tabs);
             return true;
         }
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
@@ -1510,6 +1534,19 @@ public:
             }
             if (key == Qt::Key_K && on_settings_menu) {
                 on_settings_menu();
+                return;
+            }
+            // Ctrl+Shift+N makes another place to work and moves this window into it;
+            // Ctrl+Shift+H changes how the places are looked at, one at a time with tabs or
+            // all of them at once. Both belong to the session rather than to this window,
+            // which is why the answer comes back on the tab bar and every other window
+            // looking at the same session sees the same thing happen.
+            if (key == Qt::Key_N) {
+                newTab();
+                return;
+            }
+            if (key == Qt::Key_H) {
+                toggleViewMode();
                 return;
             }
         }
@@ -4934,6 +4971,8 @@ private:
     int tab_panes_ = 0;
     int tab_focused_ = 0;
     bool tab_chosen_ = false;
+    // Whether the session's places are shown one at a time with tabs, or side by side.
+    bool view_tabs_ = false;
 
     // Rows moved by one wheel notch, and how far the view is scrolled back from
     // the live bottom in lines. Zero means "following the shell".

@@ -142,6 +142,16 @@ public:
 
     // Asking to be shown a pane is asking the daemon, which is where the panes are; this
     // window holds one screen and no notion of what the others contain.
+    // Making, ending, and re-looking-at places: all asked of the daemon, which is where the
+    // places are. The answer comes back on the tab bar, so this window finds out the same
+    // way every other window on the session does.
+    void newPane() override { static_cast<void>(client_.send(MsgKind::NewPane)); }
+    void closePane() override { static_cast<void>(client_.send(MsgKind::ClosePane)); }
+    void setViewMode(bool tabs) override {
+        static_cast<void>(client_.send(
+            MsgKind::SetViewMode, encodeFields({{"mode", tabs ? "tabs" : "side-by-side"}})));
+    }
+
     void showPane(int pane) override {
         static_cast<void>(client_.send(MsgKind::ShowPane,
                                        encodeFields({{"pane", std::to_string(pane)}})));
@@ -204,6 +214,7 @@ private:
                 const Fields fields = decodeFields(frame.body);
                 tabs_.panes = number(fieldValue(fields, "panes", "0"));
                 tabs_.focused = number(fieldValue(fields, "focused", "0"));
+                tabs_.tabs = fieldValue(fields, "mode") == "tabs";
                 tabs_changed_ = true;
                 break;
             }
