@@ -1204,6 +1204,24 @@ public:
     // Lines scrolled back from the live bottom; zero means following the shell.
     int scrollOffset() const { return scroll_offset_; }
 
+    // The text of the row shown at display row `r` of the window's own view, honouring
+    // the scroll offset — for a check that wants to say "scrolled up, this line is on
+    // screen" rather than merely "the offset grew".
+    std::string displayRowText(int r) const { return rowText(displayRow(r)); }
+    // The same for a neighbour's own place, honouring that place's own scroll.
+    std::string neighbourRowText(int pane, int r) const {
+        const ExtraPane* view = neighbourFor(pane);
+        if (!view)
+            return {};
+        return rowText(rowToShow(view->screen, view->scroll, r));
+    }
+    static std::string rowText(const Row& line) {
+        std::string out;
+        for (const Cell& c : line)
+            out += c.text;
+        return out;
+    }
+
     // Where the scroll indicator sits right now, in this widget's pixels. Aimed
     // at by the mouse handlers and by anything that needs to click on it.
     ScrollBar scrollIndicator() const {

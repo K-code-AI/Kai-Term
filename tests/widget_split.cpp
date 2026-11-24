@@ -132,7 +132,8 @@ int main(int argc, char** argv) {
         "/tmp/kai-widget-split-" + std::to_string(static_cast<long>(::getpid()));
     ::mkdir(root.c_str(), 0700);
     ::setenv("XDG_RUNTIME_DIR", root.c_str(), 1);
-    ::setenv("KAI_SHELL", "/bin/sh", 1);
+    if (!::getenv("KAI_SHELL"))
+        ::setenv("KAI_SHELL", "/bin/sh", 1);
 
     Daemon daemon;
     std::string error;
@@ -280,6 +281,11 @@ int main(int argc, char** argv) {
     pump(120);
     expect("the place being looked at scrolls back", window.scrollOffset() > 0);
     expect("and its neighbour does not move with it", window.neighbourScrollAt(1) == 0);
+    // Scrolled back, the place being looked at must still show its own lines, not a
+    // blank half. The reported breakage was that nothing scrolled in side-by-side, and
+    // a scroll that grows the offset but paints an empty cell is just as broken.
+    expect("and shows its own history when scrolled up, not a blank half",
+           !window.displayRowText(0).empty());
     // Scroll a neighbour (the middle place); the place being looked at must stay put.
     const int was_focused = window.scrollOffset();
     const QPointF middle = cellPoint(&window, 5, 32); // solidly inside the middle place
@@ -288,6 +294,8 @@ int main(int argc, char** argv) {
     expect("a neighbour scrolls on its own", window.neighbourScrollAt(1) > 0);
     expect("and the place being looked at does not move with it",
            window.scrollOffset() == was_focused);
+    expect("and the neighbour shows its own lines when scrolled, not a blank place",
+           !window.neighbourRowText(1, 0).empty());
 
     expect("the session still runs after all this",
            waitFor([&daemon] {
