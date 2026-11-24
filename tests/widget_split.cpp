@@ -166,6 +166,15 @@ int main(int argc, char** argv) {
         return neighbour;
     });
 
+    // Count the window's own commands, so the control test can prove a key reaches the
+    // right action and not the shell.
+    int settings_hits = 0;
+    int save_hits = 0;
+    int attach_hits = 0;
+    window.on_settings_menu = [&settings_hits] { ++settings_hits; };
+    window.on_save_session = [&save_hits] { ++save_hits; };
+    window.on_session_menu = [&attach_hits] { ++attach_hits; };
+
     // A second place, so there are two to draw. Asked of the window rather than of the
     // daemon directly, because a place is added the way a person adds one.
     window.newTab();
@@ -297,15 +306,37 @@ int main(int argc, char** argv) {
     expect("and the neighbour shows its own lines when scrolled, not a blank place",
            !window.neighbourRowText(1, 0).empty());
 
-    // Ctrl+Shift+N now asks which way to divide before it divides. Reaching a place is
-    // already covered above; this is the key that MAKES one. It must pop a Vertical /
-    // Horizontal question answerable by a single letter, and lay the new place out that
-    // way: Vertical beside (shares the rows), Horizontal below (shares the columns).
+    // Ctrl+K is the control; Ctrl+K then N asks which way to divide before it divides.
+    // Reaching a place is already covered above; this is the key that MAKES one. It must
+    // pop a Vertical / Horizontal question answerable by a single letter, and lay the new
+    // place out that way: Vertical beside (shares the rows), Horizontal below (columns).
     window.showPaneAt(0);
     pump(200);
-    sendKey(&window, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+    // First the control itself: Ctrl+K waits for a key without touching the shell, and
+    // Escape spends the wait on nothing.
+    sendKey(&window, Qt::Key_K, Qt::ControlModifier);
+    pump(60);
+    expect("Ctrl+K arms the control and waits for a key", window.prefixArmed());
+    sendKey(&window, Qt::Key_Escape, Qt::NoModifier);
+    pump(60);
+    expect("and Escape spends the control on nothing", !window.prefixArmed());
+
+    // Ctrl+K then K reaches the settings menu, not the shell.
+    const int settings_before = settings_hits;
+    sendKey(&window, Qt::Key_K, Qt::ControlModifier);
+    pump(40);
+    sendKey(&window, Qt::Key_K, Qt::NoModifier);
+    pump(60);
+    expect("Ctrl+K then K opens the settings menu",
+           waitFor([&] { return settings_hits > settings_before; }));
+    expect("and leaves no control waiting", !window.prefixArmed());
+
+    // Ctrl+K then N opens the split question.
+    sendKey(&window, Qt::Key_K, Qt::ControlModifier);
+    pump(40);
+    sendKey(&window, Qt::Key_N, Qt::NoModifier);
     pump(120);
-    expect("Ctrl+Shift+N asks which way to divide rather than just dividing",
+    expect("Ctrl+K then N asks which way to divide rather than just dividing",
            window.overlayActive());
     expect("and the question offers Vertical then Horizontal",
            window.overlayChoices().size() == 2 && window.overlayChoices()[0] == "Vertical" &&
@@ -346,7 +377,9 @@ int main(int argc, char** argv) {
     // Answer with the H key: the new place stacks under the one looked at, so a fresh
     // stacked pair (same column and width, one above the other) appears.
     const int stacked_before = stacked_pairs();
-    sendKey(&window, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+    sendKey(&window, Qt::Key_K, Qt::ControlModifier);
+    pump(40);
+    sendKey(&window, Qt::Key_N, Qt::NoModifier);
     pump(120);
     sendKey(&window, Qt::Key_H, Qt::NoModifier);
     pump(300);
@@ -360,7 +393,9 @@ int main(int argc, char** argv) {
     // Answer with the V key: side by side, so a fresh pair sharing a row and height appears.
     const int side_before = side_pairs();
     const int panes_before_v = window.paneCount();
-    sendKey(&window, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+    sendKey(&window, Qt::Key_K, Qt::ControlModifier);
+    pump(40);
+    sendKey(&window, Qt::Key_N, Qt::NoModifier);
     pump(120);
     sendKey(&window, Qt::Key_V, Qt::NoModifier);
     pump(300);

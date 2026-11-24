@@ -1107,11 +1107,22 @@ public:
     // daemon; it knows Ctrl+Shift+S was pressed and that somebody asked to be told.
     std::function<void()> on_save_session;
     std::function<void()> on_session_menu;
-    // Ctrl+Shift+K: the settings menu, and through its `theme` row the colour editor.
-    // K is for configuration — the key is free
-    // of the held list (F, N, H) and of the chords the shell and the programs
-    // inside it already answer to.
+    // Ctrl+K then K: the settings menu, and through its `theme` row the colour editor.
     std::function<void()> on_settings_menu;
+    // Ctrl+K then R: enter resize mode, where the arrows stretch the place in hand.
+    std::function<void()> on_resize_mode;
+    // Ctrl+K then F: a file manager in a new place. Not wired to a real spawn yet; the
+    // key is reserved now so the surface is whole and the tty has no surprise later.
+    std::function<void()> on_file_manager;
+
+    // The tmux-style control: Ctrl+K arms a one-key command and the next key spends it.
+    // Captured always, so the shell never sees the Ctrl+K that kills its line — the cost
+    // of a single prefix that the future tty will need. `prefixArmed` lets a check ask.
+    bool prefixArmed() const { return prefix_armed_; }
+    // Whether the row of possible keys shows while the control waits. Off, arming still
+    // works, it just says nothing; a person who has learned the keys need no reminder.
+    void setShowKeyHints(bool on) { show_key_hints_ = on; update(); }
+    bool showKeyHints() const { return show_key_hints_; }
 
     // One line the window says for itself, shown in the corner for a moment and then
     // gone. A keybind that keeps your work and says nothing is a keybind that gets
@@ -1929,9 +1940,45 @@ public:
             return;
         }
 
+        // The tmux-style control. Ctrl+K arms a one-key command; the next key spends it
+        // and nothing else. It is captured always — the shell never sees the Ctrl+K that
+        // would kill its line — because a single prefix the future tty can lean on is
+        // worth more here than one readline shortcut the terminal cannot offer anyway.
+        if (!prefix_armed_ && mods.testFlag(Qt::ControlModifier) && !shift &&
+            key == Qt::Key_K) {
+            prefix_armed_ = true;
+            update();
+            ev->accept();
+            return;
+        }
+        if (prefix_armed_) {
+            prefix_armed_ = false; // spent, whatever the key turns out to be
+            bool spent = false;
+            switch (key) {
+                case Qt::Key_K: if (on_settings_menu) on_settings_menu(); spent = true; break;
+                case Qt::Key_N: askNewTab(); spent = true; break;
+                case Qt::Key_R: if (on_resize_mode) on_resize_mode(); else setStatusText("resize: not wired yet"); spent = true; break;
+                case Qt::Key_F: if (on_file_manager) on_file_manager(); else setStatusText("file manager: not wired yet"); spent = true; break;
+                case Qt::Key_S: if (on_save_session) on_save_session(); spent = true; break;
+                case Qt::Key_A: if (on_session_menu) on_session_menu(); spent = true; break;
+                case Qt::Key_Escape: spent = true; break; // a way back out that spends nothing
+                default: break;                            // some other key: give it to the shell
+            }
+            update();
+            if (spent) {
+                ev->accept();
+                return;
+            }
+            // Fall through with a disarmed control so an unrecognised key still reaches
+            // the shell, exactly as if the control had never been pressed.
+        }
+
         // Ctrl+Shift+C and Ctrl+Shift+V are the terminal's own, handled before
         // anything else and never written to the PTY. Without the early return
         // Ctrl+Shift+C would encode as Ctrl+C and interrupt whatever is running.
+        // These two stay on Ctrl+Shift while the rest of the window's commands moved
+        // behind Ctrl+K: copy and paste are reflexes worth keeping free of a prefix,
+        // and neither steals a key the shell or a program inside it needs.
         if (mods.testFlag(Qt::ControlModifier) && shift) {
             if (key == Qt::Key_C) {
                 copySelection();
@@ -1940,43 +1987,6 @@ public:
             if (key == Qt::Key_V) {
                 scroll_offset_ = 0;
                 pasteFromClipboard();
-                return;
-            }
-            // Ctrl+Shift+S keeps the shell this window is showing and starts a fresh
-            // one in its place; Ctrl+Shift+A asks for the list of kept sessions. Both
-            // belong to the window and never reach the shell: sent on, Ctrl+Shift+A
-            // would be a control character at the prompt and Ctrl+Shift+S at least a
-            // pause in flow control, both the opposite of what was asked.
-            //
-            // Here Qt can tell Ctrl+Shift+S from Ctrl+S, so plain Ctrl+S is left alone
-            // and goes to the shell, where it means what it always meant. A plain
-            // terminal cannot tell the two apart at all — a control letter arrives as
-            // one byte and Shift is not in it — which is why the attached view speaks of
-            // Ctrl+S and this window speaks of Ctrl+Shift+S. The letter is the same on
-            // purpose: it is the one that means keep, in both places.
-            if (key == Qt::Key_S && on_save_session) {
-                on_save_session();
-                return;
-            }
-            if (key == Qt::Key_A && on_session_menu) {
-                on_session_menu();
-                return;
-            }
-            if (key == Qt::Key_K && on_settings_menu) {
-                on_settings_menu();
-                return;
-            }
-            // Ctrl+Shift+N makes another place to work and moves this window into it;
-            // Ctrl+Shift+H changes how the places are looked at, one at a time with tabs or
-            // all of them at once. Both belong to the session rather than to this window,
-            // which is why the answer comes back on the tab bar and every other window
-            // looking at the same session sees the same thing happen.
-            if (key == Qt::Key_N) {
-                askNewTab();
-                return;
-            }
-            if (key == Qt::Key_H) {
-                toggleViewMode();
                 return;
             }
         }
@@ -2701,6 +2711,21 @@ public:
             p.fillRect(strip, ground(default_bg, 235));
             p.setPen(ink(theme_.foreground, 255));
             p.drawText(strip, Qt::AlignCenter, notice_);
+        }
+
+        // The control waiting on a key says so, and what it will take. Drawn over the
+        // work like the refusal line, because arming is a word from the window. When the
+        // hint is switched off the control still waits — it just keeps quiet about it.
+        if (prefix_armed_ && show_key_hints_) {
+            const QString line = QStringLiteral(
+                "Ctrl+K  ·  K settings  N new pane  R resize  F files  S save  A attach  Esc cancel");
+            const double row = cellHeight();
+            const double box = std::min(static_cast<double>(width()) - 2.0 * grid_pad,
+                                        fm.horizontalAdvance(line) + 2.0 * padding_);
+            const QRectF strip((width() - box) / 2.0, height() - grid_pad - row, box, row);
+            p.fillRect(strip, ground(default_bg, 245));
+            p.setPen(ink(theme_.foreground, 255));
+            p.drawText(strip, Qt::AlignCenter, line);
         }
 
         if (!mixer_)
@@ -5511,6 +5536,9 @@ private:
     int extra_generation_ = 0;
     std::string status_;
     QTimer* status_timer_ = nullptr;
+    // Ctrl+K waits for one key. Armed means that key has not arrived yet.
+    bool prefix_armed_ = false;
+    bool show_key_hints_ = true;
     Overlay overlay_;
     // The theme picker, when it is up: the model holds the decisions, and the
     // theme as it was on opening is kept so leaving with Esc puts the window
