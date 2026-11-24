@@ -300,8 +300,8 @@ one that has become somebody else's: **Ctrl+Shift+F** file manager, **Ctrl+Shift
 new tab, **Ctrl+Shift+H** switch between side-by-side panes and a tab view. The last two
 have had their keys since 2026-11-23: they ask the session, which owns the panes, and the
 answer comes back on the tab bar to every window looking at it. **H** changes the mode and
-every window learns it, but the window still draws one place at a time — the picture of
-several at once is the rest of step 2 below.
+every window learns it, and now every window draws the change: in side-by-side mode a window
+shows its places at once rather than one at a time.
 
 The rules behind it:
 
@@ -393,17 +393,28 @@ The order, and the reason each step is where it is:
    on a tab to jump — and the grid gives up a row to make room, with the click mapping moved to
    match so a press still lands on the character under the pointer.
 
-   Still here: two panes' screens drawn in one window at once, the dividers from
-   `dividerRects()`, and a drag of one divider at a time going to `resizeDivider`.
+   A window now draws two places at once (2026-11-23): in side-by-side mode it opens a second
+   connection to the other place, keeps a screen and a reader for it, and paints both into the
+   cells the bar named, on a hairline divider. Clicking a half moves the typing to it — a place
+   you can see but cannot type into would be a picture of a split, not a split — and one block
+   cursor marks the half being typed into. The connection opens at the window's whole size,
+   never its cell, so a second view does not shrink the session; the neighbour reads on its own
+   thread and minds the same "quiet, not gone" rule the window's own reader does. A window onto
+   a session does this on its own; one handed a connection shows exactly the place it was given.
+
+   Still here: the dividers from `dividerRects()`, and a drag of one divider at a time going to
+   `resizeDivider`. Also not yet here, and deliberately left for after the two-place drawing
+   worked: more than two places in one window, a cursor or selection of its own in each half,
+   and history in a neighbour's half (a neighbour paints its live screen, not its scrollback).
 3. **Tabs and windows** — **Ctrl+Shift+N** a new tab, **Ctrl+Shift+H** between side-by-side
    and a tab view, both reserved since 2026-11-17 so nothing else could take them. Both keys
    are wired (2026-11-23): `NewPane`, `ClosePane` and `SetViewMode` on the wire, refused out
    loud when asked for something that is not there — the last place in a session, or a mode
    that is neither of the two. A refusal no longer closes the window that caused it and is
    said along the bottom of it instead; a place shown on its own fills the window, and the
-   one a window is looking at is marked in the accent. What is left of this step is the
-   drawing that follows **Ctrl+Shift+H** — the panes' contents side by side, which needs a
-   screen and a connection per pane in the window.
+   one a window is looking at is marked in the accent. The drawing that follows **Ctrl+Shift+H**
+   — the panes' contents side by side, a screen and a connection per pane in the window — is
+   built (2026-11-23, step 2 above): pressing H now changes the picture.
 4. **The attached view emulates the screen instead of relaying bytes.** The status line above
    already needs it; so do panes in a tty, and the prefix key below. kai-term is in an odd
    position here — `screen.hpp` and the parser are Qt-free, which is how the tests run
@@ -442,9 +453,9 @@ The daemon holds one per session and answers for it — `command=layout` reads i
 and `kai-term set-layout ID < FILE`. A whole arrangement is read before any of it is applied,
 so a file with a typo in it is refused and names the line, and the session keeps what it had.
 What follows it now: the daemon runs a program per pane, a view is routed to the one it is
-looking at, and a window draws a tab bar for the session's places. Drawing several panes at
-once, and the dividers between them, are the rest of step 2 — which is also what
-`dividerRects()` is for.
+looking at, a window draws a tab bar for the session's places, and — since 2026-11-23 — a
+window draws several panes' contents at once. What is left of step 2 is the dividers between
+them, which is what `dividerRects()` is for.
 
 The size of a session went with it: **the smallest view wins**, retiring the rule the daemon
 had from the beginning, that the last view to speak decides. Two windows on one session used
