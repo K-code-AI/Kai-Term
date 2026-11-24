@@ -247,14 +247,22 @@ private:
                         PaneRect cell;
                         int* const parts[4] = {&cell.row, &cell.col, &cell.rows, &cell.cols};
                         bool read = true;
-                        for (int* part : parts) {
+                        for (int i = 0; i < 4; ++i) {
                             const std::size_t comma = one.find(',', mark);
-                            const std::string piece = one.substr(
-                                mark, comma == std::string::npos ? std::string::npos
-                                                                 : comma - mark);
-                            if (comma == std::string::npos && mark + 1 < one.size())
+                            // The first three numbers must be followed by a comma; the
+                            // last runs to the end of the group. Anything else is a cell
+                            // that did not arrive whole.
+                            if (i < 3 && comma == std::string::npos) {
                                 read = false;
-                            *part = number(piece);
+                                break;
+                            }
+                            const std::string piece = comma == std::string::npos
+                                                          ? one.substr(mark)
+                                                          : one.substr(mark, comma - mark);
+                            if (piece.empty() ||
+                                piece.find_first_not_of("0123456789") != std::string::npos)
+                                read = false;
+                            *parts[i] = number(piece);
                             mark = comma == std::string::npos ? one.size() : comma + 1;
                         }
                         if (read && cell.valid())
