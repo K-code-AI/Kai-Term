@@ -151,7 +151,10 @@ public:
     // Making, ending, and re-looking-at places: all asked of the daemon, which is where the
     // places are. The answer comes back on the tab bar, so this window finds out the same
     // way every other window on the session does.
-    void newPane() override { static_cast<void>(client_.send(MsgKind::NewPane)); }
+    void newPane(bool side_by_side) override {
+        static_cast<void>(client_.send(
+            MsgKind::NewPane, encodeFields({{"dir", side_by_side ? "v" : "h"}})));
+    }
     void closePane() override { static_cast<void>(client_.send(MsgKind::ClosePane)); }
     void setViewMode(bool tabs) override {
         static_cast<void>(client_.send(

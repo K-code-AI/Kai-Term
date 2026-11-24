@@ -1405,12 +1405,22 @@ private:
                     const int leaf = slot >= 0 && static_cast<size_t>(slot) < before.size()
                                          ? before[static_cast<size_t>(slot)]
                                          : record->layout.layout.focused();
+                    // Which way to divide comes from the asking view: "h" stacks the new
+                    // place underneath, anything else (the default) puts it beside.
+                    const std::string dir = fieldValue(decodeFields(frame.body), "dir", "v");
+                    const Split how = dir == "h" ? Split::UpDown : Split::LeftRight;
                     int made = -1;
                     {
                         std::lock_guard<std::mutex> lock(record->layout_mutex);
-                        made = record->layout.layout.splitPane(leaf, Split::LeftRight,
+                        made = record->layout.layout.splitPane(leaf, how,
                                                                record->rows.load(),
                                                                record->cols.load());
+                        // Share the room evenly. Splitting the place in hand and leaving the
+                        // ratios alone halves each new place down to a sliver beside a fat
+                        // first one; rebalancing the whole tree by leaf count keeps every
+                        // place an equal slice, which is what "split" should feel like.
+                        if (made >= 0)
+                            record->layout.layout.evenize();
                     }
                     if (made < 0) {
                         static_cast<void>(detail::sendFrame(

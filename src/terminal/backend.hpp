@@ -122,7 +122,11 @@ public:
         return false;
     }
 
-    virtual void newPane() {}
+    // Make another place. `side_by_side` says which way to divide the place being looked
+    // at: side by side puts a vertical divider (a place to the right), otherwise a
+    // horizontal one stacks a place underneath. The default is the vertical, side-by-side
+    // split, which is what a lone "new" key has always meant.
+    virtual void newPane(bool side_by_side = true) {}
     virtual void closePane() {}
     virtual void setViewMode(bool /*tabs*/) {}
 
