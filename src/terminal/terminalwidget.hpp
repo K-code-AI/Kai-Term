@@ -2098,10 +2098,6 @@ public:
         // holding the alternate screen.
         const double grid_pad = activePadding();
         const double grid_top = gridTop();
-        // Selection is drawn as a solid band with light text so it stays legible
-        // whatever colours the application had chosen for those cells.
-        const Color selection_bg = theme_.selection;
-        const Color selection_fg = theme_.selection_foreground;
 
         // The tab bar: one place to look at per tab, with the one this window is looking
         // at marked. The tabs are numbered rather than named after the program inside them,
@@ -2148,58 +2144,8 @@ public:
             // narrower than the current screen after a resize.
             const int line_cols = std::min(cols_, static_cast<int>(line.size()));
             for (int c = 0; c < line_cols; ++c) {
-                const Cell& cell = line[c];
-                const double x = grid_pad + c * cw;
-                const double y = grid_top + r * ch;
-
-                // Blank cells are skipped below, so the highlight for them has
-                // to be painted here or a dragged band would show gaps.
-                if (selectedAt(r, c) && (cell.text.empty() || cell.width <= 0)) {
-                    p.fillRect(QRectF(x, y, cw, ch), ground(selection_bg));
-                }
-
-                if (cell.text.empty() || cell.width <= 0)
-                    continue;
-                if (cell.attr.hidden)
-                    continue;
-
-                Color fg = cellColour(cell.fg, cell.fg_role, true);
-                Color bg = cellColour(cell.bg, cell.bg_role, false);
-                if (cell.attr.reverse)
-                    std::swap(fg, bg);
-                if (selectedAt(r, c)) {
-                    bg = selection_bg;
-                    fg = selection_fg;
-                }
-
-                if (bg.r != default_bg.r || bg.g != default_bg.g || bg.b != default_bg.b)
-                    p.fillRect(QRectF(x, y, cw * cell.width, ch), ground(bg));
-
-                QFont f = font_;
-                if (cell.attr.bold)
-                    f.setBold(true);
-                if (cell.attr.italic)
-                    f.setItalic(true);
-                p.setFont(f);
-                p.setPen(ink(fg, cell.attr.dim ? 180 : 255));
-
-                QString text = QString::fromUtf8(cell.text.c_str(), cell.text.size());
-                p.drawText(QPointF(x, y + fm.ascent()), text);
-
-                // Underline, strike and overline are independent attributes, so
-                // each draws its own line. Sharing one variable for the position
-                // made the last of them win, which is how a struck-out word with an
-                // underline on lost its underline.
-                if (cell.attr.underline || cell.attr.strike || cell.attr.overline) {
-                    p.setPen(QPen(ink(fg), 1.0));
-                    const double right = x + cw * cell.width;
-                    if (cell.attr.underline)
-                        p.drawLine(QPointF(x, y + ch - 1.5), QPointF(right, y + ch - 1.5));
-                    if (cell.attr.strike)
-                        p.drawLine(QPointF(x, y + ch / 2.0), QPointF(right, y + ch / 2.0));
-                    if (cell.attr.overline)
-                        p.drawLine(QPointF(x, y + 0.5), QPointF(right, y + 0.5));
-                }
+                paintCell(p, fm, cw, ch, grid_pad + c * cw, grid_top + r * ch, line[c],
+                          selectedAt(r, c), default_bg);
             }
         }
 
@@ -2301,6 +2247,72 @@ public:
             paintPicker(p);
         paintSettings(p);
         paintMixer(p); // on top of the list it was opened from
+    }
+
+    // Draw one cell of one screen at the pixel where it sits. This is the whole
+    // of what "paint this grid" means for a single character, and it is one
+    // method rather than a loop body because a window that shows a session side
+    // by side paints two grids and they must be the *same* painting: two copies
+    // of these rules is two chances for the second place to gain an underline the
+    // first lost, or for a selected band to be legible in one half and not the
+    // other. `selected` is passed in rather than asked of a selection, because
+    // which cells are highlighted is the caller's business — the screen being
+    // looked at has a selection, a neighbour shown beside it does not.
+    void paintCell(QPainter& p, const QFontMetricsF& fm, double cw, double ch, double x,
+                   double y, const Cell& cell, bool selected, const Color& default_bg) const {
+        // Selection is drawn as a solid band with light text so it stays legible
+        // whatever colours the application had chosen for those cells.
+        const Color selection_bg = theme_.selection;
+        const Color selection_fg = theme_.selection_foreground;
+
+        // Blank cells are skipped below, so the highlight for them has
+        // to be painted here or a dragged band would show gaps.
+        if (selected && (cell.text.empty() || cell.width <= 0)) {
+            p.fillRect(QRectF(x, y, cw, ch), ground(selection_bg));
+        }
+
+        if (cell.text.empty() || cell.width <= 0)
+            return;
+        if (cell.attr.hidden)
+            return;
+
+        Color fg = cellColour(cell.fg, cell.fg_role, true);
+        Color bg = cellColour(cell.bg, cell.bg_role, false);
+        if (cell.attr.reverse)
+            std::swap(fg, bg);
+        if (selected) {
+            bg = selection_bg;
+            fg = selection_fg;
+        }
+
+        if (bg.r != default_bg.r || bg.g != default_bg.g || bg.b != default_bg.b)
+            p.fillRect(QRectF(x, y, cw * cell.width, ch), ground(bg));
+
+        QFont f = font_;
+        if (cell.attr.bold)
+            f.setBold(true);
+        if (cell.attr.italic)
+            f.setItalic(true);
+        p.setFont(f);
+        p.setPen(ink(fg, cell.attr.dim ? 180 : 255));
+
+        QString text = QString::fromUtf8(cell.text.c_str(), cell.text.size());
+        p.drawText(QPointF(x, y + fm.ascent()), text);
+
+        // Underline, strike and overline are independent attributes, so
+        // each draws its own line. Sharing one variable for the position
+        // made the last of them win, which is how a struck-out word with an
+        // underline on lost its underline.
+        if (cell.attr.underline || cell.attr.strike || cell.attr.overline) {
+            p.setPen(QPen(ink(fg), 1.0));
+            const double right = x + cw * cell.width;
+            if (cell.attr.underline)
+                p.drawLine(QPointF(x, y + ch - 1.5), QPointF(right, y + ch - 1.5));
+            if (cell.attr.strike)
+                p.drawLine(QPointF(x, y + ch / 2.0), QPointF(right, y + ch / 2.0));
+            if (cell.attr.overline)
+                p.drawLine(QPointF(x, y + 0.5), QPointF(right, y + 0.5));
+        }
     }
 
 private:
