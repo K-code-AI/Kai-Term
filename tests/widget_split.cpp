@@ -18,6 +18,7 @@
 #include <QMouseEvent>
 #include <QPoint>
 #include <QPointF>
+#include <QWheelEvent>
 #include <chrono>
 #include <functional>
 #include <iostream>
@@ -78,6 +79,14 @@ void runLine(kai::TerminalWidget* w, const std::string& command) {
 void sendMouse(kai::TerminalWidget* w, QEvent::Type type, Qt::MouseButton button,
                Qt::MouseButtons buttons, const QPointF& at) {
     QMouseEvent ev(type, at, at, button, buttons, Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &ev);
+}
+
+// Roll the wheel a notch at a point, the way a hand does: the sign of the angle says
+// which way, and the widget maps it to lines the same way it does for a real wheel.
+void sendWheel(kai::TerminalWidget* w, const QPointF& at, int angle_y) {
+    QWheelEvent ev(at, w->mapToGlobal(at.toPoint()), QPoint(0, 0), QPoint(0, angle_y),
+                   Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
     QCoreApplication::sendEvent(w, &ev);
 }
 
@@ -145,9 +154,19 @@ int main(int argc, char** argv) {
     window.resize(800, 500);
     window.show();
     pump(300);
+    // Give the window the one thing a window onto a session has that a bare widget
+    // does not: a way to open a neighbour connection. Everything after is the window's
+    // own doing — which is exactly what a real window does, and it is what lets a click
+    // move the focus from one place to another.
+    window.setPaneConnector([&window](int pane) -> std::unique_ptr<TerminalBackend> {
+        auto neighbour = std::make_unique<SessionBackend>("split", window.rows(),
+                                                          window.cols());
+        neighbour->showPane(pane);
+        return neighbour;
+    });
 
-    // A second place, so there are two halves to draw. Asked of the window rather than
-    // of the daemon directly, because a place is added the way a person adds one.
+    // A second place, so there are two to draw. Asked of the window rather than of the
+    // daemon directly, because a place is added the way a person adds one.
     window.newTab();
     expect("the session is running two programs",
            waitFor([&daemon] {
@@ -160,93 +179,117 @@ int main(int argc, char** argv) {
            waitFor([&window] { return window.paneCount() == 2; }));
     expect("shown side by side, which is where two places share the screen",
            waitFor([&window] { return !window.viewIsTabs(); }));
+    expect("and the window opened a neighbour for the other place on its own",
+           waitFor([&window] { return window.hasExtraPane(); }));
 
-    // A new place takes the focus, so the window would be looking at the second one.
-    // Look it back at the first, the way clicking that tab would, so this test says
-    // which half is which rather than following wherever the session happened to point.
+    // A new place takes the focus, so the window is looking at the second one. Look it
+    // back at the first, the way clicking that tab would, so this test says which half
+    // is which rather than following wherever the session happened to point.
     window.showPaneAt(0);
-    pump(200);
+    pump(250);
     expect("and the window is looking at the first place", window.shownPane() == 0);
 
     // Each place prints something only it says, so a marker found in the right place
-    // was painted from the right program and not copied from its neighbour.
-    expect("the first place is asked to print",
-           daemon.type("split", "echo LEFT-PLACE-MARKER\n", 0));
-    expect("and the second place too",
-           daemon.type("split", "echo RIGHT-PLACE-MARKER\n", 1));
-    pump(700);
-
-    // The window is looking at one place; the other is not its screen yet, so its
-    // marker must not be on the screen this window shows.
+    // came from the right program and not from its neighbour. The place being looked at
+    // is the window's own screen; the other is a neighbour's.
+    runLine(&window, "echo LEFT-PLACE-MARKER");
     expect("the place being looked at has its marker on the window's screen",
-           onScreen(window).find("LEFT-PLACE-MARKER") != std::string::npos);
-    expect("and the other place's marker is not there before it is shown",
-           onScreen(window).find("RIGHT-PLACE-MARKER") == std::string::npos);
-
-    // Hand the window a second connection, pointed at the other place. The window
-    // gives it a screen and a reader of its own and paints it where the tab bar says
-    // that place sits.
-    auto second = std::make_unique<SessionBackend>("split", 24, 80);
-    second->showPane(1);
-    window.setExtraPane(std::move(second), 1);
-    pump(500);
-
-    expect("the other place now has a screen inside the window",
+           waitFor([&window] { return onScreen(window).find("LEFT-PLACE-MARKER") != std::string::npos; }));
+    expect("the second place is asked to print",
+           daemon.type("split", "echo RIGHT-PLACE-MARKER\n", 1));
+    expect("and its marker lands in the neighbour, not the window's own screen",
            waitFor([&window] {
-               return window.extraScreenText().find("RIGHT-PLACE-MARKER") != std::string::npos;
+               return window.neighbourText(1).find("RIGHT-PLACE-MARKER") != std::string::npos &&
+                      onScreen(window).find("RIGHT-PLACE-MARKER") == std::string::npos;
            }));
 
     // Both places painted at once: ink in the left cell and ink in the right, in the
     // same window. This is the thing that was missing — pressing H used to change
     // nothing a person could see.
     const QImage shot = window.grab().toImage();
-    expect("the first place is drawn in the left half",
-           inkInColumns(shot, &window, 0, 39));
-    expect("and the second place is drawn in the right half",
-           inkInColumns(shot, &window, 40, 80));
+    expect("the first place is drawn in the left half", inkInColumns(shot, &window, 0, 39));
+    expect("and the second place is drawn in the right half", inkInColumns(shot, &window, 40, 80));
 
-    // Typing goes to the half that was clicked. The window starts by typing into the
-    // place it is looking at; a click moves it, and the marker proves which program
-    // took the keystrokes.
+    // Clicking a place looks at it: the focus, the highlight and the typing all move
+    // there, and the place this window used to look at becomes the neighbour.
     const int right_col = 50; // well inside the second place's cell
     sendMouse(&window, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton,
               cellPoint(&window, 1, right_col));
     sendMouse(&window, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
               cellPoint(&window, 1, right_col));
-    pump(120);
-    expect("clicking the second place moves the typing to it",
-           window.activePane() == 1);
-    runLine(&window, "echo TYPED-INTO-SECOND");
-    expect("the second place takes what was typed",
-           waitFor([&window] {
-               return window.extraScreenText().find("TYPED-INTO-SECOND") != std::string::npos;
+    pump(250);
+    expect("clicking a place looks at it", window.activePane() == 1);
+    expect("and its own screen is now the window's, showing its marker",
+           waitFor([&window] { return onScreen(window).find("RIGHT-PLACE-MARKER") != std::string::npos; }));
+    expect("while the place left behind becomes a neighbour that still shows its marker",
+           waitFor([&window] { return window.neighbourText(0).find("LEFT-PLACE-MARKER") != std::string::npos; }));
+
+    // Typing now goes to the place being looked at — the one just clicked — with no
+    // need to first select the other and click back. This was the reported breakage:
+    // reaching a place by clicking its tab or Ctrl+Shift+Right used to leave it untypeable.
+    runLine(&window, "echo TYPED-AFTER-CLICK");
+    expect("the place looked at takes what was typed",
+           waitFor([&window] { return onScreen(window).find("TYPED-AFTER-CLICK") != std::string::npos; }));
+    expect("and the neighbour is left alone",
+           window.neighbourText(0).find("TYPED-AFTER-CLICK") == std::string::npos);
+
+    // Ctrl+Shift+Right moves the look the same way a click does, and typing follows.
+    sendKey(&window, Qt::Key_Right, Qt::ControlModifier | Qt::ShiftModifier);
+    pump(250);
+    expect("Ctrl+Shift+Right moves the look to the next place", window.activePane() == 0);
+    expect("and that place is now the window's own screen",
+           waitFor([&window] { return onScreen(window).find("LEFT-PLACE-MARKER") != std::string::npos; }));
+
+    // A third place. The window must show all three at once, not have the second and
+    // third fight for the one slot beside the first.
+    window.newTab();
+    expect("the session is running three programs",
+           waitFor([&daemon] {
+               for (const SessionInfo& info : daemon.list())
+                   if (info.name == "split")
+                       return info.panes == 3;
+               return false;
            }));
-    expect("and the first place is left alone",
-           onScreen(window).find("TYPED-INTO-SECOND") == std::string::npos);
-
-    // Clicking back moves the typing to the first place.
-    sendMouse(&window, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton,
-              cellPoint(&window, 1, 5));
-    sendMouse(&window, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
-              cellPoint(&window, 1, 5));
-    pump(120);
-    expect("clicking the first place moves the typing back",
-           window.activePane() == 0);
-    runLine(&window, "echo TYPED-INTO-FIRST");
-    expect("the first place takes what was typed",
+    window.showPaneAt(0);
+    pump(400);
+    expect("with two neighbours drawn beside the place being looked at",
            waitFor([&window] {
-               return onScreen(window).find("TYPED-INTO-FIRST") != std::string::npos;
+               return window.neighbourText(1).find("RIGHT-PLACE-MARKER") != std::string::npos;
            }));
-    expect("and the second place is left alone",
-           window.extraScreenText().find("TYPED-INTO-FIRST") == std::string::npos);
+    expect("the third place is asked to print",
+           daemon.type("split", "echo THIRD-PLACE-MARKER\n", 2));
+    expect("and it appears in its own neighbour",
+           waitFor([&window] {
+               return window.neighbourText(2).find("THIRD-PLACE-MARKER") != std::string::npos;
+           }));
+    const QImage three = window.grab().toImage();
+    expect("all three places are painted: ink in the left, middle and right",
+           inkInColumns(three, &window, 2, 22) && inkInColumns(three, &window, 26, 44) &&
+               inkInColumns(three, &window, 50, 88));
 
-    // Taking the extra place away must not leave a thread reading a closed connection.
-    window.setExtraPane(nullptr, -1);
-    pump(200);
-    expect("the window has no extra place once it is taken away",
-           !window.hasExtraPane());
+    // Each place scrolls on its own. Fill two of them with lines, then scroll the place
+    // being looked at and check only it moved, then scroll a neighbour and check only it
+    // moved. A split where one wheel moved both, or neither, would show up here.
+    runLine(&window, "seq 1 200");
+    pump(500);
+    daemon.type("split", "seq 1 200\n", 1);
+    pump(500);
+    // Scroll the place being looked at (left third) with the wheel.
+    const QPointF left = cellPoint(&window, 5, 5);
+    sendWheel(&window, left, +120);
+    pump(120);
+    expect("the place being looked at scrolls back", window.scrollOffset() > 0);
+    expect("and its neighbour does not move with it", window.neighbourScrollAt(1) == 0);
+    // Scroll a neighbour (the middle place); the place being looked at must stay put.
+    const int was_focused = window.scrollOffset();
+    const QPointF middle = cellPoint(&window, 5, 32); // solidly inside the middle place
+    sendWheel(&window, middle, +120);
+    pump(120);
+    expect("a neighbour scrolls on its own", window.neighbourScrollAt(1) > 0);
+    expect("and the place being looked at does not move with it",
+           window.scrollOffset() == was_focused);
 
-    expect("the session still runs after the second view is let go",
+    expect("the session still runs after all this",
            waitFor([&daemon] {
                for (const SessionInfo& info : daemon.list())
                    if (info.name == "split")
@@ -254,71 +297,19 @@ int main(int argc, char** argv) {
                return false;
            }));
 
-    // The window above was handed its neighbour. A real window onto a session is not:
-    // it is given a way to open one and shows its places side by side by itself. That
-    // is what a window onto a session does with a connector, and it is checked here on
-    // a plain widget so the whole thing runs without a compositor — the same seam the
-    // app wires up, minus the app's own config.
-    SessionSpec auto_spec;
-    auto_spec.name = "auto";
-    auto_spec.rows = 24;
-    auto_spec.cols = 80;
-    expect("a second session starts, to be shown side by side on its own",
-           daemon.create(auto_spec, error));
-    pump(400);
-
-    kai::TerminalWidget auto_window(24, 80,
-                                    std::make_unique<SessionBackend>("auto", 24, 80));
-    auto_window.resize(800, 500);
-    auto_window.show();
-    pump(300);
-    // The only thing this window is given that the first one was not: a way to ask for
-    // a neighbour connection. Everything after is the window's own doing.
-    auto_window.setPaneConnector([&auto_window](int pane) -> std::unique_ptr<TerminalBackend> {
-        auto neighbour = std::make_unique<SessionBackend>("auto", auto_window.rows(),
-                                                          auto_window.cols());
-        neighbour->showPane(pane);
-        return neighbour;
-    });
-    expect("a window with one place shows no neighbour", !auto_window.hasExtraPane());
-
-    // Add a place the way a person does. The window should find the other place and
-    // open a connection to it without anyone handing it one.
-    auto_window.newTab();
-    expect("adding a place makes the window open a neighbour on its own",
-           waitFor([&auto_window] { return auto_window.hasExtraPane(); }));
-    expect("and the neighbour is a place other than the one being looked at",
-           waitFor([&auto_window] {
-               return auto_window.hasExtraPane() &&
-                      auto_window.extraScreenText().find("RIGHT") == std::string::npos;
-           }));
-    daemon.type("auto", "echo AUTO-NEIGHBOUR-MARKER\n", auto_window.shownPane() == 0 ? 1 : 0);
-    pump(500);
-    expect("the neighbour the window opened is showing the other place",
-           waitFor([&auto_window] {
-               return auto_window.extraScreenText().find("AUTO-NEIGHBOUR-MARKER") !=
-                      std::string::npos;
-           }));
-
-    // Going back to one-place-at-a-time tabs takes the neighbour away; the window is
-    // then the whole screen and has nothing beside it.
-    auto_window.toggleViewMode();
+    // A real window onto a session also drops its neighbours when the view goes back to
+    // one place at a time, and brings them back on side-by-side.
+    window.toggleViewMode();
     expect("tabs mode leaves no neighbour beside the window",
-           waitFor([&auto_window] { return auto_window.viewIsTabs() && !auto_window.hasExtraPane(); }));
-    // And coming back to side-by-side opens one again.
-    auto_window.toggleViewMode();
-    expect("side by side opens the neighbour again",
-           waitFor([&auto_window] { return !auto_window.viewIsTabs() && auto_window.hasExtraPane(); }));
-
-    auto_window.shutdown();
-    static_cast<void>(daemon.kill("auto", error));
-
-    // Leave nothing running for the next test to trip over.
-    static_cast<void>(daemon.kill("split", error));
+           waitFor([&window] { return window.viewIsTabs() && !window.hasExtraPane(); }));
+    window.toggleViewMode();
+    expect("side by side opens the neighbours again",
+           waitFor([&window] { return !window.viewIsTabs() && window.hasExtraPane(); }));
 
     // Put the window down before the daemon it is watching, so its readers are joined
     // while the far end is still there to say goodbye; then stop serving and wait.
     window.shutdown();
+    static_cast<void>(daemon.kill("split", error));
     daemon.stop();
     serving.join();
 
