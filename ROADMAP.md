@@ -399,8 +399,11 @@ The order, and the reason each step is where it is:
    and a tab view, both reserved since 2026-11-17 so nothing else could take them. Both keys
    are wired (2026-11-23): `NewPane`, `ClosePane` and `SetViewMode` on the wire, refused out
    loud when asked for something that is not there — the last place in a session, or a mode
-   that is neither of the two. What is left of this step is the drawing that follows
-   **Ctrl+Shift+H**.
+   that is neither of the two. A refusal no longer closes the window that caused it and is
+   said along the bottom of it instead; a place shown on its own fills the window, and the
+   one a window is looking at is marked in the accent. What is left of this step is the
+   drawing that follows **Ctrl+Shift+H** — the panes' contents side by side, which needs a
+   screen and a connection per pane in the window.
 4. **The attached view emulates the screen instead of relaying bytes.** The status line above
    already needs it; so do panes in a tty, and the prefix key below. kai-term is in an odd
    position here — `screen.hpp` and the parser are Qt-free, which is how the tests run
