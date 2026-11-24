@@ -261,6 +261,26 @@ public:
     // grid is built out of.
     void equalise() { equaliseNode(root_); }
 
+    // Share the space so every pane gets the same slice of the area its split divides.
+    // `equalise` puts each divider in the middle, which for a chain of same-direction splits
+    // leaves the first pane twice the width of the next (40, 20, 20) — the reason pressing
+    // "new pane" a few times drifts into one fat place and a row of slivers. Here a branch's
+    // ratio becomes the leaf count on its near side over the leaf count of the whole branch,
+    // so a chain of k same-direction splits gives k equal cells and repeated splits stay
+    // even. It only moves ratios, never the shape, so a deliberate nested arrangement (one
+    // half and two stacked) is left alone until the next split asks for room.
+    void evenize() { evenizeNode(root_); }
+
+    // How many panes hang beneath a node; one for a leaf.
+    int leafCount(int at) const {
+        if (at == kNil)
+            return 0;
+        const Node& n = nodes_[static_cast<size_t>(at)];
+        if (n.leaf)
+            return 1;
+        return leafCount(n.first) + leafCount(n.second);
+    }
+
     // One rect per pane, in `panes()` order. A divider costs a cell, which the window draws
     // and which `dividerCells` counts, so that a check can add the whole screen up and find
     // no hole in it.
@@ -622,6 +642,20 @@ private:
         n.ratio = 0.5;
         equaliseNode(n.first);
         equaliseNode(n.second);
+    }
+
+    void evenizeNode(int at) {
+        if (at == kNil)
+            return;
+        Node& n = nodes_[static_cast<size_t>(at)];
+        if (n.leaf)
+            return;
+        const int left = leafCount(n.first);
+        const int total = left + leafCount(n.second);
+        if (total > 0)
+            n.ratio = static_cast<double>(left) / static_cast<double>(total);
+        evenizeNode(n.first);
+        evenizeNode(n.second);
     }
 
     int newLeaf() {

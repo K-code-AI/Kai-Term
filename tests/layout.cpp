@@ -163,6 +163,35 @@ int main() {
     }
 
     {
+        // Repeated splits in one direction stay even. Filling a wide window means pressing
+        // "new place" a few times, each split dividing the place you are looking at; without
+        // a rebalance the second and third new place are halved into slivers beside a fat
+        // first one, which is the uneven split the report was about.
+        Layout l;
+        l.splitPane(l.focused(), Split::LeftRight, 24, 80);
+        l.splitPane(l.focused(), Split::LeftRight, 24, 80);
+        l.splitPane(l.focused(), Split::LeftRight, 24, 80);
+        const std::vector<CellRect> before = l.rects(24, 80);
+        int widest_before = 0, narrowest_before = 999;
+        for (const CellRect& one : before) {
+            widest_before = std::max(widest_before, one.cols);
+            narrowest_before = std::min(narrowest_before, one.cols);
+        }
+        expect("three same-direction splits make four places", before.size() == 4);
+        expect("and left alone they are uneven — the fat-first-pane the report saw",
+               widest_before - narrowest_before > 1);
+        l.evenize();
+        const std::vector<CellRect> after = l.rects(24, 80);
+        int widest = 0, narrowest = 999;
+        for (const CellRect& one : after) {
+            widest = std::max(widest, one.cols);
+            narrowest = std::min(narrowest, one.cols);
+        }
+        expect("evenize shares the width evenly, within a cell", widest - narrowest <= 1);
+        expect("and it does that without putting a hole in the screen", tiles(l, 24, 80));
+    }
+
+    {
         // A 4x4 is what happens when the same split is asked for evenly: sixteen panes, and
         // the odd cell from an indivisible width going somewhere sensible rather than to
         // the last pane as a bonus.
