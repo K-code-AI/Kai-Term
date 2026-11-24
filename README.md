@@ -7,8 +7,8 @@ Kai-Term is a native Linux terminal workspace: a terminal emulator, a dual-pane 
 M1 (the native terminal emulator), M2 (input reliability: text selection,
 clipboard, paste, and mouse reporting) and M3 (native session infrastructure) are
 implemented and tested, and M4 (the native multiplexer) has its first pieces: every
-window's shell is held by the session daemon, **Ctrl+Shift+S** keeps one and starts a
-fresh shell in the same window, **Ctrl+Shift+A** brings a kept one back, and closing a
+window's shell is held by the session daemon, **Ctrl+K then S** keeps one and starts a
+fresh shell in the same window, **Ctrl+K then A** brings a kept one back, and closing a
 window with something running asks rather than ends. M1 and M2 have been used at a live
 Wayland session. Of M3 and M4, the keep-this-shell keybind and the close question have
 been used at a live Wayland session — on niri, by Kaida — and the dialog's current shape
@@ -272,7 +272,7 @@ Verified results on this machine:
   it is looking at, typing after the switch reaches the new shell and not the old one, a
   kept session outlives the window moving on and an unsaved one does not.
 - `kai-term-app-window` prints `PASS: 386 application window checks passed`: a window
-  gets a shell held by the daemon without asking for one, Ctrl+Shift+S keeps it and
+  gets a shell held by the daemon without asking for one, Ctrl+K then S keeps it and
   starts a fresh one in the same window, a kept session comes back into the window that
   asks for it, and the program the close prompt would name is the one that is running —
   and, offscreen, that closing such a window really does put the question up, that the
@@ -376,10 +376,20 @@ the daemon is started if it is not there. If it cannot be started the window say
 once in the corner and runs a shell of its own, which works the same except that
 nothing can be kept.
 
-- **Ctrl+Shift+S** keeps the shell this window is showing and starts a fresh one in the
+**Ctrl+K** is the control: press it, and the terminal waits for one more key and then
+does that one thing. A line along the bottom lists the keys while it waits (switch it off
+under Settings → keybind hints). It is captured always, so the shell loses its readline
+kill-line to the prefix — a single control the future tty can lean on is worth more here
+than one shortcut the terminal could not offer anyway, and Ctrl+U still clears the line.
+The keys: **K** settings, **N** a new place (asks Vertical or Horizontal), **R** resize
+mode, **F** a file manager, **S** save this session, **A** bring one back, **Esc** to back
+out. Copy and paste stay on **Ctrl+Shift+C** / **Ctrl+Shift+V**, and **Ctrl+Shift+Left** /
+**Ctrl+Shift+Right** still step along the places — reflexes that cost the shell nothing.
+
+- **Ctrl+K, then S** keeps the shell this window is showing and starts a fresh one in the
   same window. The window stays, because what ended was the shell, not the window. The
   kept session gets a name (`s1`, `s2`, …) and the corner says which.
-- **Ctrl+Shift+A** puts the list of sessions you could go back to inside the terminal
+- **Ctrl+K, then A** puts the list of sessions you could go back to inside the terminal
   itself, drawn in its own font and walked like any TUI picker: Up/Down or j/k move the
   highlight, Enter goes, Esc puts it away, and the number keys jump straight to a row.
   Each row says what is happening in the session — `s1  sleep running  kept`,
@@ -390,7 +400,7 @@ nothing can be kept.
   with it; a session that was kept is asked about by nobody, since its work goes
   on whether or not this window is looking at it.
 
-- **Ctrl+Shift+K** opens the settings menu over the grid — font size, the two
+- **Ctrl+K, then K** opens the settings menu over the grid — font size, the two
   transparencies, padding, scrollback, cursor style, when closing asks, and which theme
   is being worn — walked
   with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, and one
@@ -472,10 +482,11 @@ nothing can be kept.
   sentence about arrow keys.
 
 - Plain **Ctrl+S** is left alone and goes to the shell, where it stops and starts
-  output the way it always has. That is why the key above has Shift in it: a terminal
-  cannot tell Ctrl+S from Ctrl+Shift+S — a control letter arrives as one byte and Shift
-  is not in it — so claiming the letter would take it away from every program in the
-  window. Qt can tell them apart, which is why the window can have the letter at all.
+  output the way it always has. That is why the save command sits behind the control:
+  a terminal cannot tell Ctrl+S from a shifted Ctrl+S — a control letter arrives as one
+  byte and Shift is not in it — so claiming the bare letter would take it away from every
+  program in the window. The commands are the second key of **Ctrl+K**, which Qt can tell
+  from anything the shell receives, so the window has them without taking a byte.
 - In a terminal that `attach`ed into a session there is no window to bind the shifted
   form to, so there the plain byte is the way out: **Ctrl+S** leaves the view, and the
   shell keeps running (it is kept, and `kai-term list` still shows it). Only a Ctrl+S
@@ -483,9 +494,11 @@ nothing can be kept.
   mode has already switched flow control off, so nothing a program there could use is
   taken.
 
-Keys held free for what is coming, so that a later feature does not quietly take one
-that has become somebody else's: **Ctrl+Shift+F** for a file manager, **Ctrl+Shift+N**
-for a new tab, **Ctrl+Shift+H** to switch between side-by-side panes and a tab view.
+The whole command set lives under **Ctrl+K** so a later feature adds a letter to the prefix
+rather than claiming a bare chord a program inside the window already answers to. Copy,
+paste (**Ctrl+Shift+C** / **Ctrl+Shift+V**) and stepping the places (**Ctrl+Shift+Left** /
+**Ctrl+Shift+Right**) stay as direct chords, and **Ctrl+K, then R** is resize mode and
+**Ctrl+K, then F** is the file manager on the way.
 - Closing a window with something running asks **"Quit while `make` is running?"**
   inside the terminal itself — the terminal's own font on its own surface, not a
   window the desktop decorates — with **Yes**, **No** and **Save Session** in that

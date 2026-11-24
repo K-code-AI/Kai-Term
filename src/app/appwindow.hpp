@@ -225,6 +225,9 @@ public:
             // window does. A file that says nothing says blink, because that is what a
             // terminal does until its person says otherwise; a file that says 0 means it.
             setCursorBlink(config_.cursor_blink.value_or(kDefaultCursorBlinkMs));
+            // Whether the control lists its keys while it waits. Off only when the file
+            // says so; no line means the hints show, as they do for a person learning.
+            setShowKeyHints(config_.keybind_hints != "off");
             if (config_.cols || config_.rows)
                 resize(sizeForGrid(config_.rows.value_or(rows()), config_.cols.value_or(cols())));
         }
@@ -284,7 +287,7 @@ public:
     // can set it again.
     std::function<void()> on_session_changed;
 
-    // Ctrl+Shift+S: keep this shell, and start a fresh one in the same window.
+    // Ctrl+K then S: keep this shell, and start a fresh one in the same window.
     //
     // The window does not close. The thing a person is doing when they press this is
     // not "I have finished with this window" but "I have finished with this shell", and
@@ -355,7 +358,7 @@ public:
         return out;
     }
 
-    // Ctrl+Shift+A: the sessions you could go back to, listed inside the terminal
+    // Ctrl+K then A: the sessions you could go back to, listed inside the terminal
     // itself and walked like any TUI picker — Up/Down or j/k to choose, Enter to go,
     // Esc to put it away, and the number keys to jump straight to an entry. It is
     // drawn by the widget in the terminal's own font, so it looks like a part of the
@@ -368,7 +371,7 @@ public:
         const std::vector<SessionInfo> choices = restorableSessions();
         if (choices.empty()) {
             askInTerminal("Nothing to go back to",
-                          "Ctrl+Shift+S keeps this shell, and it will be here when you "
+                          "Ctrl+K then S keeps this shell, and it will be here when you "
                           "come back for it.",
                           {"OK"}, 0, [](int) {});
             return;
@@ -409,7 +412,7 @@ public:
                           }
                           if (which != 2)
                               return; // No, or the question put away: stay here
-                          // The same keeping Ctrl+Shift+S does, aimed at the
+                          // The same keeping Ctrl+K then S does, aimed at the
                           // switch rather than the window: the name a person
                           // would type, and if renaming fails the session is
                           // kept under the name it has, since keeping it is
@@ -453,7 +456,7 @@ public:
         // status line points at the key that would stop it.
         session_kept_ = false;
         setStatusText("session '" + name + "' restored, and no longer kept"
-                      " — Ctrl+Shift+S keeps it");
+                      " — Ctrl+K then S keeps it");
         if (on_session_changed)
             on_session_changed();
     }
@@ -729,7 +732,7 @@ private:
                 // (Kaida, 2026-11-21.)
                 bool wrote = saveConfigValues(
                     path, colours, error,
-                    "# kai-term colours — edit here, or in the window: settings (Ctrl+Shift+K), then Enter on the theme row\n",
+                    "# kai-term colours — edit here, or in the window: settings (Ctrl+K then K), then Enter on the theme row\n",
                     /*equals_sign=*/false);
                 // A new theme is only worn once the settings file says to wear it. The
                 // colours went in above; this is the line that points at them, and it
@@ -809,7 +812,7 @@ private:
         return fields;
     }
 
-    // Ctrl+Shift+K: the settings the file holds, walked inside the window.
+    // Ctrl+K then K: the settings the file holds, walked inside the window.
     //
     // The same shape as the colour picker, for the same reason: the decisions are
     // in a Qt-free model, the pixels are the widget's, and the preview is the
@@ -975,6 +978,12 @@ private:
         }
         rows.push_back({"confirm_quit", "confirm quit", SettingKind::Choice, quit, 0, 0, 0,
                         {"never", "running", "always"}});
+        // Whether the control, while it waits for its key, shows the row of keys it
+        // takes. On is the default — a thing you have not learned yet should say what it
+        // wants — and off is for the person who has learned it and wants the screen back.
+        int hints = config_.keybind_hints == "off" ? 0 : 1;
+        rows.push_back({"keybind_hints", "keybind hints", SettingKind::Choice, hints, 0, 0, 0,
+                        {"off", "on"}});
         // Which colours the window is wearing. The answers are the names on disk, with
         // the default offered first even though it is not a file in `themes` — it is the
         // file the colours have always lived in, and a menu that hides the answer you are
@@ -1019,6 +1028,8 @@ private:
                                  : CursorStyle::Underline));
         else if (row.key == "confirm_quit")
             config_.confirm_quit = settingFileText(row);
+        else if (row.key == "keybind_hints")
+            setShowKeyHints(row.value == 1);
         else if (row.key == "theme")
             previewTheme(settingFileText(row));
         else if (row.key == "background_opacity")

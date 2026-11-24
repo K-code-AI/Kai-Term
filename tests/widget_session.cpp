@@ -419,24 +419,25 @@ int main(int argc, char** argv) {
         int menu_calls = 0;
         window.on_save_session = [&saved_calls] { ++saved_calls; };
         window.on_session_menu = [&menu_calls] { ++menu_calls; };
-        sendKey(&window, Qt::Key_S, Qt::ControlModifier | Qt::ShiftModifier);
-        sendKey(&window, Qt::Key_A, Qt::ControlModifier | Qt::ShiftModifier);
-        expect("Ctrl+Shift+S belongs to the window", saved_calls == 1);
-        expect("and Ctrl+Shift+A asks for the list of sessions", menu_calls == 1);
-        // Sent on, Ctrl+Shift+S would be a flow-control stop at the prompt and the
-        // shell would not run the line below, so the line appearing on screen is the
-        // proof the key never arrived.
+        // The commands sit behind the Ctrl+K control now: arm it, then spend it on S or A.
+        sendKey(&window, Qt::Key_K, Qt::ControlModifier);
+        sendKey(&window, Qt::Key_S, Qt::NoModifier);
+        sendKey(&window, Qt::Key_K, Qt::ControlModifier);
+        sendKey(&window, Qt::Key_A, Qt::NoModifier);
+        expect("Ctrl+K then S belongs to the window", saved_calls == 1);
+        expect("and Ctrl+K then A asks for the list of sessions", menu_calls == 1);
+        // The control and its key never reach the shell, so a line typed after them runs:
+        // the line appearing on screen is the proof the keys were spent on the window.
         //
         runLine(&window, "M=AFTER; echo ${M}-THE-BINDS");
-        expect("neither keybind reaches the shell",
+        expect("neither command reaches the shell",
                waitFor([&window] {
                    return onScreen(window).find("AFTER-THE-BINDS") != std::string::npos;
                }));
-        // Plain Ctrl+S is the other half of the same rule, and the reason the window's
-        // own key has Shift in it: it is a byte programs use, here the one that stops
-        // output and starts it again. It reaches the shell, which is both what is
-        // wanted and what the window must not do — and it has to be checked last,
-        // because a shell with its output stopped stops answering checks.
+        // Ctrl+K is now the control's own, so it no longer reaches the shell — the one
+        // thing the prefix costs. Plain Ctrl+S is untouched and still the shell's, the
+        // byte that stops and starts output; checked last because a stopped shell stops
+        // answering checks.
         sendKey(&window, Qt::Key_S, Qt::ControlModifier);
         expect("and plain Ctrl+S is left for the shell", saved_calls == 1);
         window.setStatusText("session 'work' saved");

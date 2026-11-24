@@ -1104,7 +1104,7 @@ public:
 
     // What the window's own keybinds mean, set by whoever owns the window. The widget
     // does not know what a session is, does not draw a menu and has never heard of the
-    // daemon; it knows Ctrl+Shift+S was pressed and that somebody asked to be told.
+    // daemon; it knows Ctrl+K then S was pressed and that somebody asked to be told.
     std::function<void()> on_save_session;
     std::function<void()> on_session_menu;
     // Ctrl+K then K: the settings menu, and through its `theme` row the colour editor.
@@ -1411,7 +1411,7 @@ public:
         if (backend_)
             backend_->newPane(side_by_side);
     }
-    // Ctrl+Shift+N asks which way to make the new place before making it: a small dialog
+    // Ctrl+K then N asks which way to make the new place before making it: a small dialog
     // offering Vertical (a place beside, a vertical divider) or Horizontal (a place below,
     // a horizontal one), answerable by the V or H key or by a click. Asking first is the
     // whole point — one key cannot guess which way a person wants to divide the screen.

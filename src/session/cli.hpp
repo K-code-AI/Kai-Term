@@ -41,7 +41,7 @@ namespace kai {
 
 // The shell starts where a person expects a shell to start: the user's home,
 // not whatever directory happened to launch the window. A session created by
-// `kai-term new` or by a window's Ctrl+Shift+S follows the same rule, and an
+// `kai-term new` or by a window's Ctrl+K then S follows the same rule, and an
 // explicit `--cwd` still wins.
 inline std::string homeDirectory() {
     const struct passwd* pw = getpwuid(getuid());
@@ -885,7 +885,7 @@ inline int printHelp(const std::string& version = std::string()) {
         printHelpRow(command.usage, command.summary);
     std::cout << "\nSettings live in ~/.config/kai-term — kai-term.conf for how the program behaves,\n"
                  "theme.conf for how it looks — and a window's colours win over a session's own.\n"
-                 "Inside a window, Ctrl+Shift+S keeps this shell and Ctrl+Shift+A brings back one\n"
+                 "Inside a window, Ctrl+K then S keeps this shell and Ctrl+K then A brings back one\n"
                  "that was kept.\n";
     return 0;
 }

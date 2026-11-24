@@ -160,6 +160,9 @@ struct Config {
     // Empty means the files said nothing, which is not the same as a value of
     // "never": a setting nobody wrote leaves the built-in answer standing.
     std::string confirm_quit;
+    // Whether Ctrl+K, while it waits for its one key, lists the keys it will take along
+    // the bottom. On for a person still learning; off for one who has learned them.
+    std::string keybind_hints;
     // Which colours to wear, as written: empty or `Default.conf` for the file the program
     // has always used, a bare name for a file in `themes`, and anything with a slash in it
     // for that path. Only ever read from the settings file — a theme is colours, and the
@@ -499,6 +502,12 @@ inline void parseConfigFile(const std::string& path, Config& config) {
                 continue;
             }
             config.confirm_quit = lowerWord(value);
+        } else if (key == "keybind_hints") {
+            if (value.empty()) {
+                note(line_no, "keybind_hints needs on or off");
+                continue;
+            }
+            config.keybind_hints = lowerWord(value);
         } else if (key == "theme") {
             // Kept exactly as written, slashes and case and all: it is a file name, and a
             // file system that distinguishes case is not this parser's business.

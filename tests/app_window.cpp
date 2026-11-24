@@ -131,7 +131,9 @@ void leavePanels(kai::TerminalWidget* w) {
 
 void openThemeEditor(kai::TerminalWidget* w) {
     leavePanels(w); // start from the bare terminal, not from where the last test stopped
-    sendKey(w, Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
+    sendKey(w, Qt::Key_K, Qt::ControlModifier); // the control
+    pump(40);
+    sendKey(w, Qt::Key_K, Qt::NoModifier);      // then K: the settings menu
     pump(60);
     for (int i = 0; i < 3; ++i)
         sendKey(w, Qt::Key_Up);
@@ -1164,9 +1166,10 @@ int main(int argc, char** argv) {
         // Transparency is a setting, not a colour, so it is edited in the settings
         // menu — the second row there, under the font size.
         const auto open_picker = [&window] {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
+            QKeyEvent arm(QEvent::KeyPress, Qt::Key_K, Qt::ControlModifier);
+            QCoreApplication::sendEvent(&window, &arm);
+            QKeyEvent go(QEvent::KeyPress, Qt::Key_K, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &go);
         };
 
         open_picker();
@@ -1216,7 +1219,7 @@ int main(int argc, char** argv) {
     }
 
     {
-        // The settings menu, end to end. Ctrl+Shift+K opens it over the grid, the
+        // The settings menu, end to end. Ctrl+K then K opens it over the grid, the
         // preview is the live window, leaving puts the window back and touches no
         // file, and saving writes the lines that moved in the words the reader takes
         // back. The mouse drives it too: a panel only the keyboard can answer is a
@@ -1237,9 +1240,10 @@ int main(int argc, char** argv) {
             QCoreApplication::sendEvent(&window, &ev);
         };
         const auto open_menu = [&window] {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
+            QKeyEvent arm(QEvent::KeyPress, Qt::Key_K, Qt::ControlModifier);
+            QCoreApplication::sendEvent(&window, &arm);
+            QKeyEvent go(QEvent::KeyPress, Qt::Key_K, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &go);
         };
         const auto click = [&window](const QPointF& at) {
             QMouseEvent press(QEvent::MouseButtonPress, at, at, Qt::LeftButton,
@@ -1257,7 +1261,7 @@ int main(int argc, char** argv) {
 
         open_menu();
         pump(80);
-        expect("Ctrl+Shift+K opens the settings menu over the grid",
+        expect("Ctrl+K then K opens the settings menu over the grid",
                window.settingsActive());
         expect("the menu paints where a pointer can reach it",
                !window.settingsRowRect(0).isNull());
@@ -1675,9 +1679,10 @@ int main(int argc, char** argv) {
             QCoreApplication::sendEvent(&window, &ev);
         };
         const auto open_menu = [&window] {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
+            QKeyEvent arm(QEvent::KeyPress, Qt::Key_K, Qt::ControlModifier);
+            QCoreApplication::sendEvent(&window, &arm);
+            QKeyEvent go(QEvent::KeyPress, Qt::Key_K, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &go);
         };
         const int last_row = window.settingsRowCount() - 1;
         // Up off a row is `cancel`, up again `save`, up again the bottom of the list,
@@ -2133,7 +2138,9 @@ int main(int argc, char** argv) {
         };
         expect("a window wears the theme with the impossible name",
                window.theme().background.r == 0x05);
-        press_key(Qt::Key_K, QString(), Qt::ControlModifier | Qt::ShiftModifier);
+        press_key(Qt::Key_K, QString(), Qt::ControlModifier); // the control
+        pump(30);
+        press_key(Qt::Key_K);                                 // then K: settings
         pump(140);
         const int last_row = window.settingsRowCount() - 1;
         for (int guard = 0;
@@ -2226,9 +2233,10 @@ int main(int argc, char** argv) {
             pump(30);
         };
         const auto open_menu = [&window] {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&window, &ev);
+            QKeyEvent arm(QEvent::KeyPress, Qt::Key_K, Qt::ControlModifier);
+            QCoreApplication::sendEvent(&window, &arm);
+            QKeyEvent go(QEvent::KeyPress, Qt::Key_K, Qt::NoModifier);
+            QCoreApplication::sendEvent(&window, &go);
             pump(120);
         };
         const auto type_word = [&press_key](const std::string& word) {
@@ -2830,7 +2838,9 @@ int main(int argc, char** argv) {
         // test wants is a fresh one, opened from the terminal with its keys on row 0.
         press(Qt::Key_Escape);
         pump(60);
-        press(Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
+        press(Qt::Key_K, Qt::ControlModifier);
+        pump(30);
+        press(Qt::Key_K);
         pump(150);
         expect("the settings menu fits the same small window",
                room().contains(window.settingsPanelRect()));
@@ -3019,7 +3029,9 @@ int main(int argc, char** argv) {
         press(Qt::Key_Escape);
         pump(80);
 
-        press(Qt::Key_K, Qt::ControlModifier | Qt::ShiftModifier);
+        press(Qt::Key_K, Qt::ControlModifier);
+        pump(30);
+        press(Qt::Key_K);
         pump(120);
         expect("and the settings menu's words are clear of its hint too",
                window.settingsWordsRect().bottom() <= window.panelHintRect().top());
@@ -3215,9 +3227,10 @@ int main(int argc, char** argv) {
             QCoreApplication::sendEvent(&walking, &ev);
         };
         const auto open_settings = [&walking] {
-            QKeyEvent ev(QEvent::KeyPress, Qt::Key_K,
-                         Qt::ControlModifier | Qt::ShiftModifier);
-            QCoreApplication::sendEvent(&walking, &ev);
+            QKeyEvent arm(QEvent::KeyPress, Qt::Key_K, Qt::ControlModifier);
+            QCoreApplication::sendEvent(&walking, &arm);
+            QKeyEvent go(QEvent::KeyPress, Qt::Key_K, Qt::NoModifier);
+            QCoreApplication::sendEvent(&walking, &go);
         };
         const int rows = walking.settingsRowCount(); // asked, not counted by hand
         const int padding_row = 3;
