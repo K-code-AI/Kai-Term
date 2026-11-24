@@ -1342,19 +1342,10 @@ public:
             tab_focused_ = std::clamp(focused, 0, std::max(0, tab_panes_ - 1));
         else if (tab_focused_ >= tab_panes_)
             tab_focused_ = std::max(0, tab_panes_ - 1);
-        // A neighbour is a view of one particular place, so it moves with the cells of
-        // that place; and if that place is gone, or the session has gone back to tabs,
-        // there is nothing beside the window to show any more.
-        if (extra_ && extra_->pane >= 0 && extra_->pane < tab_panes_ && !view_tabs_ &&
-            extra_->pane < static_cast<int>(tab_cells_.size())) {
-            const PaneRect cell = tab_cells_[static_cast<size_t>(extra_->pane)];
-            if (cell.valid()) {
-                extra_->cell = cell;
-                extra_->screen.resize(cell.rows, cell.cols);
-            }
-        } else if (extra_ && (extra_->pane >= tab_panes_ || view_tabs_)) {
-            stopExtraReader();
-        }
+        // A neighbour is a view of one particular place, so it moves with the cells
+        // of that place; and if that place is gone, or the session has gone back to
+        // tabs, there is nothing beside the window to show any more.
+        syncExtraPane();
         applyGridGeometry(); // the bar takes a row's height the moment it appears
         update();
     }
@@ -1370,6 +1361,10 @@ public:
         update();
         if (backend_)
             backend_->showPane(pane);
+        // The window has moved onto a new place, so the neighbour has to move off it
+        // — the daemon does not say so on the tab bar for a view that only moved
+        // itself, so this is where the neighbour learns to get out of the way.
+        syncExtraPane();
     }
     // The keys, as methods so a check can press them without a window manager.
     void newTab() {
@@ -1438,6 +1433,49 @@ public:
     // Which place takes the typing: 0 for the one this window is looking at, or the
     // neighbour's number once its half of the screen has been clicked.
     int activePane() const { return typed_pane_; }
+
+    // Say how to open a neighbour connection, so a window onto a session shows its
+    // places side by side on its own rather than waiting to be handed one. The
+    // factory is given the number of the place to show and returns a connection to
+    // it; null says the place could not be opened, which leaves the window as it was.
+    void setPaneConnector(std::function<std::unique_ptr<TerminalBackend>(int pane)> connector) {
+        pane_connector_ = std::move(connector);
+        syncExtraPane(); // a connector set after the bar already grew should take effect now
+    }
+
+    // Bring the neighbour in line with what the tab bar says and where the window
+    // is looking. Side by side with more than one place, some place other than the
+    // one being looked at is shown beside it; one place, or tabs, and there is
+    // nothing to show beside the window. A window with no way to open a connection
+    // keeps whatever neighbour it was handed and neither opens nor moves one.
+    void syncExtraPane() {
+        int want = -1;
+        if (!view_tabs_ && tab_panes_ > 1) {
+            for (int p = 0; p < static_cast<int>(tab_cells_.size()); ++p) {
+                if (p == tab_focused_)
+                    continue; // that one is already the place the window is looking at
+                if (tab_cells_[static_cast<size_t>(p)].valid()) {
+                    want = p;
+                    break;
+                }
+            }
+        }
+        if (want < 0) {
+            if (extra_)
+                stopExtraReader();
+            return;
+        }
+        if (extra_ && extra_->pane == want) {
+            // The same place, so keep its cell and screen in step with the bar.
+            const PaneRect cell = tab_cells_[static_cast<size_t>(want)];
+            extra_->cell = cell;
+            extra_->screen.resize(cell.rows, cell.cols);
+            return;
+        }
+        if (!pane_connector_)
+            return; // nobody to ask for a neighbour; leave the one that is there alone
+        setExtraPane(pane_connector_(want), want);
+    }
 
     // Something the session refused, said where it can be read: along the bottom of the
     // window, gone on its own after a few seconds, and gone the moment a key is typed. A
@@ -2412,8 +2450,12 @@ public:
             const PaneRect& cell =
                 tab_cells_[static_cast<size_t>(into_extra ? extra_->pane : tab_focused_)];
             if (where.cursorVisible() && cursorLit()) {
-                const int cx = std::clamp(where.cursorX(), 0, cell.cols - 1);
-                const int cy = std::clamp(where.cursorY(), 0, cell.rows - 1);
+                // The cursor belongs to the screen, so it is clamped to the screen's
+                // own size rather than the cell's: during a resize the bar can name a
+                // larger cell than the screen has been resized to yet, and a cursor at
+                // the edge of that larger cell would read a row that is not there.
+                const int cx = std::clamp(where.cursorX(), 0, where.cols() - 1);
+                const int cy = std::clamp(where.cursorY(), 0, where.rows() - 1);
                 const Cell& under = where.at(cy, cx);
                 const double x = grid_pad + (cell.col + cx) * cw;
                 const double y = grid_top + (cell.row + cy) * ch;
@@ -2547,7 +2589,13 @@ public:
     void paintScreenInto(QPainter& p, const QFontMetricsF& fm, double cw, double ch,
                          double grid_pad, double grid_top, const Screen& screen,
                          const PaneRect& cell, const Color& default_bg) const {
-        for (int r = 0; r < cell.rows; ++r) {
+        // The cell comes from the tab bar's current layout and the screen from the
+        // connection, and during a resize they can disagree by a row or a column for a
+        // frame: the bar has the new size before the neighbour's screen has been
+        // resized to it. Paint what the screen actually holds and leave the rest as
+        // ground — the same reason the columns are clamped to the row's width below.
+        const int rows = std::min(cell.rows, screen.rows());
+        for (int r = 0; r < rows; ++r) {
             const Row& line = screen.row(r);
             const int line_cols = std::min(cell.cols, static_cast<int>(line.size()));
             for (int c = 0; c < line_cols; ++c)
@@ -5280,6 +5328,13 @@ private:
     // the screen. A window that drew two places but always typed into one would be
     // a picture of a split screen rather than a working one.
     int typed_pane_ = 0;
+    // How to open a second connection to a place, when the window is told to show
+    // one beside the place it is looking at. The window does not know a daemon
+    // exists; the host that does — a window onto a session — sets this so the
+    // window can ask for a neighbour without knowing what it is opening. Left
+    // unset for a widget driving a single backend, and for a check that hands a
+    // neighbour in by hand, which then stays exactly where it was put.
+    std::function<std::unique_ptr<TerminalBackend>(int pane)> pane_connector_;
     // How many paints this window has ever been asked to do, and how many it had done the
     // last time it was shown. A window asked to draw before it has a surface does the work
     // and nothing comes of it; these two say whether anything has been drawn since.

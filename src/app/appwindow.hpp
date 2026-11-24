@@ -74,6 +74,7 @@ public:
         : TerminalWidget(start.rows, start.cols, std::move(start.backend)),
           session_(std::move(start.session)) {
         bindKeybinds();
+        installPaneConnector();
         adoptConfig(true);
         if (!start.note.empty())
             setStatusText(start.note, 8000);
@@ -88,6 +89,7 @@ public:
           // this window is now responsible for it, and only a save from here keeps it.
           session_kept_(false) {
         bindKeybinds();
+        installPaneConnector();
         // The person's own colours win here too. A window that attached to a
         // running session still reads the config and locks whatever colours it
         // names, so a previously-themed session comes back wearing the theme
@@ -235,6 +237,31 @@ public:
     }
 
     const std::string& sessionName() const { return session_; }
+
+    // Show the places of a session side by side without being told to. The window
+    // cannot open a connection of its own — it does not know a session or a daemon
+    // exists — so it is handed a way to ask for one, and uses it the moment the tab
+    // bar says the places are laid out beside each other.
+    //
+    // The neighbour attaches at the window's whole size, never its cell: the session
+    // takes the size of the smallest window looking at it, so a view that asked for
+    // forty columns would shrink the place being looked at to forty as well. Its own
+    // screen is then the cell's size, which the window knows from the bar. A session
+    // that has gone while a neighbour was being opened is met with a null connection,
+    // which the window treats as "no neighbour" rather than as a crash.
+    void installPaneConnector() {
+        setPaneConnector([this](int pane) -> std::unique_ptr<kai::TerminalBackend> {
+            if (session_.empty())
+                return nullptr;
+            try {
+                auto neighbour = std::make_unique<SessionBackend>(session_, rows(), cols());
+                neighbour->showPane(pane);
+                return neighbour;
+            } catch (const std::exception&) {
+                return nullptr;
+            }
+        });
+    }
     // Whether the shell being shown is one the person said to keep. A restored session
     // is one by definition, and a fresh window is not one until the keybind says so.
     bool sessionKept() const { return session_kept_; }

@@ -254,6 +254,65 @@ int main(int argc, char** argv) {
                return false;
            }));
 
+    // The window above was handed its neighbour. A real window onto a session is not:
+    // it is given a way to open one and shows its places side by side by itself. That
+    // is what a window onto a session does with a connector, and it is checked here on
+    // a plain widget so the whole thing runs without a compositor — the same seam the
+    // app wires up, minus the app's own config.
+    SessionSpec auto_spec;
+    auto_spec.name = "auto";
+    auto_spec.rows = 24;
+    auto_spec.cols = 80;
+    expect("a second session starts, to be shown side by side on its own",
+           daemon.create(auto_spec, error));
+    pump(400);
+
+    kai::TerminalWidget auto_window(24, 80,
+                                    std::make_unique<SessionBackend>("auto", 24, 80));
+    auto_window.resize(800, 500);
+    auto_window.show();
+    pump(300);
+    // The only thing this window is given that the first one was not: a way to ask for
+    // a neighbour connection. Everything after is the window's own doing.
+    auto_window.setPaneConnector([&auto_window](int pane) -> std::unique_ptr<TerminalBackend> {
+        auto neighbour = std::make_unique<SessionBackend>("auto", auto_window.rows(),
+                                                          auto_window.cols());
+        neighbour->showPane(pane);
+        return neighbour;
+    });
+    expect("a window with one place shows no neighbour", !auto_window.hasExtraPane());
+
+    // Add a place the way a person does. The window should find the other place and
+    // open a connection to it without anyone handing it one.
+    auto_window.newTab();
+    expect("adding a place makes the window open a neighbour on its own",
+           waitFor([&auto_window] { return auto_window.hasExtraPane(); }));
+    expect("and the neighbour is a place other than the one being looked at",
+           waitFor([&auto_window] {
+               return auto_window.hasExtraPane() &&
+                      auto_window.extraScreenText().find("RIGHT") == std::string::npos;
+           }));
+    daemon.type("auto", "echo AUTO-NEIGHBOUR-MARKER\n", auto_window.shownPane() == 0 ? 1 : 0);
+    pump(500);
+    expect("the neighbour the window opened is showing the other place",
+           waitFor([&auto_window] {
+               return auto_window.extraScreenText().find("AUTO-NEIGHBOUR-MARKER") !=
+                      std::string::npos;
+           }));
+
+    // Going back to one-place-at-a-time tabs takes the neighbour away; the window is
+    // then the whole screen and has nothing beside it.
+    auto_window.toggleViewMode();
+    expect("tabs mode leaves no neighbour beside the window",
+           waitFor([&auto_window] { return auto_window.viewIsTabs() && !auto_window.hasExtraPane(); }));
+    // And coming back to side-by-side opens one again.
+    auto_window.toggleViewMode();
+    expect("side by side opens the neighbour again",
+           waitFor([&auto_window] { return !auto_window.viewIsTabs() && auto_window.hasExtraPane(); }));
+
+    auto_window.shutdown();
+    static_cast<void>(daemon.kill("auto", error));
+
     // Leave nothing running for the next test to trip over.
     static_cast<void>(daemon.kill("split", error));
 
