@@ -232,6 +232,19 @@ if(UTIL_LIBRARY)
 endif()
 add_test(NAME widget-panes COMMAND kai-term-widget-panes)
 
+# Two places of one session drawn in the same window at once, over a real daemon:
+# each place painted into the cells the session gave it, and the half that was
+# clicked is the half that takes the typing.
+add_executable(kai-term-widget-split
+    tests/widget_split.cpp
+    src/terminal/vtparser.cpp
+)
+target_link_libraries(kai-term-widget-split PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core Threads::Threads)
+if(UTIL_LIBRARY)
+    target_link_libraries(kai-term-widget-split PRIVATE ${UTIL_LIBRARY})
+endif()
+add_test(NAME widget-split COMMAND kai-term-widget-split)
+
 add_executable(kai-term-mouse-app tests/mouse_app.cpp src/terminal/vtparser.cpp)
 target_link_libraries(kai-term-mouse-app PRIVATE Qt6::Widgets Qt6::Gui Qt6::Core)
 
@@ -270,6 +283,7 @@ set(KAI_TEST_TARGETS
     kai-term-settings-picker
     kai-term-color-mixer
     kai-term-widget-panes
+    kai-term-widget-split
     kai-term-mouse-app)
 foreach(kai_test ${KAI_TEST_TARGETS})
     set_target_properties(${kai_test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY

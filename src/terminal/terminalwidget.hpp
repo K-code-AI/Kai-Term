@@ -88,6 +88,35 @@ struct TerminalExitEvent : QEvent {
     int generation;
 };
 
+// Output from a second place shown beside the one this window is looking at. It is
+// a separate event because it feeds a separate screen: the bytes for the neighbour
+// must never be painted onto the screen the window was built around. It carries the
+// neighbour's own number for the same reason the others carry the shell's — a place
+// taken away must not keep painting into a screen that has already been freed.
+struct ExtraOutputEvent : QEvent {
+    explicit ExtraOutputEvent(std::string data, int generation)
+        : QEvent(QEvent::None), data(std::move(data)), generation(generation) {}
+    std::string data;
+    int generation;
+};
+
+// A second place of the same session, drawn beside the one this window is looking
+// at. It is deliberately small: a connection, a screen of its own, and a reader to
+// keep that screen filled. Everything the window does for the place it was built
+// around — the tab bar, the refusal, the clipboard, the queries — stays on the first
+// connection, because those describe the session, not one half of it. A neighbour is
+// a second pair of eyes on the same session, not a second window.
+struct ExtraPane {
+    std::unique_ptr<TerminalBackend> backend;
+    Screen screen;
+    std::thread reader;
+    std::atomic<bool> running{false};
+    std::atomic<bool> alive{false};
+    int generation = 0;
+    PaneRect cell;
+    int pane = -1;
+};
+
 class TerminalWidget : public QWidget {
 public:
     explicit TerminalWidget(int rows = 24, int cols = 80, std::string shell = {})
@@ -746,6 +775,13 @@ public:
                      QSize(int(cell.width() * span) + 2, int(cell.height()) + 2));
     }
     void repaintCursorCell() {
+        // Split, the cursor lives in whichever half is being typed into and may be a
+        // neighbour's, so the one-cell rectangle the single screen uses is the wrong
+        // box to dirty; the whole window is cheap to repaint and always right.
+        if (splitActive()) {
+            update();
+            return;
+        }
         const QRect cell = cursorBlinkRect();
         if (!cell.isNull())
             update(cell);
@@ -871,6 +907,83 @@ public:
         });
     }
 
+    // The neighbour's reader. It is the window's own reader with the parts a second
+    // pair of eyes does not need taken out: it does not ask about the tab bar or the
+    // refusal, because those belong to the connection the window was built around,
+    // and it does not collect a child, because a session's program is the daemon's
+    // to reap, not this window's. What it must keep is the two things that make the
+    // first reader safe — minding kNothingRightNow, so a view that is merely quiet is
+    // not mistaken for a view that is gone, and taking the whole buffered run at
+    // once, so a place's first screen reaches its model in one piece.
+    void startExtraReader() {
+        if (!extra_)
+            return;
+        ExtraPane* const view = extra_.get();
+        TerminalBackend* const backend = view->backend.get();
+        const int generation = view->generation;
+        view->running = true;
+        view->reader = std::thread([this, view, backend, generation] {
+            char buf[4096];
+            while (view->running && view->alive) {
+                // A backend answers read() with kNothingRightNow while it is holding a
+                // tab bar or a refusal the window has not taken, and it does not pop
+                // that frame until it is taken. The window's own reader asks for the
+                // tab bar on every turn; a neighbour has no tab bar of its own, but it
+                // still has to take the one the session broadcasts to it, or the flag
+                // stays set, read() keeps saying "nothing right now", and the real
+                // output sits unread behind it forever. Taking and discarding is what
+                // keeps a quiet-but-alive view from being mistaken for a stalled one.
+                TerminalBackend::TabBar bar;
+                static_cast<void>(backend->takeTabBar(bar));
+                std::string refusal;
+                static_cast<void>(backend->takeRefusal(refusal));
+                if (!backend->hasBuffered()) {
+                    struct pollfd watched {backend->descriptor(), POLLIN, 0};
+                    const int ready = ::poll(&watched, 1, 200);
+                    if (ready < 0 && errno == EINTR)
+                        continue;
+                    if (ready == 0)
+                        continue;
+                }
+                ssize_t n = backend->read(buf, sizeof(buf));
+                if (n == TerminalBackend::kNothingRightNow)
+                    continue; // quiet, not gone
+                if (n <= 0) {
+                    view->alive = false;
+                    break;
+                }
+                std::string run(buf, static_cast<size_t>(n));
+                while (backend->hasBuffered()) {
+                    const ssize_t more = backend->read(buf, sizeof(buf));
+                    if (more <= 0)
+                        break;
+                    run.append(buf, static_cast<size_t>(more));
+                }
+                QCoreApplication::postEvent(this, new ExtraOutputEvent(std::move(run), generation));
+            }
+        });
+    }
+
+    // Let go of the neighbour. The reader is joined before its connection is
+    // destroyed, exactly as for the window's own reader; the socket is hung up first
+    // so a reader waiting on output wakes and sees the end. Detaching is not closing:
+    // the program on the far end belongs to the session, and this window is only
+    // stopping looking at it.
+    void stopExtraReader() {
+        if (!extra_)
+            return;
+        extra_->running = false;
+        if (extra_->backend)
+            extra_->backend->stopProcess(false); // also wakes the read the reader is in
+        if (extra_->reader.joinable())
+            extra_->reader.join();
+        if (extra_->backend)
+            extra_->backend->release();
+        extra_.reset();
+        ++extra_generation_; // anything still in flight about that place is dropped
+        typed_pane_ = 0;
+    }
+
     // Say that this window is being closed and what it is showing was not kept, so
     // that the teardown in the destructor ends the session rather than only leaving it.
     // Nothing else calls this. A window merely going away is not somebody throwing
@@ -884,6 +997,7 @@ public:
 
     void shutdown() {
         running_ = false;
+        stopExtraReader(); // the neighbour goes first, and its reader is joined like the rest
         // The child goes first, and the reader is joined before the master is
         // closed. Closing a descriptor under a thread blocked reading it leaves
         // that number free to be handed to somebody else's open() while the read
@@ -912,6 +1026,7 @@ public:
     void showSession(std::unique_ptr<TerminalBackend> next, bool discard_current) {
         if (!next)
             return;
+        stopExtraReader(); // a neighbour is a view of the old session, not the new one
         running_ = false;
         backend_->stopProcess(discard_current); // also wakes the read the reader is in
         if (reader_.joinable())
@@ -1227,6 +1342,19 @@ public:
             tab_focused_ = std::clamp(focused, 0, std::max(0, tab_panes_ - 1));
         else if (tab_focused_ >= tab_panes_)
             tab_focused_ = std::max(0, tab_panes_ - 1);
+        // A neighbour is a view of one particular place, so it moves with the cells of
+        // that place; and if that place is gone, or the session has gone back to tabs,
+        // there is nothing beside the window to show any more.
+        if (extra_ && extra_->pane >= 0 && extra_->pane < tab_panes_ && !view_tabs_ &&
+            extra_->pane < static_cast<int>(tab_cells_.size())) {
+            const PaneRect cell = tab_cells_[static_cast<size_t>(extra_->pane)];
+            if (cell.valid()) {
+                extra_->cell = cell;
+                extra_->screen.resize(cell.rows, cell.cols);
+            }
+        } else if (extra_ && (extra_->pane >= tab_panes_ || view_tabs_)) {
+            stopExtraReader();
+        }
         applyGridGeometry(); // the bar takes a row's height the moment it appears
         update();
     }
@@ -1259,6 +1387,57 @@ public:
             backend_->setViewMode(!view_tabs_);
     }
     bool viewIsTabs() const { return view_tabs_; }
+
+    // Show a second place of the session beside the one this window is looking at,
+    // on a second connection the host has opened and pointed at `pane`. The window
+    // gives it a screen of its own and a reader of its own, and paints it where the
+    // tab bar says that place sits. Handing over null takes the neighbour away
+    // again — which is what leaving side-by-side mode, or closing the pane, means.
+    //
+    // The window does not open the connection itself: it does not know a daemon
+    // exists. The host that does know opens one at the full window size — a smaller
+    // view would shrink the whole session, since the session takes the size of the
+    // smallest window looking at it — points it at the place to show, and hands it
+    // over. This is the same seam as the first connection, one place further along.
+    void setExtraPane(std::unique_ptr<TerminalBackend> backend, int pane) {
+        stopExtraReader();
+        if (!backend) {
+            typed_pane_ = 0;
+            update();
+            return;
+        }
+        if (pane < 0 || pane >= static_cast<int>(tab_cells_.size()))
+            return; // nowhere to draw it; the tab bar has not said where that place is
+        const PaneRect cell = tab_cells_[static_cast<size_t>(pane)];
+        if (!cell.valid())
+            return;
+        auto view = std::make_unique<ExtraPane>();
+        view->backend = std::move(backend);
+        view->screen = Screen(cell.rows, cell.cols);
+        view->cell = cell;
+        view->pane = pane;
+        view->generation = ++extra_generation_;
+        view->alive = true;
+        // The screen the new connection is already holding — the place as it looked
+        // when the connection opened — is fed here, on this thread, for the same
+        // reason the window feeds its own first screen there: a neighbour that waits
+        // on posted events would be blank until something made it paint.
+        const std::string held = view->backend->heldBytes();
+        if (!held.empty()) {
+            view->backend->clearHeldBytes();
+            view->screen.feed(held);
+        }
+        extra_ = std::move(view);
+        typed_pane_ = 0; // typing stays with the place the window was already looking at
+        startExtraReader();
+        update();
+    }
+
+    bool hasExtraPane() const { return extra_ && extra_->alive; }
+    std::string extraScreenText() const { return extra_ ? extra_->screen.text() : std::string(); }
+    // Which place takes the typing: 0 for the one this window is looking at, or the
+    // neighbour's number once its half of the screen has been clicked.
+    int activePane() const { return typed_pane_; }
 
     // Something the session refused, said where it can be read: along the bottom of the
     // window, gone on its own after a few seconds, and gone the moment a key is typed. A
@@ -1349,7 +1528,13 @@ public:
     // paste. Exposed because the middle-click path needs a clipboard, and a test
     // should still be able to check what the terminal would send.
     void pasteText(const std::string& text) {
-        if (text.empty() || !shell_alive_ || !backend_->alive())
+        if (text.empty())
+            return;
+        // The same decision writeToPty makes, taken first so a paste into a half whose
+        // program is gone does not bother wrapping bytes that will be dropped anyway.
+        TerminalBackend* const to = activeBackend();
+        const bool into_extra = splitActive() && typed_pane_ == extra_->pane;
+        if (into_extra ? !to->alive() : (!shell_alive_ || !backend_->alive()))
             return;
 
         // A line feed is delivered as Enter, so pasting a script would run
@@ -1372,8 +1557,9 @@ public:
         }
 
         // Bracketed paste tells the application these bytes are pasted text, not
-        // typing, so readline and fish do not act on each line as it arrives.
-        if (screen_.bracketedPaste())
+        // typing, so readline and fish do not act on each line as it arrives. It is
+        // the mode of the half being pasted into, which may be the neighbour's.
+        if (activeScreen().bracketedPaste())
             out = "\x1b[200~" + out + "\x1b[201~";
 
         writeToPty(out);
@@ -1516,6 +1702,17 @@ public:
             QCoreApplication::quit();
             return true;
         }
+        if (auto* extra = dynamic_cast<ExtraOutputEvent*>(e)) {
+            // The neighbour, on its own screen. It is fed nothing but bytes: the
+            // title, the clipboard and the queries are asked of the session through
+            // the connection the window was built around, and a second pair of eyes
+            // has no business answering them twice.
+            if (!extra_ || extra->generation != extra_->generation)
+                return true; // about a place this window is no longer showing
+            extra_->screen.feed(extra->data);
+            update();
+            return true;
+        }
         return QWidget::event(e);
     }
 
@@ -1655,14 +1852,12 @@ public:
         scroll_offset_ = 0;
         clearSelection();
 
-        if (!shell_alive_ || !backend_->alive())
-            return;
-
+        // Encoded against the modes of the half being typed into, and written to
+        // whichever connection that half is on — the neighbour's once it has been
+        // clicked. writeToPty is the one place that decides which program takes bytes.
         const std::string bytes = encodeKey(key, mods, ev->text(),
-                                            screen_.applicationCursorKeys());
-        if (bytes.empty())
-            return;
-        static_cast<void>(backend_->write(bytes));
+                                            activeScreen().applicationCursorKeys());
+        writeToPty(bytes);
     }
 
     // Mouse handling splits on what the application asked for. With reporting on
@@ -1702,6 +1897,25 @@ public:
         stopEdgeScroll();
         if (scrollBarPress(ev->position()))
             return;
+        // Side by side, a left press says which half the keys are for. It is not the
+        // start of a selection and not a mouse report: a neighbour drawn beside the
+        // place being looked at is not yet a place you can select in, and the click
+        // that moves the typing to a half is worth more here than a click that would
+        // have drawn a band across it. Clicking either half makes it the typed half.
+        if (splitActive() && ev->button() == Qt::LeftButton) {
+            const CellPos where = cellAt(ev->position());
+            const int clicked = paneAtGrid(where.row, where.col);
+            if (clicked == extra_->pane) {
+                typed_pane_ = extra_->pane;
+                update();
+                return;
+            }
+            if (clicked == tab_focused_) {
+                typed_pane_ = 0;
+                update();
+                return;
+            }
+        }
         const CellPos pos = cellAt(ev->position());
         const bool force_local = ev->modifiers().testFlag(Qt::ShiftModifier);
 
@@ -2057,6 +2271,21 @@ public:
         cols_ = new_cols;
         screen_.resize(rows_, cols_);
         backend_->resize(rows_, cols_);
+        // The neighbour is a view of the same session, so it is told the same window
+        // size — a smaller view would shrink the session for everyone, since the
+        // session takes the size of the smallest window looking at it. Its own screen
+        // then follows the cells the session will send back for it, which the tab bar
+        // carries on the next frame.
+        if (extra_ && extra_->backend) {
+            extra_->backend->resize(rows_, cols_);
+            if (extra_->pane >= 0 && extra_->pane < static_cast<int>(tab_cells_.size())) {
+                const PaneRect cell = tab_cells_[static_cast<size_t>(extra_->pane)];
+                if (cell.valid()) {
+                    extra_->cell = cell;
+                    extra_->screen.resize(cell.rows, cell.cols);
+                }
+            }
+        }
         // Reflow moves text between rows and columns, so a highlight drawn before
         // the resize would be sitting over different characters afterwards. It is
         // dropped rather than left to drift onto text nobody selected.
@@ -2138,14 +2367,64 @@ public:
                              ink(theme_.foreground, 46));
         }
 
-        for (int r = 0; r < rows_; ++r) {
-            const Row& line = displayRow(r);
-            // History rows keep the width they were written at, so a row can be
-            // narrower than the current screen after a resize.
-            const int line_cols = std::min(cols_, static_cast<int>(line.size()));
-            for (int c = 0; c < line_cols; ++c) {
-                paintCell(p, fm, cw, ch, grid_pad + c * cw, grid_top + r * ch, line[c],
-                          selectedAt(r, c), default_bg);
+        if (splitActive()) {
+            // Two places, each painted into the cells the session gave it. The
+            // window is looking at one of them and the neighbour is the other; which
+            // is left and which is right is the arrangement's, not a guess here, so
+            // each is drawn from its own rect. The gap between them is left as the
+            // ground the whole window was filled with — a divider you look through,
+            // not a wall you have to be told about.
+            const PaneRect shown = tab_cells_[static_cast<size_t>(tab_focused_)];
+            const PaneRect neighbour = tab_cells_[static_cast<size_t>(extra_->pane)];
+            paintScreenInto(p, fm, cw, ch, grid_pad, grid_top, screen_, shown, default_bg);
+            paintScreenInto(p, fm, cw, ch, grid_pad, grid_top, extra_->screen, neighbour,
+                            default_bg);
+            // A hairline in the gap, so the split reads as two places and not as one
+            // screen with a stripe that failed to draw. It sits in the column the
+            // arrangement left empty, so it never covers a character.
+            if (neighbour.col > shown.col) {
+                const double gap = grid_pad + shown.endCol() * cw;
+                p.setPen(Qt::NoPen);
+                p.setBrush(ink(theme_.foreground, 46));
+                p.drawRect(QRectF(gap, grid_top, std::max(1.0, (neighbour.col - shown.endCol()) * cw),
+                                  rows_ * ch));
+            }
+        } else {
+            for (int r = 0; r < rows_; ++r) {
+                const Row& line = displayRow(r);
+                // History rows keep the width they were written at, so a row can be
+                // narrower than the current screen after a resize.
+                const int line_cols = std::min(cols_, static_cast<int>(line.size()));
+                for (int c = 0; c < line_cols; ++c) {
+                    paintCell(p, fm, cw, ch, grid_pad + c * cw, grid_top + r * ch, line[c],
+                              selectedAt(r, c), default_bg);
+                }
+            }
+        }
+
+        // The cursor of the place being typed into, drawn as a block in that place's
+        // own cell. Only one cursor is drawn, because a window that showed a cursor
+        // in each half would not say which half the keys were going to — and the
+        // whole point of the split is that there is a place to be typing.
+        if (splitActive()) {
+            const bool into_extra = typed_pane_ == extra_->pane;
+            const Screen& where = into_extra ? extra_->screen : screen_;
+            const PaneRect& cell =
+                tab_cells_[static_cast<size_t>(into_extra ? extra_->pane : tab_focused_)];
+            if (where.cursorVisible() && cursorLit()) {
+                const int cx = std::clamp(where.cursorX(), 0, cell.cols - 1);
+                const int cy = std::clamp(where.cursorY(), 0, cell.rows - 1);
+                const Cell& under = where.at(cy, cx);
+                const double x = grid_pad + (cell.col + cx) * cw;
+                const double y = grid_top + (cell.row + cy) * ch;
+                p.setPen(Qt::NoPen);
+                p.setBrush(ink(theme_.cursor));
+                p.drawRect(QRectF(x, y, cw * std::max(1, under.width), ch));
+                if (!under.text.empty()) {
+                    p.setPen(ink(cellColour(under.bg, under.bg_role, false)));
+                    p.setBrush(Qt::NoBrush);
+                    p.drawText(QPointF(x, y + fm.ascent()), QString::fromStdString(under.text));
+                }
             }
         }
 
@@ -2155,8 +2434,9 @@ public:
         // underline this terminal has always drawn. The blink is a third answer to
         // the same question — is the cursor being drawn right now — and the dark half
         // of it is simply the cell underneath, which is why it is a gate here rather
-        // than a colour.
-        if (scroll_offset_ == 0 && screen_.cursorVisible() && cursorLit()) {
+        // than a colour. A split window has already drawn the cursor of the half being
+        // typed into, so this one is for the ordinary single screen only.
+        if (!splitActive() && scroll_offset_ == 0 && screen_.cursorVisible() && cursorLit()) {
             const int cx = std::clamp(screen_.cursorX(), 0, cols_ - 1);
             const int cy = std::clamp(screen_.cursorY(), 0, rows_ - 1);
             const Cell& under = screen_.at(cy, cx);
@@ -2247,6 +2527,33 @@ public:
             paintPicker(p);
         paintSettings(p);
         paintMixer(p); // on top of the list it was opened from
+    }
+
+    // Whether the window is showing two places at once: side by side, a session
+    // with more than one place, and a neighbour that is still there to be seen. The
+    // grid is painted as two halves only in this case; every other state — one
+    // place, tabs, a neighbour not yet handed over — is the ordinary single screen,
+    // painted exactly as it always was.
+    bool splitActive() const {
+        return extra_ && extra_->alive && !view_tabs_ && tab_panes_ > 1 &&
+               extra_->pane >= 0 && extra_->pane < static_cast<int>(tab_cells_.size());
+    }
+
+    // Paint one screen into the cells the session gave it, cell for cell. This is
+    // the grid loop the window has always run, with the cell's own origin and
+    // extent in place of the whole window's, and no selection — a neighbour drawn
+    // beside the place being looked at is not the place being selected in. It is
+    // here so both halves go through the same `paintCell`, and so the same rules.
+    void paintScreenInto(QPainter& p, const QFontMetricsF& fm, double cw, double ch,
+                         double grid_pad, double grid_top, const Screen& screen,
+                         const PaneRect& cell, const Color& default_bg) const {
+        for (int r = 0; r < cell.rows; ++r) {
+            const Row& line = screen.row(r);
+            const int line_cols = std::min(cell.cols, static_cast<int>(line.size()));
+            for (int c = 0; c < line_cols; ++c)
+                paintCell(p, fm, cw, ch, grid_pad + (cell.col + c) * cw,
+                          grid_top + (cell.row + r) * ch, line[c], false, default_bg);
+        }
     }
 
     // Draw one cell of one screen at the pixel where it sits. This is the whole
@@ -4964,6 +5271,15 @@ private:
     }
 
     std::unique_ptr<TerminalBackend> backend_;
+    // The neighbour drawn beside the place this window looks at, while the session
+    // shows its places side by side. Null when there is nothing beside it — one
+    // place, or tabs, where the window is the only thing on the screen.
+    std::unique_ptr<ExtraPane> extra_;
+    // Which place the keys and the paste go to. 0 is the place this window is
+    // looking at; any other number is the neighbour's, set by clicking its half of
+    // the screen. A window that drew two places but always typed into one would be
+    // a picture of a split screen rather than a working one.
+    int typed_pane_ = 0;
     // How many paints this window has ever been asked to do, and how many it had done the
     // last time it was shown. A window asked to draw before it has a surface does the work
     // and nothing comes of it; these two say whether anything has been drawn since.
@@ -4987,6 +5303,10 @@ private:
     // Which shell the reader thread is reading. Raised when the window is pointed at
     // another one, so events from the old shell can be recognised and dropped.
     std::atomic<int> generation_{0};
+    // The neighbour's own number, separate because it comes and goes on its own
+    // schedule: opening and closing a second place must not make the window stop
+    // listening for bytes from the place it has been showing all along.
+    int extra_generation_ = 0;
     std::string status_;
     QTimer* status_timer_ = nullptr;
     Overlay overlay_;
@@ -5255,6 +5575,18 @@ private:
     // Pixel position to grid cell, in display coordinates: the same row index
     // the painter used, so a selection made while scrolled up stays on the text
     // under the pointer.
+    // Which place a grid position falls in, by the cells the session laid out. The
+    // answer is a place's number, so a click says the same thing the tab bar says —
+    // there is one arrangement and both the painter and the click read it.
+    int paneAtGrid(int row, int col) const {
+        for (int pane = 0; pane < static_cast<int>(tab_cells_.size()); ++pane) {
+            const PaneRect& cell = tab_cells_[static_cast<size_t>(pane)];
+            if (row >= cell.row && row <= cell.lastRow() && col >= cell.col && col < cell.endCol())
+                return pane;
+        }
+        return -1;
+    }
+
     CellPos cellAt(const QPointF& pos) const {
         const double cw = cellWidth();
         const double ch = cellHeight();
@@ -5301,10 +5633,37 @@ private:
         return encodeMouse(rep, screen_.mouseMode(), screen_.mouseCoord());
     }
 
+    // The connection the keys and the paste go to: the neighbour's while its half of
+    // the screen has been clicked, the window's own otherwise. A window that drew two
+    // places but wrote only to one would be a picture of a split, not a working one —
+    // the whole point of clicking a half is that it is the half that answers.
+    TerminalBackend* activeBackend() const {
+        if (splitActive() && typed_pane_ == extra_->pane && extra_->backend &&
+            extra_->backend->alive())
+            return extra_->backend.get();
+        return backend_.get();
+    }
+    // The screen whose modes the keystrokes are encoded against — bracketed paste and
+    // application cursor keys are per-program, and the two halves can hold different
+    // programs.
+    const Screen& activeScreen() const {
+        if (splitActive() && typed_pane_ == extra_->pane)
+            return extra_->screen;
+        return screen_;
+    }
+
     void writeToPty(const std::string& bytes) {
-        if (bytes.empty() || !shell_alive_ || !backend_->alive())
+        if (bytes.empty())
             return;
-        static_cast<void>(backend_->write(bytes));
+        TerminalBackend* const to = activeBackend();
+        const bool into_extra = splitActive() && typed_pane_ == extra_->pane;
+        if (into_extra) {
+            if (!to->alive())
+                return;
+        } else if (!shell_alive_ || !backend_->alive()) {
+            return;
+        }
+        static_cast<void>(to->write(bytes));
     }
 
     // Classification for word-wise selection. Word characters are ASCII letters,
