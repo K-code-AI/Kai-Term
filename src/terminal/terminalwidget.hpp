@@ -1156,13 +1156,14 @@ public:
     // one that should sit under the finger.
     void askInTerminal(const std::string& question, const std::string& detail,
                        const std::vector<std::string>& choices, int focus,
-                       std::function<void(int)> answer) {
+                       std::function<void(int)> answer, const std::vector<char>& hotkeys = {}) {
         overlay_ = Overlay{};
         overlay_.active = true;
         overlay_.lines.push_back(question);
         if (!detail.empty())
             overlay_.lines.push_back(detail);
         overlay_.choices = choices;
+        overlay_.hotkeys = hotkeys;
         if (focus >= 0 && focus < static_cast<int>(choices.size()))
             overlay_.selected = focus;
         overlay_.answer = std::move(answer);
@@ -1395,9 +1396,24 @@ public:
         syncNeighbours();
     }
     // The keys, as methods so a check can press them without a window manager.
-    void newTab() {
+    void newTab(bool side_by_side = true) {
         if (backend_)
-            backend_->newPane();
+            backend_->newPane(side_by_side);
+    }
+    // Ctrl+Shift+N asks which way to make the new place before making it: a small dialog
+    // offering Vertical (a place beside, a vertical divider) or Horizontal (a place below,
+    // a horizontal one), answerable by the V or H key or by a click. Asking first is the
+    // whole point — one key cannot guess which way a person wants to divide the screen.
+    void askNewTab() {
+        askInTerminal("Split which way?",
+                      "Vertical puts a place beside · Horizontal stacks one below",
+                      {"Vertical", "Horizontal"}, 0,
+                      [this](int which) {
+                          if (which < 0)
+                              return; // dismissed — no new place
+                          newTab(which == 0);
+                      },
+                      {'V', 'H'});
     }
     void closeTab() {
         if (backend_)
@@ -1617,6 +1633,14 @@ public:
     }
     int shownPane() const { return tab_focused_; }
     int paneCount() const { return tab_panes_; }
+    // The cell the session gave a place, so a check can tell which way a split ran:
+    // side by side shares the columns (two places with the same rows), stacked shares
+    // the rows (two places with the same cols).
+    PaneRect paneCell(int pane) const {
+        if (pane < 0 || pane >= static_cast<int>(tab_cells_.size()))
+            return {};
+        return tab_cells_[static_cast<size_t>(pane)];
+    }
 
     // How far the grid is inset right now. An ordinary shell keeps the margin:
     // a borderless Wayland window has rounded corners, and a glyph in the corner
@@ -1948,7 +1972,7 @@ public:
             // which is why the answer comes back on the tab bar and every other window
             // looking at the same session sees the same thing happen.
             if (key == Qt::Key_N) {
-                newTab();
+                askNewTab();
                 return;
             }
             if (key == Qt::Key_H) {
@@ -2800,6 +2824,7 @@ private:
         bool vertical = false;            // a list walked with Up/Down, not a button row
         int selected = 0;
         std::string hint;                 // the keys, said once, under the list
+        std::vector<char> hotkeys;        // letters that answer, checked before movement
         std::function<void(int)> answer;  // the index picked; -1 means it went away
     };
 
@@ -4005,6 +4030,19 @@ private:
         if (key == Qt::Key_Backtab) {
             step(-1);
             return;
+        }
+
+        // Named hotkeys answer ahead of everything else, movement included. A choice
+        // spelled to collide with a walk key — "Horizontal" starting with the `h` that
+        // steps left — would otherwise never be reachable by the very letter it shows.
+        if (plain && key >= Qt::Key_A && key <= Qt::Key_Z) {
+            for (std::size_t i = 0; i < overlay_.hotkeys.size(); ++i) {
+                if (std::toupper(static_cast<unsigned char>(overlay_.hotkeys[i])) ==
+                    static_cast<char>(key)) {
+                    finishOverlay(static_cast<int>(i));
+                    return;
+                }
+            }
         }
 
         if (overlay_.vertical) {

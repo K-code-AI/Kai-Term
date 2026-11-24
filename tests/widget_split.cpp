@@ -297,6 +297,80 @@ int main(int argc, char** argv) {
     expect("and the neighbour shows its own lines when scrolled, not a blank place",
            !window.neighbourRowText(1, 0).empty());
 
+    // Ctrl+Shift+N now asks which way to divide before it divides. Reaching a place is
+    // already covered above; this is the key that MAKES one. It must pop a Vertical /
+    // Horizontal question answerable by a single letter, and lay the new place out that
+    // way: Vertical beside (shares the rows), Horizontal below (shares the columns).
+    window.showPaneAt(0);
+    pump(200);
+    sendKey(&window, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+    pump(120);
+    expect("Ctrl+Shift+N asks which way to divide rather than just dividing",
+           window.overlayActive());
+    expect("and the question offers Vertical then Horizontal",
+           window.overlayChoices().size() == 2 && window.overlayChoices()[0] == "Vertical" &&
+               window.overlayChoices()[1] == "Horizontal");
+    const int panes_before = window.paneCount();
+    sendKey(&window, Qt::Key_Escape, Qt::NoModifier);
+    pump(120);
+    expect("and Escape puts the question away", !window.overlayActive());
+    expect("without making a place", window.paneCount() == panes_before);
+
+    // Count pairs of places that share a column span (stacked) or a row span (side by
+    // side), straight off the cells the session handed back. A split that stacks adds a
+    // stacked pair; one that splits side by side adds a side-by-side pair — whichever place
+    // ended up focused, and however the rest of the tree is arranged.
+    auto stacked_pairs = [&window] {
+        int n = 0;
+        for (int a = 0; a < window.paneCount(); ++a)
+            for (int b = a + 1; b < window.paneCount(); ++b) {
+                const PaneRect x = window.paneCell(a);
+                const PaneRect y = window.paneCell(b);
+                if (x.col == y.col && x.cols == y.cols && x.row != y.row)
+                    ++n;
+            }
+        return n;
+    };
+    auto side_pairs = [&window] {
+        int n = 0;
+        for (int a = 0; a < window.paneCount(); ++a)
+            for (int b = a + 1; b < window.paneCount(); ++b) {
+                const PaneRect x = window.paneCell(a);
+                const PaneRect y = window.paneCell(b);
+                if (x.row == y.row && x.rows == y.rows && x.col != y.col)
+                    ++n;
+            }
+        return n;
+    };
+
+    // Answer with the H key: the new place stacks under the one looked at, so a fresh
+    // stacked pair (same column and width, one above the other) appears.
+    const int stacked_before = stacked_pairs();
+    sendKey(&window, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+    pump(120);
+    sendKey(&window, Qt::Key_H, Qt::NoModifier);
+    pump(300);
+    expect("answering H closes the question",
+           waitFor([&window] { return !window.overlayActive(); }));
+    expect("and makes a place",
+           waitFor([&window, panes_before] { return window.paneCount() == panes_before + 1; }));
+    expect("stacked: a new pair shares a column and width, one above the other",
+           waitFor([&] { return stacked_pairs() > stacked_before; }));
+
+    // Answer with the V key: side by side, so a fresh pair sharing a row and height appears.
+    const int side_before = side_pairs();
+    const int panes_before_v = window.paneCount();
+    sendKey(&window, Qt::Key_N, Qt::ControlModifier | Qt::ShiftModifier);
+    pump(120);
+    sendKey(&window, Qt::Key_V, Qt::NoModifier);
+    pump(300);
+    expect("answering V makes a place beside the one looked at",
+           waitFor([&window, panes_before_v] {
+               return window.paneCount() == panes_before_v + 1;
+           }));
+    expect("side by side: a new pair shares a row and height, side by side",
+           waitFor([&] { return side_pairs() > side_before; }));
+
     expect("the session still runs after all this",
            waitFor([&daemon] {
                for (const SessionInfo& info : daemon.list())
