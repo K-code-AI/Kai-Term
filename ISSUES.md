@@ -56,3 +56,23 @@
 ## Fixed since
 
 - **A setting for the view a new session opens in.** `default_view_mode` in `~/.config/kai-term/kai-term.conf` (`side-by-side` or `tabs`), with a row in the settings menu for it. It applies to a session the window starts for itself; a session joined by `kai-term attach ID --window` keeps the view it already has, because which way the work was laid out is part of what that session is. `Ctrl+K T` still changes the view of the session in hand either way.
+
+- **A divider stopped answering while there was room to move.** Reported twice: "it doesn't
+  let you resize after a certain point it just freeze even when there's plenty of space", and
+  "2 pane vertical, pane 1 can get way smaller than pane 2, but they should be the same".
+  Reproduce: a 50x200 window, two places side by side, `Ctrl+K R`, then `Right` — the line
+  moved once and never again, at 99 columns of 200. In an 85-column window it stopped at 51
+  of 84 with 33 columns still free. `resizeDivider` stored the moved line as
+  `ratio = moved / shared` and `divide` recovered it with `floor(shared * ratio)`, which in
+  binary lands a hair under `moved` for a few percent of (extent, cell) pairs, so the line
+  read back one cell short: the next press wrote the fraction it had just written, said yes,
+  and moved nothing. The other direction stepped off the bad value, sometimes two cells at a
+  press, which is why shrinking kept working and one place could end up at 1 column beside an
+  82-column neighbour. `ratioForCell` now stores the middle of the cell the line sits in, so
+  the floor lands where it was written; that also carries through the six decimals a preset
+  is written in, where a dragged line used to move a cell on reload. Checked in
+  `tests/layout.cpp` by walking a divider one press at a time across every width from 3 to
+  320, the same sweep over rows and through a nested split-and-stack, and a preset round trip
+  at every width: one cell per press, one cell at one end and all but one at the other, and
+  the line back in the cell it was left in. Verified in the real window — place 1 walked from
+  42 columns to 1 and back to 46 in 45 presses, then on to 83 of 84, then `Esc` put it back.

@@ -7,9 +7,9 @@ Kai-Term is a native Linux terminal workspace: a VT terminal emulator, a dual-pa
 ## Current Status
 
 - Build: `cmake --build build -- -j4` succeeds.
-- Tests: all 29 `build/tests/kai-term-*` binaries pass after the changes below (two clean
-  back-to-back runs on an idle machine, run under a fork cap and a watchdog — see Next
-  Steps on the daemon fork-storm).
+- Tests: `ctest` in `build` is 31 checks; 30 pass and `wayland-close` fails — the one failure
+  that predates the current work and was failing before it too. Last full run 2026-11-25,
+  after the divider fix recorded at the end of the journal.
 - Everything through the 2026-11-19 documentation audit is committed and pushed to
   `origin/main`. The 2026-11-19 config split, colour picker, body settings, the
   full-screen resize-loop fix, the config-wins colour authority, the palette-colours-after-
@@ -914,6 +914,52 @@ test that hangs should still cost a test and not a machine.
   believing the source rather than reading what I expected to be there. And the config's
   complaint count: adding a fourth refused line to a fixture broke *"all three said their
   piece"*, which is a check doing its job and a reminder that fixtures are shared.
+
+- **2026-11-25, afternoon — the divider that stopped answering.** Kaida asked what was next
+  after the equal-thirds bar, then reported the real complaint behind the earlier "it just
+  freeze": with two places side by side, *pane 1 can get way smaller than pane 2, but they
+  should be the same*. Both reports are one line of arithmetic. `resizeDivider` stored the
+  moved line as `ratio = moved / shared`, and `divide` recovers the cell with
+  `floor(shared * ratio)`. In binary `shared * (moved / shared)` lands a hair under `moved`
+  for a few percent of (extent, cell) pairs — 5920 of them below extent 600, two of the 83
+  cells an 85-column window shares — so the line
+  read back one cell short of where it was written. The next press computed the fraction it
+  had just written, so `resizeDivider` returned true, `announceTabs` repainted, and nothing
+  moved: a pane frozen with room to spare (a 50x200 window stopped after *one* press, at 99
+  columns of 200; a 24x84 one stopped at 52). The other direction stepped off the bad value
+  instead of into it, sometimes two cells at a press, which is why shrinking kept working and
+  a place could be driven to 1 column beside an 82-column neighbour with no way back.
+
+  Fixed in `src/session/layout.hpp` by a `ratioForCell(at, shared)` helper that stores the
+  **middle** of the cell the line sits in, `(at + 0.5) / shared`. Flooring that lands on `at`
+  with half a cell of slack, which also carries it through the six-decimal writing of a
+  preset — where the old `ceil`-to-6-dp belt in `writeNode` was not enough: a dragged line
+  moved a cell on reload at several widths (160 -> 161 at 318 columns).
+
+  Checks in `tests/layout.cpp`: every press at every width from 3 to 320 moves exactly one
+  cell; every place reaches one cell at one end and all-but-one at the other; the same sweep
+  turned a quarter round over rows and through a nested split-and-stack (where the line
+  belongs to a branch higher up); and a dragged line reads back from a preset in the cell it
+  was left in. The existing preset check had the literal ratio in it and was updated to the
+  new number, with the reason. All four new checks were confirmed to fail against the old
+  line (5 failures), and the whole sweep reports 4064 problems on the old arithmetic and zero
+  on the new. `cmake --build build` clean, `ctest` 30/31 with only the known
+  `wayland-close` failure.
+
+  Verified in the real window against Kaida's exact recipe — two places side by side in a
+  48x85 window on his own compositor, `Ctrl+K R`, keys paced at 40 ms apart because a burst
+  of taps is not a keyboard and 45 back-to-back `Left`s only got through 11 times. 45 `Left`
+  walks place 1 from 42 columns down to 1; 45 `Right` bring it back to 46, which is one cell
+  a press and the direction that used to refuse to move at all; 40 more reach 83 of the 84
+  cells a split shares, one column left for the neighbour; `Esc` puts the line back on 0.5.
+  On the old arithmetic this window froze at 51 of 84. Run against a private
+  `$XDG_RUNTIME_DIR` (with the compositor's socket symlinked in) and a private config dir, so
+  his own daemon and session `3w1` were never touched — and note that they are running the
+  *old* daemon still: the daemon is exec'd from `/proc/self/exe` and keeps whatever code it
+  was started with, so this fix only reaches a live session after `kai-term shutdown`.
+  `grabview <id>` was used once and destroyed the session it looked at — it closes its window
+  as a discard — so read `kai-term layout ID` between steps and save the picture for last.
+
 
 ## Next Steps
 

@@ -12,6 +12,7 @@
 #include "../src/session/layout.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -275,6 +276,113 @@ int main() {
     }
 
     {
+        // One press, one cell, the whole way to each end — at every width a window can be.
+        //
+        // A divider that stops answering while the pane beside it still has room is what a
+        // person calls a freeze, and it came from the fraction a moved line is stored in.
+        // `divide` floors its way back to cells, and a ratio written as `cells / room` is a
+        // hair under that fraction as a double often enough to floor to one cell short of
+        // where it was written. The next press worked the fraction out again, got the one it
+        // had just stored, said yes and moved nothing — while the opposite direction stepped
+        // off the bad value, sometimes two cells at a time. So one pane could be walked down
+        // to a single column beside an 82-column neighbour with no way back, and the two
+        // sides of one line did not have the same limits in practice even though the rule
+        // says they do. (Kaida, 2026-11-25: "it doesn't let you resize after a certain point
+        // it just freeze even when there's plenty of space", "pane 1 can get way smaller than
+        // pane 2, but they should be the same". A 50x200 window stopped after one press.)
+        bool one_cell_per_press = true;
+        bool both_ends_reachable = true;
+        bool tiled_the_whole_way = true;
+        for (int cols = 3; cols <= 320; ++cols) {
+            Layout l;
+            const int right = l.splitPane(0, Split::LeftRight, 24, cols);
+            const int widest = cols - 2; // a cell for the line, a cell for the other pane
+            if (widest < 2)
+                continue; // a line with nowhere to travel is a three-column window
+            for (const int pane : {0, right}) {
+                const int starts_at = l.rectOf(pane, 24, cols).cols;
+                int narrowest = starts_at;
+                int widest_seen = starts_at;
+                for (const int delta : {-1, 1}) {
+                    for (int press = 0; press < cols + 2; ++press) {
+                        const int before = l.rectOf(pane, 24, cols).cols;
+                        if (!l.resizeDivider(pane, delta, 24, cols, Split::LeftRight))
+                            break;
+                        const int after = l.rectOf(pane, 24, cols).cols;
+                        // Which way the pane moves depends on which side of the line it is
+                        // on, so what every press owes is one cell and not a sign.
+                        if (after == before || std::abs(after - before) != 1)
+                            one_cell_per_press = false;
+                        narrowest = std::min(narrowest, after);
+                        widest_seen = std::max(widest_seen, after);
+                    }
+                }
+                if (narrowest != 1 || widest_seen != widest)
+                    both_ends_reachable = false;
+                if (!tiles(l, 24, cols))
+                    tiled_the_whole_way = false;
+            }
+        }
+        expect("every press of a divider moves it exactly one cell, at any width",
+               one_cell_per_press);
+        expect("and a pane can reach one cell at one end and all but one at the other",
+               both_ends_reachable);
+        expect("with the screen tiled the whole way along", tiled_the_whole_way);
+    }
+
+    {
+        // Up and down is the same arithmetic turned a quarter round, and the nested case is
+        // where a line belongs to a branch higher up: a stacked place is widened by the
+        // split beside it, not the one it was made by.
+        bool moved_by_one = true;
+        for (int rows = 3; rows <= 120; ++rows) {
+            Layout l;
+            const int right = l.splitPane(0, Split::LeftRight, rows, 100);
+            const int lower = l.splitPane(right, Split::UpDown, rows, 100);
+            for (const int pane : {0, right, lower}) {
+                for (const Split axis : {Split::LeftRight, Split::UpDown}) {
+                    for (const int delta : {-1, 1}) {
+                        for (int press = 0; press < rows + 2; ++press) {
+                            const CellRect was = l.rectOf(pane, rows, 100);
+                            if (!l.resizeDivider(pane, delta, rows, 100, axis))
+                                break;
+                            const CellRect now = l.rectOf(pane, rows, 100);
+                            const int before = axis == Split::LeftRight ? was.cols : was.rows;
+                            const int after = axis == Split::LeftRight ? now.cols : now.rows;
+                            if (after == before || std::abs(after - before) != 1)
+                                moved_by_one = false;
+                        }
+                    }
+                }
+                expect("a stacked place still leaves the screen tiled", tiles(l, rows, 100));
+            }
+        }
+        expect("and a nested divider moves one cell at a time too", moved_by_one);
+    }
+
+    {
+        // The words a preset is written in have to carry a dragged line to the same cell.
+        // Writing the ratio as the middle of the cell rather than its edge is what does it:
+        // the nearest number the words can hold is still inside the same cell, where an edge
+        // lands on a boundary and rounds to whichever side the decimals fall.
+        bool kept_the_line = true;
+        for (int cols = 3; cols <= 320; ++cols) {
+            Layout l;
+            l.splitPane(0, Split::LeftRight, 24, cols);
+            for (int press = 0; press < 7; ++press)
+                static_cast<void>(l.resizeDivider(0, 1, 24, cols, Split::LeftRight));
+            const int before = l.rectOf(0, 24, cols).cols;
+            std::vector<std::string> complaints;
+            const SessionLayout back = SessionLayout::fromText(
+                SessionLayout{l, ViewMode::SideBySide}.toText(), complaints);
+            if (!complaints.empty() || back.layout.rectOf(0, 24, cols).cols != before)
+                kept_the_line = false;
+        }
+        expect("a dragged divider reads back from a preset in the cell it was left in",
+               kept_the_line);
+    }
+
+    {
         // Equalise is what "unstick this" means.
         Layout l;
         const int right = l.splitPane(0, Split::LeftRight, 24, 80);
@@ -334,10 +442,12 @@ int main() {
                problems.empty() && back.paneCount() == 3);
         expect("at the same sizes", back.rects(24, 80) == l.rects(24, 80));
         // The drag left the divider on 31 of the 79 cells a split shares, and the words have
-        // to carry exactly that: a preset that wrote an approximation would put the divider
-        // in another cell on the way back in, and the check above would notice.
+        // to carry exactly that. They carry the middle of the cell the line sits in — 31.5 of
+        // 79 — because that is the number which still lands in cell 31 after the decimals
+        // have been rounded to six places, and after the same number has been multiplied back
+        // out. An edge does not: 31/79 written as a double and floored again came back 30.
         expect("and the ratios are in the words, not guessed",
-               text.find("split left-right 0.3924") != std::string::npos);
+               text.find("split left-right 0.398735") != std::string::npos);
 
         // The arrangement from the request, written by hand.
         std::vector<std::string> handwritten;

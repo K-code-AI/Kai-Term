@@ -332,7 +332,9 @@ public:
         const int moved = std::clamp(first + delta, kMinPaneCells, widest);
         if (moved == first || shared <= 0)
             return false;
-        branch.ratio = static_cast<double>(moved) / static_cast<double>(shared);
+        // Stored as the middle of the cell the line lands in, not its lower edge, so that
+        // reading the ratio back gives this same cell. See `ratioForCell`.
+        branch.ratio = ratioForCell(moved, shared);
         return true;
     }
 
@@ -574,6 +576,28 @@ private:
 
     // A divider only exists where there is something on both sides of it.
     static int dividerCost(int extent) { return extent >= 2 * kMinPaneCells + 1 ? 1 : 0; }
+
+    // The fraction that means "the line sits one cell past `at` cells of room".
+    //
+    // The middle of the cell rather than its lower edge, because `divide` floors its way
+    // back to cells. A ratio written as `at / shared` is not exactly that fraction once it
+    // is a double, and for a few percent of (extent, cell) pairs — 5920 of them below extent
+    // 600, two of the 83 cells an 85-column window shares — `shared * (at / shared)` comes
+    // out a hair under `at` and floors to `at - 1`. The record then describes one line and
+    // the screen draws another, which on a second look is a divider that will not come back:
+    // the next press works out the cell above the one it can see, writes the fraction it
+    // just wrote, and reports success while nothing moves.
+    // (Kaida, 2026-11-25: "it doesn't let you resize after a certain point it just freeze
+    // even when there's plenty of space" — a 50x200 window stopped growing its first pane
+    // after one press, at 99 columns of 200.)
+    //
+    // Half a cell of slack also carries the number through the six-decimal writing of a
+    // preset, which an edge does not: the nearest stored decimal is still in the same cell.
+    static double ratioForCell(int at, int shared) {
+        if (shared <= 0)
+            return 0.5;
+        return (static_cast<double>(at) + 0.5) / static_cast<double>(shared);
+    }
 
     // A ratio is the share of an area that lies on one side of a divider, so the only
     // bounds it can have are the ones that make it a share at all. How thin a pane may get
