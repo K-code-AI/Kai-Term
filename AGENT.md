@@ -998,8 +998,10 @@ test that hangs should still cost a test and not a machine.
   places with two sets of arrows a few rows apart on the middle line: "seems to still have
   double arrow indicator in some case". Two separate things in that one picture. The spare
   `▲ ▼` over the right-hand half is the `rectOfNode` fault fixed an hour ago — his window was
-  still talking to a daemon started before it, which is the third time the running daemon has
-  been the reason a correct fix looked wrong. The doubled `◀ ▶` was real and new: the rule he
+  still talking to a daemon started before it, which is the standing trap with a process that
+  keeps whatever code it was launched with, and the reason "I rebuilt and it is still broken"
+  needs an answer besides "the fix is wrong". Ask for `kai-term shutdown` before believing a
+  report about a fix already pushed. The doubled `◀ ▶` was real and new: the rule he
   asked for last week ("draw 2 sets, 1 on each of them") puts a set on the border of every
   place a line touches, and with each half split at a different height the four middles land
   in two pairs two rows apart, which is not two statements, it is one mark drawn twice.
