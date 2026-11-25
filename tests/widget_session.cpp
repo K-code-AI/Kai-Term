@@ -186,7 +186,16 @@ int main(int argc, char** argv) {
 
     {
         // The window is a view, not the owner. Closing it has to leave the shell and
-        // whatever it is running exactly where they were.
+        // whatever it is running exactly where they were — which is what a window going
+        // away without a word means, and why there has to be work in there for it to mean.
+        // A shell sitting at a prompt with nobody looking is ended instead: nothing to
+        // come back to. (Kaida, 2026-11-24: "sometimes sessions that crash get saved on
+        // their own, but if they had no running process there is no point to save them".)
+        // A closing window says "keep this" as it goes, which is why the session is still
+        // here afterwards. What it does NOT say — a socket that simply stops, the way a
+        // crash stops it — is what the new rule is about: nothing running in there, nothing
+        // worth coming back to. (Kaida, 2026-11-24: "sometimes sessions that crash get saved
+        // on their own, but if they had no running process there is no point to save them".)
         window.shutdown();
         bool one_viewer = waitFor([&daemon] {
             for (const SessionInfo& info : daemon.list()) {

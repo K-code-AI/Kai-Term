@@ -319,14 +319,29 @@ int main(int argc, char** argv) {
     {
         // Ctrl+Shift+S: keep this shell, start a fresh one here. The window stays,
         // because what ended was the shell, not the window.
+        //
+        // It asks what to call the session first. A kept session is one you go back to by
+        // name, so the name is the part worth asking for; Enter takes the one the window
+        // offered, which is what the rest of this block then follows.
+        // (Kaida, 2026-11-24: "saving a session should now prompt for a name (can be
+        // disabled in setting)".)
         window.saveCurrentSession();
+        expect("the window asks what the kept session should be called",
+               window.overlayActive() && window.overlayEditable() &&
+                   !window.overlayField().empty());
+        const std::string offered = window.overlayField();
+        QKeyEvent accept(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier, "\r");
+        QApplication::sendEvent(&window, &accept);
+        expect("and the question is gone once it is answered",
+               waitFor([&window] { return !window.overlayActive(); }));
         expect("the window says what it did",
                waitFor([&window] { return window.statusText().find("kept") != std::string::npos; }));
         expect("and the menu would now have something to offer",
                waitFor([&window] { return window.restorableSessions().size() == 1; }));
         const std::string kept = window.restorableSessions().front().name;
 
-        expect("kept under a name a person would choose to type", kept.rfind("s", 0) == 0);
+        expect("kept under the name the window offered", kept == offered);
+        expect("which is a name a person would choose to type", kept.rfind("s", 0) == 0);
         expect("still holding what was on it",
                waitFor([&kept] { return writtenInto(kept).find("FIRST-WINDOW") != std::string::npos; }));
         // That was a view, even a short one that only wanted to know what the screen
@@ -1291,7 +1306,11 @@ int main(int argc, char** argv) {
         // The blink row gets nudged on the way, so the save is checked against a row
         // whose value is not the two-digit font size it was already holding.
         // (Kaida, 2026-11-21: "customizable blink speed ( 0 being no blinking)".)
-        for (int step = 0; step < 6; ++step) {
+        // Walked to rather than counted: the menu gains a row now and then, and the point of
+        // this is the row, not its position.
+        for (int step = 0; step < 14 && window.settingsRowKey(window.settingsCursor().first) !=
+                                                       QStringLiteral("cursor_blink");
+             ++step) {
             press_key(Qt::Key_Down);
             pump(20);
         }
@@ -1458,7 +1477,12 @@ int main(int argc, char** argv) {
         };
         open_menu();
         pump(120);
-        const int scrollback_row = 4; // font, 2 opacities, padding, then scrollback
+        // Where the scrollback row sits, asked rather than counted by hand: this menu gains
+        // a row now and then, and an index written down breaks the day one appears above it.
+        int scrollback_row = 0;
+        for (int i = 0; i < row_count; ++i)
+            if (window.settingsRowKey(i) == QStringLiteral("scrollback"))
+                scrollback_row = i;
         { // on the words, where nothing else is painted
             const QRectF row = window.settingsRowRect(scrollback_row);
             click(QPointF(row.left() + 4.0, row.center().y()));

@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <string>
 #include <thread>
 #include <utility>
@@ -68,17 +69,20 @@ struct TerminalOutputEvent : QEvent {
 // pane prints nothing on the pane being looked at, so nothing else would ever say so.
 struct TerminalTabsEvent : QEvent {
     TerminalTabsEvent(int panes, int focused, bool tabs, std::vector<PaneRect> cells,
-                      int generation)
+                      std::vector<int> numbers, int generation)
         : QEvent(QEvent::None),
           panes(panes),
           focused(focused),
           tabs(tabs),
           cells(std::move(cells)),
+          numbers(std::move(numbers)),
           generation(generation) {}
     int panes;
     int focused;
     bool tabs;
     std::vector<PaneRect> cells;
+    // Which number each place is called by, in the order the places are listed.
+    std::vector<int> numbers;
     int generation;
 };
 
@@ -118,6 +122,10 @@ struct ExtraPane {
     PaneRect cell;
     int pane = -1;
     int scroll = 0; // lines scrolled back from this place's own live bottom
+    // The scroll this place was left at, waiting to be applied once its snapshot has
+    // arrived — a view created before any history has fed in cannot be scrolled yet, and
+    // applying it then would only be clamped back to the bottom.
+    int pending_scroll = 0;
 };
 
 class TerminalWidget : public QWidget {
@@ -708,6 +716,20 @@ public:
         update();
     }
     double padding() const { return padding_; }
+    // How thick the line between two places is drawn, in pixels. The gap itself belongs to
+    // the arrangement — a divider costs a row or a column of cells whichever way it runs —
+    // so this is only about what is painted inside it. Filling the whole gap used to mean a
+    // vertical divider was a column wide and a horizontal one a row tall, so the two were
+    // never the same thickness and neither was a line. The same number is used for both, and
+    // 0 draws nothing.
+    // (Kaida, 2026-11-24: "the separator should be thinner and equal in size when comparing
+    // the horizontal and vertical one (maybe even an option in the settings to change it
+    // size) and use the Theme Accent color".)
+    void setDividerWidth(double pixels) {
+        divider_width_ = std::clamp(pixels, 0.0, 16.0);
+        update();
+    }
+    double dividerWidth() const { return divider_width_; }
     void setHistoryLimit(int lines) {
         if (lines < 0)
             lines = 0;
@@ -838,6 +860,7 @@ public:
                     QCoreApplication::postEvent(this,
                                                 new TerminalTabsEvent(bar.panes, bar.focused,
                                                                       bar.tabs, bar.cells,
+                                                                      bar.numbers,
                                                                       generation));
                 }
                 // Bytes the backend is already holding are not waiting on the
@@ -1123,6 +1146,24 @@ public:
     // works, it just says nothing; a person who has learned the keys need no reminder.
     void setShowKeyHints(bool on) { show_key_hints_ = on; update(); }
     bool showKeyHints() const { return show_key_hints_; }
+    // Resize mode: the arrows stretch the place in hand. Enter keeps, Esc puts it back.
+    bool inResizeMode() const { return resize_mode_; }
+    void enterResizeMode() {
+        if (resize_mode_)
+            return;
+        resize_mode_ = true;
+        if (backend_)
+            backend_->resizeBegin();
+        update();
+    }
+    void endResizeMode(bool commit) {
+        if (!resize_mode_)
+            return;
+        resize_mode_ = false;
+        if (backend_)
+            backend_->resizeEnd(commit);
+        update();
+    }
 
     // One line the window says for itself, shown in the corner for a moment and then
     // gone. A keybind that keeps your work and says nothing is a keybind that gets
@@ -1198,6 +1239,25 @@ public:
     }
 
     bool overlayActive() const { return overlay_.active; }
+    // A panel that asks for a name and nothing else: a line of text you type, Enter to
+    // hand it over, Esc to back out. `starting` is what the window would have chosen on its
+    // own, offered so pressing Enter without typing takes the automatic name rather than an
+    // empty one. Enter on an empty field means the same thing for the same reason.
+    // (Kaida, 2026-11-24: "saving a session should now prompt for a name".)
+    void askNameInTerminal(const std::string& question, const std::string& detail,
+                           const std::string& starting, std::function<void(std::string)> gave) {
+        overlay_ = Overlay{};
+        overlay_.active = true;
+        overlay_.editable = true;
+        overlay_.field = starting;
+        overlay_.field_offered = !starting.empty();
+        overlay_.lines.push_back(question);
+        if (!detail.empty())
+            overlay_.lines.push_back(detail);
+        overlay_.hint = "type a name · enter keep it · esc back out";
+        overlay_.gave_text = std::move(gave);
+        update();
+    }
     // What is being asked and what it is being asked with — exposed so the
     // words and the order of the answers can be checked without an eye on a
     // screen, and so a screenshot tool can photograph a dialog on purpose.
@@ -1206,6 +1266,10 @@ public:
     }
     const std::vector<std::string>& overlayChoices() const { return overlay_.choices; }
     int overlaySelected() const { return overlay_.selected; }
+    // The field of a panel that asks for words rather than a button, exposed on the same
+    // terms as the question: what has been typed, and whether there is a field at all.
+    bool overlayEditable() const { return overlay_.editable; }
+    std::string overlayField() const { return overlay_.field; }
 
     // Read-only view of the terminal model, for tests and for UI pieces such as
     // a scrollbar that must agree with the painted content.
@@ -1322,8 +1386,23 @@ public:
     Selection selection() const { return selection_; }
     std::string selectedText() const {
         const PaneRect pane = paneForDrag(panes_, selection_.anchor, rows_, cols_);
-        return selectionTextInPane(pane, selection_,
-                                   [&](int r) -> const Row& { return displayRow(r); });
+        if (!splitActive() || (pane.firstRow() == 0 && pane.firstCol() == 0)) {
+            return selectionTextInPane(pane, selection_,
+                                       [&](int r) -> const Row& { return focusedRow(r); });
+        }
+        // Side by side, each place owns a corner of the grid and a screen of its own
+        // width, so the drag is read in that place's coordinates. Reading its rows at the
+        // grid's columns would run past the end of every line and bring back nothing but
+        // newlines. A host that has only described rects over one screen keeps the
+        // straightforward reading above, where the grid and the screen are the same thing.
+        const Selection local{CellPos{selection_.anchor.row - pane.firstRow(),
+                                      selection_.anchor.col - pane.firstCol()},
+                              CellPos{selection_.head.row - pane.firstRow(),
+                                      selection_.head.col - pane.firstCol()}};
+        return selectionTextInPane(PaneRect{0, 0, pane.rows, pane.cols}, local,
+                                   [&](int r) -> const Row& {
+                                       return focusedRow(r + pane.firstRow());
+                                   });
     }
 
     // Whether a cell is highlighted. The pane a selection started in clips it, because
@@ -1369,17 +1448,45 @@ public:
     // What the session's tab bar holds. The count is the daemon's business; which tab is
     // lit is this window's, because two windows on one session can be looking at two
     // different places and both are right.
-    void setTabBar(int panes, int focused, bool tabs, std::vector<PaneRect> cells = {}) {
+    void setTabBar(int panes, int focused, bool tabs, std::vector<PaneRect> cells = {},
+                   std::vector<int> numbers = {}) {
         if (panes == tab_panes_ && view_tabs_ == tabs && cells == tab_cells_ &&
-            (tab_chosen_ || focused == tab_focused_))
+            numbers == tab_numbers_ && (tab_chosen_ || focused == tab_focused_))
             return;
+        const int places_before = tab_panes_;
         tab_panes_ = std::max(0, panes);
         view_tabs_ = tabs;
         tab_cells_ = std::move(cells);
+        tab_numbers_ = std::move(numbers);
+        if (static_cast<int>(tab_numbers_.size()) > tab_panes_)
+            tab_numbers_.resize(static_cast<size_t>(tab_panes_));
+        // The bar's cells are where each place sits, so they are also the answer to
+        // "which place does this drag belong to". Kept as one copy on purpose: a drag
+        // clipped by a different set of rects than the ones painted highlights the cells
+        // of one place and copies the text of its neighbour. Only while places really are
+        // side by side — with one place to look at the grid is the place, and clipping a
+        // drag to a rect left over from a closed split would cut a selection short along
+        // a divider that is no longer drawn.
+        panes_ = (tab_panes_ > 1 && !view_tabs_) ? tab_cells_ : std::vector<PaneRect>{};
         if (!tab_chosen_)
             tab_focused_ = std::clamp(focused, 0, std::max(0, tab_panes_ - 1));
         else if (tab_focused_ >= tab_panes_)
             tab_focused_ = std::max(0, tab_panes_ - 1);
+        // Before anything is drawn or measured, settle which place this window is looking
+        // at: the size it asks the program to be, and the screen it paints, both come from
+        // that answer.
+        followThePlaceJustMade();
+        // A neighbour stands in for a PLACE rather than for a program: it is painted into
+        // that place's rect, so what it should be showing is whatever program answers to
+        // that number now. Adding or taking away a place renumbers the places after the
+        // change, and a view opened for an old number would go on feeding the program it
+        // was opened for into a rect that belongs to somebody else — which is how one
+        // program came to be drawn twice while the place this window left behind was
+        // painted blank. Only the count moves them: dragging a divider changes sizes, not
+        // numbers, and re-opening every view on each frame of a drag would blank the
+        // window continuously.
+        if (places_before != tab_panes_)
+            stopAllNeighbours();
         // The neighbours are views of particular places, so they move with the cells
         // of those places; and if a place is gone, or the session has gone back to
         // tabs, there is nothing beside the window to show any more.
@@ -1394,8 +1501,19 @@ public:
     void showPaneAt(int pane) {
         if (pane < 0 || pane >= tab_panes_ || pane == tab_focused_)
             return;
+        // The place just left keeps the scroll it was left at, so coming back finds it
+        // where it was. The place being moved to starts at its live bottom while its fresh
+        // snapshot fills the screen; the scroll saved for it is held until that history has
+        // arrived (below, in the output path), because applying it to an empty screen would
+        // only be clamped back to the bottom and lost.
+        pending_new_place_ = -1; // a place chosen by hand outranks one merely asked for
+        pane_scroll_[tab_focused_] = scroll_offset_;
         tab_focused_ = pane;
+        scroll_offset_ = 0;
+        const auto saved = pane_scroll_.find(pane);
+        pending_view_scroll_ = saved == pane_scroll_.end() ? 0 : saved->second;
         tab_chosen_ = true;
+        resizeViewToFocusedCell(); // the view now shows a different place's cell
         update();
         if (backend_)
             backend_->showPane(pane);
@@ -1406,10 +1524,43 @@ public:
         // this is where the neighbours learn to get out of the way and step in.
         syncNeighbours();
     }
+
+    // Adopt the place this window asked the session to make, once the bar says it is
+    // there. The session puts a new place directly after the one it was divided from —
+    // the new node holds the old place first and the new one second — and it moves the
+    // view that asked onto the place it made, so that asking for a place lands you in it
+    // instead of leaving you to press a second key. That move is invisible on the wire:
+    // the window is simply sent the new place's screen. Saying here what the window asked
+    // for is therefore the only way this side can keep its own screen, the place it
+    // believes it is looking at, and the size it asks of that place's program telling the
+    // same story — without it the new place's blank prompt is painted into the rect of the
+    // place that was divided, at that place's old size, and the work that was there
+    // disappears until something redraws it.
+    void followThePlaceJustMade() {
+        if (pending_new_place_ < 0)
+            return;
+        const int made = pending_new_place_;
+        pending_new_place_ = -1;
+        if (made >= tab_panes_ || made == tab_focused_)
+            return;
+        // The same bookkeeping as moving to a place by hand: the place being left keeps
+        // the scroll it was left at, and the new place starts at its live bottom.
+        pane_scroll_[tab_focused_] = scroll_offset_;
+        tab_focused_ = made;
+        scroll_offset_ = 0;
+        const auto saved = pane_scroll_.find(made);
+        pending_view_scroll_ = saved == pane_scroll_.end() ? 0 : saved->second;
+        tab_chosen_ = true; // this window chose a place; which tab the session lights is not its business
+    }
     // The keys, as methods so a check can press them without a window manager.
     void newTab(bool side_by_side = true) {
-        if (backend_)
-            backend_->newPane(side_by_side);
+        if (!backend_)
+            return;
+        // Remembered here, applied when the bar arrives with the new place in it: the
+        // number is the place being divided plus one, because the new place is put
+        // immediately after it. See followThePlaceJustMade().
+        pending_new_place_ = tab_focused_ + 1;
+        backend_->newPane(side_by_side);
     }
     // Ctrl+K then N asks which way to make the new place before making it: a small dialog
     // offering Vertical (a place beside, a vertical divider) or Horizontal (a place below,
@@ -1470,6 +1621,22 @@ public:
             view->backend->clearHeldBytes();
             view->screen.feed(held);
         }
+        // The place starts where the window left it looking, not at its live bottom.
+        // The window keeps a scroll per place precisely so a place is found where it was
+        // left, and a neighbour that began at the bottom would repaint the place you are
+        // NOT looking at into a different place than the one you walked away from: scroll
+        // the left half back to the top of a log, look at the right half, and the left
+        // half silently drops to its prompt. (Kaida, 2026-11-24: "during pane 2 selection
+        // we should still see the same in pane 1 as when pane 1 was selected".) Where the
+        // snapshot has not arrived yet there is no history to scroll through, so the
+        // number waits as `pending_scroll` and the first output applies it — the same
+        // bargain the window makes with itself when it moves onto a place.
+        const auto saved = pane_scroll_.find(pane);
+        const int wanted = saved == pane_scroll_.end() ? 0 : saved->second;
+        view->scroll = wanted;
+        clampNeighbourScroll(*view);
+        if (view->scroll != wanted)
+            view->pending_scroll = wanted; // its history has not arrived yet
         ExtraPane* added = view.get();
         neighbours_.push_back(std::move(view));
         startNeighbourReader(added);
@@ -1598,16 +1765,41 @@ public:
     // important than another. Proportional to the cells when they are shown side by side,
     // with the dividers left as gaps — the bar is a map of where the work is, and a map
     // that lies about the sizes of rooms is worse than no map at all.
+    // The number a place is called by: the order it was made in, as the session says. When
+    // the session has not said — an older session, or a shell started inside this window —
+    // its position is its number, which is what those sessions mean anyway.
+    int tabNumber(int slot) const {
+        if (slot >= 0 && slot < static_cast<int>(tab_numbers_.size()) &&
+            tab_numbers_[static_cast<size_t>(slot)] > 0)
+            return tab_numbers_[static_cast<size_t>(slot)];
+        return slot + 1;
+    }
+
+    // The places in the order the bar lists them: by the number each is called by, which is
+    // the order they were made in. A person counting tabs counts them, so the bar counts;
+    // where a place sits on screen is the arrangement's business, and the places themselves
+    // show that far better than a strip above them can.
+    std::vector<int> tabOrder() const {
+        std::vector<int> order;
+        for (int slot = 0; slot < tab_panes_; ++slot)
+            order.push_back(slot);
+        std::stable_sort(order.begin(), order.end(),
+                         [this](int a, int b) { return tabNumber(a) < tabNumber(b); });
+        return order;
+    }
+
     std::vector<double> tabEdges() const {
         std::vector<double> edges;
         if (tab_panes_ <= 0)
             return edges;
         const bool proportional =
             !view_tabs_ && static_cast<int>(tab_cells_.size()) == tab_panes_;
+        const std::vector<int> order = tabOrder();
         double total = 0.0;
         std::vector<double> widths;
-        for (int pane = 0; pane < tab_panes_; ++pane) {
-            const double w = proportional ? std::max(1, tab_cells_[pane].cols) : 1.0;
+        for (const int slot : order) {
+            const double w =
+                proportional ? std::max(1, tab_cells_[static_cast<size_t>(slot)].cols) : 1.0;
             widths.push_back(w);
             total += w;
         }
@@ -1615,10 +1807,10 @@ public:
         total += gap * (tab_panes_ - 1);
         edges.push_back(0.0);
         double used = 0.0;
-        for (int pane = 0; pane < tab_panes_; ++pane) {
-            used += widths[pane] / total;
+        for (int at = 0; at < tab_panes_; ++at) {
+            used += widths[static_cast<size_t>(at)] / total;
             edges.push_back(used);
-            if (pane + 1 < tab_panes_) {
+            if (at + 1 < tab_panes_) {
                 used += gap / total;
                 edges.push_back(used);
             }
@@ -1634,11 +1826,12 @@ public:
         if (edges.size() < 2 || bar_width <= 0.0)
             return -1;
         const double at = std::clamp((x - bar_left) / bar_width, 0.0, 1.0);
-        for (int pane = 0; pane + 1 < static_cast<int>(edges.size()); ++pane) {
+        const std::vector<int> order = tabOrder();
+        for (int edge = 0; edge + 1 < static_cast<int>(edges.size()); ++edge) {
             // Odd boundaries are the far edge of a place, even ones the near edge; the
             // entries between them are the gaps left by dividers.
-            if ((pane % 2) == 0 && at >= edges[pane] && at < edges[pane + 1])
-                return pane / 2;
+            if ((edge % 2) == 0 && at >= edges[edge] && at < edges[edge + 1])
+                return order[static_cast<size_t>(edge / 2)];
         }
         return -1;
     }
@@ -1737,7 +1930,7 @@ public:
         if (auto* tabs = dynamic_cast<TerminalTabsEvent*>(e)) {
             if (tabs->generation != generation_)
                 return true; // about a session this window no longer shows
-            setTabBar(tabs->panes, tabs->focused, tabs->tabs, tabs->cells);
+            setTabBar(tabs->panes, tabs->focused, tabs->tabs, tabs->cells, tabs->numbers);
             return true;
         }
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
@@ -1798,6 +1991,18 @@ public:
                 scroll_offset_ = 0;
             else
                 followScroll(history_before);
+
+            // A move onto a new place held its saved scroll until this snapshot filled the
+            // screen; now the history is here, so put the view back where that place was
+            // left. Only once there is enough history to hold the offset, so a snapshot that
+            // has not fully arrived yet does not clamp the memory away.
+            if (pending_view_scroll_ > 0 && !screen_.inAlternateScreen() &&
+                screen_.historySize() >= pending_view_scroll_) {
+                scroll_offset_ = pending_view_scroll_;
+                clampScroll();
+                pane_scroll_[tab_focused_] = scroll_offset_;
+                pending_view_scroll_ = 0;
+            }
 
             // The same bytes that changed whose screen this is may have changed
             // how much room the grid has: an application taking the screen over
@@ -1862,8 +2067,37 @@ public:
             // history, the same way the window's own view is held still.
             const int history_before = view->screen.historySize();
             view->screen.feed(extra->data);
-            if (view->scroll > 0) {
-                view->scroll += view->screen.historySize() - history_before;
+            // A place that was left scrolled comes back to there once its first screen
+            // has arrived — the snapshot may reach the window here rather than at the
+            // connection, and until it does the saved scroll has nowhere to be applied.
+            // "Arrived" means history deep enough to hold that scroll: spending it on the
+            // first chunk of a snapshot still on its way clamps the memory down to what
+            // has landed and throws the rest away.
+            if (view->pending_scroll > 0 && !view->screen.inAlternateScreen() &&
+                view->screen.historySize() >= view->pending_scroll) {
+                view->scroll = view->pending_scroll;
+                view->pending_scroll = 0;
+                clampNeighbourScroll(*view);
+            } else if (view->scroll > 0) {
+                // History shrinking is not ordinary output pushing old lines out of a
+                // full ring — that leaves the count where it was. The screen has been
+                // replaced under the neighbour: the daemon sending a fresh snapshot of the
+                // place, or a reflow. Shifting the view by that negative difference buries
+                // it below the oldest line there is, the clamp pulls it back to nothing,
+                // and the place snaps to its live bottom — which is how the half you
+                // walked away from stopped showing what you left it on. Put it back at the
+                // scroll remembered for that place and keep the number waiting until that
+                // place's own history is all in.
+                const int history_now = view->screen.historySize();
+                if (history_now < history_before) {
+                    const auto saved = pane_scroll_.find(view->pane);
+                    const int remembered =
+                        saved == pane_scroll_.end() ? view->scroll : saved->second;
+                    view->pending_scroll = remembered;
+                    view->scroll = remembered;
+                } else {
+                    view->scroll += history_now - history_before;
+                }
                 clampNeighbourScroll(*view);
             }
             update();
@@ -1887,13 +2121,27 @@ public:
             ++notice_revision_;
         }
 
-        // Ctrl+Shift+Left and Right step along the tab bar, wrapping at both ends: the
-        // places are numbered, so there is nothing to remember about which is which, and
-        // the point is to look at the other program without letting go of this one.
+        // Ctrl+Shift and an arrow step along the tab bar, wrapping at both ends: the places
+        // are numbered, so there is nothing to remember about which is which, and the point
+        // is to look at the other program without letting go of this one.
+        //
+        // They step by NUMBER rather than by position, because the numbers are what a person
+        // is counting when they press this. The bar is drawn in creation order and the
+        // places sit wherever the arrangement put them, so "the next one" from the place
+        // called 2 is the one called 3 even when 3 is stacked underneath instead of beside
+        // it. Right and Down run the numbers up, Left and Up run them back.
+        // (Kaida, 2026-11-24: "Ctrl+Shift+Arrow should cycle in numerical order".)
         if (tab_panes_ > 1 && mods.testFlag(Qt::ControlModifier) && shift &&
-            (key == Qt::Key_Left || key == Qt::Key_Right)) {
-            showPaneAt((tab_focused_ + (key == Qt::Key_Right ? 1 : tab_panes_ - 1)) %
-                       tab_panes_);
+            (key == Qt::Key_Left || key == Qt::Key_Right || key == Qt::Key_Up ||
+             key == Qt::Key_Down)) {
+            const std::vector<int> order = tabOrder(); // the places, sorted by their numbers
+            const int count = static_cast<int>(order.size());
+            int here = 0;
+            for (int i = 0; i < count; ++i)
+                if (order[static_cast<std::size_t>(i)] == tab_focused_)
+                    here = i;
+            const int forward = (key == Qt::Key_Right || key == Qt::Key_Down) ? 1 : count - 1;
+            showPaneAt(order[static_cast<std::size_t>((here + forward) % count)]);
             ev->accept();
             return;
         }
@@ -1913,7 +2161,7 @@ public:
         // must mean the highlighted answer, not a newline someone else has to
         // explain.
         if (overlay_.active) {
-            overlayKeyPress(key, mods);
+            overlayKeyPress(key, mods, ev->text());
             return;
         }
 
@@ -1957,7 +2205,7 @@ public:
             switch (key) {
                 case Qt::Key_K: if (on_settings_menu) on_settings_menu(); spent = true; break;
                 case Qt::Key_N: askNewTab(); spent = true; break;
-                case Qt::Key_R: if (on_resize_mode) on_resize_mode(); else setStatusText("resize: not wired yet"); spent = true; break;
+                case Qt::Key_R: enterResizeMode(); spent = true; break;
                 case Qt::Key_F: if (on_file_manager) on_file_manager(); else setStatusText("file manager: not wired yet"); spent = true; break;
                 case Qt::Key_S: if (on_save_session) on_save_session(); spent = true; break;
                 case Qt::Key_A: if (on_session_menu) on_session_menu(); spent = true; break;
@@ -1971,6 +2219,29 @@ public:
             }
             // Fall through with a disarmed control so an unrecognised key still reaches
             // the shell, exactly as if the control had never been pressed.
+        }
+
+        // Resize mode owns the keyboard: the arrows stretch the place in hand along the
+        // axis they point, Shift runs the divider the other way, Enter keeps the new
+        // arrangement and Esc puts it back. Nothing reaches the shell while it is up —
+        // an arrow that resized a pane should not also move a cursor underneath it.
+        if (resize_mode_) {
+            const int step = 1;
+            if (key == Qt::Key_Left || key == Qt::Key_Right) {
+                const int dir = key == Qt::Key_Right ? step : -step;
+                if (backend_)
+                    backend_->resizeDivider(shift ? -dir : dir, 0);
+            } else if (key == Qt::Key_Up || key == Qt::Key_Down) {
+                const int dir = key == Qt::Key_Down ? step : -step;
+                if (backend_)
+                    backend_->resizeDivider(0, shift ? -dir : dir);
+            } else if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+                endResizeMode(true);
+            } else if (key == Qt::Key_Escape) {
+                endResizeMode(false);
+            }
+            ev->accept();
+            return;
         }
 
         // Ctrl+Shift+C and Ctrl+Shift+V are the terminal's own, handled before
@@ -2004,7 +2275,7 @@ public:
             return;
         }
 
-        scroll_offset_ = 0;
+        returnToBottom();
         clearSelection();
 
         // Encoded against the modes of the place being looked at and written to its
@@ -2302,28 +2573,12 @@ public:
 
         const bool force_local = ev->modifiers().testFlag(Qt::ShiftModifier);
 
-        // Side by side, the wheel scrolls the place it is over, not the one being
-        // looked at: two places on screen are two histories, and scrolling one by
-        // moving the other shows the wrong lines. Over a neighbour its own offset
-        // moves — and a neighbour in a full-screen program owns its scrolling, just as
-        // the window's own view would. This is checked before the window's own mouse
-        // and alternate-screen modes, because those belong to the place being looked at,
-        // not to the one under the pointer.
-        if (splitActive()) {
-            const CellPos where = cellAt(ev->position());
-            const int over = paneAtGrid(where.row, where.col);
-            if (over >= 0 && over != tab_focused_) {
-                if (ExtraPane* n = neighbourFor(over)) {
-                    if (!n->screen.inAlternateScreen()) {
-                        n->scroll += steps * kWheelRows;
-                        clampNeighbourScroll(*n);
-                    }
-                    ev->accept();
-                    update();
-                    return;
-                }
-            }
-        }
+        // The wheel scrolls the place being looked at, and only that place — wherever
+        // the pointer happens to be. A scroll that reached the place under the cursor
+        // moved a history the person was not working in, and left the place they *were*
+        // working in untouched; the selected place is the one the keys, the highlight and
+        // now the wheel all belong to. So a split is skipped here entirely and the scroll
+        // falls through to the window's own view below.
 
         if (screen_.mouseReporting() && !force_local) {
             const CellPos pos = cellAt(ev->position());
@@ -2435,6 +2690,13 @@ public:
         const int new_rows =
             std::max(1, static_cast<int>((height() - 2.0 * pad - tabStrip()) / ch));
         if (new_rows == rows_ && new_cols == cols_) {
+            // The window is the same size it was, but the place this window is looking at
+            // may not be: dividing a place, closing one or dragging a divider changes that
+            // place's cell while the window around it does not move. The screen this window
+            // paints is the size of that cell, so it has to be asked again — otherwise a
+            // new place is drawn from a screen sized for the place that was divided, which
+            // shows a cell full of nothing where a prompt is waiting further down.
+            resizeViewToFocusedCell();
             update();
             return;
         }
@@ -2442,7 +2704,14 @@ public:
         rows_ = new_rows;
         cols_ = new_cols;
         screen_.resize(rows_, cols_);
-        backend_->resize(rows_, cols_);
+        backend_->resize(rows_, cols_); // the session keeps the window's size, not the cell's
+        // While the places share the screen, the window is shown the place in hand at that
+        // place's cell — the same size the daemon draws the place's screen, and the same a
+        // neighbour takes. Sized to the whole grid, the place in hand's screen would fill
+        // the window and its bottom — the prompt, always the last line — would be painted
+        // below the cell and lost. With one place, or places shown one at a time, there is
+        // no cell smaller than the window to shrink to, so the view stays the whole window.
+        resizeViewToFocusedCell();
         // Every neighbour is a view of the same session, so each is told the same window
         // size — a smaller view would shrink the session for everyone, since the session
         // takes the size of the smallest window looking at it. Each one's own screen then
@@ -2467,6 +2736,29 @@ public:
         clearSelection();
         clampScroll();
         update();
+    }
+
+    // The window's own screen shows the place in hand at that place's cell size while the
+    // places share the screen, matching the screen the daemon draws for it; with one place,
+    // or places shown one at a time, the view is the whole window. The connection always
+    // reports the whole window, so the session is not shrunk to a single place.
+    void resizeViewToFocusedCell() {
+        if (!backend_)
+            return;
+        int vr = rows_;
+        int vc = cols_;
+        if (splitActive() && tab_focused_ >= 0 &&
+            tab_focused_ < static_cast<int>(tab_cells_.size())) {
+            const PaneRect cell = tab_cells_[static_cast<size_t>(tab_focused_)];
+            if (cell.valid()) {
+                vr = cell.rows;
+                vc = cell.cols;
+            }
+        }
+        if (screen_.rows() == vr && screen_.cols() == vc)
+            return;
+        screen_.resize(vr, vc);
+        clampScroll();
     }
 
     // The screen changing hands between the shell and an application taking the
@@ -2511,12 +2803,14 @@ public:
             const double bar_w = width() - 2.0 * grid_pad;
             p.fillRect(QRectF(grid_pad, grid_pad, bar_w, strip), ground(default_bg, 40));
             const std::vector<double> edges = tabEdges();
+            const std::vector<int> order = tabOrder();
             for (int pane = 0; pane + 1 < static_cast<int>(edges.size()); ++pane) {
                 if ((pane % 2) != 0)
                     continue; // the gap a divider leaves, which is left as the bar's ground
                 const QRectF slot(grid_pad + edges[pane] * bar_w, grid_pad,
                                   (edges[pane + 1] - edges[pane]) * bar_w, strip);
-                const bool looked_at = pane / 2 == tab_focused_;
+                const int place = order[static_cast<size_t>(pane / 2)];
+                const bool looked_at = place == tab_focused_;
                 if (looked_at) {
                     p.fillRect(slot, ground(default_bg, 110));
                     // The accent, which is the colour a dialog puts on the answer its focus
@@ -2534,7 +2828,9 @@ public:
                 } else {
                     p.setPen(ink(theme_.foreground, 140));
                 }
-                p.drawText(slot, Qt::AlignCenter, QString::number(pane / 2 + 1));
+                // The number the place is called by, which is the order it was made in —
+                // so a pane keeps the number it was given, and the bar lists them in order.
+                p.drawText(slot, Qt::AlignCenter, QString::number(tabNumber(place)));
             }
             // A rule under the bar, so the strip reads as something the grid sits on
             // rather than as a row of the grid that failed to draw.
@@ -2553,30 +2849,50 @@ public:
                 if (!cell.valid())
                     continue;
                 if (pane == tab_focused_) {
+                    // The place being looked at is the place a drag selects in, so it is
+                    // painted with its selection — asked in grid coordinates, because that
+                    // is the space the drag was recorded in.
                     paintScreenInto(p, fm, cw, ch, grid_pad, grid_top, screen_, cell,
-                                    default_bg, scroll_offset_);
+                                    default_bg, scroll_offset_,
+                                    [&](int row, int col) { return selectedAt(row, col); });
                 } else if (const ExtraPane* n = neighbourFor(pane)) {
                     paintScreenInto(p, fm, cw, ch, grid_pad, grid_top, n->screen, cell,
                                     default_bg, n->scroll);
                 }
             }
-            // A hairline in every gap between two places, so each reads as its own place
-            // and not as one screen with a stripe that failed to draw. It sits in the
-            // column the arrangement left empty, so it never covers a character, and it
-            // is drawn for every pair — not only the one the focus happens to touch, which
-            // is why a divider used to vanish the moment the other place was selected.
+            // A line in every gap between two places, so each reads as its own place and not
+            // as one screen with a stripe that failed to draw. It sits in the row or column
+            // the arrangement left empty, so it never covers a character, and it is drawn for
+            // every pair — not only the one the focus happens to touch, which is why a
+            // divider used to vanish the moment the other place was selected. A place with
+            // room empty to its right is divided from it by a vertical line; a place with
+            // room empty below it is divided by a horizontal one, which is what a
+            // top-and-bottom split otherwise has no way to show.
+            //
+            // Both are `divider_width_` pixels thick, centred in the gap: filling the gap
+            // instead made the vertical one a column wide and the horizontal one a row tall,
+            // which is two different thicknesses and neither of them a line. The colour is
+            // the theme's accent, the same ink the rest of the window marks itself with.
             p.setPen(Qt::NoPen);
-            p.setBrush(ink(theme_.foreground, 46));
-            for (int pane = 0; pane < tab_panes_ && pane < static_cast<int>(tab_cells_.size());
-                 ++pane) {
-                const PaneRect cell = tab_cells_[static_cast<size_t>(pane)];
-                if (!cell.valid() || cell.endCol() >= cols_)
-                    continue; // the rightmost place: nothing to its right
-                if (paneAtGrid(cell.row, cell.endCol()) != -1)
-                    continue; // no gap: the next place starts flush against this one
-                const double gap_x = grid_pad + cell.endCol() * cw;
-                p.drawRect(QRectF(gap_x, grid_top + cell.row * ch, std::max(1.0, cw),
-                                  cell.rows * ch));
+            const QColor divider_ink(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+            p.setBrush(divider_ink);
+            const double thick = divider_width_;
+            if (thick > 0.0) {
+                for (int pane = 0;
+                     pane < tab_panes_ && pane < static_cast<int>(tab_cells_.size()); ++pane) {
+                    const PaneRect cell = tab_cells_[static_cast<size_t>(pane)];
+                    if (!cell.valid())
+                        continue;
+                    // The vertical line, in the column just right of this place.
+                    if (cell.endCol() < cols_ && paneAtGrid(cell.row, cell.endCol()) == -1)
+                        p.drawRect(QRectF(grid_pad + cell.endCol() * cw + (cw - thick) / 2.0,
+                                          grid_top + cell.row * ch, thick, cell.rows * ch));
+                    // The horizontal line, in the row just below this place.
+                    if (cell.endRow() < rows_ && paneAtGrid(cell.endRow(), cell.col) == -1)
+                        p.drawRect(QRectF(grid_pad + cell.col * cw,
+                                          grid_top + cell.endRow() * ch + (ch - thick) / 2.0,
+                                          cell.cols * cw, thick));
+                }
             }
         } else {
             for (int r = 0; r < rows_; ++r) {
@@ -2598,22 +2914,40 @@ public:
         // typing. It sits where the highlight sits, so the bar and the grid agree.
         if (splitActive()) {
             const PaneRect& cell = tab_cells_[static_cast<size_t>(tab_focused_)];
-            if (screen_.cursorVisible() && cursorLit()) {
-                // The cursor belongs to the place, so it is clamped to that place's own
-                // cell: the window's screen is the whole grid, but this place is one cell
-                // of it, and the cursor is nowhere a neighbour's.
+            // The cursor belongs to a row of this place's screen, and a place scrolled
+            // back shows every one of those rows `scroll` lines lower than it sits in the
+            // screen — the same shift `paintScreenInto` runs on the text. Clamping the
+            // cursor into the cell instead, which is what this used to do, leaves it
+            // stranded on whatever history line happens to fall last, parked in the column
+            // the prompt left empty and wearing the glyph of a row that is not the one
+            // under it. It read as a cursor waiting in a place nobody is typing. So the
+            // cursor is drawn where its own row is drawn and nowhere else: scroll back
+            // past the live bottom and its row walks out below the cell and there is no
+            // cursor at all, which is the same answer the single screen gives a few lines
+            // below with `scroll_offset_ == 0`. Scroll only partway and a cursor that is
+            // still on screen follows its own row down, because that is where the row is.
+            const int shown = std::min(cell.rows, screen_.rows());
+            const int cy = screen_.cursorY() - (screen_.rows() - shown) + scroll_offset_;
+            if (screen_.cursorVisible() && cursorLit() && cy >= 0 && cy < shown) {
                 const int cx = std::clamp(screen_.cursorX(), 0, cell.cols - 1);
-                const int cy = std::clamp(screen_.cursorY(), 0, cell.rows - 1);
-                const Cell& under = screen_.at(cy, cx);
+                // The glyph under the cursor is the one that was actually painted on that
+                // row, so it comes from the scrolled view rather than from the live
+                // screen on its own — otherwise the block repaints a character from a row
+                // that is not underneath it.
+                const Row& line = rowToShow(screen_, scroll_offset_, screen_.cursorY());
+                const Cell* under = cx < static_cast<int>(line.size())
+                                        ? &line[static_cast<size_t>(cx)]
+                                        : nullptr;
                 const double x = grid_pad + (cell.col + cx) * cw;
                 const double y = grid_top + (cell.row + cy) * ch;
                 p.setPen(Qt::NoPen);
                 p.setBrush(ink(theme_.cursor));
-                p.drawRect(QRectF(x, y, cw * std::max(1, under.width), ch));
-                if (!under.text.empty()) {
-                    p.setPen(ink(cellColour(under.bg, under.bg_role, false)));
+                p.drawRect(QRectF(x, y, cw * (under ? std::max(1, under->width) : 1), ch));
+                if (under && !under->text.empty()) {
+                    p.setPen(ink(cellColour(under->bg, under->bg_role, false)));
                     p.setBrush(Qt::NoBrush);
-                    p.drawText(QPointF(x, y + fm.ascent()), QString::fromStdString(under.text));
+                    p.drawText(QPointF(x, y + fm.ascent()),
+                               QString::fromStdString(under->text));
                 }
             }
         }
@@ -2744,25 +3078,43 @@ public:
 
     // Paint one screen into the cells the session gave it, cell for cell, scrolled
     // back by `scroll` lines. This is the grid loop the window has always run, with the
-    // cell's own origin and extent in place of the whole window's, and no selection — a
-    // neighbour drawn beside the place being looked at is not the place being selected
-    // in. It is here so every place goes through the same `paintCell`, and so the same
-    // rules.
+    // cell's own origin and extent in place of the whole window's. Which cells are
+    // highlighted is the caller's, because only the place being looked at is the place
+    // being selected in. It is here so every place goes through the same `paintCell`,
+    // and so the same rules.
     void paintScreenInto(QPainter& p, const QFontMetricsF& fm, double cw, double ch,
                          double grid_pad, double grid_top, const Screen& screen,
                          const PaneRect& cell, const Color& default_bg, int scroll = 0) const {
+        // The neighbours are not the place being selected in, so nothing in them is
+        // highlighted: a band in a place the pointer is not touching would promise text
+        // that a copy would not bring back.
+        paintScreenInto(p, fm, cw, ch, grid_pad, grid_top, screen, cell, default_bg, scroll,
+                        [](int, int) { return false; });
+    }
+
+    template <typename Selected>
+    void paintScreenInto(QPainter& p, const QFontMetricsF& fm, double cw, double ch,
+                         double grid_pad, double grid_top, const Screen& screen,
+                         const PaneRect& cell, const Color& default_bg, int scroll,
+                         Selected selected) const {
         // The cell comes from the tab bar's current layout and the screen from the
         // connection, and during a resize they can disagree by a row or a column for a
         // frame: the bar has the new size before the neighbour's screen has been
         // resized to it. Paint what the screen actually holds and leave the rest as
         // ground — the same reason the columns are clamped to the row's width below.
+        // When the screen runs taller than the cell (a frame where the two have not yet
+        // agreed), show the bottom of the screen, not the top: a place is always read from
+        // its live bottom — the newest line and the prompt, always the last line — and
+        // painting the top would push that prompt below the cell and lose it.
         const int rows = std::min(cell.rows, screen.rows());
+        const int top = screen.rows() - rows;
         for (int r = 0; r < rows; ++r) {
-            const Row& line = rowToShow(screen, scroll, r);
+            const Row& line = rowToShow(screen, scroll, r + top);
             const int line_cols = std::min(cell.cols, static_cast<int>(line.size()));
             for (int c = 0; c < line_cols; ++c)
                 paintCell(p, fm, cw, ch, grid_pad + (cell.col + c) * cw,
-                          grid_top + (cell.row + r) * ch, line[c], false, default_bg);
+                          grid_top + (cell.row + r) * ch, line[c],
+                          selected(cell.row + r, cell.col + c), default_bg);
         }
     }
 
@@ -2851,6 +3203,16 @@ private:
         std::string hint;                 // the keys, said once, under the list
         std::vector<char> hotkeys;        // letters that answer, checked before movement
         std::function<void(int)> answer;  // the index picked; -1 means it went away
+        // A panel can also carry one line you type into. The letters then belong to that
+        // line and not to the buttons under it, Enter hands the words over through
+        // `gave_text`, and Esc still throws the whole thing away with `answer(-1)`.
+        bool editable = false;
+        std::string field;
+        // True while the field still holds the name the window offered rather than anything
+        // typed. The first letter typed replaces it outright — the offer is a default to
+        // accept with Enter, not a word to delete a character at a time.
+        bool field_offered = false;
+        std::function<void(std::string)> gave_text;
     };
 
     // Where the panel and each choice landed, computed the same way for the
@@ -2908,6 +3270,16 @@ private:
                 inner_w = std::max(inner_w, fm.horizontalAdvance(piece));
                 lay.lines.push_back(piece);
             }
+        }
+        // A typed field is a line of its own, straight under the question and painted as
+        // loudly as the question: it is what you are looking at while you type. It is not a
+        // choice, so it is not clickable and no letter of it is a hotkey.
+        if (overlay_.editable) {
+            const QString typed = QString::fromStdString(overlay_.field);
+            inner_w = std::max(inner_w, fm.horizontalAdvance(typed) + 4 * cw);
+            lay.lines.insert(lay.lines.begin() + lay.question_lines,
+                             typed.isEmpty() ? QStringLiteral(" ") : typed);
+            ++lay.question_lines; // full strength, like the question above it
         }
         for (const std::string& choice : overlay_.choices) {
             const QString label = QString::fromStdString(choice);
@@ -4030,7 +4402,7 @@ private:
             finish(result, saved);
     }
 
-    void overlayKeyPress(int key, Qt::KeyboardModifiers mods) {
+    void overlayKeyPress(int key, Qt::KeyboardModifiers mods, const QString& typed = QString()) {
         const int count = static_cast<int>(overlay_.choices.size());
         const bool plain = mods == Qt::NoModifier || mods == Qt::KeypadModifier;
         auto step = [this, count](int delta) {
@@ -4043,6 +4415,51 @@ private:
         if (key == Qt::Key_Escape || (key == Qt::Key_G && mods.testFlag(Qt::ControlModifier))) {
             finishOverlay(-1);
             return;
+        }
+        // A panel with a field: everything the keyboard can hand over as a character goes
+        // into the field, and nothing else reaches the buttons underneath it — a `y` typed
+        // into a name is a `y`, not an answer. Enter gives the name and Esc, handled above,
+        // backs out. Backspace takes one letter off the end; the caret lives there.
+        if (overlay_.editable) {
+            if (key == Qt::Key_Backspace) {
+                if (overlay_.field_offered) {
+                    overlay_.field.clear(); // the offer, not a letter of it
+                    overlay_.field_offered = false;
+                } else if (!overlay_.field.empty()) {
+                    overlay_.field.pop_back();
+                }
+                update();
+                return;
+            }
+            if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+                const std::string name = overlay_.field;
+                std::function<void(std::string)> gave = overlay_.gave_text;
+                overlay_ = Overlay{};
+                update();
+                if (gave)
+                    gave(name);
+                return;
+            }
+            // Shift is not a reason to lose a letter: a capital arrives as the same key
+            // with Shift on it, and a field that refused them types `My-Session` as
+            // `ySession`. Control and Alt still mean something else to this window.
+            const bool writable = mods == Qt::NoModifier || mods == Qt::KeypadModifier ||
+                                  mods == Qt::ShiftModifier ||
+                                  mods == (Qt::ShiftModifier | Qt::KeypadModifier);
+            if (writable && typed.size() == 1 && typed.at(0).isPrint() &&
+                !typed.at(0).isSpace() && overlay_.field.size() < 48) {
+                if (overlay_.field_offered) {
+                    // The offered name was a default to accept, not a word to edit: the
+                    // first letter typed stands in its place.
+                    overlay_.field.clear();
+                    overlay_.field_offered = false;
+                }
+                overlay_.field.push_back(typed.at(0).toLatin1());
+                update();
+                return;
+            }
+            update();
+            return; // the panel owns the rest of the keyboard, and does nothing with it
         }
         if (key == Qt::Key_Return || key == Qt::Key_Enter) {
             finishOverlay(count > 0 ? overlay_.selected : -1);
@@ -4292,6 +4709,21 @@ private:
             p.drawText(QRectF(lay.panel.x(), y - fm.ascent(), lay.panel.width(), fm.height()),
                        Qt::AlignHCenter | Qt::AlignVCenter, lay.lines[i]);
             y += cellHeight();
+        }
+
+        // The field's caret: a bar in the accent, standing where the next letter will go.
+        // It does not blink — a panel you are about to type into has nothing to compete
+        // with, and a cursor that pulses in a dialog is a cursor that steals the question.
+        if (overlay_.editable) {
+            const int field_line = lay.question_lines - 1;
+            const double field_y = lay.panel.y() + 1.5 * cellHeight() + fm.ascent() +
+                                   field_line * cellHeight();
+            const QString typed = QString::fromStdString(overlay_.field);
+            const double x = lay.panel.center().x() + fm.horizontalAdvance(typed) / 2.0 + 1.0;
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(QColor(theme_.accent.r, theme_.accent.g, theme_.accent.b), 2));
+            p.drawLine(QPointF(x, field_y - fm.ascent() + 2), QPointF(x, field_y + fm.descent()));
+            p.setRenderHint(QPainter::Antialiasing, false);
         }
 
         for (std::size_t i = 0; i < lay.boxes.size(); ++i) {
@@ -5539,6 +5971,9 @@ private:
     // Ctrl+K waits for one key. Armed means that key has not arrived yet.
     bool prefix_armed_ = false;
     bool show_key_hints_ = true;
+    // Ctrl+K then R: the arrows move the divider of the place in hand instead of the
+    // cursor, until Enter keeps it or Esc puts the arrangement back.
+    bool resize_mode_ = false;
     Overlay overlay_;
     // The theme picker, when it is up: the model holds the decisions, and the
     // theme as it was on opening is kept so leaving with Esc puts the window
@@ -5634,6 +6069,10 @@ private:
     bool cursor_lit_ = true;
     bool closing_on_close_ = false;
     double padding_ = 10.0;
+    // The line between two places, in pixels. One, because a divider's job is to say "here
+    // one place stops and another starts" and a single line says that; the setting exists
+    // because a person on a scaling display may want two.
+    double divider_width_ = 1.0;
     // The colours this window wears. Defaults until a config file says
     // otherwise; see `applyTheme()`.
     Theme theme_;
@@ -5653,10 +6092,17 @@ private:
     int tab_panes_ = 0;
     int tab_focused_ = 0;
     bool tab_chosen_ = false;
+    // The place number this window asked the session to make and is waiting to be told is
+    // there, or -1 when nothing is owed. -1 is also what a place chosen by hand leaves
+    // behind: nobody is owed a move then.
+    int pending_new_place_ = -1;
     // Whether the session's places are shown one at a time with tabs, or side by side.
     bool view_tabs_ = false;
     // Where each place sits, as the session last said. Empty until it says.
     std::vector<PaneRect> tab_cells_;
+    // Which number each place is called by, in the order the places are listed; empty when
+    // the session has not said, which means numbering them by position.
+    std::vector<int> tab_numbers_;
     // The refusal currently on screen, and which one it is: a notice that has been replaced
     // must not be cleared by the timer belonging to the one before it.
     QString notice_;
@@ -5669,6 +6115,24 @@ private:
     // same span Qt's double-click interval uses by default.
     static constexpr qint64 kDoubleClickMs = 400;
     int scroll_offset_ = 0;
+    // How far each place is scrolled, kept across the window looking at another. The
+    // place being looked at holds its offset in `scroll_offset_`; a place looked at from
+    // a neighbour holds it in the neighbour's own view. This map is the memory both
+    // write, so scrolling a place and then looking away, or looking away and back, keeps
+    // it where it was rather than snapping to the prompt.
+    std::map<int, int> pane_scroll_;
+    // The scroll the place being looked at was left at, waiting for its snapshot. Moving
+    // to a place feeds a fresh snapshot that lands at its live bottom; the offset saved
+    // for that place cannot be applied until the history behind it is on the screen, so it
+    // waits here and is applied by the first output chunk that fills the screen.
+    int pending_view_scroll_ = 0;
+    void clearSavedScroll(int pane) { pane_scroll_.erase(pane); }
+    // The live place returns to the bottom: what it shows now is its own business, and
+    // a saved scroll for it would be a memory of a screen that has moved on.
+    void returnToBottom() {
+        scroll_offset_ = 0;
+        pane_scroll_.erase(tab_focused_);
+    }
 
     // The indicator's geometry, recomputed whenever the screen is painted, and
     // the state of a drag on its thumb.
@@ -5717,6 +6181,7 @@ private:
         const int view_top_before = viewTop();
         scroll_offset_ += lines;
         clampScroll();
+        pane_scroll_[tab_focused_] = scroll_offset_;
         keepSelectionOnScreen(view_top_before);
         update();
     }
@@ -5791,6 +6256,42 @@ private:
     // Display row r of the window's own view, which may be a scrollback line rather
     // than a live screen row.
     const Row& displayRow(int r) const { return rowToShow(screen_, scroll_offset_, r); }
+
+    // The place this window is looking at, in grid coordinates: the whole grid while
+    // there is one place to look at, and the rect the session gave that place once
+    // there are several beside each other.
+    PaneRect focusedPane() const {
+        if (tab_panes_ > 1 && tab_focused_ >= 0 &&
+            tab_focused_ < static_cast<int>(tab_cells_.size()) &&
+            tab_cells_[static_cast<size_t>(tab_focused_)].valid())
+            return tab_cells_[static_cast<size_t>(tab_focused_)];
+        return wholeGridPane(rows_, cols_);
+    }
+
+    // The row shown at a row of the grid. A drag, a copy and a double-click all ask
+    // this rather than reading the screen directly: side by side, the place being looked
+    // at owns a corner of the grid, so a row of the grid is a row of that place counted
+    // from the rows above it — and its rows are its own width, not the window's.
+    const Row& focusedRow(int grid_row) const {
+        if (!splitActive())
+            return displayRow(grid_row);
+        const PaneRect pane = focusedPane();
+        const int shown = std::min(pane.rows, screen_.rows());
+        const int top = screen_.rows() - shown;
+        return rowToShow(screen_, scroll_offset_, grid_row - pane.firstRow() + top);
+    }
+
+    // The cell covering a cell of the grid, in the coordinates a press reports. Reading
+    // a place's own row at a grid column would read past its end for every place that
+    // does not start at the left edge, which is how a drag in the right-hand place came
+    // to find nothing there at all.
+    Cell focusedCellAt(int grid_row, int grid_col) const {
+        const Row& line = focusedRow(grid_row);
+        const int col = grid_col - focusedPane().firstCol();
+        if (col < 0 || col >= static_cast<int>(line.size()))
+            return Cell{};
+        return line[static_cast<std::size_t>(col)];
+    }
 
     // How far a neighbour's own screen may be scrolled back, and the clamp that holds
     // it there. A neighbour in a full-screen program cannot scroll, exactly as the
@@ -5894,10 +6395,8 @@ private:
     // digits and underscore, matching what shells use for word-wise movement;
     // anything else visible is selected one cell at a time.
     CellKind kindAt(int row, int col) const {
-        const Row& line = displayRow(row);
-        if (col < 0 || col >= static_cast<int>(line.size()))
-            return CellKind::Blank;
-        const std::string& text = line[static_cast<std::size_t>(col)].text;
+        const Cell cell = focusedCellAt(row, col);
+        const std::string& text = cell.text;
         if (text.empty())
             return CellKind::Blank;
         const unsigned char c = static_cast<unsigned char>(text[0]);

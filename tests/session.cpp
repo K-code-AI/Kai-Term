@@ -284,6 +284,20 @@ bool sendPane(const std::string& name, int pane, const std::string& text) {
     return client.reply(reply) && reply.kind == MsgKind::Ack;
 }
 
+// Wait for a fact the daemon has had a moment to make true. A place is made on a thread of
+// its own, so what a listing says lags what was asked for by as long as the machine likes;
+// a check that reads the listing once fails depending on load, which is not a fact about
+// the daemon.
+template <typename Fn>
+bool waitForValue(Fn&& what, int ms) {
+    for (int waited = 0; waited < ms; waited += 25) {
+        if (what())
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return what();
+}
+
 // Attach and leave the client connected; the caller decides when it goes away.
 bool attach(TestClient& client, const std::string& name, int rows, int cols,
             std::string& snapshot, std::string* error = nullptr) {
@@ -292,10 +306,14 @@ bool attach(TestClient& client, const std::string& name, int rows, int cols,
             *error = "cannot reach the daemon";
         return false;
     }
+    // `kind=window`, because in these checks an attached client stands for a window a
+    // person is looking at. The daemon tells the two apart: a window that goes away without
+    // a word is a crash, and a command that merely read a screen is not.
     if (!client.hello({{"command", "attach"},
                        {"name", name},
                        {"rows", std::to_string(rows)},
-                       {"cols", std::to_string(cols)}})) {
+                       {"cols", std::to_string(cols)},
+                       {"kind", "window"}})) {
         if (error)
             *error = "cannot say hello";
         return false;
@@ -604,7 +622,18 @@ int main() {
 
         // Nobody looking is not a reason to resize: the shell's screen is what it is, and a
         // session that picked a default the moment the last window closed would throw away
-        // the layout it was keeping for the next one.
+        // the layout it was keeping for the next one. Saved first: a session nobody kept and
+        // nobody is looking at is ended rather than left waiting — see the `abandoned` block
+        // — and what this check is about is the size a session holds on to while it waits for
+        // the next window to look at it.
+        {
+            TestClient keeper;
+            expect("and it can be saved before the last window goes",
+                   keeper.connect() &&
+                       keeper.hello({{"command", "save"}, {"name", "shared"}, {"as", ""}}));
+            Frame kept_ack;
+            static_cast<void>(keeper.reply(kept_ack));
+        }
         ::close(big_view.fd);
         big_view.fd = -1;
         bool quiet = false;
@@ -712,6 +741,12 @@ int main() {
         expect("a view attaches to see the pane being looked at",
                attach(watcher, "split-me", 24, 80, shown));
         std::string text = TestClient::render(shown, 24, 80);
+        // The snapshot is a picture taken when the view arrived, and the shell had only
+        // just been told it was in a narrower place; if it had not answered yet the picture
+        // is of a prompt with nothing in it. Wait for the answer to arrive rather than
+        // blame the terminal for a shell that was still catching up.
+        if (text.find("ZERO-ONLY") == std::string::npos)
+            text = TestClient::render(shown + watcher.waitFor("ZERO-ONLY", 3000), 24, 80);
         // The pane the session is focused on, which an arrangement read from words puts at
         // the start of the tab bar: the left one. Not whichever shell was started last —
         // "what you are looking at" and "what appeared last" are different questions, and a
@@ -765,6 +800,208 @@ int main() {
             static_cast<void>(tidying.reply(ack));
         }
     }
+
+    {
+        // A place stacked UNDER THE FIRST ONE lands in the middle of the tab bar, so every
+        // place after it changes number. The programs must follow the places they were
+        // started for rather than stay where they were counted, or the new place wears its
+        // neighbour's screen and the neighbour's own work walks off the edge.
+        // (Kaida, 2026-11-24: "go back to pane 1 and create a new horizontal pane, it
+        // wrongly gets assigned pane 2 instead of 3, and overwrite the display of pane 1
+        // if you do command that are long/large enough, clear brings it back".)
+        expect("a session to split in the middle", createSession("middle-place"));
+        static_cast<void>(
+            giveLayout("middle-place", "split left-right 0.5\n  pane\n  pane\n"));
+        expect("with two places each doing its own work",
+               listedPanes("middle-place") == 2 &&
+                   sendPane("middle-place", 0, "echo FIRST-PLACE-A\n") &&
+                   sendPane("middle-place", 1, "echo SECOND-PLACE-B\n"));
+
+        // A view on the second place, settled there before anything moves.
+        TestClient stays;
+        std::string stays_shown;
+        expect("a view can go and look at the second place",
+               attach(stays, "middle-place", 24, 40, stays_shown));
+        static_cast<void>(stays.send(MsgKind::ShowPane, encodeFields({{"pane", "1"}})));
+        expect("and is shown that place's program",
+               TestClient::render(stays.waitFor("SECOND-PLACE-B", 4000), 24, 40)
+                   .find("SECOND-PLACE-B") != std::string::npos);
+
+        // The report's move, and the way the report made it: a view looking at the first
+        // place asks for a new place stacked under it. That edits the tree the shells are
+        // already in, so every shell has a leaf to be found by.
+        TestClient maker;
+        std::string maker_shown;
+        expect("a view looking at the first place asks for a new place under it",
+               attach(maker, "middle-place", 24, 40, maker_shown) &&
+                   maker.send(MsgKind::NewPane, encodeFields({{"dir", "h"}})));
+        expect("and the session now runs three shells",
+               waitForValue([&] { return listedPanes("middle-place") == 3; }, 4000));
+
+        // The place that used to be second is third now. The view looking at it asked for
+        // a NUMBER, and the number moved; what it must keep seeing is the program it chose.
+        // Ask each place something and wait to see the answer come back to the view that
+        // is looking at it. Asked more than once because a shell that has just been resized
+        // to its new cell drops what is typed at it, and a check that blames the terminal
+        // for that is blaming the wrong thing.
+        // Everything each view has been sent, kept as one stream: a chunk that happens to
+        // begin in the middle of an escape sequence renders as nothing, and on a loaded
+        // machine chunks arrive in awkward places.
+        std::string stays_seen;
+        std::string fresh_seen;
+        auto typed_reaches = [&](int slot, TestClient& viewer, std::string& seen,
+                                 const char* marker) {
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                static_cast<void>(
+                    sendPane("middle-place", slot, std::string("echo ") + marker + "\n"));
+                seen += viewer.waitFor(marker, 1500);
+                if (TestClient::render(seen, 24, 40).find(marker) != std::string::npos)
+                    return true;
+            }
+            return false;
+        };
+        expect("the view that was already looking at the moved place is still looking at it",
+               typed_reaches(2, stays, stays_seen, "AFTER-MIDDLE-C"));
+
+        // And the places themselves, read from outside: each shows its own work, and the
+        // place that was just made shows nobody else's.
+        TestClient first_place;
+        std::string first_shown;
+        expect("the first place can be looked at",
+               attach(first_place, "middle-place", 24, 40, first_shown));
+        static_cast<void>(first_place.send(MsgKind::ShowPane, encodeFields({{"pane", "0"}})));
+        std::string first_seen = first_shown;
+        first_seen += first_place.waitFor("FIRST-PLACE-A", 4000);
+        const std::string first_text = TestClient::render(first_seen, 24, 40);
+        expect("the first place still shows the work it was doing",
+               first_text.find("FIRST-PLACE-A") != std::string::npos);
+        expect("and not the work of the place beside it",
+               first_text.find("SECOND-PLACE-B") == std::string::npos);
+
+        TestClient new_place;
+        std::string new_shown;
+        expect("the place that was just made can be looked at",
+               attach(new_place, "middle-place", 24, 40, new_shown));
+        static_cast<void>(new_place.send(MsgKind::ShowPane, encodeFields({{"pane", "1"}})));
+        expect("and it takes its own typing",
+               typed_reaches(1, new_place, fresh_seen, "NEW-PLACE-D"));
+        const std::string fresh = TestClient::render(fresh_seen, 24, 40);
+        expect("and it is a place of its own, wearing neither neighbour's screen",
+               fresh.find("NEW-PLACE-D") != std::string::npos &&
+                   fresh.find("FIRST-PLACE-A") == std::string::npos &&
+                   fresh.find("SECOND-PLACE-B") == std::string::npos);
+
+        TestClient tidying2;
+        if (tidying2.connect()) {
+            static_cast<void>(tidying2.hello({{"command", "kill"}, {"name", "middle-place"}}));
+            Frame ack;
+            static_cast<void>(tidying2.reply(ack));
+        }
+    }
+
+    {
+        // A new place takes half of the place it was made from, and no other place shrinks
+        // to pay for it. Rebalancing the tree by leaf count used to make every place an
+        // equal slice, so stacking a third place under the right-hand one of a pair cut the
+        // left-hand one — which nobody had touched — down to a third of the window.
+        // (Kaida, 2026-11-24: "pane 1 is now 33%/100%, pane 2 is 66%/50% and pane 3 is
+        // 66%/50%, it should be pane 1 50%/100% pane 2 50%/50% and pane 3 50%/50%".)
+        expect("a session with one place to hold it", createSession("half-room"));
+        TestClient looking;
+        std::string looking_shown;
+        expect("and a window looking at that one place",
+               attach(looking, "half-room", 24, 80, looking_shown));
+        // Beside it first. The daemon moves the asking view onto the place it just made, so
+        // the view is looking at place 1 when it asks again — which is how the report made
+        // the second split, and where the untouched place is at stake.
+        expect("a place beside it",
+               looking.send(MsgKind::NewPane, encodeFields({{"dir", "v"}})));
+        expect("and a place under the one being looked at",
+               looking.send(MsgKind::NewPane, encodeFields({{"dir", "h"}})));
+        expect("so the session holds three places",
+               waitForValue([&] { return listedPanes("half-room") == 3; }, 4000));
+        std::string shape;
+        expect("and the arrangement can be read back", askLayout("half-room", shape));
+        // Two dividers, each in the middle of the room it divides: the first place keeps
+        // half the window's width and all of its height, and the pair shares the other
+        // half. A third is what counting leaves came up with.
+        int halves = 0;
+        for (std::size_t at = shape.find("0.500000"); at != std::string::npos;
+             at = shape.find("0.500000", at + 1))
+            ++halves;
+        expect("so every divider sits in the middle of the room it divides",
+               halves == 2 && shape.find("0.666667") == std::string::npos);
+        expect("and the new place went under the one asked about, beside the first",
+               shape.find("split left-right 0.500000\n  pane\n  split up-down") !=
+                   std::string::npos);
+        TestClient tidying3;
+        if (tidying3.connect()) {
+            static_cast<void>(tidying3.hello({{"command", "kill"}, {"name", "half-room"}}));
+            Frame ack;
+            static_cast<void>(tidying3.reply(ack));
+        }
+    }
+
+    {
+        // The numbers on the bar count the places that are still here, in the order they
+        // were made. Close the second of four and what were 3 and 4 are 2 and 3: the bar
+        // never shows a number belonging to a place that has gone, and the order a person
+        // learned stays the order they get.
+        // (Kaida, 2026-11-24: "the number identifying the shell should count down when one
+        // is closed, so if we have shell 1 to 4 and we close 2 then 3 become 2 and 4 become
+        // 3".)
+        auto numbers_now = [](TestClient& viewer, int panes) {
+            for (int attempt = 0; attempt < 80; ++attempt) {
+                struct pollfd pfd {viewer.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[8192];
+                    const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (viewer.reader.pop(frame)) {
+                    if (frame.kind != MsgKind::Tabs)
+                        continue;
+                    const Fields fields = decodeFields(frame.body);
+                    if (fieldValue(fields, "panes", "0") == std::to_string(panes))
+                        return fieldValue(fields, "numbers");
+                }
+            }
+            return std::string();
+        };
+
+        expect("a session to number", createSession("numbering", 24, 200));
+        TestClient looking;
+        std::string looking_shown;
+        expect("with a window looking at it", attach(looking, "numbering", 24, 200, looking_shown));
+        // Three more places, each asked for from the newest one — which is where the daemon
+        // leaves a view that has just made a place.
+        for (int made = 0; made < 3; ++made)
+            static_cast<void>(looking.send(MsgKind::NewPane, encodeFields({{"dir", "v"}})));
+        expect("so the session holds four places",
+               waitForValue([&] { return listedPanes("numbering") == 4; }, 4000));
+        expect("and the four are called 1, 2, 3 and 4 in the order they were made",
+               numbers_now(looking, 4) == "1,2,3,4");
+
+        // Close the place called 2: look at it, then say it is finished.
+        static_cast<void>(looking.send(MsgKind::ShowPane, encodeFields({{"pane", "1"}})));
+        static_cast<void>(looking.send(MsgKind::ClosePane));
+        expect("and three places are left",
+               waitForValue([&] { return listedPanes("numbering") == 3; }, 4000));
+        const std::string after = numbers_now(looking, 3);
+        expect("so the numbers count down over the ones still standing", after == "1,2,3");
+        expect("and no place is left wearing the number of one that has gone",
+               after.find("4") == std::string::npos);
+
+        TestClient tidying4;
+        if (tidying4.connect()) {
+            static_cast<void>(tidying4.hello({{"command", "kill"}, {"name", "numbering"}}));
+            Frame ack;
+            static_cast<void>(tidying4.reply(ack));
+        }
+    }
+
 
     {
         // A tab IS a pane, so switching tabs is one question to the daemon — "show me that
@@ -1121,12 +1358,16 @@ int main() {
 
     {
         // Exit the shell from inside: every view is told, and the session leaves the
-        // listing rather than lingering as something that cannot be attached to.
-        expect("a shell can be told to leave",
+        // listing rather than lingering as something that cannot be attached to. Its own
+        // session, because a shell that has no window on it any more may already have been
+        // ended — see the `abandoned` block — and this check is about how a shell leaves, not
+        // about how long an empty one waits.
+        expect("a shell to exit", createSession("exiting", 24, 80, false));
+        expect("and a shell can be told to leave",
                [] {
                    TestClient c;
                    std::string snap;
-                   if (!attach(c, "work", 24, 80, snap))
+                   if (!attach(c, "exiting", 24, 80, snap))
                        return false;
                    return c.send(MsgKind::Data, "exit\n");
                }());
@@ -1470,14 +1711,30 @@ int main() {
 
         {
             // And the case that matters more: nobody said anything. A window that is
-            // killed, crashes or loses its machine leaves the shell where it is, because
-            // silence is not a person throwing work away.
+            // killed, crashes or loses its machine leaves the shell where it is — when the
+            // shell has work in it. Silence is not a person throwing work away. It is not a
+            // reason to keep an idle prompt alive either: a session with nothing running has
+            // nothing to come back to, and a listing full of saved-but-empty shells is a
+            // listing that hides the ones worth rescuing.
+            // (Kaida, 2026-11-24: "sometimes sessions that crash get saved on their own, but
+            // if they had no running process there is no point to save them".)
             expect("a fourth shell starts", createSession("abandoned", 10, 60, false));
             TestClient viewer;
             std::string snapshot;
             std::string error;
             expect("with a window looking at it",
                    attach(viewer, "abandoned", 10, 60, snapshot, &error));
+            // Something running out front, so the rescue has a reason to exist. Asked more
+            // than once because a shell that has just been resized drops what is typed at it.
+            bool busy = false;
+            for (int attempt = 0; attempt < 8 && !busy; ++attempt) {
+                static_cast<void>(sendPane("abandoned", 0, "sleep 30\n"));
+                for (int waited = 0; waited < 1500 && !busy; waited += 50) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    busy = !findInfo("abandoned").foreground.empty();
+                }
+            }
+            expect("and a program running in it", busy);
             ::close(viewer.fd);
             viewer.fd = -1; // gone without a word, the way a crash goes
             bool still_there = false;
@@ -1486,13 +1743,13 @@ int main() {
                 const SessionInfo info = findInfo("abandoned");
                 still_there = !info.name.empty() && info.alive && info.clients == 0;
             }
-            expect("the shell is left behind rather than lost", still_there);
+            expect("the shell with work in it is left behind rather than lost", still_there);
             expect("and it is still not saved", !findInfo("abandoned").saved);
             {
                 TestClient cleaner;
-                static_cast<void>(
-                    cleaner.connect() && cleaner.hello({{"command", "discard"},
-                                                        {"name", "abandoned"}}));
+                static_cast<void>(cleaner.connect() &&
+                                  cleaner.hello({{"command", "discard"},
+                                                 {"name", "abandoned"}}));
                 Frame ack;
                 static_cast<void>(cleaner.reply(ack));
             }
@@ -1500,6 +1757,25 @@ int main() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             expect("and discarding it is what finally ends it",
                    findInfo("abandoned").name.empty());
+
+            // The same silence over a shell sitting at a prompt: nothing to come back to, so
+            // nothing is kept.
+            expect("a fifth shell starts with nothing running",
+                   createSession("idle-crash", 10, 60, false));
+            TestClient idle_viewer;
+            std::string idle_snapshot;
+            expect("with a window looking at it",
+                   attach(idle_viewer, "idle-crash", 10, 60, idle_snapshot, &error));
+            expect("and nothing running out front",
+                   findInfo("idle-crash").foreground.empty());
+            ::close(idle_viewer.fd);
+            idle_viewer.fd = -1;
+            bool gone = false;
+            for (int attempt = 0; attempt < 100 && !gone; ++attempt) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                gone = findInfo("idle-crash").name.empty();
+            }
+            expect("the idle shell is ended rather than kept for nobody", gone);
         }
 
         expect("the saved one outlives all of it", findInfo("kept").saved);

@@ -122,6 +122,49 @@ bool inkInColumns(const QImage& shot, kai::TerminalWidget* w, int from_col, int 
     return inked > 3; // a few stray pixels is anti-aliasing, not text
 }
 
+// Press, move, release — the gesture a person makes with a mouse to select text.
+// The cells are grid cells, so a caller aiming at a place beside another one says
+// where that place sits in the grid, which is exactly what a pointer reports.
+void drag(kai::TerminalWidget* w, int from_row, int from_col, int to_row, int to_col) {
+    sendMouse(w, QEvent::MouseButtonPress, Qt::LeftButton, Qt::LeftButton,
+              cellPoint(w, from_row, from_col));
+    sendMouse(w, QEvent::MouseMove, Qt::NoButton, Qt::LeftButton,
+              cellPoint(w, to_row, to_col));
+    sendMouse(w, QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton,
+              cellPoint(w, to_row, to_col));
+}
+
+QImage grabImage(kai::TerminalWidget* w) {
+    return w->grab().toImage().convertToFormat(QImage::Format_ARGB32);
+}
+
+long long differingPixels(const QImage& a, const QImage& b) {
+    if (a.size() != b.size())
+        return -1;
+    long long n = 0;
+    for (int y = 0; y < a.height(); ++y) {
+        for (int x = 0; x < a.width(); ++x) {
+            if (a.pixel(x, y) != b.pixel(x, y))
+                ++n;
+        }
+    }
+    return n;
+}
+
+// One place's own rectangle out of a whole-window grab. A check that looked at the
+// window would see a cursor in the place being looked at and call it a cursor in the
+// place being measured; this asks about one place and nothing beside it.
+QImage paneShot(kai::TerminalWidget* w, int pane) {
+    const QImage whole = grabImage(w);
+    const PaneRect cell = w->paneCell(pane);
+    const QSizeF one = w->cellSize();
+    const QPointF from = w->cellTopLeft(cell.row, cell.col);
+    const QRect box(static_cast<int>(from.x()), static_cast<int>(from.y()),
+                    static_cast<int>(one.width() * cell.cols),
+                    static_cast<int>(one.height() * cell.rows));
+    return whole.copy(box.intersected(whole.rect()));
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -250,8 +293,12 @@ int main(int argc, char** argv) {
     expect("and that place is now the window's own screen",
            waitFor([&window] { return onScreen(window).find("LEFT-PLACE-MARKER") != std::string::npos; }));
 
-    // A third place. The window must show all three at once, not have the second and
-    // third fight for the one slot beside the first.
+    // A third place, made by dividing the place being looked at. A new place is put
+    // immediately after the one it was divided from, so the place that was second is third
+    // now. The window must show all three at once, not have the second and third fight for
+    // the one slot beside the first, and each must show its own program: the report was
+    // that a new place "gets assigned pane 2 instead of 3, and overwrites the display of
+    // pane 1".
     window.newTab();
     expect("the session is running three programs",
            waitFor([&daemon] {
@@ -262,20 +309,113 @@ int main(int argc, char** argv) {
            }));
     window.showPaneAt(0);
     pump(400);
-    expect("with two neighbours drawn beside the place being looked at",
+    expect("with the place that was second now third, still showing its own marker",
            waitFor([&window] {
-               return window.neighbourText(1).find("RIGHT-PLACE-MARKER") != std::string::npos;
+               return window.neighbourText(2).find("RIGHT-PLACE-MARKER") != std::string::npos;
            }));
-    expect("the third place is asked to print",
-           daemon.type("split", "echo THIRD-PLACE-MARKER\n", 2));
-    expect("and it appears in its own neighbour",
+    expect("the new place sits beside the one it was made from, and is empty of its work",
+           window.neighbourText(1).find("RIGHT-PLACE-MARKER") == std::string::npos);
+    expect("the new place is asked to print",
+           daemon.type("split", "echo THIRD-PLACE-MARKER\n", 1));
+    expect("and it appears in its own neighbour and nowhere else",
            waitFor([&window] {
-               return window.neighbourText(2).find("THIRD-PLACE-MARKER") != std::string::npos;
+               return window.neighbourText(1).find("THIRD-PLACE-MARKER") != std::string::npos &&
+                      window.neighbourText(2).find("THIRD-PLACE-MARKER") == std::string::npos;
            }));
     const QImage three = window.grab().toImage();
     expect("all three places are painted: ink in the left, middle and right",
            inkInColumns(three, &window, 2, 22) && inkInColumns(three, &window, 26, 44) &&
                inkInColumns(three, &window, 50, 88));
+
+    // The numbers on the bar are the order the places were made in, not the order they
+    // happen to sit in: the place made third is called 3 even though it sits second, and
+    // the bar lists them 1, 2, 3 rather than 1, 3, 2. (Kaida, 2026-11-24: "it wrongly gets
+    // assigned pane 2 instead of 3" — with "the top bar should still display in numerical
+    // order".)
+    expect("each place keeps the number it was made with, so the newest is 3",
+           window.tabNumber(0) == 1 && window.tabNumber(2) == 2 && window.tabNumber(1) == 3);
+    expect("and the bar lists the places by that number",
+           window.tabOrder() == std::vector<int>({0, 2, 1}));
+    expect("so the tab a click lands on is the third place, not the one beside it",
+           window.tabSlotAt(window.width() - 60.0, 5.0, window.width() - 10.0) == 1);
+
+    const int looked_at_before = window.activePane();
+    // Ctrl+Shift and an arrow walks those numbers rather than the positions: from the place
+    // called 1 the next one is the place called 2, which sits at the far end of the bar, and
+    // only after it comes the place called 3 that sits underneath.
+    // (Kaida, 2026-11-24: "Ctrl+Shift+Arrow should cycle in numerical order".)
+    auto walk = [&window](Qt::Key key) {
+        QKeyEvent step(QEvent::KeyPress, key, Qt::ControlModifier | Qt::ShiftModifier);
+        QApplication::sendEvent(&window, &step);
+    };
+    window.showPaneAt(0);
+    walk(Qt::Key_Right);
+    expect("the first arrow lands on the place called 2",
+           window.activePane() == 2 && window.tabNumber(window.activePane()) == 2);
+    walk(Qt::Key_Right);
+    expect("the next lands on the place called 3, which is the one underneath",
+           window.activePane() == 1 && window.tabNumber(window.activePane()) == 3);
+    walk(Qt::Key_Right);
+    expect("and the next wraps to 1 rather than running off the numbers",
+           window.activePane() == 0);
+    walk(Qt::Key_Left);
+    expect("going back runs the numbers down", window.activePane() == 1);
+    walk(Qt::Key_Up);
+    expect("up is the same walk as left", window.activePane() == 2);
+    walk(Qt::Key_Down);
+    expect("and down the same as right", window.activePane() == 1);
+
+    // The line between two places. (Kaida, 2026-11-24: "the separator should be thinner and
+    // equal in size when comparing the horizontal and vertical one (maybe even an option in
+    // the settings to change it size)".) One default for both directions, and a number the
+    // settings menu can move without making the two disagree.
+    expect("the divider starts as a line rather than the whole gap",
+           window.dividerWidth() == 1.0);
+    window.setDividerWidth(3.0);
+    expect("and it takes the width the settings menu hands it", window.dividerWidth() == 3.0);
+    window.setDividerWidth(4000.0);
+    expect("a wild number is held to something drawable", window.dividerWidth() == 16.0);
+    window.setDividerWidth(0.0);
+    expect("and none at all is a real answer: a gap with nothing drawn in it",
+           window.dividerWidth() == 0.0);
+    window.setDividerWidth(1.0);
+
+    // Keeping a session asks what to call it, in the window's own panel: a field you type
+    // into, Enter to hand the name over, Esc to back out.
+    // (Kaida, 2026-11-24: "saving a session should now prompt for a name (can be disabled in
+    // setting)".)
+    std::string given;
+    window.askNameInTerminal("What should this session be called?", "", "w7",
+                             [&given](std::string name) { given = name; });
+    expect("the name is asked for in the window, not on the shell",
+           window.overlayActive() && window.overlayEditable() &&
+               window.overlayQuestion() == "What should this session be called?");
+    expect("offering the name the window would have picked",
+           window.overlayField() == "w7");
+    const struct { int code; const char* text; } typed[] = {
+        {Qt::Key_M, "M"}, {Qt::Key_Y, "y"}, {Qt::Key_Minus, "-"}, {Qt::Key_7, "7"}};
+    for (const auto& letter : typed) {
+        QKeyEvent key(QEvent::KeyPress, letter.code, Qt::NoModifier, letter.text);
+        QApplication::sendEvent(&window, &key);
+    }
+    expect("the first letter replaces the name that was offered, and the rest follow it",
+           window.overlayField() == "My-7");
+    QKeyEvent erase(QEvent::KeyPress, Qt::Key_Backspace, Qt::NoModifier);
+    QApplication::sendEvent(&window, &erase);
+    expect("backspace takes one letter off the end", window.overlayField() == "My-");
+    QKeyEvent accept(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier, "\r");
+    QApplication::sendEvent(&window, &accept);
+    expect("enter hands that name over and puts the panel away",
+           given == "My-" && !window.overlayActive());
+
+    given = "untouched";
+    window.askNameInTerminal("What should this session be called?", "", "w8",
+                             [&given](std::string name) { given = name; });
+    QKeyEvent away(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(&window, &away);
+    expect("and escape backs out without keeping anything",
+           !window.overlayActive() && given == "untouched");
+    window.showPaneAt(looked_at_before); // the checks after this one know where they are
 
     // Each place scrolls on its own. Fill two of them with lines, then scroll the place
     // being looked at and check only it moved, then scroll a neighbour and check only it
@@ -295,16 +435,125 @@ int main(int argc, char** argv) {
     // a scroll that grows the offset but paints an empty cell is just as broken.
     expect("and shows its own history when scrolled up, not a blank half",
            !window.displayRowText(0).empty());
-    // Scroll a neighbour (the middle place); the place being looked at must stay put.
+    // The wheel belongs to the place being looked at, wherever the pointer is. The
+    // reported bug was a wheel over a neighbour moving that neighbour while the place in
+    // hand — the one being read — stayed put. So a wheel that lands on a neighbour must
+    // scroll the place in hand and leave the neighbour where it was.
     const int was_focused = window.scrollOffset();
     const QPointF middle = cellPoint(&window, 5, 32); // solidly inside the middle place
     sendWheel(&window, middle, +120);
     pump(120);
-    expect("a neighbour scrolls on its own", window.neighbourScrollAt(1) > 0);
-    expect("and the place being looked at does not move with it",
-           window.scrollOffset() == was_focused);
-    expect("and the neighbour shows its own lines when scrolled, not a blank place",
-           !window.neighbourRowText(1, 0).empty());
+    expect("a wheel over a neighbour scrolls the place in hand, not the neighbour",
+           window.scrollOffset() > was_focused);
+    expect("and the neighbour under the pointer does not move",
+           window.neighbourScrollAt(1) == 0);
+
+    // A place scrolled back shows no cursor. The row the cursor stands on belongs to the
+    // live bottom, and scrolling moves that row down out of the cell; drawing the block
+    // anyway — which clamping it into the cell used to do — strands it on a history line,
+    // in the column the prompt left empty, carrying the glyph of a row that is not
+    // underneath it. It reads as a cursor waiting in a place nobody is typing.
+    // (Kaida, 2026-11-24: "we shouldn't see the cursor when scrolling up like that".)
+    // The blink is what separates the two grabs here: nothing is typed and no output
+    // arrives between them, so any pixel that moved is the cursor and nothing else.
+    const int looked_at = window.activePane();
+    window.setCursorBlink(120);
+    const bool went_out = waitFor([&] { return !window.cursorBlinkPhase(); }, 3000);
+    const QImage scrolled_out = paneShot(&window, looked_at);
+    const bool came_back = waitFor([&] { return window.cursorBlinkPhase(); }, 3000);
+    const QImage scrolled_lit = paneShot(&window, looked_at);
+    expect("the blink turns, so the two grabs differ only by the cursor",
+           went_out && came_back && window.scrollOffset() > 0);
+    expect("a place scrolled back paints no cursor at all",
+           differingPixels(scrolled_lit, scrolled_out) == 0);
+
+    // And the same pair back at the live bottom must differ, or the check above would be
+    // satisfied by a window that never paints a cursor anywhere.
+    for (int guard = 0; guard < 200 && window.scrollOffset() > 0; ++guard) {
+        sendWheel(&window, left, -120);
+        pump(40);
+    }
+    expect("the place is back at its live bottom", window.scrollOffset() == 0);
+    const bool went_out_again = waitFor([&] { return !window.cursorBlinkPhase(); }, 3000);
+    const QImage bottom_out = paneShot(&window, looked_at);
+    const bool came_back_again = waitFor([&] { return window.cursorBlinkPhase(); }, 3000);
+    const QImage bottom_lit = paneShot(&window, looked_at);
+    expect("and the cursor is painted there, on its own row",
+           went_out_again && came_back_again && differingPixels(bottom_lit, bottom_out) > 0);
+    window.setCursorBlink(0);
+
+    // Scrolling a place is a fact about that place, not about the window looking at it,
+    // so it holds from both sides. Coming back finds a place where it was left — and the
+    // same fact says that looking at a DIFFERENT place must leave the place you walked
+    // away from showing the lines you left it on. It used to snap to its live bottom the
+    // moment it became a neighbour, so the half you were not looking at changed under
+    // you: scroll a log back to its first line, look at the other half, and the first
+    // line is gone. (Kaida, 2026-11-24: "during pane 2 selection we should still see the
+    // same in pane 1 as when pane 1 was selected".)
+    sendWheel(&window, left, +120);
+    pump(150);
+    const int left_behind = window.activePane();
+    const int left_scroll = window.scrollOffset();
+    expect("the place being looked at is scrolled back before it is left behind",
+           left_scroll > 0);
+    window.showPaneAt(left_behind == 0 ? 1 : 0);
+    // The neighbour starts holding the scroll, and — the part that used to break — it
+    // keeps holding it after the snapshot that every new connection is handed. That
+    // snapshot resets the place's screen, and shifting the view by the difference in
+    // history depth drove the offset far below zero, where the clamp brought it back to
+    // nothing: the place snapped to its live bottom.
+    expect("the place left behind is shown by a neighbour that holds its scroll",
+           waitFor([&] { return window.neighbourScrollAt(left_behind) > 0; }));
+    expect("and the snapshot that follows does not drop it back to the live bottom",
+           waitFor([&] {
+               const int held = window.neighbourScrollAt(left_behind);
+               return held > 0 && !window.neighbourRowText(left_behind, 0).empty();
+           }, 2500));
+
+    // A drag must still select in the place being looked at. Side by side it stopped
+    // working altogether: the highlight was never painted and the text came back empty,
+    // so once a second place existed nothing on screen could be selected for copying.
+    // (Kaida, 2026-11-24: "Selection doesn't work, we can't select any text for copying
+    // right now when we create a second pane. before creating a second pane it works".)
+    {
+        // Run the same gesture in whichever place is being looked at, and then in the
+        // other one: a place that starts at column zero and one that starts at column
+        // forty-two are different arithmetic, and only one of them was ever exercised.
+        auto selects_in_the_place_being_looked_at = [&](int marker) {
+            const int here = window.activePane();
+            const PaneRect place = window.paneCell(here);
+            const std::string needle = "SELECTED-HERE-" + std::to_string(marker);
+            sendWheel(&window, cellPoint(&window, place.row + 3, place.col + 3), -1200);
+            pump(120);
+            runLine(&window, "echo " + needle);
+            pump(200);
+            int row = -1;
+            for (int r = window.screen().rows() - 1; r >= 0; --r) {
+                if (window.screen().rowText(r).find(needle) != std::string::npos) {
+                    row = r;
+                    break;
+                }
+            }
+            expect("the place being looked at has text to select", row >= 0);
+            if (row < 0)
+                return;
+            const QImage before = paneShot(&window, here);
+            const int other = here == 0 ? 1 : 0;
+            const QImage neighbour_before = paneShot(&window, other);
+            drag(&window, place.row + row, place.col, place.row + row, place.col + 15);
+            pump(80);
+            expect("a drag in the place being looked at selects its text",
+                   window.selectedText().find(needle) != std::string::npos);
+            expect("and the highlight is painted, not merely remembered",
+                   differingPixels(before, paneShot(&window, here)) > 0);
+            expect("while the place beside it keeps showing its own text, untouched",
+                   differingPixels(neighbour_before, paneShot(&window, other)) == 0);
+        };
+        selects_in_the_place_being_looked_at(1);
+        window.showPaneAt(window.activePane() == 0 ? 1 : 0);
+        pump(250);
+        selects_in_the_place_being_looked_at(2);
+    }
 
     // Ctrl+K is the control; Ctrl+K then N asks which way to divide before it divides.
     // Reaching a place is already covered above; this is the key that MAKES one. It must

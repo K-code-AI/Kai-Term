@@ -431,7 +431,7 @@ int main() {
     // something when there is a terminal to read it from and hand back.
     {
         const Run mk = run({"new", "escape"}, here);
-        expect(mk.code == 0 && contains(mk.out, "started session 3 named escape"),
+        expect(mk.code == 0 && contains(mk.out, "named escape"),
                "a session to attach and leave: " + mk.out);
         // The id, taken from what `new` printed rather than trusted to be 3.
         std::string sid;

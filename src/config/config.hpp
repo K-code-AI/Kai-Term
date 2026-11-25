@@ -163,6 +163,12 @@ struct Config {
     // Whether Ctrl+K, while it waits for its one key, lists the keys it will take along
     // the bottom. On for a person still learning; off for one who has learned them.
     std::string keybind_hints;
+    // Whether keeping a session (Ctrl+K then S) asks for a name first. On unless the file
+    // says `off`, because the name is how the session is found again afterwards; `off` is
+    // for a person content with the name the window picks.
+    // (Kaida, 2026-11-24: "saving a session should now prompt for a name (can be disabled
+    // in setting)".)
+    std::string save_name_prompt;
     // Which colours to wear, as written: empty or `Default.conf` for the file the program
     // has always used, a bare name for a file in `themes`, and anything with a slash in it
     // for that path. Only ever read from the settings file — a theme is colours, and the
@@ -193,6 +199,12 @@ struct Config {
     // compositor that rounds its corners this is the difference between glyphs
     // inside the glass and glyphs clipped by it.
     std::optional<double> padding;
+    // The line drawn between two places of a split session, in pixels. Both directions are
+    // drawn this thick, so a vertical divider and a horizontal one match; 0 leaves the gap
+    // empty and the places are told apart by their edges alone.
+    // (Kaida, 2026-11-24: "the separator should be thinner and equal in size ... maybe even
+    // an option in the settings to change it size".)
+    std::optional<int> divider_width;
     // The cursor's shape. Named in the file it is the window's and every DECSCUSR the
     // session writes answers to it — the same authority the colours hold, so a shape
     // chosen here is not lost when a session is attached. Left out, a program picks its
@@ -508,6 +520,15 @@ inline void parseConfigFile(const std::string& path, Config& config) {
                 continue;
             }
             config.keybind_hints = lowerWord(value);
+        } else if (key == "save_name_prompt") {
+            // Only the two answers the menu offers. A word nobody meant is worth refusing by
+            // name at the line that wrote it, rather than being read as "on" forever.
+            const std::string answered = lowerWord(value);
+            if (answered != "on" && answered != "off") {
+                note(line_no, "save_name_prompt wants on or off, got '" + value + "'");
+                continue;
+            }
+            config.save_name_prompt = answered;
         } else if (key == "theme") {
             // Kept exactly as written, slashes and case and all: it is a file name, and a
             // file system that distinguishes case is not this parser's business.
@@ -554,6 +575,14 @@ inline void parseConfigFile(const std::string& path, Config& config) {
                 note(line_no, "scrollback wants a number from 0 to 20000, got '" + value + "'");
             else
                 config.scrollback = got;
+        } else if (key == "divider_width") {
+            // Whole pixels, including none at all: a divider of zero is a real answer for
+            // somebody who wants the places divided by an empty gap and nothing drawn in it.
+            int got = 0;
+            if (!numberFromText(value, 0, 16, got))
+                note(line_no, "divider_width wants a number from 0 to 16, got '" + value + "'");
+            else
+                config.divider_width = got;
         } else if (key == "padding") {
             double got = 0.0;
             if (!fractionFromText(value, 0.0, 64.0, got))

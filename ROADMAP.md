@@ -130,17 +130,12 @@ acceptable. That session is also where the btop bug turned up.
 
 Not yet verified:
 
-- Colours, fonts and spacing on a real display.
-- Interactive applications other than btop with the mouse grabbed (vim, htop, less,
-  tmux).
 - Clipboard and PRIMARY behaviour on X11 specifically; what was confirmed was
   Wayland.
 
 Needed:
 
 - X11 runtime verification, which needs a machine with an X server on it.
-- Interactive applications driven with the mouse by a person: vim, less, htop, tmux.
-- Cursor blink: a timer for SGR 5/6 and for DECSCUSR's blinking variants.
 
 ## M3 — Native session infrastructure
 

@@ -104,6 +104,11 @@ public:
         // Where each place sits, in cells, in the same order as the places. Empty when the
         // session has said nothing about sizes, which is the same as saying they are equal.
         std::vector<PaneRect> cells;
+        // Which number each place is called by, in the same order as the places. A place is
+        // numbered by when it was made, not by where it ended up, so the number on a tab
+        // outlives the splits made around it. Empty means the session said nothing, which
+        // is the same as numbering them in the order they are listed.
+        std::vector<int> numbers;
     };
     virtual bool takeTabBar(TabBar& /*bar*/) { return false; }
 
@@ -129,6 +134,11 @@ public:
     virtual void newPane(bool side_by_side = true) {}
     virtual void closePane() {}
     virtual void setViewMode(bool /*tabs*/) {}
+    // A hand resize, as a little session: begin (remember for a cancel), move the divider
+    // a cell along one axis, and end keeping or undoing it.
+    virtual void resizeBegin() {}
+    virtual void resizeDivider(int /*dcol*/, int /*drow*/) {}
+    virtual void resizeEnd(bool /*commit*/) {}
 
     virtual void stopProcess(bool /*closing*/ = false) {}
     virtual void release() {}

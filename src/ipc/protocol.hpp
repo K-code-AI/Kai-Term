@@ -69,6 +69,15 @@ enum class MsgKind : std::uint8_t {
     // to be written.
     SetViewMode = 19, // fields: mode
 
+    // Resizing a place by hand. A resize is a little session of its own: it begins (the
+    // daemon keeps the arrangement as it was), moves a divider a cell at a time as the
+    // arrows are pressed, and ends — kept, or put back the way it was. The daemon owns the
+    // undo because it owns the arrangement, so a second window watching sees the same
+    // preview and the same rollback.
+    ResizeBegin = 20, // no body: remember the arrangement for a possible cancel
+    ResizeDivider = 21, // fields: dcol, drow — cells to move the divider, one axis at a time
+    ResizeEnd = 22, // fields: commit ("1" keep, "0" put back)
+
     // daemon -> client
     Welcome = 10,   // fields: name, id, rows, cols, pid, shell, created
     Snapshot = 11,  // body: bytes that rebuild the screen from an empty one

@@ -120,6 +120,7 @@ struct PaneRect {
 
     int firstRow() const { return row; }
     int lastRow() const { return row + rows - 1; }
+    int endRow() const { return row + rows; }
     int firstCol() const { return col; }
     int endCol() const { return col + cols; }
 

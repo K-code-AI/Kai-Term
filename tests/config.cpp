@@ -143,7 +143,8 @@ int main() {
         // for the file somebody edits at 2am.
         const std::string body_keys = dir + "/body-menu-keys";
         writeFile(body_keys,
-                  "scrollback = 5000\npadding = 14\ncursor_style = bar\ncursor_blink = 600\n");
+                  "scrollback = 5000\npadding = 14\ncursor_style = bar\ncursor_blink = 600\n"
+                  "divider_width = 3\nsave_name_prompt = off\n");
         ::setenv("KAI_TERM_CONFIG", body_keys.c_str(), 1);
         {
             const Config keys = loadConfig();
@@ -152,6 +153,13 @@ int main() {
                        keys.padding && *keys.padding == 14.0 && keys.cursor_style &&
                        *keys.cursor_style == CursorStyle::Bar && keys.cursor_blink &&
                        *keys.cursor_blink == 600);
+            // The line between two places, and whether keeping a session asks for a name.
+            // (Kaida, 2026-11-24: "the separator should be thinner and equal in size ...
+            // maybe even an option in the settings to change it size"; "saving a session
+            // should now prompt for a name (can be disabled in setting)".)
+            expect("the divider's width and the name question both arrive",
+                   keys.problems.empty() && keys.divider_width &&
+                       *keys.divider_width == 3 && keys.save_name_prompt == "off");
         }
         // (Kaida, 2026-11-21: "customizable blink speed ( 0 being no blinking)".) The
         // zero has to arrive as a zero rather than as \"nothing was said\", because the
@@ -168,10 +176,15 @@ int main() {
         const std::string wrong = dir + "/body-menu-wrong";
         writeFile(wrong,
                   "scrollback = ninety thousand\npadding = 4000\ncursor_style = blok\n"
-                  "cursor_blink = soon\n");
+                  "cursor_blink = soon\ndivider_width = 999\nsave_name_prompt = maybe\n");
         ::setenv("KAI_TERM_CONFIG", wrong.c_str(), 1);
         {
             const Config junk = loadConfig();
+            expect("a divider wider than a cell is out of range",
+                   !junk.divider_width && mentions(junk.problems, "divider_width"));
+            expect("and the name question takes on or off, not an opinion",
+                   junk.save_name_prompt.empty() &&
+                       mentions(junk.problems, "save_name_prompt"));
             expect("a scrollback spelled in words is refused by name",
                    !junk.scrollback && mentions(junk.problems, "scrollback"));
             expect("four thousand pixels of padding is out of range",
@@ -183,7 +196,7 @@ int main() {
                        mentions(junk.problems, "block"));
             expect("a blink rate that is not a number is refused by name",
                    !junk.cursor_blink && mentions(junk.problems, "cursor_blink"));
-            expect("all four said their piece", junk.problems.size() == 4);
+            expect("every one of them said its piece", junk.problems.size() == 6);
         }
     }
     {

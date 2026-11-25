@@ -639,8 +639,13 @@ public:
         // our own receive side makes that return, and a thread left blocked would hold
         // the descriptor open and keep the view counted as watching. The other half
         // tells the program on the far end that the session is gone.
-        for (const int fd : record->clients)
+        for (const int fd : record->clients) {
+            // Said before the socket is shut, while the lock is held: the thread on the
+            // other end wakes up as soon as it is, and its cleanup has to be able to see
+            // that this hangup was arranged here rather than a window falling over.
+            record->evicting.push_back(fd);
             ::shutdown(fd, SHUT_RDWR);
+        }
         return true;
     }
 
@@ -693,7 +698,14 @@ private:
         // so a session holds one per pane and this is the thing that grows and shrinks when
         // the arrangement does.
         struct Shell {
-            int pane = 0; // the leaf of the session's tree this shell was made for
+            // The leaf of the session's tree this shell was made for. It never changes:
+            // inserting a place in the middle of the arrangement moves the numbers after
+            // it, and a shell that took its name from its position would end up answering
+            // to a different place than the one it was started for.
+            int pane = 0;
+            // Where that leaf sits in tab order right now, which is the number views
+            // address places by and so the one that moves when the arrangement changes.
+            int slot = 0;
             std::unique_ptr<Pty> pty;
             std::unique_ptr<Screen> screen;
             mutable std::mutex screen_mutex;
@@ -757,6 +769,16 @@ private:
         // asked about. Read and written under the same lock as the client list.
         std::string tabs_sent;
         std::vector<int> clients;
+        // Descriptors the daemon is closing on purpose — `kai-term detach` from another
+        // terminal, which means "stop showing it to me" and nothing harsher. A hangup the
+        // daemon arranged is not a window crashing, so the thread serving that descriptor
+        // needs to be able to tell the two apart when it cleans up. Guarded by
+        // `clients_mutex`, and an fd is taken back out by the thread that was serving it.
+        std::vector<int> evicting;
+        // Descriptors of the views that said they are a `window` — a person looking at the
+        // session, as opposed to a command that attaches to read a screen and hangs up.
+        // Guarded by `clients_mutex`, and taken back out by the thread that served it.
+        std::vector<int> windows;
         // What each view looking at this session said its window is, by descriptor. The
         // session's size is worked out from all of them together — see `settleSessionSize`
         // — rather than from whoever sent a message last, and a view that goes away takes
@@ -776,6 +798,9 @@ private:
         // next step — which is why it can be read and changed before it is visible.
         SessionLayout layout;
         mutable std::mutex layout_mutex;
+        // The arrangement as words, taken when a resize begins, so Esc can put it back.
+        // Empty means no resize is in progress.
+        std::string resize_saved;
         long long started = 0;
     };
 
@@ -834,6 +859,24 @@ private:
 
     // Make the shell go away. The master stays open so the reader can see the end of
     // the stream and close it itself.
+    // Whether anything is actually running in a session: any one of its places whose
+    // foreground job is not just the shell sitting at a prompt. A session with nothing
+    // running is a shell waiting for typing, which is nothing a person could come back to.
+    bool sessionHasWork(const Record& record) const {
+        std::vector<std::shared_ptr<Record::Shell>> shells;
+        {
+            std::lock_guard<std::mutex> lock(record.shells_mutex);
+            shells = record.shells;
+        }
+        for (const std::shared_ptr<Record::Shell>& shell : shells) {
+            if (!shell || !shell->pty)
+                continue;
+            if (!foregroundJob(shell->pty->master(), shell->pty->child()).empty())
+                return true;
+        }
+        return false;
+    }
+
     // Take a session out of the table and stop it. The check that the table still
     // holds *this* record matters: a session replaced by a newer one of the same name
     // must not have its replacement removed on its way out.
@@ -858,7 +901,7 @@ private:
     // Reads one shell to the end. Every pane has a thread doing this for it, which is what
     // lets one pane's program block, print, or exit without holding up its neighbours.
     // One pane's worth of program, at the size its cell is.
-    std::shared_ptr<Record::Shell> makeShell(Record& record, int slot, int rows, int cols) const {
+    std::shared_ptr<Record::Shell> makeShell(Record& record, int leaf, int rows, int cols) const {
         auto shell = std::make_shared<Record::Shell>();
         // At least one line and one column, whatever the arrangement asked for. A screen
         // with nothing in it is not a small terminal but a shape no program can be run in:
@@ -866,7 +909,8 @@ private:
         // not a pane failing quietly, it is the daemon going down with every session on it.
         rows = std::max(1, rows);
         cols = std::max(1, cols);
-        shell->pane = slot;
+        shell->pane = leaf;
+        shell->slot = leaf; // reconciled to its real place in tab order straight away
         shell->pty = std::make_unique<Pty>(rows, cols, record.shell_program,
                                           record.working_directory, std::to_string(record.id));
         shell->screen = std::make_unique<Screen>(rows, cols);
@@ -879,7 +923,7 @@ private:
     std::shared_ptr<Record::Shell> shellAt(const std::shared_ptr<Record>& record, int slot) const {
         std::lock_guard<std::mutex> lock(record->shells_mutex);
         for (const std::shared_ptr<Record::Shell>& shell : record->shells) {
-            if (shell->pane == slot)
+            if (shell->slot == slot)
                 return shell;
         }
         return nullptr;
@@ -900,6 +944,7 @@ private:
             panes = static_cast<int>(record.shells.size());
         }
         std::string cells;
+        std::string numbers; // which number each place is called by, in the same order
         {
             std::lock_guard<std::mutex> lock(record.layout_mutex);
             mode = record.layout.mode == ViewMode::Tabs ? "tabs" : "side-by-side";
@@ -914,11 +959,35 @@ private:
                 cells += std::to_string(cell.top) + "," + std::to_string(cell.left) + "," +
                          std::to_string(cell.rows) + "," + std::to_string(cell.cols);
             }
+            // Which number each place answers to: the order the places were made in, which
+            // is the order their leaf numbers were handed out in. The bar is drawn in this
+            // order rather than in reading order, because a person counting tabs counts
+            // them, not their positions.
+            //
+            // The count runs over the places that are still here, so closing one takes its
+            // number out of the sequence and the places made after it step down to fill the
+            // gap: with 1 to 4 open, closing 2 leaves 1, 2 and 3 — the same places in the
+            // same order, with no hole where the closed one was. A leaf's own id is still
+            // what the shells are addressed by, so nothing inside the session moves.
+            // (Kaida, 2026-11-24: "the number identifying the shell should count down when
+            // one is closed, so if we have shell 1 to 4 and we close 2 then 3 become 2 and
+            // 4 become 3".)
+            std::vector<int> made_in_order = record.layout.layout.panes();
+            std::sort(made_in_order.begin(), made_in_order.end());
+            for (const int leaf : record.layout.layout.panes()) {
+                if (!numbers.empty())
+                    numbers += ",";
+                const int turn = static_cast<int>(
+                    std::lower_bound(made_in_order.begin(), made_in_order.end(), leaf) -
+                    made_in_order.begin());
+                numbers += std::to_string(turn + 1);
+            }
         }
         return encodeFields({{"panes", std::to_string(panes)},
                              {"focused", std::to_string(record.focus_slot.load())},
                              {"mode", mode},
-                             {"cells", cells}});
+                             {"cells", cells},
+                             {"numbers", numbers}});
     }
 
     // Tell everyone looking at a session what its tab bar holds now. This goes to every
@@ -951,7 +1020,19 @@ private:
     // is rewritten wholesale (a preset, `set-layout`, a renumbering after a close) while the
     // work inside the shells goes on. Rebuilding the tree must not be a way of killing every
     // program in the session.
-    void reconcileShells(const std::shared_ptr<Record>& record) {
+    // How the shells are matched to the places when the arrangement changes.
+    //
+    // Splitting or closing a place edits the tree the shells already live in, so each
+    // shell can be found by the leaf it was made for and keeps its program whatever
+    // number it ends up answering to. Replacing the arrangement wholesale is a different
+    // thing: the words describe a brand-new tree whose leaf numbers mean nothing to the
+    // shells that exist, so the only honest reading is by place in the tab bar — the shell
+    // in the first place keeps the first place — which is what keeping the same panes and
+    // moving one means when a layout is edited.
+    enum class MatchShells { ByLeaf, ByPosition };
+
+    void reconcileShells(const std::shared_ptr<Record>& record,
+                         MatchShells match = MatchShells::ByLeaf) {
         const std::vector<int> leaves = record->layout.layout.panes();
         bool one_at_a_time = false;
         {
@@ -970,28 +1051,69 @@ private:
                                           ? std::vector<CellRect>(leaves.size(), whole)
                                           : laid_out;
 
+        // Which place each view is looking at, remembered by the leaf it serves rather
+        // than by the number of its slot. Adding a place in the middle moves every number
+        // after it, and a view that followed the number would find itself showing a
+        // different program than the one it chose.
+        std::map<int, int> view_leaf;
+        {
+            std::lock_guard<std::mutex> lock(record->clients_mutex);
+            for (const auto& view : record->view_slot) {
+                const std::shared_ptr<Record::Shell> shell = shellAt(record, view.second);
+                if (shell)
+                    view_leaf[view.first] = shell->pane;
+            }
+        }
+
         std::vector<std::shared_ptr<Record::Shell>> fresh;
         std::vector<std::shared_ptr<Record::Shell>> retired;
         {
             std::lock_guard<std::mutex> lock(record->shells_mutex);
-            while (record->shells.size() < leaves.size()) {
-                const int slot = static_cast<int>(record->shells.size());
-                const CellRect cell = static_cast<size_t>(slot) < cells.size()
-                                          ? cells[static_cast<size_t>(slot)]
-                                          : CellRect{0, 0, record->rows.load(),
-                                                     record->cols.load()};
-                fresh.push_back(makeShell(*record, slot, cell.rows, cell.cols));
-                record->shells.push_back(fresh.back());
+            // One shell per leaf, found by the leaf it was made for. Matching them by
+            // position instead relabels every shell after an inserted place, which is how a
+            // new place came to wear its neighbour's screen while its own stayed blank.
+            std::vector<std::shared_ptr<Record::Shell>> in_order;
+            in_order.reserve(leaves.size());
+            for (size_t slot = 0; slot < leaves.size(); ++slot) {
+                const int leaf = leaves[slot];
+                std::shared_ptr<Record::Shell> shell;
+                for (const std::shared_ptr<Record::Shell>& existing : record->shells) {
+                    const bool same = match == MatchShells::ByLeaf
+                                          ? existing->pane == leaf
+                                          : existing->slot == static_cast<int>(slot);
+                    if (same) {
+                        shell = existing;
+                        break;
+                    }
+                }
+                if (!shell) {
+                    const CellRect cell = slot < cells.size()
+                                              ? cells[slot]
+                                              : CellRect{0, 0, record->rows.load(),
+                                                         record->cols.load()};
+                    shell = makeShell(*record, leaf, cell.rows, cell.cols);
+                    fresh.push_back(shell);
+                    record->shells.push_back(shell);
+                }
+                shell->pane = leaf; // only differs when the tree itself was replaced
+                shell->slot = static_cast<int>(slot);
+                in_order.push_back(shell);
             }
-            // Places that no longer exist. Truncating rather than hunting: the tab bar is
-            // the list, so anything past its end has no tab to belong to.
-            retired.assign(record->shells.begin() + static_cast<long>(leaves.size()),
-                           record->shells.end());
-            record->shells.erase(record->shells.begin() + static_cast<long>(leaves.size()),
-                                 record->shells.end());
+            // Places that no longer exist. The leaves are the list, so any shell the walk
+            // above did not claim has no tab left to belong to, wherever in the list it
+            // happens to sit.
+            for (const std::shared_ptr<Record::Shell>& shell : record->shells) {
+                const bool claimed = std::any_of(
+                    in_order.begin(), in_order.end(),
+                    [&shell](const std::shared_ptr<Record::Shell>& kept) {
+                        return kept == shell;
+                    });
+                if (!claimed)
+                    retired.push_back(shell);
+            }
+            record->shells = in_order; // kept in tab order, so counting them is counting places
             for (size_t slot = 0; slot < record->shells.size() && slot < cells.size(); ++slot) {
                 const std::shared_ptr<Record::Shell>& shell = record->shells[slot];
-                shell->pane = static_cast<int>(slot);
                 const CellRect& cell = cells[slot];
                 if (cell.rows < 1 || cell.cols < 1 ||
                     (cell.rows == shell->rows && cell.cols == shell->cols))
@@ -1017,8 +1139,29 @@ private:
         {
             std::lock_guard<std::mutex> lock(record->clients_mutex);
             for (auto& view : record->view_slot) {
-                if (view.second >= static_cast<int>(leaves.size()))
+                const auto seen = view_leaf.find(view.first);
+                if (seen == view_leaf.end()) {
+                    // No program to follow. Either the one this view was watching has gone
+                    // or it was retired when the arrangement was replaced, and the number
+                    // the view is filed under now belongs to whoever was renumbered into it.
+                    // Leaving the view there is how keystrokes meant for the place in hand
+                    // end up typed into a different program: the window lights the place the
+                    // session is focused on while this table still points the view at the
+                    // neighbour that took over the number. Such a view goes to the focused
+                    // place, which is the place the window is showing it.
                     view.second = focus;
+                    continue;
+                }
+                // Back to the place this view was looking at, wherever that leaf sits now.
+                // A view whose leaf has gone (its pane was closed) takes the focused one.
+                int at = focus;
+                for (size_t i = 0; i < leaves.size(); ++i) {
+                    if (leaves[i] == seen->second) {
+                        at = static_cast<int>(i);
+                        break;
+                    }
+                }
+                view.second = at;
             }
         }
 
@@ -1079,7 +1222,7 @@ private:
             // One pane's output goes to the views looking at that pane, and nowhere else:
             // a pane is a program, and two programs' output interleaved onto one screen is
             // unreadable rather than twice as informative.
-            const std::vector<int> watching = record->clientsSeeing(shell->pane);
+            const std::vector<int> watching = record->clientsSeeing(shell->slot);
             for (const Screen::ClipboardRequest& request : copies) {
                 // Which clipboard it came from travels with it, so a view can put the
                 // text where the program asked for it to go.
@@ -1118,12 +1261,28 @@ private:
             // next resize would start another program in it, because reconciling counts the
             // leaves it is told about — and a process coming back in a pane nobody opened is
             // not what "the shell exited" is supposed to mean.
+            //
+            // Only a program that still holds a place may take that place with it, though. A
+            // program retired when the arrangement was replaced is already off the list, and
+            // the pane id it remembers now names whoever took its place over, so closing that
+            // would delete a live place from the tree. Every retired program ate one, which is
+            // how a session came to be drawn with four places while its arrangement listed
+            // one: reconciling sizes only the places the tree still has, so the rest kept the
+            // tty size they were born with while the window shrank their cells underneath
+            // them. A shell laying its lines out against a grid that is not the one it is
+            // painted on is the whole of the leftover text and the duplicated prompts —
+            // erasing a wrapped line walks the cursor back over rows that are not where the
+            // shell believes them to be, so the redraw lands beside the text it meant to
+            // replace and the erase never reaches past the row it stopped believing in.
+            bool holds_a_place = false;
             {
+                std::lock_guard<std::mutex> lock(record->shells_mutex);
+                holds_a_place = std::find(record->shells.begin(), record->shells.end(),
+                                          shell) != record->shells.end();
+            }
+            if (holds_a_place) {
                 std::lock_guard<std::mutex> lock(record->layout_mutex);
-                const std::vector<int> leaves = record->layout.layout.panes();
-                if (shell->pane >= 0 && static_cast<size_t>(shell->pane) < leaves.size())
-                    static_cast<void>(
-                        record->layout.layout.closePane(leaves[static_cast<size_t>(shell->pane)]));
+                static_cast<void>(record->layout.layout.closePane(shell->pane));
             }
             {
                 std::lock_guard<std::mutex> lock(record->shells_mutex);
@@ -1133,15 +1292,10 @@ private:
                 record->shells.erase(keep, record->shells.end());
                 shell->pty->closeMaster();
             }
-            // Places are numbered, and one has gone, so every view goes back to the place
-            // the session is focused on. A view left on the number it asked for would find
-            // itself looking at a different program than the one it chose; a view left on
-            // the number that went away would be staring at the last picture of a program
-            // that is not there, into a prompt that answers nothing.
-            {
-                std::lock_guard<std::mutex> lock(record->clients_mutex);
-                record->view_slot.clear();
-            }
+            // Views are not moved wholesale. Each one follows the program it was looking
+            // at, which reconciling re-sorts by leaf; only a view whose own program has
+            // gone — the last picture of a program that is not there, into a prompt that
+            // answers nothing — is moved, and it goes to wherever the session is focused.
             // Reconciling sizes what is left to what is left, hands every view the screen of
             // the place it is now looking at, and says what the tab bar holds.
             reconcileShells(record);
@@ -1282,8 +1436,11 @@ private:
         // so a session Kaida had saved once went on saving itself every time it was
         // looked at, and closed without a question.
         record->saved = false;
+        const bool as_window = fieldValue(hello, "kind") == "window";
         {
             std::lock_guard<std::mutex> lock(record->clients_mutex);
+            if (as_window)
+                record->windows.push_back(fd);
             record->clients.push_back(fd);
             // The tab bar comes with the welcome, not only when it changes: a window
             // opening onto a session that has had three panes since this morning should
@@ -1315,14 +1472,50 @@ private:
             int fd;
             const bool* closing;
             ~Guard() {
+                bool was_last_view = false;
+                bool arranged_by_daemon = false;
+                bool was_a_window = false;
                 {
                     std::lock_guard<std::mutex> lock(record->clients_mutex);
                     record->clients.erase(std::remove(record->clients.begin(),
                                                       record->clients.end(), fd),
                                           record->clients.end());
                     record->views.erase(fd);
+                    const auto evicted = std::find(record->evicting.begin(),
+                                                   record->evicting.end(), fd);
+                    if (evicted != record->evicting.end()) {
+                        record->evicting.erase(evicted);
+                        arranged_by_daemon = true;
+                    }
+                    const auto window_fd =
+                        std::find(record->windows.begin(), record->windows.end(), fd);
+                    if (window_fd != record->windows.end()) {
+                        record->windows.erase(window_fd);
+                        was_a_window = true;
+                    }
+                    was_last_view = record->clients.empty();
                 }
                 if (*closing && !record->saved) {
+                    daemon.destroy(record);
+                    return;
+                }
+                // A window that went away without saying so is not somebody throwing the
+                // shell away — a crash, a kill -9, a compositor that took the window with it
+                // — so the session stays where it is and can be found again. A session with
+                // nothing running in it is the exception: an idle shell at a prompt is
+                // nothing to come back to, and keeping it means a line in the listing with
+                // no work behind it. Four things have to be true for that, because the
+                // innocent readings of a dropped socket are many: it was a WINDOW that went
+                // away (a command that attaches to read a screen and hangs up is not a
+                // verdict on the session), it was the LAST view (one window crashing cannot
+                // end a session another is still reading), nobody had saved it, and nothing
+                // is running in it. A hangup the daemon arranged is excluded too, because
+                // `kai-term detach` means "stop showing it to me" and the shell is meant to
+                // outlive that.
+                // (Kaida, 2026-11-24: "sometimes sessions that crash get saved on their own,
+                // but if they had no running process there is no point to save them".)
+                if (!*closing && !arranged_by_daemon && was_a_window && !record->saved &&
+                    was_last_view && !daemon.sessionHasWork(*record)) {
                     daemon.destroy(record);
                     return;
                 }
@@ -1415,12 +1608,14 @@ private:
                         made = record->layout.layout.splitPane(leaf, how,
                                                                record->rows.load(),
                                                                record->cols.load());
-                        // Share the room evenly. Splitting the place in hand and leaving the
-                        // ratios alone halves each new place down to a sliver beside a fat
-                        // first one; rebalancing the whole tree by leaf count keeps every
-                        // place an equal slice, which is what "split" should feel like.
-                        if (made >= 0)
-                            record->layout.layout.evenize();
+                        // The new place takes half of the place it was made from, and
+                        // nothing else moves. Rebalancing the whole tree by leaf count —
+                        // which is what this used to do — shrinks a place nobody asked
+                        // about: with two places side by side, stacking a third under one
+                        // of them turned the other into a third of the window, so the pane
+                        // you were not touching lost half its width on its own.
+                        // (Kaida, 2026-11-24: "pane 1 is now 33%/100% ... it should be pane
+                        // 1 50%/100% pane 2 50%/50% and pane 3 50%/50%".)
                     }
                     if (made < 0) {
                         static_cast<void>(detail::sendFrame(
@@ -1476,14 +1671,10 @@ private:
                                            "session is what closes it"}})));
                         break;
                     }
-                    // Places are numbered, and closing one moves the numbers along. A view
-                    // left on the number it asked for would find itself looking at a
-                    // different program than the one it chose, so everyone goes back to the
-                    // place the session is focused on and is shown it.
-                    {
-                        std::lock_guard<std::mutex> lock(record->clients_mutex);
-                        record->view_slot.clear();
-                    }
+                    // Closing one place moves the numbers of the places after it, so views
+                    // are re-sorted by which program they are showing rather than left on a
+                    // number that now names somebody else. Only the view whose own place was
+                    // closed moves, and it lands on the focused place and is shown it.
                     reconcileShells(record);
                     const std::shared_ptr<Record::Shell> now =
                         shellAt(record, record->focus_slot.load());
@@ -1492,6 +1683,52 @@ private:
                         for (const int viewer : record->clientsSeeing(record->focus_slot.load()))
                             static_cast<void>(detail::sendFrame(viewer, MsgKind::Snapshot,
                                                                 screen));
+                    }
+                    announceTabs(record);
+                    break;
+                }
+                case MsgKind::ResizeBegin: {
+                    // Remember the arrangement as words before a divider is moved, so a
+                    // cancel can put it back. An empty snapshot means none is in progress.
+                    std::lock_guard<std::mutex> lock(record->layout_mutex);
+                    record->resize_saved = record->layout.toText();
+                    break;
+                }
+                case MsgKind::ResizeDivider: {
+                    // Nudge the divider of the place being looked at by a cell along one
+                    // axis. The arrows choose the axis; the divider runs the other way.
+                    const Fields f = decodeFields(frame.body);
+                    const int dcol = std::stoi(fieldValue(f, "dcol", "0"));
+                    const int drow = std::stoi(fieldValue(f, "drow", "0"));
+                    const int delta = dcol != 0 ? dcol : drow;
+                    const int leaf = record->layout.layout.focused();
+                    bool moved = false;
+                    {
+                        std::lock_guard<std::mutex> lock(record->layout_mutex);
+                        moved = record->layout.layout.resizeDivider(leaf, delta,
+                                                                    record->rows.load(),
+                                                                    record->cols.load());
+                    }
+                    // Only worth announcing when a divider actually moved; a pane against
+                    // its own edge says nothing and repaints nothing.
+                    if (moved)
+                        announceTabs(record);
+                    break;
+                }
+                case MsgKind::ResizeEnd: {
+                    // Keep the resized arrangement, or put back the words taken when the
+                    // resize began. The undo is the daemon's, so a watching window rolls
+                    // back with the one that resized.
+                    const std::string commit =
+                        fieldValue(decodeFields(frame.body), "commit", "1");
+                    {
+                        std::lock_guard<std::mutex> lock(record->layout_mutex);
+                        if (commit != "1" && !record->resize_saved.empty()) {
+                            std::vector<std::string> problems;
+                            record->layout =
+                                SessionLayout::fromText(record->resize_saved, problems);
+                        }
+                        record->resize_saved.clear();
                     }
                     announceTabs(record);
                     break;
@@ -1540,7 +1777,7 @@ private:
                     // that is merely unloved and listed, because otherwise "detach" and
                     // "crashed" look identical to everything that comes after.
                     if (!closing_on_purpose)
-                        record->saved = true;
+            record->saved = true;
                     return; // the view asks for nothing more
                 }
                 default:
@@ -1814,8 +2051,10 @@ private:
             }
             // The arrangement decides how many programs the session runs, which is the whole
             // reason it is worth saving: a record of panes with one shell behind it is a
-            // picture of a workspace rather than one.
-            reconcileShells(record);
+            // picture of a workspace rather than one. Those words describe a new tree, so
+            // the shells already running are matched to places rather than to leaf numbers
+            // that were only just invented.
+            reconcileShells(record, MatchShells::ByPosition);
             static_cast<void>(detail::sendFrame(
                 fd, MsgKind::Ack, encodeFields({{"what", "layout"}})));
             return;

@@ -34,10 +34,18 @@ public:
         std::string error;
         if (!client_.connect(error))
             throw std::runtime_error(error);
+        // `kind=window` says what is on this end of the socket: a window a person is
+        // looking at, rather than a command that attaches only to read a screen and hangs
+        // up again. The daemon needs the difference when a view goes away without saying
+        // anything — a window falling over with nothing running in it leaves nothing worth
+        // keeping, while a peek that moves along is not a verdict on the session at all.
+        // (Kaida, 2026-11-24: "sometimes sessions that crash get saved on their own, but if
+        // they had no running process there is no point to save them".)
         if (!client_.request({{"command", "attach"},
                               {"name", name_},
                               {"rows", std::to_string(rows)},
-                              {"cols", std::to_string(cols)}})) {
+                              {"cols", std::to_string(cols)},
+                              {"kind", "window"}})) {
             throw std::runtime_error("the daemon would not listen");
         }
         Frame welcome;
@@ -160,6 +168,16 @@ public:
         static_cast<void>(client_.send(
             MsgKind::SetViewMode, encodeFields({{"mode", tabs ? "tabs" : "side-by-side"}})));
     }
+    void resizeBegin() override { static_cast<void>(client_.send(MsgKind::ResizeBegin)); }
+    void resizeDivider(int dcol, int drow) override {
+        static_cast<void>(client_.send(MsgKind::ResizeDivider,
+                                       encodeFields({{"dcol", std::to_string(dcol)},
+                                                     {"drow", std::to_string(drow)}})));
+    }
+    void resizeEnd(bool commit) override {
+        static_cast<void>(client_.send(
+            MsgKind::ResizeEnd, encodeFields({{"commit", commit ? "1" : "0"}})));
+    }
 
     // The refusal, once. Taken rather than read because a message somebody has already
     // seen should not be shown again on the next look.
@@ -234,6 +252,7 @@ private:
                 tabs_.focused = number(fieldValue(fields, "focused", "0"));
                 tabs_.tabs = fieldValue(fields, "mode") == "tabs";
                 tabs_.cells.clear();
+                tabs_.numbers.clear();
                 // `top,left,rows,cols` apart, in the order the places are listed. Anything
                 // that does not parse is left out rather than guessed at: a bar drawn from
                 // half-understood sizes is a map with rooms in the wrong places.
@@ -270,6 +289,25 @@ private:
                         }
                         if (read && cell.valid())
                             tabs_.cells.push_back(cell);
+                    }
+                }
+                {
+                    // The number each place is called by, in the order the places are
+                    // listed. A list shorter than the places is padded by leaving the rest
+                    // empty, which the window reads as "numbered in the order listed" —
+                    // the same thing a session from before this was said would say.
+                    const std::string text = fieldValue(fields, "numbers");
+                    std::size_t at = 0;
+                    while (at < text.size()) {
+                        const std::size_t next = text.find(',', at);
+                        const std::string one =
+                            text.substr(at, next == std::string::npos ? std::string::npos
+                                                                      : next - at);
+                        at = next == std::string::npos ? text.size() : next + 1;
+                        if (one.empty() ||
+                            one.find_first_not_of("0123456789") != std::string::npos)
+                            continue;
+                        tabs_.numbers.push_back(number(one));
                     }
                 }
                 tabs_changed_ = true;

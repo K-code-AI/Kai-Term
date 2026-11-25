@@ -217,6 +217,10 @@ public:
             // grid the file asked for rather than one column away from it.
             if (config_.padding)
                 setPadding(*config_.padding);
+            // The divider, on the same terms as the padding: the file's number is the line's
+            // thickness, and a file that says nothing leaves the built-in single pixel.
+            if (config_.divider_width)
+                setDividerWidth(*config_.divider_width);
             if (config_.scrollback)
                 setHistoryLimit(*config_.scrollback);
             if (config_.cursor_style)
@@ -297,16 +301,48 @@ public:
     // `w` names are for shells nobody decided to keep and this one is now a thing they
     // did decide about. Renaming is not fatal if it fails: the session is kept under
     // the name it has, since keeping it is the part that matters.
+    // Whether saving a session asks what to call it. On unless the settings file says off:
+    // a key whose whole job is "keep this" should not quietly decide the name it will be
+    // found by, and the person who has already decided says so once in the file.
+    bool asksForSessionName() const { return config_.save_name_prompt != "off"; }
+
     void saveCurrentSession() {
         if (session_.empty()) {
             setStatusText("no session daemon, so nothing was kept", 6000);
             return;
         }
+        // Ask what to call it. A session that comes back as `w14` is a session that came
+        // back unnamed, and the reason to keep one is to find it again later. The question
+        // can be turned off in the settings for somebody who wants the keypress to keep the
+        // shell and get on with the next one; the answer is then the name the window would
+        // have picked, exactly as it always was.
+        // (Kaida, 2026-11-24: "saving a session should now prompt for a name (can be
+        // disabled in setting)".)
+        if (asksForSessionName()) {
+            const std::string automatic = nextKeptName();
+            askNameInTerminal("What should this session be called?",
+                              "This window moves on to a new shell; the one you are in keeps running.",
+                              automatic,
+                              [this, automatic](std::string name) {
+                                  // Enter with nothing typed is an answer rather than a
+                                  // refusal: it means "the name you were going to pick".
+                                  keepSessionUnder(name.empty() ? automatic : name);
+                              });
+            return;
+        }
+        keepSessionUnder(nextKeptName());
+    }
+
+    // Keep the shell this window is showing, under the name it is to be found by, and
+    // start a fresh one in the window. Split out of `saveCurrentSession` so the name can
+    // arrive from the question above or from the setting that skips it.
+    void keepSessionUnder(const std::string& wanted) {
+        if (session_.empty())
+            return; // the question outlived the session, which is the one race worth closing
         std::string error;
-        const std::string kept = nextKeptName();
         std::string saved_as = session_;
-        if (!kept.empty() && saveSession(session_, kept, error))
-            saved_as = kept;
+        if (!wanted.empty() && saveSession(session_, wanted, error))
+            saved_as = wanted;
         else if (!saveSession(session_, std::string(), error)) {
             setStatusText("could not keep this session: " + error, 6000);
             return;
@@ -956,6 +992,11 @@ private:
                         percentFromFraction(theme().foreground_opacity), 1, 100});
         rows.push_back({"padding", "padding", SettingKind::Integer,
                         static_cast<int>(padding() + 0.5), 0, 64});
+        // The line between two places. Both directions answer to this one number, which is
+        // the point of the row: a vertical divider and a horizontal one are the same
+        // thickness here and on the screen, and 0 leaves the gap empty.
+        rows.push_back({"divider_width", "divider width", SettingKind::Integer,
+                        static_cast<int>(dividerWidth()), 0, 16});
         rows.push_back({"scrollback", "scrollback", SettingKind::Integer, historyLimit(), 0,
                         20000});
         const int shape = cursorStyle() == CursorStyle::Block
@@ -984,6 +1025,12 @@ private:
         int hints = config_.keybind_hints == "off" ? 0 : 1;
         rows.push_back({"keybind_hints", "keybind hints", SettingKind::Choice, hints, 0, 0, 0,
                         {"off", "on"}});
+        // Whether keeping a session asks what to call it. On is the default, because the
+        // name is what you type to find it again; off is the one-press keep the key used to
+        // be, which takes the name the window would have picked.
+        int name_prompt = config_.save_name_prompt == "off" ? 0 : 1;
+        rows.push_back({"save_name_prompt", "ask for session name", SettingKind::Choice,
+                        name_prompt, 0, 0, 0, {"off", "on"}});
         // Which colours the window is wearing. The answers are the names on disk, with
         // the default offered first even though it is not a file in `themes` — it is the
         // file the colours have always lived in, and a menu that hides the answer you are
@@ -1015,6 +1062,8 @@ private:
             setFontPixelSize(row.value);
         else if (row.key == "padding")
             setPadding(row.value);
+        else if (row.key == "divider_width")
+            setDividerWidth(row.value);
         else if (row.key == "scrollback")
             setHistoryLimit(row.value);
         else if (row.key == "cursor_blink")
@@ -1030,6 +1079,9 @@ private:
             config_.confirm_quit = settingFileText(row);
         else if (row.key == "keybind_hints")
             setShowKeyHints(row.value == 1);
+        else if (row.key == "save_name_prompt")
+            // Nothing to preview: the answer is about the next time the key is pressed.
+            config_.save_name_prompt = settingFileText(row);
         else if (row.key == "theme")
             previewTheme(settingFileText(row));
         else if (row.key == "background_opacity")
