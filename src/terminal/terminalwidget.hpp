@@ -3079,17 +3079,15 @@ public:
         // The control waiting on a key says so, and what it will take. Drawn over the
         // work like the refusal line, because arming is a word from the window. When the
         // hint is switched off the control still waits — it just keeps quiet about it.
-        if (prefix_armed_ && show_key_hints_) {
-            const QString line = QStringLiteral(
-                "Ctrl+K  ·  K settings  N new pane  T tabs  R resize  F files  S save  A attach  Esc cancel");
-            const double row = cellHeight();
-            const double box = std::min(static_cast<double>(width()) - 2.0 * grid_pad,
-                                        fm.horizontalAdvance(line) + 2.0 * padding_);
-            const QRectF strip((width() - box) / 2.0, height() - grid_pad - row, box, row);
-            p.fillRect(strip, ground(default_bg, 245));
-            p.setPen(ink(theme_.foreground, 255));
-            p.drawText(strip, Qt::AlignCenter, line);
-        }
+        // The chord's own guide: a panel in the middle of the window, on the same surface
+        // the settings and the split question are drawn on, with one key to a row and what
+        // that key does beside it. It used to be a single line along the bottom edge, which
+        // listed the letters and left their meaning to be remembered — and a line you have
+        // to already understand is not a guide.
+        // (Kaida, 2026-11-25: "the tooltips when pressing Ctrl+k should appear in a centered
+        // windows (akin to the setting) explaining the individual keys".)
+        if (prefix_armed_ && show_key_hints_)
+            paintKeyGuide(p);
 
         if (!mixer_)
             paintPicker(p);
@@ -4704,6 +4702,118 @@ private:
                 update();
             }
             return;
+        }
+    }
+
+    // The Ctrl+K guide. The key stands in the accent so the eye can find the letter it is
+    // looking for; the words beside it are the panel's own voice, and both columns are as
+    // wide as their widest entry, so the rows read as a table rather than as eight notes
+    // that happen to start near each other.
+    void paintKeyGuide(QPainter& p) const {
+        struct Guide {
+            const char* key;
+            const char* what;
+            // The one row that also says what it currently is, because toggling something
+            // you cannot see the state of is a coin toss.
+            // (Kaida, 2026-11-25: "T toggle view mode Current : Value".)
+            bool reads_back = false;
+        };
+        // In the order they are reached for, not in the order the letters fall: the panes
+        // and the sessions first, then the view and the resizing, then the settings, then
+        // the way out. (Kaida, 2026-11-25: "we will also re-order it: N, S, A, F, T, R, K,
+        // Esc".)
+        static const Guide kGuide[] = {
+            {"N", "new pane", false},
+            {"S", "save session", false},
+            {"A", "Attach a saved session", false},
+            {"F", "open the file manager", false},
+            {"T", "toggle view mode", true},
+            {"R", "Resize a pane in side by side view.", false},
+            {"K", "open settings", false},
+            {"Esc", "leave this menu", false},
+        };
+        static const char kTitle[] = "Keybind Tooltips";
+        const double ch = cellHeight();
+        const QFontMetricsF fm(font_);
+        // What the view is wearing at the moment the panel is drawn, read off the widget
+        // rather than remembered, so the panel cannot disagree with the window.
+        const QString reading_label = QStringLiteral("Current : ");
+        const QString reading_value =
+            view_tabs_ ? QStringLiteral("tabs") : QStringLiteral("side-by-side");
+        const double reading_w =
+            fm.horizontalAdvance(reading_label) + fm.horizontalAdvance(reading_value);
+        double key_w = 0.0;
+        double what_w = 0.0;
+        const double between = 3.0 * fm.horizontalAdvance(QLatin1Char(' '));
+        for (const Guide& entry : kGuide) {
+            key_w = std::max(key_w, fm.horizontalAdvance(QString::fromUtf8(entry.key)));
+            double width = fm.horizontalAdvance(QString::fromUtf8(entry.what));
+            if (entry.reads_back)
+                width += between + reading_w;
+            what_w = std::max(what_w, width);
+        }
+        const double gap = 3.0 * fm.horizontalAdvance(QLatin1Char(' '));
+        const QString title = QString::fromUtf8(kTitle);
+        const double title_w = fm.horizontalAdvance(title);
+        // A little more room at the sides than the rows strictly need, so no letter is
+        // standing against the edge of the panel.
+        // (Kaida, 2026-11-25: "add a bit of padding left and right (about 8px)".)
+        const double side = 2.0 * padding_ + 8.0;
+        const double box = std::max(key_w + gap + what_w, title_w) + 2.0 * side;
+        const double tall =
+            (sizeof(kGuide) / sizeof(kGuide[0]) + 2.0) * ch + 2.0 * padding_;
+        const QRectF panel((width() - box) / 2.0, (height() - tall) / 2.0, box, tall);
+        const Color bg = screen_.defaultBackground();
+        const Color fg = screen_.defaultForeground();
+        const QColor accent_ink(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+
+        // The same surface as every other question this program asks: the terminal's own
+        // background, dimmed so the grid behind it reads as behind, its own font on it, and
+        // nothing borrowed from the desktop's idea of a menu.
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(ink(fg, 80), 1));
+        p.setBrush(ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
+        p.drawRoundedRect(panel, panelRadius(ch), panelRadius(ch));
+
+        // The title says what the panel is for, centred and ruled under in the accent so it
+        // reads as a heading rather than as a ninth key. The row under it is left empty:
+        // a heading with the list touching it is not a heading.
+        // (Kaida, 2026-11-25: "Title Centered and underlined at the top with spacing between
+        // it and the keys below".)
+        const double title_y = panel.y() + padding_ + fm.ascent();
+        p.setPen(ink(fg, 255));
+        p.drawText(QRectF(panel.x(), title_y - fm.ascent(), panel.width(), fm.height()),
+                   Qt::AlignHCenter | Qt::AlignVCenter, title);
+        const double rule_y = title_y + 3.0;
+        const double rule_left = panel.center().x() - title_w / 2.0;
+        p.setPen(QPen(accent_ink, 1));
+        p.drawLine(QPointF(rule_left, rule_y), QPointF(rule_left + title_w, rule_y));
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setFont(font_);
+
+        const double key_x = panel.x() + side;
+        const double what_x = key_x + key_w + gap;
+        double y = title_y + 2.0 * ch; // the blank row between the heading and the list
+        for (const Guide& entry : kGuide) {
+            p.setPen(accent_ink);
+            p.drawText(QPointF(key_x, y), QString::fromUtf8(entry.key));
+            const QString what = QString::fromUtf8(entry.what);
+            p.setPen(ink(fg, 225));
+            p.drawText(QPointF(what_x, y), what);
+            if (entry.reads_back) {
+                // The readout is a fact about the window, not another instruction, so it
+                // is said in a quieter voice — with the answer itself in the accent, which
+                // is the one word worth reading.
+                const double read_x = what_x + fm.horizontalAdvance(what) + between;
+                p.setPen(ink(fg, 150));
+                p.drawText(QPointF(read_x, y), reading_label);
+                p.setPen(accent_ink);
+                p.drawText(QPointF(read_x + fm.horizontalAdvance(reading_label), y),
+                           reading_value);
+            }
+            y += ch;
         }
     }
 

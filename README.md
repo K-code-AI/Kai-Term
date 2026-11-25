@@ -377,13 +377,15 @@ once in the corner and runs a shell of its own, which works the same except that
 nothing can be kept.
 
 **Ctrl+K** is the control: press it, and the terminal waits for one more key and then
-does that one thing. A line along the bottom lists the keys while it waits (switch it off
-under Settings → keybind hints). It is captured always, so the shell loses its readline
+does that one thing. A panel opens in the middle of the window while it waits — one key to a
+row, and what that key does beside it (switch it off under Settings → Show Keybind Tooltips).
+It is captured always, so the shell loses its readline
 kill-line to the prefix — a single control the future tty can lean on is worth more here
 than one shortcut the terminal could not offer anyway, and Ctrl+U still clears the line.
-The keys: **K** settings, **N** a new place (asks Vertical or Horizontal), **R** resize
-mode, **F** a file manager, **S** save this session, **A** bring one back, **Esc** to back
-out. Copy and paste stay on **Ctrl+Shift+C** / **Ctrl+Shift+V**, and **Ctrl+Shift+Left** /
+The keys, in the words the panel uses: **K** open settings, **N** new pane (it asks Vertical
+or Horizontal, unless the session is showing one place at a time), **T** toggle view mode,
+**R** resize a pane in side by side view, **F** open the file manager, **S** save session,
+**A** attach a saved session, **Esc** leave this menu. Copy and paste stay on **Ctrl+Shift+C** / **Ctrl+Shift+V**, and **Ctrl+Shift+Left** /
 **Ctrl+Shift+Right** still step along the places — reflexes that cost the shell nothing.
 
 - **Ctrl+K, then S** keeps the shell this window is showing and starts a fresh one in the
@@ -400,9 +402,10 @@ out. Copy and paste stay on **Ctrl+Shift+C** / **Ctrl+Shift+V**, and **Ctrl+Shif
   with it; a session that was kept is asked about by nobody, since its work goes
   on whether or not this window is looking at it.
 
-- **Ctrl+K, then K** opens the settings menu over the grid — font size, the two
-  transparencies, padding, scrollback, cursor style, when closing asks, and which theme
-  is being worn — walked
+- **Ctrl+K, then K** opens the settings menu over the grid — Font size, Background opacity
+  and Text opacity, Padding, Divider thickness, Scrollback history length, Cursor style,
+  Cursor blink speed, Ask before closing, Show Keybind Tooltips, Name sessions on save,
+  Default view, and Themes & Customization — walked
   with the arrows or the mouse, `-` and `+` (or their arrows) nudging a value, and one
   more step down from the last row landing on the words `save` and `cancel`, and one step
   back up landing on the last row again. Enter opens

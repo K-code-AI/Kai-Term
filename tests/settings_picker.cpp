@@ -98,13 +98,23 @@ int main() {
         expect("a scrollback of 1000 shows the width it can grow to",
                settingValueText(at(picker, "scrollback")) == "01000");
         expect("a background of 80 shows 080%",
-               settingValueText(at(picker, "background_opacity")) == "080%");
+               settingValueText(at(picker, "background_opacity")) == "080 %");
         expect("a fully solid ink shows 100%",
-               settingValueText(at(picker, "foreground_opacity")) == "100%");
+               settingValueText(at(picker, "foreground_opacity")) == "100 %");
         expect("an answer shows the answer, not a number",
                settingValueText(at(picker, "confirm_quit")) == "running");
         expect("a percentage of five is 005 and not 5",
-               settingValueText(SettingRow{"p", "", SettingKind::Percent, 5, 1, 100}) == "005%");
+               settingValueText(SettingRow{"p", "", SettingKind::Percent, 5, 1, 100}) == "005 %");
+        // A number row can say what it is counted in, and the unit belongs outside the
+        // padded digits: the arrows edit a digit in a column, and a unit that moved the
+        // digits would move the caret off the digit being typed.
+        // (Kaida, 2026-11-25: "Font size 'Value' px", "Scrollback history length 'Value' Lines".)
+        expect("a unit rides after the number it belongs to",
+               settingValueText(SettingRow{"f", "", SettingKind::Integer, 18, 6, 72, 2, {},
+                                           false, 1, "px"}) == "18 px");
+        expect("and the digits keep the width the arrows type into",
+               settingValueText(SettingRow{"p", "", SettingKind::Integer, 5, 0, 64, 2, {},
+                                           false, 1, "px"}) == "05 px");
     }
 
     // Typing replaces the digit under the cursor and steps along, and every

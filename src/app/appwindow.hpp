@@ -991,30 +991,31 @@ private:
     // can reach in the menu is a value the reader will accept tomorrow morning.
     std::vector<SettingRow> settingsRows() const {
         std::vector<SettingRow> rows;
-        rows.push_back({"font_size", "font size", SettingKind::Integer, fontPixelSize(), 6, 72});
-        rows.push_back({"background_opacity", "background opacity", SettingKind::Percent,
+        rows.push_back({"font_size", "Font size", SettingKind::Integer, fontPixelSize(), 6, 72,
+                        2, {}, false, 1, "px"});
+        rows.push_back({"background_opacity", "Background opacity", SettingKind::Percent,
                         percentFromFraction(theme().background_opacity), 1, 100});
-        rows.push_back({"foreground_opacity", "foreground opacity", SettingKind::Percent,
+        rows.push_back({"foreground_opacity", "Text opacity", SettingKind::Percent,
                         percentFromFraction(theme().foreground_opacity), 1, 100});
-        rows.push_back({"padding", "padding", SettingKind::Integer,
-                        static_cast<int>(padding() + 0.5), 0, 64});
+        rows.push_back({"padding", "Padding", SettingKind::Integer,
+                        static_cast<int>(padding() + 0.5), 0, 64, 2, {}, false, 1, "px"});
         // The line between two places. Both directions answer to this one number, which is
         // the point of the row: a vertical divider and a horizontal one are the same
         // thickness here and on the screen, and 0 leaves the gap empty.
-        rows.push_back({"divider_width", "divider width", SettingKind::Integer,
-                        static_cast<int>(dividerWidth()), 0, 16});
-        rows.push_back({"scrollback", "scrollback", SettingKind::Integer, historyLimit(), 0,
-                        20000});
+        rows.push_back({"divider_width", "Divider thickness", SettingKind::Integer,
+                        static_cast<int>(dividerWidth()), 0, 16, 2, {}, false, 1, "px"});
+        rows.push_back({"scrollback", "Scrollback history length", SettingKind::Integer,
+                        historyLimit(), 0, 20000, 5, {}, false, 1, "Lines"});
         const int shape = cursorStyle() == CursorStyle::Block
                               ? 0
                               : (cursorStyle() == CursorStyle::Bar ? 1 : 2);
-        rows.push_back({"cursor_style", "cursor style", SettingKind::Choice, shape, 0, 0, 0,
+        rows.push_back({"cursor_style", "Cursor style", SettingKind::Choice, shape, 0, 0, 0,
                         {"block", "bar", "underline"}});
         // Milliseconds per half-blink, walked fifty at a time: the range is wide enough
         // that one millisecond a press is a walk of five thousand, and the difference
         // between two rates a hundred apart is not worth a press each.
         // (Kaida, 2026-11-21: "customizable blink speed ( 0 being no blinking)".)
-        rows.push_back({"cursor_blink", "cursor blink", SettingKind::Integer, cursorBlink(),
+        rows.push_back({"cursor_blink", "Cursor blink speed", SettingKind::Integer, cursorBlink(),
                         0, 5000, 4, {}, false, 50});
         const std::string policy = policyWord(closePolicy());
         int quit = 1; // the answer with no file and no environment saying otherwise
@@ -1023,26 +1024,26 @@ private:
                 break;
             ++quit;
         }
-        rows.push_back({"confirm_quit", "confirm quit", SettingKind::Choice, quit, 0, 0, 0,
+        rows.push_back({"confirm_quit", "Ask before closing", SettingKind::Choice, quit, 0, 0, 0,
                         {"never", "running", "always"}});
         // Whether the control, while it waits for its key, shows the row of keys it
         // takes. On is the default — a thing you have not learned yet should say what it
         // wants — and off is for the person who has learned it and wants the screen back.
         int hints = config_.keybind_hints == "off" ? 0 : 1;
-        rows.push_back({"keybind_hints", "keybind hints", SettingKind::Choice, hints, 0, 0, 0,
+        rows.push_back({"keybind_hints", "Show Keybind Tooltips", SettingKind::Choice, hints, 0, 0, 0,
                         {"off", "on"}});
         // Whether keeping a session asks what to call it. On is the default, because the
         // name is what you type to find it again; off is the one-press keep the key used to
         // be, which takes the name the window would have picked.
         int name_prompt = config_.save_name_prompt == "off" ? 0 : 1;
-        rows.push_back({"save_name_prompt", "ask for session name", SettingKind::Choice,
+        rows.push_back({"save_name_prompt", "Name sessions on save", SettingKind::Choice,
                         name_prompt, 0, 0, 0, {"off", "on"}});
         // Which view a session opened by a new window starts in. `Ctrl+K T` changes it for
         // the session in hand either way; this spares a person who lives in one view the
         // keystroke every single time they open a window.
         // (Kaida, 2026-11-25: "a setting that lets the user chose their default view (side
         // by side or Tabs)".)
-        rows.push_back({"default_view_mode", "new sessions open in", SettingKind::Choice,
+        rows.push_back({"default_view_mode", "Default view", SettingKind::Choice,
                         config_.default_view_mode == "tabs" ? 1 : 0, 0, 0, 0,
                         {"side-by-side", "tabs"}});
         // Which colours the window is wearing. The answers are the names on disk, with
@@ -1064,7 +1065,7 @@ private:
         // (Kaida, 2026-11-20: "Instead of having a keybind for the Theme Editor
         // Ctrl+shift+P, the Theme editor should be an item in the setting menu under
         // Theme. It would make things more coherent".)
-        rows.push_back({"theme", "theme", SettingKind::Choice, theme_row, 0, 0, 0, themes, true});
+        rows.push_back({"theme", "Themes & Customization", SettingKind::Choice, theme_row, 0, 0, 0, themes, true});
         return rows;
     }
 

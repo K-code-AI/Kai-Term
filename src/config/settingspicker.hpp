@@ -54,6 +54,12 @@ struct SettingRow {
     // one end of the range to the other is a hundred presses rather than ten.
     // (Kaida, 2026-11-21: "customizable blink speed".)
     int step = 1;
+    // What the number is counted in, said after it: `px`, `Lines`. Empty leaves the bare
+    // number, which is right for a rate nobody reads as a quantity. It rides after the
+    // padded digits rather than inside them, so the digits keep the column they are
+    // typed into and the unit cannot be mistaken for part of the value.
+    // (Kaida, 2026-11-25: "Font size 'Value' px", "Scrollback history length 'Value' Lines".)
+    std::string unit;
 };
 
 // Put a row back inside what its setting accepts, and make its display width
@@ -102,7 +108,9 @@ inline std::string settingValueText(const SettingRow& row) {
     std::string padded = number;
     while (static_cast<int>(padded.size()) < row.digits)
         padded.insert(padded.begin(), '0');
-    return row.kind == SettingKind::Percent ? padded + "%" : padded;
+    if (!row.unit.empty())
+        return padded + " " + row.unit;
+    return row.kind == SettingKind::Percent ? padded + " %" : padded;
 }
 
 class SettingsPicker {

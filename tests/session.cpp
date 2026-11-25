@@ -1012,26 +1012,37 @@ int main() {
         // shown, and a place that closes hands the focus to its neighbour rather than to
         // the first place in the session, which is where a person working through the
         // places expects to be left.
-        auto mine_now = [&](TestClient& viewer, int panes) -> std::string {
-            std::string mine;
-            for (int waited = 0; waited < 4000 && mine.empty(); waited += 100) {
-                struct pollfd pfd {viewer.fd, POLLIN, 0};
-                if (::poll(&pfd, 1, 100) > 0) {
-                    char buf[8192];
-                    const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
-                    if (n > 0)
-                        viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
-                }
-                Frame frame;
-                while (viewer.reader.pop(frame)) {
-                    if (frame.kind != MsgKind::Tabs)
-                        continue;
-                    const Fields fields = decodeFields(frame.body);
-                    if (fieldValue(fields, "panes", "0") == std::to_string(panes))
-                        mine = fieldValue(fields, "mine", "-1");
-                }
+        // The newest bar this view has been told about, kept as it arrives. Reading only
+        // for the answer being waited on would throw away a bar that came in early — and a
+        // bar is the truth about where this view is, so a check that dropped it would then
+        // sit waiting for a change that has nothing left to cause it, and fail depending on
+        // how the machine happened to be feeling.
+        int bar_panes = 0;
+        std::string bar_mine;
+        auto read_bars = [&](TestClient& viewer) {
+            struct pollfd pfd {viewer.fd, POLLIN, 0};
+            if (::poll(&pfd, 1, 100) > 0) {
+                char buf[8192];
+                const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                if (n > 0)
+                    viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
             }
-            return mine;
+            Frame frame;
+            while (viewer.reader.pop(frame)) {
+                if (frame.kind != MsgKind::Tabs)
+                    continue;
+                const Fields fields = decodeFields(frame.body);
+                bar_panes = std::stoi(fieldValue(fields, "panes", "0"));
+                bar_mine = fieldValue(fields, "mine", "-1");
+            }
+        };
+        auto view_is_on = [&](TestClient& viewer, int panes, const std::string& place) {
+            for (int waited = 0; waited < 4000; waited += 100) {
+                read_bars(viewer);
+                if (bar_panes == panes && bar_mine == place)
+                    return true;
+            }
+            return bar_panes == panes && bar_mine == place;
         };
 
         expect("a session to close places in", createSession("neighbours", 24, 200));
@@ -1045,17 +1056,17 @@ int main() {
         // and later ones did.
         static_cast<void>(window.send(MsgKind::NewPane, encodeFields({{"dir", "v"}})));
         expect("so the first place made in a fresh window takes the focus",
-               mine_now(window, 2) == "1");
+               view_is_on(window, 2, "1"));
         for (int made = 0; made < 2; ++made)
             static_cast<void>(window.send(MsgKind::NewPane, encodeFields({{"dir", "v"}})));
-        expect("and each place after it takes the focus too", mine_now(window, 4) == "3");
+        expect("and each place after it takes the focus too", view_is_on(window, 4, "3"));
 
         static_cast<void>(window.send(MsgKind::ClosePane));
         expect("closing the place in hand leaves the view on its neighbour",
-               mine_now(window, 3) == "2");
+               view_is_on(window, 3, "2"));
         static_cast<void>(window.send(MsgKind::ClosePane));
         expect("and the close after that leaves it on the neighbour again",
-               mine_now(window, 2) == "1");
+               view_is_on(window, 2, "1"));
 
         // The symptom itself: what is typed must reach the program of the place shown, and
         // come back to this window rather than to whichever shell happens to sit first.
