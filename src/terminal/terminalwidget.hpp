@@ -69,13 +69,14 @@ struct TerminalOutputEvent : QEvent {
 // pane prints nothing on the pane being looked at, so nothing else would ever say so.
 struct TerminalTabsEvent : QEvent {
     TerminalTabsEvent(int panes, int focused, bool tabs, std::vector<PaneRect> cells,
-                      std::vector<int> numbers, int generation)
+                      std::vector<int> numbers, int mine, int generation)
         : QEvent(QEvent::None),
           panes(panes),
           focused(focused),
           tabs(tabs),
           cells(std::move(cells)),
           numbers(std::move(numbers)),
+          mine(mine),
           generation(generation) {}
     int panes;
     int focused;
@@ -83,6 +84,8 @@ struct TerminalTabsEvent : QEvent {
     std::vector<PaneRect> cells;
     // Which number each place is called by, in the order the places are listed.
     std::vector<int> numbers;
+    // Which place this window is being shown, as the session sees it; -1 = nobody said.
+    int mine = -1;
     int generation;
 };
 
@@ -860,7 +863,7 @@ public:
                     QCoreApplication::postEvent(this,
                                                 new TerminalTabsEvent(bar.panes, bar.focused,
                                                                       bar.tabs, bar.cells,
-                                                                      bar.numbers,
+                                                                      bar.numbers, bar.mine,
                                                                       generation));
                 }
                 // Bytes the backend is already holding are not waiting on the
@@ -1449,9 +1452,10 @@ public:
     // lit is this window's, because two windows on one session can be looking at two
     // different places and both are right.
     void setTabBar(int panes, int focused, bool tabs, std::vector<PaneRect> cells = {},
-                   std::vector<int> numbers = {}) {
+                   std::vector<int> numbers = {}, int mine = -1) {
         if (panes == tab_panes_ && view_tabs_ == tabs && cells == tab_cells_ &&
-            numbers == tab_numbers_ && (tab_chosen_ || focused == tab_focused_))
+            numbers == tab_numbers_ && (tab_chosen_ || focused == tab_focused_) &&
+            (mine < 0 || mine == tab_focused_))
             return;
         const int places_before = tab_panes_;
         tab_panes_ = std::max(0, panes);
@@ -1475,7 +1479,26 @@ public:
         // Before anything is drawn or measured, settle which place this window is looking
         // at: the size it asks the program to be, and the screen it paints, both come from
         // that answer.
+        const int asked_for_a_place = pending_new_place_;
         followThePlaceJustMade();
+        // The session also says which place *this* window is being shown, which is not the
+        // session's focus: a place closing moves the view that was on it somewhere else
+        // without anyone asking, and until now nothing said so over here. A window left
+        // believing it is on the place it was on goes on typing into whichever program the
+        // renumbering left under that number, which is how text comes to appear in a
+        // neighbour while the cursor stays here. Adopt it quietly — the session has already
+        // moved this view, so telling it back would be repeating a rumour about its own
+        // doing. A place this window asked for itself outranks the report, since that bar
+        // may have been on its way from before the new place existed.
+        if (mine >= 0 && mine < tab_panes_ && mine != tab_focused_ && asked_for_a_place < 0) {
+            pane_scroll_[tab_focused_] = scroll_offset_;
+            tab_focused_ = mine;
+            scroll_offset_ = 0;
+            const auto saved = pane_scroll_.find(mine);
+            pending_view_scroll_ = saved == pane_scroll_.end() ? 0 : saved->second;
+            tab_chosen_ = true;
+            resizeViewToFocusedCell(); // the place in hand is a different cell now
+        }
         // A neighbour stands in for a PLACE rather than for a program: it is painted into
         // that place's rect, so what it should be showing is whatever program answers to
         // that number now. Adding or taking away a place renumbers the places after the
@@ -1567,6 +1590,10 @@ public:
     // a horizontal one), answerable by the V or H key or by a click. Asking first is the
     // whole point — one key cannot guess which way a person wants to divide the screen.
     void askNewTab() {
+        if (view_tabs_) {
+            newTab(true); // one place at a time: both answers look the same on screen
+            return;
+        }
         askInTerminal("Split which way?",
                       "Vertical puts a place beside · Horizontal stacks one below",
                       {"Vertical", "Horizontal"}, 0,
@@ -1930,7 +1957,8 @@ public:
         if (auto* tabs = dynamic_cast<TerminalTabsEvent*>(e)) {
             if (tabs->generation != generation_)
                 return true; // about a session this window no longer shows
-            setTabBar(tabs->panes, tabs->focused, tabs->tabs, tabs->cells, tabs->numbers);
+            setTabBar(tabs->panes, tabs->focused, tabs->tabs, tabs->cells, tabs->numbers,
+                      tabs->mine);
             return true;
         }
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
@@ -2205,6 +2233,7 @@ public:
             switch (key) {
                 case Qt::Key_K: if (on_settings_menu) on_settings_menu(); spent = true; break;
                 case Qt::Key_N: askNewTab(); spent = true; break;
+                case Qt::Key_T: toggleViewMode(); spent = true; break;
                 case Qt::Key_R: enterResizeMode(); spent = true; break;
                 case Qt::Key_F: if (on_file_manager) on_file_manager(); else setStatusText("file manager: not wired yet"); spent = true; break;
                 case Qt::Key_S: if (on_save_session) on_save_session(); spent = true; break;
@@ -3052,7 +3081,7 @@ public:
         // hint is switched off the control still waits — it just keeps quiet about it.
         if (prefix_armed_ && show_key_hints_) {
             const QString line = QStringLiteral(
-                "Ctrl+K  ·  K settings  N new pane  R resize  F files  S save  A attach  Esc cancel");
+                "Ctrl+K  ·  K settings  N new pane  T tabs  R resize  F files  S save  A attach  Esc cancel");
             const double row = cellHeight();
             const double box = std::min(static_cast<double>(width()) - 2.0 * grid_pad,
                                         fm.horizontalAdvance(line) + 2.0 * padding_);

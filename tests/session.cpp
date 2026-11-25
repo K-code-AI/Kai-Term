@@ -1002,6 +1002,90 @@ int main() {
         }
     }
 
+    {
+        // Closing places one after another, in the order they stand (Kaida, 2026-11-25:
+        // "make 8 extra pane, send exit to pane 9 ... send some text — if the text is
+        // present in both pane 1 and pane 2 then the bug is still there"). The window was
+        // left typing into whichever program the renumbering had put under the number it
+        // believed it was on, so the text appeared in a neighbour while the cursor stayed
+        // put. Two things answer it: the daemon tells each view which place *it* is being
+        // shown, and a place that closes hands the focus to its neighbour rather than to
+        // the first place in the session, which is where a person working through the
+        // places expects to be left.
+        auto mine_now = [&](TestClient& viewer, int panes) -> std::string {
+            std::string mine;
+            for (int waited = 0; waited < 4000 && mine.empty(); waited += 100) {
+                struct pollfd pfd {viewer.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[8192];
+                    const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        viewer.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (viewer.reader.pop(frame)) {
+                    if (frame.kind != MsgKind::Tabs)
+                        continue;
+                    const Fields fields = decodeFields(frame.body);
+                    if (fieldValue(fields, "panes", "0") == std::to_string(panes))
+                        mine = fieldValue(fields, "mine", "-1");
+                }
+            }
+            return mine;
+        };
+
+        expect("a session to close places in", createSession("neighbours", 24, 200));
+        TestClient window;
+        std::string window_shown;
+        expect("with one window looking at it",
+               attach(window, "neighbours", 24, 200, window_shown));
+        // The first place made in a fresh window is the one people said did not take the
+        // focus (Kaida, 2026-11-25: "when creating a pane for the first time in a fresh
+        // kai-term window, the focus doesn't change to it as it should"), while the third
+        // and later ones did.
+        static_cast<void>(window.send(MsgKind::NewPane, encodeFields({{"dir", "v"}})));
+        expect("so the first place made in a fresh window takes the focus",
+               mine_now(window, 2) == "1");
+        for (int made = 0; made < 2; ++made)
+            static_cast<void>(window.send(MsgKind::NewPane, encodeFields({{"dir", "v"}})));
+        expect("and each place after it takes the focus too", mine_now(window, 4) == "3");
+
+        static_cast<void>(window.send(MsgKind::ClosePane));
+        expect("closing the place in hand leaves the view on its neighbour",
+               mine_now(window, 3) == "2");
+        static_cast<void>(window.send(MsgKind::ClosePane));
+        expect("and the close after that leaves it on the neighbour again",
+               mine_now(window, 2) == "1");
+
+        // The symptom itself: what is typed must reach the program of the place shown, and
+        // come back to this window rather than to whichever shell happens to sit first.
+        expect("the view can type", window.send(MsgKind::Data, "echo into-hand-7331\n"));
+        bool echoed_here = false;
+        for (int waited = 0; waited < 4000 && !echoed_here; waited += 100) {
+            struct pollfd pfd {window.fd, POLLIN, 0};
+            if (::poll(&pfd, 1, 100) > 0) {
+                char buf[8192];
+                const ssize_t n = readSome(window.fd, buf, sizeof(buf));
+                if (n > 0)
+                    window.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+            }
+            Frame frame;
+            while (window.reader.pop(frame)) {
+                if (frame.kind == MsgKind::Data &&
+                    frame.body.find("into-hand-7331") != std::string::npos)
+                    echoed_here = true;
+            }
+        }
+        expect("and the program of the place in hand answers to this window", echoed_here);
+
+        TestClient tidying5;
+        if (tidying5.connect()) {
+            static_cast<void>(tidying5.hello({{"command", "kill"}, {"name", "neighbours"}}));
+            Frame ack;
+            static_cast<void>(tidying5.reply(ack));
+        }
+    }
+
 
     {
         // A tab IS a pane, so switching tabs is one question to the daemon — "show me that

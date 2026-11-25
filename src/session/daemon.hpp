@@ -767,7 +767,7 @@ private:
         std::atomic<int> focus_slot{0};
         // The tab bar as last announced, so a resize does not repeat a number nobody
         // asked about. Read and written under the same lock as the client list.
-        std::string tabs_sent;
+        std::map<int, std::string> tabs_sent; // per view: each is told its own place
         std::vector<int> clients;
         // Descriptors the daemon is closing on purpose — `kai-term detach` from another
         // terminal, which means "stop showing it to me" and nothing harsher. A hangup the
@@ -936,7 +936,7 @@ private:
 
     // What the tab bar is, in the words it travels in: how many places, which one a view
     // lands on, and whether the places are shown side by side or one at a time.
-    static std::string tabsBody(const Record& record) {
+    static std::string tabsBody(const Record& record, int mine = -1) {
         std::string mode = "side-by-side";
         int panes = 0;
         {
@@ -987,7 +987,12 @@ private:
                              {"focused", std::to_string(record.focus_slot.load())},
                              {"mode", mode},
                              {"cells", cells},
-                             {"numbers", numbers}});
+                             {"numbers", numbers},
+                             // Where this particular recipient is being shown, so that a
+                             // window whose place closed learns where it was put. Only the
+                             // one addressed by this body is asked to believe it; a body
+                             // meant for everyone says nothing (-1).
+                             {"mine", std::to_string(mine)}});
     }
 
     // Tell everyone looking at a session what its tab bar holds now. This goes to every
@@ -995,19 +1000,44 @@ private:
     // whoever is watching: a pane added from a second window, or from `set-layout` in a
     // terminal, has to appear in the first window too.
     void announceTabs(const std::shared_ptr<Record>& record) {
-        const std::string body = tabsBody(*record);
-        std::vector<int> every;
+        // Where each view is being shown, taken in one go: the table is read under the
+        // lock that guards it, and the bodies are written outside it, because writing one
+        // takes the locks the arrangement and the shells are kept behind.
+        std::vector<std::pair<int, int>> views; // recipient, and the place it is on
         {
             std::lock_guard<std::mutex> lock(record->clients_mutex);
-            // Compared as the words it travels in, so a change of view mode is announced as
-            // readily as a change of count: deduplicating on the count alone would swallow
-            // the one message that says the panes are side by side now.
-            if (record->tabs_sent == body)
-                return;
-            record->tabs_sent = body;
-            every = record->clients;
+            const int fallback = record->focus_slot.load();
+            for (const int fd : record->clients) {
+                const auto seen = record->view_slot.find(fd);
+                views.emplace_back(fd, seen == record->view_slot.end() ? fallback
+                                                                       : seen->second);
+            }
         }
-        for (const int fd : every)
+
+        // Compared as the words it travels in, so a change of view mode is announced as
+        // readily as a change of count: deduplicating on the count alone would swallow
+        // the one message that says the panes are side by side now. Remembered per view,
+        // for the same reason it is written per view: one view moving to another place is
+        // news to that view alone, and a shared last-message would swallow it whenever
+        // another view happened to be told the same bar in the same breath.
+        std::map<int, std::string> next;
+        for (const auto& [fd, slot] : views)
+            next[fd] = tabsBody(*record, slot);
+
+        std::vector<std::pair<int, std::string>> to_send;
+        {
+            std::lock_guard<std::mutex> lock(record->clients_mutex);
+            for (const auto& [fd, body] : next) {
+                const auto sent = record->tabs_sent.find(fd);
+                if (sent != record->tabs_sent.end() && sent->second == body)
+                    continue;
+                to_send.emplace_back(fd, body);
+            }
+            // Views that have gone take their remembered bar with them, so the table cannot
+            // outgrow the session it describes.
+            record->tabs_sent = std::move(next);
+        }
+        for (const auto& [fd, body] : to_send)
             static_cast<void>(detail::sendFrame(fd, MsgKind::Tabs, body));
     }
 

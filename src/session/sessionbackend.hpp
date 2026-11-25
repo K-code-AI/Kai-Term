@@ -250,6 +250,7 @@ private:
                 const Fields fields = decodeFields(frame.body);
                 tabs_.panes = number(fieldValue(fields, "panes", "0"));
                 tabs_.focused = number(fieldValue(fields, "focused", "0"));
+                tabs_.mine = number(fieldValue(fields, "mine", "-1"));
                 tabs_.tabs = fieldValue(fields, "mode") == "tabs";
                 tabs_.cells.clear();
                 tabs_.numbers.clear();

@@ -100,6 +100,11 @@ public:
     struct TabBar {
         int panes = 0;   // how many places there are to look at
         int focused = 0; // the one a view lands on when it arrives
+        // Which place *this* view is being shown, which is not the same question: two
+        // windows on one session look at two places, and a place closing moves the view
+        // that was on it without anyone asking. -1 means nobody said, which is what a
+        // window with a shell of its own hears, having no session to be told by.
+        int mine = -1;
         bool tabs = false; // one at a time with tabs, rather than all of them at once
         // Where each place sits, in cells, in the same order as the places. Empty when the
         // session has said nothing about sizes, which is the same as saying they are equal.

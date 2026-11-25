@@ -220,13 +220,33 @@ public:
         const int sibling = nodes_[static_cast<size_t>(parent)].first == at
                                 ? nodes_[static_cast<size_t>(parent)].second
                                 : nodes_[static_cast<size_t>(parent)].first;
+        // Where the place being closed sat among the places, while it is still among them:
+        // the focus after the close is decided from this, and after the reparenting below the
+        // closed place is simply absent, which would read as "it was first".
+        const std::vector<int> order_before = panes();
         if (root_ == parent)
             root_ = sibling;
         else
             reparentChild(parentOf(parent), parent, sibling);
         if (focused_ == pane) {
+            // The place next to the one that went, not the first one in the session. A
+            // person closing places in turn is working through them, and being thrown back
+            // to the far end on the first close means every close after it is made wherever
+            // the tour started rather than where the work is. A place taken out of the
+            // middle hands its spot to whoever moves up into it; a place taken off the end
+            // leaves one fewer, so the focus steps back one.
+            int at = 0;
+            for (size_t i = 0; i < order_before.size(); ++i) {
+                if (order_before[i] == pane) {
+                    at = static_cast<int>(i);
+                    break;
+                }
+            }
             const std::vector<int> left = panes();
-            focused_ = left.empty() ? kNil : left.front();
+            if (left.empty())
+                focused_ = kNil;
+            else
+                focused_ = left[std::min(at, static_cast<int>(left.size()) - 1)];
         }
         return true;
     }
