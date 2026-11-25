@@ -142,7 +142,8 @@ int main(int argc, char **argv)
         std::unique_ptr<kai::AppWindow> term =
             attach_to.empty()
                 ? std::make_unique<kai::AppWindow>(kai::startWindowBackend(
-                      boot.rows.value_or(24), boot.cols.value_or(80)))
+                      boot.rows.value_or(24), boot.cols.value_or(80),
+                      boot.default_view_mode))
                 : std::make_unique<kai::AppWindow>(std::string(attach_to));
         auto title = [term = term.get()] {
             return term->sessionName().empty()

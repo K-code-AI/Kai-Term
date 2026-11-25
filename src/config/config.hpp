@@ -169,6 +169,13 @@ struct Config {
     // (Kaida, 2026-11-24: "saving a session should now prompt for a name (can be disabled
     // in setting)".)
     std::string save_name_prompt;
+    // Which view a session a window starts opens in: the places sharing the window, or one
+    // at a time with the bar along the top. A session read back from a save keeps the view
+    // it was saved with, because which way the work was laid out is part of what was kept;
+    // this is only what a brand new session is born wearing.
+    // (Kaida, 2026-11-25: "a setting that lets the user chose their default view (side by
+    // side or Tabs)".)
+    std::string default_view_mode = "side-by-side";
     // Which colours to wear, as written: empty or `Default.conf` for the file the program
     // has always used, a bare name for a file in `themes`, and anything with a slash in it
     // for that path. Only ever read from the settings file — a theme is colours, and the
@@ -529,6 +536,15 @@ inline void parseConfigFile(const std::string& path, Config& config) {
                 continue;
             }
             config.save_name_prompt = answered;
+        } else if (key == "default_view_mode") {
+            // The two views the program has. A word nobody meant is named back at the line
+            // that wrote it rather than read as the default in silence.
+            const std::string answered = lowerWord(value);
+            if (answered != "side-by-side" && answered != "tabs") {
+                note(line_no, "default_view_mode wants side-by-side or tabs, got '" + value + "'");
+                continue;
+            }
+            config.default_view_mode = answered;
         } else if (key == "theme") {
             // Kept exactly as written, slashes and case and all: it is a file name, and a
             // file system that distinguishes case is not this parser's business.

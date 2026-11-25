@@ -26,6 +26,6 @@
 - **Fixed: closing places threw the view to the first place in the session.** `closePane` focused the first remaining place when the focused one closed, so working down through the places snapped the view back to the far end on the first close. It now hands the focus to the neighbour: a place taken out of the middle passes its spot to whoever moves up into it, a place taken off the end steps the focus back one.
 - **Fixed: the tabs view had no way in.** `toggleViewMode()` was still in `src/terminal/terminalwidget.hpp`, still sending `SetViewMode` to the session, with nothing calling it — so one-place-at-a-time could only be reached by writing the arrangement out in words. `Ctrl+K T` calls it again. Making a place while in the tabs view no longer asks which way to divide it, since both answers fill the window; the arrangement still records a side, which is what a later return to side by side lays the places out by, and the tree is untouched by a mode change, so the places come back where they were.
 
-## Not done yet
+## Fixed since
 
-- No setting for which view a session starts in. `default_view_mode` is the plan: the window would pass it when it starts a session, and a session that has been saved with a view of its own would keep that one.
+- **A setting for the view a new session opens in.** `default_view_mode` in `~/.config/kai-term/kai-term.conf` (`side-by-side` or `tabs`), with a row in the settings menu for it. It applies to a session the window starts for itself; a session joined by `kai-term attach ID --window` keeps the view it already has, because which way the work was laid out is part of what that session is. `Ctrl+K T` still changes the view of the session in hand either way.

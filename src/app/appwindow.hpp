@@ -45,7 +45,8 @@ struct WindowStart {
 // with a shell of its own. That fallback is said out loud once rather than kept quiet,
 // because the difference only shows up later — when a keybind that keeps a shell keeps
 // nothing — and a person who was never told will not think to look for it here.
-inline WindowStart startWindowBackend(int rows, int cols) {
+inline WindowStart startWindowBackend(int rows, int cols,
+                                      const std::string& view_mode = "side-by-side") {
     std::string error;
     const std::string name = startWindowSession(rows, cols, error);
     if (!name.empty()) {
@@ -55,8 +56,13 @@ inline WindowStart startWindowBackend(int rows, int cols) {
             // still holding the shells it started, and nothing we can list will show
             // them, so the window says so once instead of leaving them to be found in
             // `ps` next week.
-            return {std::make_unique<SessionBackend>(name, rows, cols), name,
-                    foreignDaemonNotice(), rows, cols};
+            auto backend = std::make_unique<SessionBackend>(name, rows, cols);
+            // A session this window has just started wears the view its person asked for.
+            // Only a new one: the session read back from a save keeps the view it was saved
+            // with, and that is decided by what is on disk rather than by this setting.
+            if (view_mode == "tabs")
+                backend->setViewMode(true);
+            return {std::move(backend), name, foreignDaemonNotice(), rows, cols};
         } catch (const std::exception& e) {
             error = e.what();
         }
@@ -1031,6 +1037,14 @@ private:
         int name_prompt = config_.save_name_prompt == "off" ? 0 : 1;
         rows.push_back({"save_name_prompt", "ask for session name", SettingKind::Choice,
                         name_prompt, 0, 0, 0, {"off", "on"}});
+        // Which view a session opened by a new window starts in. `Ctrl+K T` changes it for
+        // the session in hand either way; this spares a person who lives in one view the
+        // keystroke every single time they open a window.
+        // (Kaida, 2026-11-25: "a setting that lets the user chose their default view (side
+        // by side or Tabs)".)
+        rows.push_back({"default_view_mode", "new sessions open in", SettingKind::Choice,
+                        config_.default_view_mode == "tabs" ? 1 : 0, 0, 0, 0,
+                        {"side-by-side", "tabs"}});
         // Which colours the window is wearing. The answers are the names on disk, with
         // the default offered first even though it is not a file in `themes` — it is the
         // file the colours have always lived in, and a menu that hides the answer you are
@@ -1082,6 +1096,10 @@ private:
         else if (row.key == "save_name_prompt")
             // Nothing to preview: the answer is about the next time the key is pressed.
             config_.save_name_prompt = settingFileText(row);
+        else if (row.key == "default_view_mode")
+            // Likewise about the next window, not this one: the view of the session in hand
+            // is `Ctrl+K T`'s to change.
+            config_.default_view_mode = settingFileText(row);
         else if (row.key == "theme")
             previewTheme(settingFileText(row));
         else if (row.key == "background_opacity")
