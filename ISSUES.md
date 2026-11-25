@@ -26,6 +26,12 @@
 - **Fixed: closing places threw the view to the first place in the session.** `closePane` focused the first remaining place when the focused one closed, so working down through the places snapped the view back to the far end on the first close. It now hands the focus to the neighbour: a place taken out of the middle passes its spot to whoever moves up into it, a place taken off the end steps the focus back one.
 - **Fixed: the tabs view had no way in.** `toggleViewMode()` was still in `src/terminal/terminalwidget.hpp`, still sending `SetViewMode` to the session, with nothing calling it — so one-place-at-a-time could only be reached by writing the arrangement out in words. `Ctrl+K T` calls it again. Making a place while in the tabs view no longer asks which way to divide it, since both answers fill the window; the arrangement still records a side, which is what a later return to side by side lays the places out by, and the tree is untouched by a mode change, so the places come back where they were.
 
+- **The tab bar followed the panes' widths.** It mirrored the arrangement, so squeezing a
+  place narrow shrank its tab with it until the number on it was hard to read and its half of
+  the bar was hard to hit, while a wide place took the bar over. The bar is now split equally
+  between the places whatever their sizes, with a hairline between them side by side and none
+  in tab view: its job is to name the places and be picked, and a name is the same size
+  whoever owns the room.
 ## Fixed since
 
 - **Resizing only moved one axis.** `resizeDivider` moved the split a place was made by and

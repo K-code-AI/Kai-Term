@@ -1862,23 +1862,19 @@ public:
         std::vector<double> edges;
         if (tab_panes_ <= 0)
             return edges;
-        const bool proportional =
-            !view_tabs_ && static_cast<int>(tab_cells_.size()) == tab_panes_;
-        const std::vector<int> order = tabOrder();
-        double total = 0.0;
-        std::vector<double> widths;
-        for (const int slot : order) {
-            const double w =
-                proportional ? std::max(1, tab_cells_[static_cast<size_t>(slot)].cols) : 1.0;
-            widths.push_back(w);
-            total += w;
-        }
-        const double gap = proportional ? 1.0 : 0.0; // a divider's worth, between places
-        total += gap * (tab_panes_ - 1);
+        // The bar is split equally between the places, whatever their sizes on the screen.
+        // It used to mirror the arrangement, which made it a map of where the places are —
+        // and also made a place you had squeezed narrow almost unclickable while a wide one
+        // took the bar over. Naming the places and being picked is the whole job here, and a
+        // name is the same size whoever owns the room.
+        // (Kaida, 2026-11-25: "the size in top bar should be of equal proportion even when
+        // pane aren't".)
+        const double gap = view_tabs_ ? 0.0 : 0.04; // a hairline between the places
+        const double total = tab_panes_ + gap * (tab_panes_ - 1);
         edges.push_back(0.0);
         double used = 0.0;
         for (int at = 0; at < tab_panes_; ++at) {
-            used += widths[static_cast<size_t>(at)] / total;
+            used += 1.0 / total;
             edges.push_back(used);
             if (at + 1 < tab_panes_) {
                 used += gap / total;

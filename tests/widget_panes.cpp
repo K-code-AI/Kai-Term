@@ -330,10 +330,10 @@ int main(int argc, char** argv) {
     }
 
     {
-        // What Ctrl+Shift+H changes. Side by side, the bar is a map of the places, so a
-        // place ten columns wide does not get half of it; in tab view the bar is a list, and
-        // every place is as important as any other. The two answer the same press
-        // differently, which is the whole point of having two views.
+        // The bar is an even row of names whatever the places look like: a place squeezed to
+        // ten columns still gets the same tab as one seventy wide, because the bar is there
+        // to be read and picked, not to be a map. Side by side the names are held apart by a
+        // hairline; in tab view they run together.
         const double bar_left = w.cellTopLeft(0, 0).x();
         const double bar_width = w.width() - 2.0 * bar_left;
         const std::vector<kai::PaneRect> uneven{{0, 0, 24, 10}, {0, 11, 24, 70}};
@@ -344,10 +344,12 @@ int main(int argc, char** argv) {
         // Two places and the divider between them: an edge at the start and end of each.
         expect("side by side, the bar carries the divider as well as the places",
                split.size() == 4 && split.back() == 1.0);
-        expect("so the narrow place gets its tenth of the bar",
-               split[1] > 0.05 && split[1] < 0.2);
-        expect("and a press a quarter along it is the wide place",
-               w.tabSlotAt(bar_left + bar_width * 0.25, bar_left, bar_width) == 1);
+        expect("so the narrow place gets half the bar, like the wide one",
+               qAbs(split[1] - 0.5) < 0.02);
+        expect("and a press a quarter along it is the narrow place",
+               w.tabSlotAt(bar_left + bar_width * 0.25, bar_left, bar_width) == 0);
+        expect("while a press three quarters along it is the wide one",
+               w.tabSlotAt(bar_left + bar_width * 0.75, bar_left, bar_width) == 1);
         const double in_divider = bar_left + bar_width * ((split[1] + split[2]) / 2.0);
         expect("while a press on the divider is no place at all",
                w.tabSlotAt(in_divider, bar_left, bar_width) == -1);
@@ -356,15 +358,20 @@ int main(int argc, char** argv) {
         pump(60);
         const std::vector<double> listed = w.tabEdges();
         expect("in tab view the bar is an even list", qAbs(listed[1] - 0.5) < 0.001);
-        expect("so the same press is the first place instead",
+        expect("and the same press answers the same place in either view",
                w.tabSlotAt(bar_left + bar_width * 0.25, bar_left, bar_width) == 0);
 
-        // Sizes the session did not say about a bar of that many places are not invented:
-        // the bar falls back to an even list rather than drawing rooms of made-up widths.
+        // Sizes are not what the bar is drawn from any more, so a bar told about two places
+        // while it holds three has nothing to fall back from: every place gets the same
+        // share, hairlines between them and all.
         w.setTabBar(3, 0, false, uneven);
         pump(60);
-        expect("and a bar whose sizes do not match its places is drawn even",
-               qAbs(w.tabEdges()[1] - 1.0 / 3.0) < 0.001);
+        const std::vector<double> unmatched = w.tabEdges();
+        const double first = unmatched[1] - unmatched[0];
+        const double second = unmatched[3] - unmatched[2];
+        const double third = unmatched[5] - unmatched[4];
+        expect("and a bar whose sizes do not match its places is still split evenly",
+               qAbs(first - second) < 0.001 && qAbs(second - third) < 0.001);
         // The place this window is looking at is marked in the theme's accent — the same
         // colour a dialog puts on the answer its focus is on, and the one colour in a theme
         // that means "here".
