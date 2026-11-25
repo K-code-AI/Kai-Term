@@ -76,3 +76,22 @@
   at every width: one cell per press, one cell at one end and all but one at the other, and
   the line back in the cell it was left in. Verified in the real window — place 1 walked from
   42 columns to 1 and back to 46 in 45 presses, then on to 83 of 84, then `Esc` put it back.
+
+- **Duplicated resize arrows, and a nested line that would not move.** Reproduce: open
+  kai-term, make a vertical place, make a horizontal one, go back to place 1, make a
+  horizontal one there, then `Ctrl+K R` — a second pair of `▲ ▼` appeared over the places on
+  the far side of the vertical line, where the place in hand has no line and the keys do
+  nothing. `rectOfNode` answered for a nested branch by walking the tree *from that branch*
+  as though it were the root, so a line inside half the window was described as running
+  across all of it, and the window paints its marks from that description. The same answer
+  feeds `resizeDivider`, so on a vertical line inside a half it was worse than a spare pair
+  of arrows: the line was reported at its parent's column, its travel measured against the
+  whole window's shared cells instead of the branch's, and a press stored a ratio that drew
+  the line back where it started — success, and nothing moved. `rectOfNode` now walks from
+  the root and returns the node's real area. Checked in `tests/layout.cpp` on the
+  arrangement above (the line runs across its own half only, and no place beyond the vertical
+  line is on its run) and on a vertical line nested two deep (reported at its own column,
+  running its own quarter, one cell a press, its neighbour above untouched); seven of those
+  checks fail without the fix. The marks themselves were painted offscreen from the real
+  widget before and after, and the live window moved the nested line on the third press of
+  `Right` where it used to move nothing at all.

@@ -721,10 +721,21 @@ private:
         rectsNode(n.first, a, out, dividers);
     }
 
+    // The area a node covers in a window of `rows` by `cols`.
+    //
+    // Computed from the root down, because a node's area is decided by every branch above
+    // it: the split a stacked place belongs to covers half the window, not all of it. Asking
+    // for that node as though it were the root hands back the whole window, which the resize
+    // marks read as a line running the full width — the same pair of arrows painted twice,
+    // once over places the line never touches (Kaida, 2026-11-25: "go to resize mode and
+    // move a bit, some arrows for resize are duplicated") — and a nested line measured its
+    // travel against a room it does not have.
     CellRect rectOfNode(int at, int rows, int cols) const {
         std::vector<CellRect> out(nodes_.size(), CellRect{});
-        if (rows > 0 && cols > 0)
-            rectsNode(at, CellRect{0, 0, rows, cols}, out);
+        if (root_ != kNil && rows > 0 && cols > 0)
+            rectsNode(root_, CellRect{0, 0, rows, cols}, out);
+        if (at < 0 || static_cast<size_t>(at) >= out.size())
+            return CellRect{};
         return out[static_cast<size_t>(at)];
     }
 

@@ -383,6 +383,62 @@ int main() {
     }
 
     {
+        // A line is described by the room it is in, not by the window it happens to sit in.
+        // `rectOfNode` used to answer for a nested branch by treating that branch as the root
+        // of the window, so a line inside half the window was reported as running across all
+        // of it. The window draws its resize marks from that answer, so place 1's horizontal
+        // line grew a second, identical pair of arrows over the places on the other side of
+        // the vertical line — the split there is somebody else's, and pressing the arrow does
+        // nothing to it. (Kaida, 2026-11-25: "create a vertical pane, then create a horizontal
+        // pane, then go to pane 1, create a horizontal pane. then go to resize mode and move a
+        // bit, some arrows for resize are duplicated".)
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 55, 128);
+        const int lower_right = l.splitPane(right, Split::UpDown, 55, 128);
+        l.focus(0);
+        const int lower_left = l.splitPane(0, Split::UpDown, 55, 128);
+        const Layout::DividerInfo ud = l.dividerAlongAxis(0, 55, 128, Split::UpDown);
+        expect("the first place's line runs across its own half only",
+               ud.ok && ud.at == 27 && ud.from == 0 && ud.span == 63);
+        for (const int other : {right, lower_right})
+            expect("and no place on the far side of the vertical line is on its run",
+                   l.rectOf(other, 55, 128).left >= ud.from + ud.span);
+        expect("while the places it does run over are the two it divides",
+               l.rectOf(0, 55, 128).top + l.rectOf(0, 55, 128).rows == ud.at &&
+                   l.rectOf(lower_left, 55, 128).top == ud.at + 1);
+        // The line down the middle is the whole window's, and says so.
+        const Layout::DividerInfo lr = l.dividerAlongAxis(0, 55, 128, Split::LeftRight);
+        expect("while the line that does run the whole way reports the whole way",
+               lr.ok && lr.at == 63 && lr.from == 0 && lr.span == 55);
+    }
+
+    {
+        // The same fault on a vertical line inside a half, where it was worse than a spare
+        // pair of arrows: the line was reported at the column of the branch above it, so its
+        // marks were painted on a line it cannot move, and its travel was measured against
+        // the whole window's 99 shared cells rather than the 49 it has. A press then stored a
+        // ratio that drew the line back where it started — it said yes and moved nothing.
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 40, 100);
+        const int lower_right = l.splitPane(right, Split::UpDown, 40, 100);
+        const int inner = l.splitPane(lower_right, Split::LeftRight, 40, 100);
+        const Layout::DividerInfo deep = l.dividerAlongAxis(inner, 40, 100, Split::LeftRight);
+        expect("a line inside a half is reported at its own column, not its parent's",
+               deep.ok && deep.at == 74);
+        expect("and it runs along its own quarter, not the window's height",
+               deep.from == 20 && deep.span == 20);
+        const int before = l.rectOf(inner, 40, 100).cols;
+        expect("so a press on it moves it",
+               l.resizeDivider(inner, 1, 40, 100, Split::LeftRight));
+        expect("by one cell", l.rectOf(inner, 40, 100).cols == before - 1);
+        expect("and the line is where the window draws it",
+               l.dividerAlongAxis(inner, 40, 100, Split::LeftRight).at == 75);
+        expect("with the place above it left alone",
+               l.rectOf(right, 40, 100).cols == 50);
+        expect("and the screen still tiled", tiles(l, 40, 100));
+    }
+
+    {
         // Equalise is what "unstick this" means.
         Layout l;
         const int right = l.splitPane(0, Split::LeftRight, 24, 80);

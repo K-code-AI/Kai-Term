@@ -961,6 +961,39 @@ test that hangs should still cost a test and not a machine.
   as a discard — so read `kai-term layout ID` between steps and save the picture for last.
 
 
+- **2026-11-25, evening — resize marks painted twice, and a nested line that would not
+  move.** Kaida's recipe: open kai-term, a vertical place, a horizontal place, back to place
+  1, a horizontal place there, then resize mode — "some arrows for resize are duplicated".
+  Painted the same arrangement offscreen through the real widget (`paintResizeArrows`, real
+  rects, real `DividerLine`) to see it rather than reason about it: place 1's horizontal line
+  grew a second `▲ ▼` over the right-hand places, whose split belongs to somebody else.
+
+  One function: `rectOfNode(at, rows, cols)` called `rectsNode(at, whole window, ...)`, i.e.
+  it laid out the tree starting *at that node*, so every nested branch was described as
+  covering the whole window. Three callers, all wrong together — `dividerAlongAxis` (a run
+  across the full width, so the window's run check let far-side places through and painted a
+  second set), `dividersIn`, and `resizeDivider`. The last one is the worse half of the bug
+  and was invisible until now: for a vertical line nested inside a half it measured travel
+  against the window's 99 shared cells rather than the branch's 49, so a press stored
+  `ratio = 50/99` which draws back to the same cell — `resizeDivider` returned true,
+  `announceTabs` repainted, and the line did not move. That is another face of the "it just
+  freeze" report from this afternoon, from a different cause.
+
+  `rectOfNode` now walks from the root and hands back the node's real area, with the reason
+  written where it is. Measured before and after on `split LR / right UD / lower-right LR` in
+  40x100: the bottom-right pair's line went from `at=49 from=0 span=40` — its marks on the
+  *root's* line, its run the full height, one press moving nothing — to `at=74 from=20
+  span=20`, one cell a press, the place above it untouched.
+
+  Two checks in `tests/layout.cpp`, seven assertions, all confirmed to fail without the fix;
+  `ctest` 30/31 with only the known `wayland-close`. Live in a private runtime dir again:
+  walking the view onto the bottom-right place and pressing `Right` three times moved the
+  nested split (0.500000 -> 0.590910) where the old code moved nothing, and `Down` moved its
+  horizontal line twice. The pictures are `.scratch/marks_before.png` and `marks_after.png`.
+  Left `paint_marks.cpp` in `.scratch` — it is the quickest way to look at resize marks
+  without a compositor in the loop.
+
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,
