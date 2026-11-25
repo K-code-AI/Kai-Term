@@ -13,6 +13,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QString>
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <iostream>
@@ -445,6 +446,78 @@ int main(int argc, char** argv) {
         QApplication::sendEvent(&w, &press);
         pump(60);
         expect("and the next key typed clears it", w.notice().empty());
+    }
+
+    {
+        // The marks of resize mode, counted rather than photographed. A window split four
+        // ways — each half also split up-down, at slightly different heights, as two halves
+        // usually are — put two sets of ◀ ▶ on the middle line a couple of cells apart, one
+        // for each place it touches, and a person reads that as one arrow drawn twice.
+        // (Kaida, 2026-11-25: "seems to still have double arrow indicator in some case".)
+        kai::TerminalWidget w(55, 128, "/bin/sh");
+        w.resize(1100, 900);
+        w.show();
+        pump(200);
+
+        const std::vector<kai::PaneRect> four{{0, 0, 27, 50},
+                                              {28, 0, 27, 50},
+                                              {0, 51, 22, 77},
+                                              {23, 51, 32, 77}};
+        const kai::TerminalBackend::DividerLine lr{true, 50, 0, 55, true, true};
+        const kai::TerminalBackend::DividerLine ud{true, 27, 0, 50, true, true};
+        w.setTabBar(4, 1, false, four, {1, 2, 3, 4}, 1, lr, ud);
+        w.enterResizeMode();
+        pump(60);
+
+        std::vector<double> lr_rows;
+        std::vector<double> ud_cols;
+        for (const kai::TerminalWidget::ResizeMark& m : w.resizeMarks()) {
+            if (m.glyph == QChar(0x25C0) || m.glyph == QChar(0x25B6)) {
+                if (std::find(lr_rows.begin(), lr_rows.end(), m.row) == lr_rows.end())
+                    lr_rows.push_back(m.row);
+            } else if (std::find(ud_cols.begin(), ud_cols.end(), m.col) == ud_cols.end()) {
+                ud_cols.push_back(m.col);
+            }
+        }
+        // The line touches four places, whose middles are at rows 13, 41, 11 and 39: the two
+        // pairs collapse, so the border says it once at each end.
+        expect("a set goes at each end of the middle line, not one per place",
+               lr_rows.size() == 2);
+        std::sort(lr_rows.begin(), lr_rows.end());
+        bool far_apart = lr_rows.size() == 2 &&
+                         lr_rows[1] - lr_rows[0] >= kai::TerminalWidget::kMarkGapCells;
+        expect("and no two sets on one border sit close enough to read as one drawn twice",
+               far_apart);
+        expect("while the horizontal line keeps its one set, on the half it runs across",
+               ud_cols.size() == 1 && ud_cols[0] == 25.0);
+
+        // The two sets someone asked for earlier stay drawn: one wide place here, two stacked
+        // places there, their middles a window apart. The wide place gets none itself,
+        // because the divider between the stacked pair crosses the middle it would sit on.
+        kai::TerminalWidget tall(60, 120, "/bin/sh");
+        tall.resize(1000, 900);
+        tall.show();
+        pump(200);
+        const std::vector<kai::PaneRect> stack{{0, 0, 60, 60},
+                                               {0, 61, 29, 59},
+                                               {30, 61, 30, 59}};
+        const kai::TerminalBackend::DividerLine across{true, 60, 0, 60, true, true};
+        tall.setTabBar(3, 0, false, stack, {1, 2, 3}, 0, across, {});
+        tall.enterResizeMode();
+        pump(60);
+        std::vector<double> stack_rows;
+        for (const kai::TerminalWidget::ResizeMark& m : tall.resizeMarks()) {
+            if (m.glyph != QChar(0x25C0) && m.glyph != QChar(0x25B6))
+                continue;
+            if (std::find(stack_rows.begin(), stack_rows.end(), m.row) == stack_rows.end())
+                stack_rows.push_back(m.row);
+        }
+        expect("and a line that runs over two places a window apart still says it twice",
+               stack_rows.size() == 2 && stack_rows[0] != stack_rows[1]);
+
+        tall.endResizeMode(false);
+        pump(60);
+        expect("and out of resize mode there are no marks at all", tall.resizeMarks().empty());
     }
 
 

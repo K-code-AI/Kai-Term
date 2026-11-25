@@ -994,6 +994,30 @@ test that hangs should still cost a test and not a machine.
   without a compositor in the loop.
 
 
+- **2026-11-25, evening again — doubled `◀ ▶` on one border.** Kaida sent a picture of four
+  places with two sets of arrows a few rows apart on the middle line: "seems to still have
+  double arrow indicator in some case". Two separate things in that one picture. The spare
+  `▲ ▼` over the right-hand half is the `rectOfNode` fault fixed an hour ago — his window was
+  still talking to a daemon started before it, which is the third time the running daemon has
+  been the reason a correct fix looked wrong. The doubled `◀ ▶` was real and new: the rule he
+  asked for last week ("draw 2 sets, 1 on each of them") puts a set on the border of every
+  place a line touches, and with each half split at a different height the four middles land
+  in two pairs two rows apart, which is not two statements, it is one mark drawn twice.
+
+  Reproduced by painting the arrangement through the real widget — uneven halves (LR 0.40,
+  each half UD at 0.42 and 0.50) — so the pairs show at rows 13/11 and 41/39 before any
+  arguing about what the picture meant. A set now goes down unless another set is already
+  within `kMarkGapCells` (4) along the same border, which keeps the pair he asked for when the
+  places are a window apart and drops it when they would overlap.
+
+  The placement moved out of `paintResizeArrows` into `TerminalWidget::resizeMarks()`, cell
+  coordinates in, glyphs out. Partly so the check can count marks instead of comparing pixels
+  — which is also the shape of check that has been right about this feature all week — and
+  partly because the crossing rule and the gap rule belong in one place. Five assertions in
+  `tests/widget_panes.cpp`, including the earlier two-set case and "out of resize mode there
+  are no marks at all"; `ctest` 30/31 with only the known `wayland-close`.
+
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,

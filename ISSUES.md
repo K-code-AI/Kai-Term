@@ -95,3 +95,18 @@
   checks fail without the fix. The marks themselves were painted offscreen from the real
   widget before and after, and the live window moved the nested line on the third press of
   `Right` where it used to move nothing at all.
+
+- **Two sets of resize arrows a couple of cells apart on one border.** Reproduce: four places
+  — the window split left-right, each half also split up-down, the two halves not at the same
+  height — select one and press `Ctrl+K R`: the middle line carried `◀ ▶` twice, one pair a
+  few rows above the other. That was the rule doing what it was asked to do — a set on the
+  border of every place the line touches — with four places touching and the two halves'
+  middles only two rows apart, so the two statements read as one mark drawn twice. A set now
+  goes on the border of every place the line touches *unless another set is already within
+  four cells of it along that border*; a line running over places a window apart still says it
+  twice, which is the other thing that was asked for. `TerminalWidget::resizeMarks()` answers
+  where the marks go, in cells, so this is counted in `tests/widget_panes.cpp` rather than
+  photographed; the pictures are `.scratch/marks_doubled_before.png` and
+  `marks_single_after.png`. Note that the spare `▲ ▼` over the far half in the same report was
+  the `rectOfNode` fault above, already fixed: the window was still running the daemon from
+  before it.

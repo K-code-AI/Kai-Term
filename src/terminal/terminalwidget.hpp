@@ -1175,6 +1175,97 @@ public:
         update();
     }
 
+    // Two sets closer than this along one border are the same mark said twice.
+    static constexpr double kMarkGapCells = 4.0;
+
+    // Where resize mode puts its marks, in cell coordinates: one entry per glyph, at the
+    // point it is centred on. Answered apart from the painting so that a check can count the
+    // marks and read where they land without anybody comparing pixels.
+    struct ResizeMark {
+        QChar glyph; // ◀ ▶ on a vertical line, ▲ ▼ on a horizontal one
+        double row;
+        double col;
+    };
+
+    std::vector<ResizeMark> resizeMarks() const {
+        std::vector<ResizeMark> marks;
+        if (!resize_mode_ || tab_focused_ < 0 ||
+            tab_focused_ >= static_cast<int>(tab_cells_.size()))
+            return marks;
+        if (!tab_cells_[static_cast<std::size_t>(tab_focused_)].valid())
+            return marks;
+        // A line touches a place when it is within a cell of that place's edge: the divider
+        // cell belongs to neither side, and each child starts on one side of it or the other.
+        // Which places a line touches is read off the places themselves rather than off this
+        // place's own lines, since the line crossing the middle may belong to a split this
+        // place cannot be resized by at all.
+        // (Kaida, 2026-11-25: "in the case of pane 1 selected and we affect both pane 2 and
+        // 3 we can draw 2 sets, 1 on each of them" and "there is a set in the middle of
+        // pane 1 for no reason".)
+        auto straddles = [](int line_at, int near_edge, int far_edge) {
+            return std::abs(line_at - near_edge) <= 1 || std::abs(line_at - far_edge) <= 1;
+        };
+        auto crossed = [this](double along, bool sideways) {
+            for (const PaneRect& edge : tab_cells_) {
+                if (!edge.valid())
+                    continue;
+                const double near = sideways ? edge.row : edge.col;
+                const double far = sideways ? edge.endRow() : edge.endCol();
+                if (std::abs(near - along) <= 1.0 || std::abs(far - along) <= 1.0)
+                    return true; // a divider crosses the middle the set would sit on
+            }
+            return false;
+        };
+        // A set goes on the border of every place the line touches, centred on that place,
+        // unless a divider crosses the middle it would be centred on — and unless a set is
+        // already that close along the same border. Two sets a couple of cells apart say the
+        // same thing about the same stretch of border, and read as one mark drawn twice;
+        // that is the ordinary four-place window, where the split on one side of a line is
+        // rarely at the height of the split on the other.
+        // (Kaida, 2026-11-25: "seems to still have double arrow indicator in some case".)
+        std::vector<double> marked_lr;
+        std::vector<double> marked_ud;
+        auto far_along = [](const std::vector<double>& marked, double at) {
+            for (const double seen : marked)
+                if (std::abs(seen - at) < kMarkGapCells)
+                    return false;
+            return true;
+        };
+        if (tab_lr_.ok) {
+            for (const PaneRect& other : tab_cells_) {
+                if (!other.valid() || !straddles(tab_lr_.at, other.col, other.endCol()))
+                    continue;
+                if (tab_lr_.from > other.row || tab_lr_.from + tab_lr_.span < other.endRow())
+                    continue;
+                const double middle_row = other.row + other.rows / 2.0;
+                if (crossed(middle_row, true) || !far_along(marked_lr, middle_row))
+                    continue;
+                marked_lr.push_back(middle_row);
+                if (tab_lr_.negative)
+                    marks.push_back({QChar(0x25C0), middle_row, tab_lr_.at - 0.3}); // ◀
+                if (tab_lr_.positive)
+                    marks.push_back({QChar(0x25B6), middle_row, tab_lr_.at + 1.3}); // ▶
+            }
+        }
+        if (tab_ud_.ok) {
+            for (const PaneRect& other : tab_cells_) {
+                if (!other.valid() || !straddles(tab_ud_.at, other.row, other.endRow()))
+                    continue;
+                if (tab_ud_.from > other.col || tab_ud_.from + tab_ud_.span < other.endCol())
+                    continue;
+                const double middle_col = other.col + other.cols / 2.0;
+                if (crossed(middle_col, false) || !far_along(marked_ud, middle_col))
+                    continue;
+                marked_ud.push_back(middle_col);
+                if (tab_ud_.negative)
+                    marks.push_back({QChar(0x25B2), tab_ud_.at - 0.25, middle_col}); // ▲
+                if (tab_ud_.positive)
+                    marks.push_back({QChar(0x25BC), tab_ud_.at + 1.25, middle_col}); // ▼
+            }
+        }
+        return marks;
+    }
+
     // One line the window says for itself, shown in the corner for a moment and then
     // gone. A keybind that keeps your work and says nothing is a keybind that gets
     // pressed twice, and then stopped being trusted.
@@ -4798,69 +4889,9 @@ private:
             p.drawText(QPointF(cx - fm.horizontalAdvance(glyph) / 2.0, cy + lift),
                        QString(glyph));
         };
-        // A set goes on the border of every place the line touches, centred on that place,
-        // unless a divider crosses the middle it would be centred on. Whether a line
-        // touches a place is read off the places themselves rather than off this place's
-        // own lines: the line crossing the middle may belong to a split this place cannot be
-        // resized by at all.
-        // (Kaida, 2026-11-25: "in the case of pane 1 selected and we affect both pane 2 and
-        // 3 we can draw 2 sets, 1 on each of them" and "there is a set in the middle of
-        // pane 1 for no reason".)
-        auto straddles = [](int line_at, int near_edge, int far_edge) {
-            // Within a cell: the divider cell belongs to neither side, and each child starts
-            // on one side of it or the other.
-            return std::abs(line_at - near_edge) <= 1 || std::abs(line_at - far_edge) <= 1;
-        };
-        if (tab_lr_.ok) {
-            const double x = activePadding() + (tab_lr_.at + 0.5) * cw;
-            for (const PaneRect& other : tab_cells_) {
-                if (!other.valid() || !straddles(tab_lr_.at, other.col, other.endCol()))
-                    continue;
-                if (tab_lr_.from > other.row || tab_lr_.from + tab_lr_.span < other.endRow())
-                    continue;
-                const double middle_row = other.row + other.rows / 2.0;
-                bool crossed = false;
-                for (const PaneRect& edge : tab_cells_) {
-                    if (!edge.valid())
-                        continue;
-                    if (std::abs(edge.row - middle_row) <= 1.0 ||
-                        std::abs(edge.endRow() - middle_row) <= 1.0)
-                        crossed = true;
-                }
-                if (crossed)
-                    continue;
-                const double y = gridTop() + middle_row * ch;
-                if (tab_lr_.negative)
-                    centred(QChar(0x25C0), x - cw * 0.8, y); // ◀
-                if (tab_lr_.positive)
-                    centred(QChar(0x25B6), x + cw * 0.8, y); // ▶
-            }
-        }
-        if (tab_ud_.ok) {
-            const double y = gridTop() + (tab_ud_.at + 0.5) * ch;
-            for (const PaneRect& other : tab_cells_) {
-                if (!other.valid() || !straddles(tab_ud_.at, other.row, other.endRow()))
-                    continue;
-                if (tab_ud_.from > other.col || tab_ud_.from + tab_ud_.span < other.endCol())
-                    continue;
-                const double middle_col = other.col + other.cols / 2.0;
-                bool crossed = false;
-                for (const PaneRect& edge : tab_cells_) {
-                    if (!edge.valid())
-                        continue;
-                    if (std::abs(edge.col - middle_col) <= 1.0 ||
-                        std::abs(edge.endCol() - middle_col) <= 1.0)
-                        crossed = true;
-                }
-                if (crossed)
-                    continue;
-                const double x = activePadding() + middle_col * cw;
-                if (tab_ud_.negative)
-                    centred(QChar(0x25B2), x, y - ch * 0.75); // ▲
-                if (tab_ud_.positive)
-                    centred(QChar(0x25BC), x, y + ch * 0.75); // ▼
-            }
-        }
+        // Where the marks go, and how many, is `resizeMarks`'s business; this puts them down.
+        for (const ResizeMark& mark : resizeMarks())
+            centred(mark.glyph, activePadding() + mark.col * cw, gridTop() + mark.row * ch);
 
         // The name of the mode, with the two ways out of it, in the middle of the place being
         // stretched. A mode announced only by arrows on its borders leaves someone who
