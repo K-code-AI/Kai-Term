@@ -439,6 +439,37 @@ int main() {
     }
 
     {
+        // The place in hand pushes, and a line pushes the whole way along itself. Standing in
+        // the bottom-right place of a window split four ways and pressing `Left` widens it by
+        // taking room from the left column — including the top-left place, which is nowhere
+        // near the arrow. That is the shape of the arrangement, not a slip: a rectangle cut
+        // into four always leaves one cut running the whole way, so the vertical boundary is
+        // one line shared by both rows, while each row's own horizontal boundary is a separate
+        // branch and moves alone. Kaida asked for exactly this pushing
+        // ("The focused pane has total control and will push away any other pane in it's
+        // way"), and it is written down here so the half of it that travels is a known
+        // consequence rather than a surprise. (2026-11-25.)
+        Layout l;
+        const int right = l.splitPane(0, Split::LeftRight, 55, 128);
+        const int lower_right = l.splitPane(right, Split::UpDown, 55, 128);
+        const int lower_left = l.splitPane(0, Split::UpDown, 55, 128);
+        for (int press = 0; press < 5; ++press)
+            static_cast<void>(l.resizeDivider(lower_right, -1, 55, 128, Split::LeftRight));
+        expect("the place in hand grows by what its border takes",
+               l.rectOf(lower_right, 55, 128).cols == 69);
+        expect("and the places beyond that edge give way",
+               l.rectOf(0, 55, 128).cols == 58 && l.rectOf(lower_left, 55, 128).cols == 58);
+        expect("the whole way along the line, the row above included",
+               l.rectOf(right, 55, 128).cols == 69);
+        for (int press = 0; press < 3; ++press)
+            static_cast<void>(l.resizeDivider(lower_right, -1, 55, 128, Split::UpDown));
+        expect("while its own horizontal line takes from its neighbour above and nobody else",
+               l.rectOf(lower_right, 55, 128).rows == 30 &&
+                   l.rectOf(right, 55, 128).rows == 24 && l.rectOf(0, 55, 128).rows == 27);
+        expect("and the window is still tiled", tiles(l, 55, 128));
+    }
+
+    {
         // Equalise is what "unstick this" means.
         Layout l;
         const int right = l.splitPane(0, Split::LeftRight, 24, 80);

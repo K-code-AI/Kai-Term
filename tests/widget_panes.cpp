@@ -449,75 +449,86 @@ int main(int argc, char** argv) {
     }
 
     {
-        // The marks of resize mode, counted rather than photographed. A window split four
-        // ways — each half also split up-down, at slightly different heights, as two halves
-        // usually are — put two sets of ◀ ▶ on the middle line a couple of cells apart, one
-        // for each place it touches, and a person reads that as one arrow drawn twice.
-        // (Kaida, 2026-11-25: "seems to still have double arrow indicator in some case".)
+        // The marks belong to the place in hand, and to nobody else. Kaida's window: four
+        // places, both halves split up-down, standing in the bottom-right one — where a set
+        // belongs between the two bottom places, which `Left` and `Right` push, and between
+        // the two right-hand places, which `Up` and `Down` push, with nothing out in the other
+        // three. (Kaida, 2026-11-25: "arrow should appear between both bottom pane and between
+        // both right pane ... The focused pane has total control and will push away any other
+        // pane in it's way".)
         kai::TerminalWidget w(55, 128, "/bin/sh");
         w.resize(1100, 900);
         w.show();
         pump(200);
 
-        const std::vector<kai::PaneRect> four{{0, 0, 27, 50},
-                                              {28, 0, 27, 50},
-                                              {0, 51, 22, 77},
-                                              {23, 51, 32, 77}};
-        const kai::TerminalBackend::DividerLine lr{true, 50, 0, 55, true, true};
-        const kai::TerminalBackend::DividerLine ud{true, 27, 0, 50, true, true};
-        w.setTabBar(4, 1, false, four, {1, 2, 3, 4}, 1, lr, ud);
+        const std::vector<kai::PaneRect> four{{0, 0, 27, 63},    // 1 top left
+                                              {28, 0, 27, 63},   // 2 bottom left
+                                              {0, 64, 27, 63},   // 3 top right
+                                              {28, 64, 27, 63}}; // 4 bottom right
+        // The middle line is the whole window's. The line the bottom-right place is resized by
+        // up and down is the right half's, and runs across the right half only.
+        const kai::TerminalBackend::DividerLine middle{true, 63, 0, 55, true, true};
+        const kai::TerminalBackend::DividerLine right_half{true, 27, 64, 64, true, true};
+        const kai::TerminalBackend::DividerLine left_half{true, 27, 0, 63, true, true};
+
+        w.setTabBar(4, 3, false, four, {1, 2, 3, 4}, 3, middle, right_half);
         w.enterResizeMode();
         pump(60);
 
-        std::vector<double> lr_rows;
-        std::vector<double> ud_cols;
+        int sideways_marks = 0;
+        int upright_marks = 0;
+        bool on_the_bottom_border = false; // between the two bottom places
+        bool on_the_right_border = false;  // between the two right-hand places
         for (const kai::TerminalWidget::ResizeMark& m : w.resizeMarks()) {
-            if (m.glyph == QChar(0x25C0) || m.glyph == QChar(0x25B6)) {
-                if (std::find(lr_rows.begin(), lr_rows.end(), m.row) == lr_rows.end())
-                    lr_rows.push_back(m.row);
-            } else if (std::find(ud_cols.begin(), ud_cols.end(), m.col) == ud_cols.end()) {
-                ud_cols.push_back(m.col);
-            }
+            const bool sideways = m.glyph == QChar(0x25C0) || m.glyph == QChar(0x25B6);
+            sideways ? ++sideways_marks : ++upright_marks;
+            if (sideways && m.row == 41.5)
+                on_the_bottom_border = true; // the middle of rows 28..54
+            if (!sideways && m.col == 95.5)
+                on_the_right_border = true; // the middle of columns 64..126
         }
-        // The line touches four places, whose middles are at rows 13, 41, 11 and 39: the two
-        // pairs collapse, so the border says it once at each end.
-        expect("a set goes at each end of the middle line, not one per place",
-               lr_rows.size() == 2);
-        std::sort(lr_rows.begin(), lr_rows.end());
-        bool far_apart = lr_rows.size() == 2 &&
-                         lr_rows[1] - lr_rows[0] >= kai::TerminalWidget::kMarkGapCells;
-        expect("and no two sets on one border sit close enough to read as one drawn twice",
-               far_apart);
-        expect("while the horizontal line keeps its one set, on the half it runs across",
-               ud_cols.size() == 1 && ud_cols[0] == 25.0);
+        expect("the place in hand gets one set on each border it can push",
+               sideways_marks == 2 && upright_marks == 2);
+        expect("with ◀ ▶ on the border between the two bottom places", on_the_bottom_border);
+        expect("and ▲ ▼ on the border between the two right-hand places", on_the_right_border);
 
-        // The two sets someone asked for earlier stay drawn: one wide place here, two stacked
-        // places there, their middles a window apart. The wide place gets none itself,
-        // because the divider between the stacked pair crosses the middle it would sit on.
-        kai::TerminalWidget tall(60, 120, "/bin/sh");
-        tall.resize(1000, 900);
-        tall.show();
+        // Stand in the top-left place: the same middle line, marked on this place's own right
+        // edge, and the left half's line on its bottom edge. The right half's line is not
+        // marked over here, because the keys here cannot move it.
+        w.setTabBar(4, 0, false, four, {1, 2, 3, 4}, 0, middle, left_half);
+        pump(60);
+        bool on_this_place = false;
+        bool anywhere_in_the_right_half = false;
+        for (const kai::TerminalWidget::ResizeMark& m : w.resizeMarks()) {
+            const bool sideways = m.glyph == QChar(0x25C0) || m.glyph == QChar(0x25B6);
+            if (sideways && m.row == 13.5)
+                on_this_place = true; // the middle of rows 0..26
+            if (!sideways && m.col > 63.0)
+                anywhere_in_the_right_half = true;
+        }
+        expect("the marks follow the place the window is looking at", on_this_place);
+        expect("and a line on the far side of the window is not marked here",
+               !anywhere_in_the_right_half);
+
+        // A line this place is not on says nothing here, even when it runs the place's whole
+        // band: three columns, standing in the left one, asked about the line between the
+        // other two.
+        kai::TerminalWidget three(30, 120, "/bin/sh");
+        three.resize(1000, 600);
+        three.show();
         pump(200);
-        const std::vector<kai::PaneRect> stack{{0, 0, 60, 60},
-                                               {0, 61, 29, 59},
-                                               {30, 61, 30, 59}};
-        const kai::TerminalBackend::DividerLine across{true, 60, 0, 60, true, true};
-        tall.setTabBar(3, 0, false, stack, {1, 2, 3}, 0, across, {});
-        tall.enterResizeMode();
+        const std::vector<kai::PaneRect> columns{{0, 0, 30, 39},
+                                                 {0, 40, 30, 39},
+                                                 {0, 80, 30, 40}};
+        three.setTabBar(3, 0, false, columns, {1, 2, 3}, 0, {true, 79, 0, 30, true, true}, {});
+        three.enterResizeMode();
         pump(60);
-        std::vector<double> stack_rows;
-        for (const kai::TerminalWidget::ResizeMark& m : tall.resizeMarks()) {
-            if (m.glyph != QChar(0x25C0) && m.glyph != QChar(0x25B6))
-                continue;
-            if (std::find(stack_rows.begin(), stack_rows.end(), m.row) == stack_rows.end())
-                stack_rows.push_back(m.row);
-        }
-        expect("and a line that runs over two places a window apart still says it twice",
-               stack_rows.size() == 2 && stack_rows[0] != stack_rows[1]);
+        expect("a line the place in hand is not against gets no marks",
+               three.resizeMarks().empty());
 
-        tall.endResizeMode(false);
+        three.endResizeMode(false);
         pump(60);
-        expect("and out of resize mode there are no marks at all", tall.resizeMarks().empty());
+        expect("and out of resize mode there are no marks at all", three.resizeMarks().empty());
     }
 
 

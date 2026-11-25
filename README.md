@@ -502,6 +502,12 @@ rather than claiming a bare chord a program inside the window already answers to
 paste (**Ctrl+Shift+C** / **Ctrl+Shift+V**) and stepping the places (**Ctrl+Shift+Left** /
 **Ctrl+Shift+Right**) stay as direct chords, and **Ctrl+K, then R** is resize mode and
 **Ctrl+K, then F** is the file manager on the way.
+- In **resize mode** the place you are looking at owns the keys. Its own borders carry the
+  marks — `◀ ▶` on the edge **Left** and **Right** will move, `▲ ▼` on the edge **Up** and
+  **Down** will — and an edge with no room left that way carries no arrow and does nothing.
+  An arrow pushes whoever lies beyond that edge out of the way, the whole way along the line:
+  a place grows by taking room from its neighbours. **Enter** keeps the new arrangement,
+  **Esc** puts it back, and the middle of the place says which is which.
 - Closing a window with something running asks **"Quit while `make` is running?"**
   inside the terminal itself — the terminal's own font on its own surface, not a
   window the desktop decorates — with **Yes**, **No** and **Save Session** in that

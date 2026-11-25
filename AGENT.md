@@ -1020,6 +1020,35 @@ test that hangs should still cost a test and not a machine.
   are no marks at all"; `ctest` 30/31 with only the known `wayland-close`.
 
 
+- **2026-11-25, night — the marks belong to the place in hand.** Kaida, standing in the
+  bottom-right place of a four-way window: "arrow should appear between both bottom pane and
+  between both right pane ... The focused pane has total control and will push away any other
+  pane in it's way". That settled a rule I had been tuning for two rounds: a set had gone on
+  every border the line touched (his earlier request, "draw 2 sets, 1 on each of them"), which
+  is a description of the *line*; the keys are the place in hand's, and the marks were
+  answering a different question from the one the arrows were asked.
+
+  So `resizeMarks()` now asks one question per axis: is this line one of *my* edges, and does
+  it run along my band? If so the set goes on that edge, centred on me. The gap rule and the
+  crossing rule from the last two rounds both disappear with it — they were patches on a rule
+  that was drawing other people's borders. `kMarkGapCells` is gone.
+
+  Measured what the pushing means rather than asserting it: in a 55x128 window cut four ways,
+  five `Left` in the bottom-right place takes 5 columns from the whole left column — both
+  left-hand places go 63 → 58 while both right-hand ones go 64 → 69 — because a rectangle cut
+  into four always leaves one cut running the whole way; three `Up` takes 3 rows from the place
+  above and nobody else. That is written into `tests/layout.cpp` as a promise, so the half of
+  the behaviour that travels with the line is a decision on record rather than something
+  someone discovers. If Kaida wants both borders independent, that is a four-way cross node in
+  the arrangement tree, not a mark change — said so and left it open.
+
+  `tests/widget_panes.cpp` counts marks instead of photographing them: one set per pushable
+  border, on the right edges, nothing in the far half, nothing when the line is not against
+  this place, nothing outside the mode. 479 layout checks and 61 widget checks pass; `ctest`
+  30/31 with the known `wayland-close`. The picture of his case is
+  `.scratch/marks_bottom_right.png`.
+
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,

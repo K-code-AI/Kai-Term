@@ -110,3 +110,17 @@
   `marks_single_after.png`. Note that the spare `▲ ▼` over the far half in the same report was
   the `rectOfNode` fault above, already fixed: the window was still running the daemon from
   before it.
+
+- **Resize marks on borders the place in hand was not standing on.** In a window split four
+  ways, standing in the bottom-right place drew `◀ ▶` on the middle line up by the *top* row
+  and `▲ ▼` on the left half's divider as well as the right's. The rule was "a set on the
+  border of every place the line touches", which describes the line rather than the keys: the
+  keys belong to the place in hand. A set now goes on that place's own border, on the edge the
+  arrow moves — so the bottom-right place gets one set between itself and the bottom-left, and
+  one between itself and the top-right, and nothing anywhere else. What an arrow then does is
+  unchanged and unchanged-by-accident: it pushes whoever lies beyond that edge, the whole way
+  along the line, because a rectangle cut into four always leaves one cut running the whole
+  way — `Left` in the bottom-right place widens it and narrows both left-hand places, while
+  `Up` takes from the place above and nobody else. Checked in `tests/widget_panes.cpp` (one
+  set per pushable border, on this place's edges, none in the far half, none for a line this
+  place is not against, none outside the mode) and `tests/layout.cpp` (what a push moves).

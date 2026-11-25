@@ -1175,9 +1175,6 @@ public:
         update();
     }
 
-    // Two sets closer than this along one border are the same mark said twice.
-    static constexpr double kMarkGapCells = 4.0;
-
     // Where resize mode puts its marks, in cell coordinates: one entry per glyph, at the
     // point it is centred on. Answered apart from the painting so that a check can count the
     // marks and read where they land without anybody comparing pixels.
@@ -1187,81 +1184,48 @@ public:
         double col;
     };
 
+    // The place in hand owns resize mode. A set goes on *its* border, on the edge the arrow
+    // will move, and nowhere else. The line may well run on past that edge and settle other
+    // people's boundaries as it goes — pressing the arrow pushes whoever lies beyond this
+    // edge out of the way, which is the point of the key rather than a side effect of it.
+    // (Kaida, 2026-11-25: "I'm in the bottom right pane, arrow should appear between both
+    // bottom pane and between both right pane ... The focused pane has total control and will
+    // push away any other pane in it's way".) Marks on every border the line touched were
+    // tried first, at the request before this one, and they read as instructions for panes
+    // this window is not looking at: doubled when two middles came near each other, and
+    // missing where a divider happened to cross the middle a set wanted.
     std::vector<ResizeMark> resizeMarks() const {
         std::vector<ResizeMark> marks;
         if (!resize_mode_ || tab_focused_ < 0 ||
             tab_focused_ >= static_cast<int>(tab_cells_.size()))
             return marks;
-        if (!tab_cells_[static_cast<std::size_t>(tab_focused_)].valid())
+        const PaneRect here = tab_cells_[static_cast<std::size_t>(tab_focused_)];
+        if (!here.valid())
             return marks;
-        // A line touches a place when it is within a cell of that place's edge: the divider
-        // cell belongs to neither side, and each child starts on one side of it or the other.
-        // Which places a line touches is read off the places themselves rather than off this
-        // place's own lines, since the line crossing the middle may belong to a split this
-        // place cannot be resized by at all.
-        // (Kaida, 2026-11-25: "in the case of pane 1 selected and we affect both pane 2 and
-        // 3 we can draw 2 sets, 1 on each of them" and "there is a set in the middle of
-        // pane 1 for no reason".)
-        auto straddles = [](int line_at, int near_edge, int far_edge) {
-            return std::abs(line_at - near_edge) <= 1 || std::abs(line_at - far_edge) <= 1;
-        };
-        auto crossed = [this](double along, bool sideways) {
-            for (const PaneRect& edge : tab_cells_) {
-                if (!edge.valid())
-                    continue;
-                const double near = sideways ? edge.row : edge.col;
-                const double far = sideways ? edge.endRow() : edge.endCol();
-                if (std::abs(near - along) <= 1.0 || std::abs(far - along) <= 1.0)
-                    return true; // a divider crosses the middle the set would sit on
-            }
-            return false;
-        };
-        // A set goes on the border of every place the line touches, centred on that place,
-        // unless a divider crosses the middle it would be centred on — and unless a set is
-        // already that close along the same border. Two sets a couple of cells apart say the
-        // same thing about the same stretch of border, and read as one mark drawn twice;
-        // that is the ordinary four-place window, where the split on one side of a line is
-        // rarely at the height of the split on the other.
-        // (Kaida, 2026-11-25: "seems to still have double arrow indicator in some case".)
-        std::vector<double> marked_lr;
-        std::vector<double> marked_ud;
-        auto far_along = [](const std::vector<double>& marked, double at) {
-            for (const double seen : marked)
-                if (std::abs(seen - at) < kMarkGapCells)
-                    return false;
-            return true;
-        };
-        if (tab_lr_.ok) {
-            for (const PaneRect& other : tab_cells_) {
-                if (!other.valid() || !straddles(tab_lr_.at, other.col, other.endCol()))
-                    continue;
-                if (tab_lr_.from > other.row || tab_lr_.from + tab_lr_.span < other.endRow())
-                    continue;
-                const double middle_row = other.row + other.rows / 2.0;
-                if (crossed(middle_row, true) || !far_along(marked_lr, middle_row))
-                    continue;
-                marked_lr.push_back(middle_row);
-                if (tab_lr_.negative)
-                    marks.push_back({QChar(0x25C0), middle_row, tab_lr_.at - 0.3}); // ◀
-                if (tab_lr_.positive)
-                    marks.push_back({QChar(0x25B6), middle_row, tab_lr_.at + 1.3}); // ▶
-            }
+        // Within a cell of this place's own edge: the divider cell belongs to neither side,
+        // so the near child's far edge is the line and the far child's near edge is one past
+        // it. And the line has to run along the axis it travels for as far as this place
+        // goes, so a line in a band this place is not inside cannot be marked here.
+        auto is_edge = [](int line_at, int edge) { return std::abs(line_at - edge) <= 1; };
+        const bool lr_here = tab_lr_.ok && tab_lr_.from <= here.row &&
+                             tab_lr_.from + tab_lr_.span >= here.endRow() &&
+                             (is_edge(tab_lr_.at, here.col) || is_edge(tab_lr_.at, here.endCol()));
+        const bool ud_here = tab_ud_.ok && tab_ud_.from <= here.col &&
+                             tab_ud_.from + tab_ud_.span >= here.endCol() &&
+                             (is_edge(tab_ud_.at, here.row) || is_edge(tab_ud_.at, here.endRow()));
+        if (lr_here) {
+            const double middle_row = here.row + here.rows / 2.0;
+            if (tab_lr_.negative)
+                marks.push_back({QChar(0x25C0), middle_row, tab_lr_.at - 0.3}); // ◀
+            if (tab_lr_.positive)
+                marks.push_back({QChar(0x25B6), middle_row, tab_lr_.at + 1.3}); // ▶
         }
-        if (tab_ud_.ok) {
-            for (const PaneRect& other : tab_cells_) {
-                if (!other.valid() || !straddles(tab_ud_.at, other.row, other.endRow()))
-                    continue;
-                if (tab_ud_.from > other.col || tab_ud_.from + tab_ud_.span < other.endCol())
-                    continue;
-                const double middle_col = other.col + other.cols / 2.0;
-                if (crossed(middle_col, false) || !far_along(marked_ud, middle_col))
-                    continue;
-                marked_ud.push_back(middle_col);
-                if (tab_ud_.negative)
-                    marks.push_back({QChar(0x25B2), tab_ud_.at - 0.25, middle_col}); // ▲
-                if (tab_ud_.positive)
-                    marks.push_back({QChar(0x25BC), tab_ud_.at + 1.25, middle_col}); // ▼
-            }
+        if (ud_here) {
+            const double middle_col = here.col + here.cols / 2.0;
+            if (tab_ud_.negative)
+                marks.push_back({QChar(0x25B2), tab_ud_.at - 0.25, middle_col}); // ▲
+            if (tab_ud_.positive)
+                marks.push_back({QChar(0x25BC), tab_ud_.at + 1.25, middle_col}); // ▼
         }
         return marks;
     }
