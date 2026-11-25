@@ -28,6 +28,7 @@
 #include <cstring>
 #include <chrono>
 #include <ctime>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -936,6 +937,16 @@ private:
 
     // What the tab bar is, in the words it travels in: how many places, which one a view
     // lands on, and whether the places are shown side by side or one at a time.
+    // A divider as one field: where it sits, how far it runs, and whether either end has
+    // room left. Nothing at all means there is no line that way.
+    static std::string dividerText(const Layout::DividerInfo& info) {
+        if (!info.ok)
+            return std::string();
+        return std::to_string(info.at) + "," + std::to_string(info.from) + "," +
+               std::to_string(info.span) + "," + (info.negative ? "1" : "0") + "," +
+               (info.positive ? "1" : "0");
+    }
+
     static std::string tabsBody(const Record& record, int mine = -1) {
         std::string mode = "side-by-side";
         int panes = 0;
@@ -945,6 +956,14 @@ private:
         }
         std::string cells;
         std::string numbers; // which number each place is called by, in the same order
+        // The two lines the recipient's own place can be resized by, said per recipient
+        // because which place a window is looking at is per window, and the lines that bound
+        // a place are its own. Empty means there is no line that way, which is what tells a
+        // window to draw no arrow there and to ignore that arrow when it is pressed.
+        // (Kaida, 2026-11-25: "draw little arrow in the possible resize direction and only
+        // accept input in the possible direction".)
+        std::string lr_divider;
+        std::string ud_divider;
         {
             std::lock_guard<std::mutex> lock(record.layout_mutex);
             mode = record.layout.mode == ViewMode::Tabs ? "tabs" : "side-by-side";
@@ -982,16 +1001,24 @@ private:
                     made_in_order.begin());
                 numbers += std::to_string(turn + 1);
             }
+            if (mine >= 0 && static_cast<size_t>(mine) < made_in_order.size()) {
+                const int leaf = made_in_order[static_cast<size_t>(mine)];
+                const int rows = record.rows.load();
+                const int columns = record.cols.load();
+                lr_divider = dividerText(
+                    record.layout.layout.dividerAlongAxis(leaf, rows, columns,
+                                                          Split::LeftRight));
+                ud_divider = dividerText(
+                    record.layout.layout.dividerAlongAxis(leaf, rows, columns, Split::UpDown));
+            }
         }
         return encodeFields({{"panes", std::to_string(panes)},
                              {"focused", std::to_string(record.focus_slot.load())},
                              {"mode", mode},
                              {"cells", cells},
                              {"numbers", numbers},
-                             // Where this particular recipient is being shown, so that a
-                             // window whose place closed learns where it was put. Only the
-                             // one addressed by this body is asked to believe it; a body
-                             // meant for everyone says nothing (-1).
+                             {"lr_divider", lr_divider},
+                             {"ud_divider", ud_divider},
                              {"mine", std::to_string(mine)}});
     }
 
@@ -1617,6 +1644,11 @@ private:
                         static_cast<void>(detail::sendFrame(fd, MsgKind::Snapshot,
                                                             snapshotOf(*shell)));
                     }
+                    // The bar goes back with the screen, because the bar now says which
+                    // lines the place this view has just moved to can be resized by. Without
+                    // it a window that switched places would go on drawing the arrows of the
+                    // place it left.
+                    announceTabs(record);
                     break;
                 }
                 case MsgKind::NewPane: {
@@ -1731,13 +1763,25 @@ private:
                     const int dcol = std::stoi(fieldValue(f, "dcol", "0"));
                     const int drow = std::stoi(fieldValue(f, "drow", "0"));
                     const int delta = dcol != 0 ? dcol : drow;
-                    const int leaf = record->layout.layout.focused();
+                    // The arrows name the axis, and the arrangement finds the line on that
+                    // axis nearest the place — which is not always the split the place was
+                    // made by, since a stacked place is also inside the split beside it.
+                    const Split axis = dcol != 0 ? Split::LeftRight : Split::UpDown;
+                    // The place *this view* is looking at, not the one the session made
+                    // last: a window that selected place 1 means to resize place 1. The same
+                    // mapping "new pane" uses, for the same reason.
+                    // (Kaida, 2026-11-25: "select pane 1 and try to resize it, it still
+                    // resize pane 3 instead".)
+                    const int slot = record->slotOf(fd);
                     bool moved = false;
                     {
                         std::lock_guard<std::mutex> lock(record->layout_mutex);
-                        moved = record->layout.layout.resizeDivider(leaf, delta,
-                                                                    record->rows.load(),
-                                                                    record->cols.load());
+                        const std::vector<int> order = record->layout.layout.panes();
+                        const int leaf = slot >= 0 && static_cast<size_t>(slot) < order.size()
+                                             ? order[static_cast<size_t>(slot)]
+                                             : record->layout.layout.focused();
+                        moved = record->layout.layout.resizeDivider(
+                            leaf, delta, record->rows.load(), record->cols.load(), axis);
                     }
                     // Only worth announcing when a divider actually moved; a pane against
                     // its own edge says nothing and repaints nothing.

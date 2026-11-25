@@ -254,6 +254,41 @@ private:
                 tabs_.tabs = fieldValue(fields, "mode") == "tabs";
                 tabs_.cells.clear();
                 tabs_.numbers.clear();
+                // The lines this place can be resized by, one per axis, as
+                // `at,from,span,negative,positive`. Anything that does not parse is read as
+                // no line at all: an arrow drawn where nothing would move is worse by a
+                // good deal than no arrow.
+                {
+                    auto line = [&](const std::string& text) {
+                        DividerLine out;
+                        int values[5] = {0, 0, 0, 0, 0};
+                        std::size_t mark = 0;
+                        for (int i = 0; i < 5; ++i) {
+                            const std::size_t comma = text.find(',', mark);
+                            // The first four numbers must be followed by a comma; the last
+                            // runs to the end of the field.
+                            if (i < 4 && comma == std::string::npos)
+                                return DividerLine{};
+                            const std::string piece = comma == std::string::npos
+                                                          ? text.substr(mark)
+                                                          : text.substr(mark, comma - mark);
+                            if (piece.empty() ||
+                                piece.find_first_not_of("0123456789") != std::string::npos)
+                                return DividerLine{};
+                            values[i] = number(piece);
+                            mark = comma == std::string::npos ? text.size() : comma + 1;
+                        }
+                        out.ok = true;
+                        out.at = values[0];
+                        out.from = values[1];
+                        out.span = values[2];
+                        out.negative = values[3] != 0;
+                        out.positive = values[4] != 0;
+                        return out;
+                    };
+                    tabs_.lr = line(fieldValue(fields, "lr_divider"));
+                    tabs_.ud = line(fieldValue(fields, "ud_divider"));
+                }
                 // `top,left,rows,cols` apart, in the order the places are listed. Anything
                 // that does not parse is left out rather than guessed at: a bar drawn from
                 // half-understood sizes is a map with rooms in the wrong places.

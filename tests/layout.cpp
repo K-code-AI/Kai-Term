@@ -258,27 +258,27 @@ int main() {
         // point at.
         Layout l;
         const int right = l.splitPane(0, Split::LeftRight, 24, 80);
-        expect("a divider moves", l.resizeDivider(right, 10, 24, 80));
+        expect("a divider moves", l.resizeDivider(right, 10, 24, 80, Split::LeftRight));
         expect("and the panes are 49 and 30 now",
                l.rectOf(0, 24, 80).cols == 49 && l.rectOf(right, 24, 80).cols == 30);
-        expect("moving it back returns the width", l.resizeDivider(right, -10, 24, 80));
-        expect("and it stops at the left edge", l.resizeDivider(right, -1000, 24, 80));
+        expect("moving it back returns the width", l.resizeDivider(right, -10, 24, 80, Split::LeftRight));
+        expect("and it stops at the left edge", l.resizeDivider(right, -1000, 24, 80, Split::LeftRight));
         expect("leaving the first pane one cell", l.rectOf(0, 24, 80).cols == 1);
         expect("and the other pane everything else", l.rectOf(right, 24, 80).cols == 78);
-        expect("pushing further right stops too", l.resizeDivider(right, 5000, 24, 80));
+        expect("pushing further right stops too", l.resizeDivider(right, 5000, 24, 80, Split::LeftRight));
         expect("with the far pane down to one cell", l.rectOf(right, 24, 80).cols == 1);
         expect("tiled the whole way down the range",
                tiles(l, 24, 80));
         Layout solo;
         expect("and a window with one pane has no divider to move",
-               !solo.resizeDivider(0, 1, 24, 80));
+               !solo.resizeDivider(0, 1, 24, 80, Split::LeftRight));
     }
 
     {
         // Equalise is what "unstick this" means.
         Layout l;
         const int right = l.splitPane(0, Split::LeftRight, 24, 80);
-        static_cast<void>(l.resizeDivider(right, 25, 24, 80));
+        static_cast<void>(l.resizeDivider(right, 25, 24, 80, Split::LeftRight));
         l.equalise();
         expect("equalising puts the divider back in the middle",
                l.rectOf(0, 24, 80).cols == 39);
@@ -325,7 +325,7 @@ int main() {
         // have to survive both.
         Layout l;
         const int right = l.splitPane(0, Split::LeftRight, 24, 80);
-        static_cast<void>(l.resizeDivider(right, -8, 24, 80));
+        static_cast<void>(l.resizeDivider(right, -8, 24, 80, Split::LeftRight));
         static_cast<void>(l.splitPane(right, Split::UpDown, 24, 80, 0.6));
         const std::string text = l.toText();
         std::vector<std::string> problems;

@@ -251,20 +251,79 @@ public:
         return true;
     }
 
-    // Move the divider of a pane's own split by whole cells. Positive is right or down,
+    // The branch that divides a place along one axis: the nearest one above it that splits
+    // that way. A place stacked under another sits in a top-and-bottom branch and, further
+    // up the tree, in a left-and-right one; pressing Left or Right at that place means the
+    // second, or a stacked place could never reach the line deciding how wide it is.
+    // (Kaida, 2026-11-25: "works in only 1 direction up&down instead of 2 expected up&down
+    // left&right".)
+    int branchAlongAxis(int node, Split axis) const {
+        for (int here = node; here != kNil;) {
+            const int above = parentOf(here);
+            if (above == kNil)
+                return kNil;
+            if (nodes_[static_cast<size_t>(above)].split == axis)
+                return above;
+            here = above;
+        }
+        return kNil;
+    }
+
+    // Where a place's divider is on one axis and which way it can still travel, in cells.
+    // The window draws its resize arrows from this and decides which arrows to believe from
+    // it too: from rectangles alone it cannot tell which of the lines it can see belongs to
+    // the split that would move.
+    struct DividerInfo {
+        bool ok = false;
+        int at = 0;            // the cell the line sits in, along the axis it travels
+        int from = 0;          // first cell of the run it spans
+        int span = 0;          // how many cells that run is
+        bool negative = false; // room to travel towards the lower-numbered cells
+        bool positive = false; // and towards the higher-numbered ones
+    };
+
+    DividerInfo dividerAlongAxis(int pane, int rows, int cols, Split axis) const {
+        DividerInfo info;
+        const int node = nodeIndexOfPane(pane);
+        if (node == kNil)
+            return info;
+        const int branch_index = branchAlongAxis(node, axis);
+        if (branch_index == kNil)
+            return info;
+        const Node& branch = nodes_[static_cast<size_t>(branch_index)];
+        const CellRect area = rectOfNode(branch_index, rows, cols);
+        const bool sideways = axis == Split::LeftRight;
+        const int extent = sideways ? area.cols : area.rows;
+        int first = 0;
+        int second = 0;
+        divide(extent, branch.ratio, first, second);
+        const int shared = extent - dividerCost(extent);
+        const int widest = std::max(kMinPaneCells, shared - kMinPaneCells);
+        info.ok = true;
+        info.from = sideways ? area.top : area.left;
+        info.span = sideways ? area.rows : area.cols;
+        info.at = (sideways ? area.left : area.top) + first;
+        info.negative = shared > 0 && first > kMinPaneCells;
+        info.positive = shared > 0 && first < widest;
+        return info;
+    }
+
+    // Move the divider of a place's own split by whole cells. Positive is right or down,
     // whichever way that divider runs, and it stops at the edges rather than wrapping: a
     // divider that teleported across the window when a pane ran out of room would be the
-    // one gesture in this file nobody could predict.
-    bool resizeDivider(int pane, int delta, int rows, int cols) {
-        const int at = nodeIndexOfPane(pane);
-        if (at == kNil)
+    // one gesture in this file nobody could predict. The axis names which of a place's two
+    // lines to move, since one runs each way and they belong to branches at different
+    // depths of the tree.
+    bool resizeDivider(int pane, int delta, int rows, int cols, Split axis) {
+        const int node = nodeIndexOfPane(pane);
+        if (node == kNil)
             return false;
-        const int parent = parentOf(at);
-        if (parent == kNil)
-            return false; // one pane, no divider to move
-        Node& branch = nodes_[static_cast<size_t>(parent)];
-        const CellRect area = rectOfNode(parent, rows, cols);
-        const int extent = branch.split == Split::LeftRight ? area.cols : area.rows;
+        const int branch_index = branchAlongAxis(node, axis);
+        if (branch_index == kNil)
+            return false; // nothing divides this place that way
+        Node& branch = nodes_[static_cast<size_t>(branch_index)];
+        const CellRect area = rectOfNode(branch_index, rows, cols);
+        const int extent = axis == Split::LeftRight ? area.cols : area.rows;
         int first = 0;
         int second = 0;
         divide(extent, branch.ratio, first, second);

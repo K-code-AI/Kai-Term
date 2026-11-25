@@ -97,6 +97,26 @@ public:
     // The session's tab bar, when it has changed since the last time it was asked for.
     // A window holding a shell started here has no tab bar to speak of — one program, one
     // screen — and says so by never filling any of this in.
+    // One line a place can be resized by, in cells, as the arrangement described it. The
+    // window draws its resize arrows on this line and only accepts the arrows along its
+    // axis, so what a person can press and what is actually there are the same thing.
+    // (Kaida, 2026-11-25: "draw little arrow in the possible resize direction and only
+    // accept input in the possible direction".)
+    struct DividerLine {
+        bool ok = false;
+        int at = 0;            // the cell the line sits in, along the axis it travels
+        int from = 0;          // first cell of the run it spans
+        int span = 0;          // how many cells that run is
+        bool negative = false; // it can travel towards the lower-numbered cells
+        bool positive = false; // and towards the higher-numbered ones
+
+        bool operator==(const DividerLine& other) const {
+            return ok == other.ok && at == other.at && from == other.from &&
+                   span == other.span && negative == other.negative &&
+                   positive == other.positive;
+        }
+    };
+
     struct TabBar {
         int panes = 0;   // how many places there are to look at
         int focused = 0; // the one a view lands on when it arrives
@@ -105,6 +125,12 @@ public:
         // that was on it without anyone asking. -1 means nobody said, which is what a
         // window with a shell of its own hears, having no session to be told by.
         int mine = -1;
+        // The lines the place this view is looking at can be resized by, one per axis: a
+        // vertical line travelled sideways, and a horizontal one travelled up and down.
+        // Both unset means there is nothing to resize, which is the answer for a session
+        // with a single place and for a window holding a shell of its own.
+        DividerLine lr;
+        DividerLine ud;
         bool tabs = false; // one at a time with tabs, rather than all of them at once
         // Where each place sits, in cells, in the same order as the places. Empty when the
         // session has said nothing about sizes, which is the same as saying they are equal.

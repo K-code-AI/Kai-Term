@@ -69,7 +69,8 @@ struct TerminalOutputEvent : QEvent {
 // pane prints nothing on the pane being looked at, so nothing else would ever say so.
 struct TerminalTabsEvent : QEvent {
     TerminalTabsEvent(int panes, int focused, bool tabs, std::vector<PaneRect> cells,
-                      std::vector<int> numbers, int mine, int generation)
+                      std::vector<int> numbers, int mine, TerminalBackend::DividerLine lr,
+                      TerminalBackend::DividerLine ud, int generation)
         : QEvent(QEvent::None),
           panes(panes),
           focused(focused),
@@ -77,6 +78,8 @@ struct TerminalTabsEvent : QEvent {
           cells(std::move(cells)),
           numbers(std::move(numbers)),
           mine(mine),
+          lr(lr),
+          ud(ud),
           generation(generation) {}
     int panes;
     int focused;
@@ -86,6 +89,10 @@ struct TerminalTabsEvent : QEvent {
     std::vector<int> numbers;
     // Which place this window is being shown, as the session sees it; -1 = nobody said.
     int mine = -1;
+    // The lines this window's place can be resized by, one per axis, as the arrangement
+    // described them. Resize mode draws its arrows on these.
+    TerminalBackend::DividerLine lr;
+    TerminalBackend::DividerLine ud;
     int generation;
 };
 
@@ -861,10 +868,10 @@ public:
                 TerminalBackend::TabBar bar;
                 if (backend->takeTabBar(bar)) {
                     QCoreApplication::postEvent(this,
-                                                new TerminalTabsEvent(bar.panes, bar.focused,
-                                                                      bar.tabs, bar.cells,
-                                                                      bar.numbers, bar.mine,
-                                                                      generation));
+                                                new TerminalTabsEvent(
+                                                    bar.panes, bar.focused, bar.tabs,
+                                                    bar.cells, bar.numbers, bar.mine, bar.lr,
+                                                    bar.ud, generation));
                 }
                 // Bytes the backend is already holding are not waiting on the
                 // descriptor to become readable, so they are taken without asking.
@@ -1241,6 +1248,21 @@ public:
         update();
     }
 
+    // The panel a refusal is said on: one line, a note under it, and any key at all to
+    // clear it. Nothing else in the program says "no" — a key that quietly does nothing is
+    // indistinguishable from a key that is broken — so when a chord has nowhere to go, this
+    // is where that gets said.
+    // (Kaida, 2026-11-25: "we could give that message in a little box in the center of the
+    // screen ... -- Press any key --".)
+    void noticeInTerminal(const std::string& message) {
+        overlay_ = Overlay{};
+        overlay_.active = true;
+        overlay_.any_key = true;
+        overlay_.lines.push_back(message);
+        overlay_.hint = "-- Press any key --";
+        update();
+    }
+
     bool overlayActive() const { return overlay_.active; }
     // A panel that asks for a name and nothing else: a line of text you type, Enter to
     // hand it over, Esc to back out. `starting` is what the window would have chosen on its
@@ -1452,16 +1474,23 @@ public:
     // lit is this window's, because two windows on one session can be looking at two
     // different places and both are right.
     void setTabBar(int panes, int focused, bool tabs, std::vector<PaneRect> cells = {},
-                   std::vector<int> numbers = {}, int mine = -1) {
+                   std::vector<int> numbers = {}, int mine = -1,
+                   TerminalBackend::DividerLine lr = {},
+                   TerminalBackend::DividerLine ud = {}) {
+        // The lines are part of "anything at all changed", because they move while a
+        // divider is being dragged: a frame that only says the line has shifted two cells
+        // is exactly the frame that has to be drawn.
         if (panes == tab_panes_ && view_tabs_ == tabs && cells == tab_cells_ &&
             numbers == tab_numbers_ && (tab_chosen_ || focused == tab_focused_) &&
-            (mine < 0 || mine == tab_focused_))
+            (mine < 0 || mine == tab_focused_) && lr == tab_lr_ && ud == tab_ud_)
             return;
         const int places_before = tab_panes_;
         tab_panes_ = std::max(0, panes);
         view_tabs_ = tabs;
         tab_cells_ = std::move(cells);
         tab_numbers_ = std::move(numbers);
+        tab_lr_ = lr;
+        tab_ud_ = ud;
         if (static_cast<int>(tab_numbers_.size()) > tab_panes_)
             tab_numbers_.resize(static_cast<size_t>(tab_panes_));
         // The bar's cells are where each place sits, so they are also the answer to
@@ -1604,6 +1633,20 @@ public:
                       },
                       {'V', 'H'});
     }
+    // Resizing moves the line between two places. With a single place there is no line to
+    // move, and in the tabs view the place in hand fills the whole window while any lines
+    // there are are behind the other tabs — in both cases the mode would open with nothing
+    // for it to do, which reads as a broken key rather than as an empty job. So it says so.
+    // (Kaida, 2026-11-25: "we need to refuse the R key if 1. we have a singular session
+    // 2. we are in tab view ... there is nothing to resize".)
+    void resizeOrSayNothing() {
+        if (view_tabs_ || tab_panes_ <= 1 || (!tab_lr_.ok && !tab_ud_.ok)) {
+            noticeInTerminal("There is nothing to Resize");
+            return;
+        }
+        enterResizeMode();
+    }
+
     void closeTab() {
         if (backend_)
             backend_->closePane();
@@ -1958,7 +2001,7 @@ public:
             if (tabs->generation != generation_)
                 return true; // about a session this window no longer shows
             setTabBar(tabs->panes, tabs->focused, tabs->tabs, tabs->cells, tabs->numbers,
-                      tabs->mine);
+                      tabs->mine, tabs->lr, tabs->ud);
             return true;
         }
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
@@ -2159,7 +2202,12 @@ public:
         // called 2 is the one called 3 even when 3 is stacked underneath instead of beside
         // it. Right and Down run the numbers up, Left and Up run them back.
         // (Kaida, 2026-11-24: "Ctrl+Shift+Arrow should cycle in numerical order".)
-        if (tab_panes_ > 1 && mods.testFlag(Qt::ControlModifier) && shift &&
+        // Resize mode holds the place in hand: the arrows are busy stretching it, and
+        // stepping to another place mid-drag would leave the mode pointing at a place the
+        // person had stopped looking at.
+        // (Kaida, 2026-11-25: "we shouldn't be able to change which pane we focus while in
+        // resize mode".)
+        if (tab_panes_ > 1 && !resize_mode_ && mods.testFlag(Qt::ControlModifier) && shift &&
             (key == Qt::Key_Left || key == Qt::Key_Right || key == Qt::Key_Up ||
              key == Qt::Key_Down)) {
             const std::vector<int> order = tabOrder(); // the places, sorted by their numbers
@@ -2234,7 +2282,7 @@ public:
                 case Qt::Key_K: if (on_settings_menu) on_settings_menu(); spent = true; break;
                 case Qt::Key_N: askNewTab(); spent = true; break;
                 case Qt::Key_T: toggleViewMode(); spent = true; break;
-                case Qt::Key_R: enterResizeMode(); spent = true; break;
+                case Qt::Key_R: resizeOrSayNothing(); spent = true; break;
                 case Qt::Key_F: if (on_file_manager) on_file_manager(); else setStatusText("file manager: not wired yet"); spent = true; break;
                 case Qt::Key_S: if (on_save_session) on_save_session(); spent = true; break;
                 case Qt::Key_A: if (on_session_menu) on_session_menu(); spent = true; break;
@@ -2256,14 +2304,20 @@ public:
         // an arrow that resized a pane should not also move a cursor underneath it.
         if (resize_mode_) {
             const int step = 1;
-            if (key == Qt::Key_Left || key == Qt::Key_Right) {
-                const int dir = key == Qt::Key_Right ? step : -step;
-                if (backend_)
-                    backend_->resizeDivider(shift ? -dir : dir, 0);
-            } else if (key == Qt::Key_Up || key == Qt::Key_Down) {
-                const int dir = key == Qt::Key_Down ? step : -step;
-                if (backend_)
-                    backend_->resizeDivider(0, shift ? -dir : dir);
+            const bool sideways = key == Qt::Key_Left || key == Qt::Key_Right;
+            const bool upright = key == Qt::Key_Up || key == Qt::Key_Down;
+            if (sideways || upright) {
+                // An arrow does something only where the session said a line runs that way
+                // and has room left that way. An arrow that moved nothing would leave
+                // someone pressing keys at a screen that refuses to answer.
+                // (Kaida, 2026-11-25: "only accept input in the possible direction".)
+                const TerminalBackend::DividerLine& line = sideways ? tab_lr_ : tab_ud_;
+                int dir = sideways ? (key == Qt::Key_Right ? step : -step)
+                                   : (key == Qt::Key_Down ? step : -step);
+                if (shift)
+                    dir = -dir;
+                if (backend_ && line.ok && (dir < 0 ? line.negative : line.positive))
+                    backend_->resizeDivider(sideways ? dir : 0, sideways ? 0 : dir);
             } else if (key == Qt::Key_Return || key == Qt::Key_Enter) {
                 endResizeMode(true);
             } else if (key == Qt::Key_Escape) {
@@ -2331,7 +2385,9 @@ public:
         }
         // A press on the tab bar asks to be shown that pane, and is never the start of a
         // selection: the strip is above the grid, so there is nothing up there to select.
-        if (tab_panes_ > 1 && ev->position().y() >= activePadding() &&
+        // …and while a resize is on the way, a press on the bar does nothing either: the
+        // place being stretched stays the place being stretched until Enter or Esc ends it.
+        if (tab_panes_ > 1 && !resize_mode_ && ev->position().y() >= activePadding() &&
             ev->position().y() < gridTop()) {
             const double bar_left = activePadding();
             showPaneAt(tabSlotAt(ev->position().x(), bar_left, width() - 2.0 * bar_left));
@@ -3086,6 +3142,7 @@ public:
         // to already understand is not a guide.
         // (Kaida, 2026-11-25: "the tooltips when pressing Ctrl+k should appear in a centered
         // windows (akin to the setting) explaining the individual keys".)
+        paintResizeArrows(p);
         if (prefix_armed_ && show_key_hints_)
             paintKeyGuide(p);
 
@@ -3240,6 +3297,10 @@ private:
         // accept with Enter, not a word to delete a character at a time.
         bool field_offered = false;
         std::function<void(std::string)> gave_text;
+        // A notice rather than a question: nothing to choose and nothing to type, so any
+        // key at all puts it away. It exists so a refusal can be read rather than guessed
+        // at. (Kaida, 2026-11-25: "There is nothing to Resize" / "-- Press any key --".)
+        bool any_key = false;
     };
 
     // Where the panel and each choice landed, computed the same way for the
@@ -4443,6 +4504,12 @@ private:
             finishOverlay(-1);
             return;
         }
+        // A notice has no answer to pick, so whatever the key turns out to be, the message
+        // has been read and the panel has done its job.
+        if (overlay_.any_key) {
+            finishOverlay(0);
+            return;
+        }
         // A panel with a field: everything the keyboard can hand over as a character goes
         // into the field, and nothing else reaches the buttons underneath it — a `y` typed
         // into a name is a `y`, not an answer. Enter gives the name and Esc, handled above,
@@ -4705,6 +4772,137 @@ private:
         }
     }
 
+    // The arrows of resize mode: a pair of points on each line the place in hand can be
+    // resized by, aimed the way that line can still travel. Where a line has run out of
+    // room at one end there is no point at that end, and the same key does nothing — the
+    // screen and the keys say one thing.
+    // (Kaida, 2026-11-25: "when in Resize mode could we draw little arrow in the possible
+    // resize direction".)
+    // The marks of resize mode: which borders will move, and how to get out of the mode.
+    void paintResizeArrows(QPainter& p) const {
+        if (!resize_mode_)
+            return;
+        if (tab_focused_ < 0 || tab_focused_ >= static_cast<int>(tab_cells_.size()))
+            return;
+        const PaneRect here = tab_cells_[static_cast<std::size_t>(tab_focused_)];
+        if (!here.valid())
+            return;
+        const double cw = cellWidth();
+        const double ch = cellHeight();
+        const QFontMetricsF fm(font_);
+        p.setFont(font_);
+        const QColor accent_ink(theme_.accent.r, theme_.accent.g, theme_.accent.b);
+        p.setPen(accent_ink);
+
+        // Each point is put down by its own middle rather than by where its first pixel
+        // lands, because a glyph this wide would otherwise sit to one side of the place it
+        // belongs to — and, with two of them on one border, on top of each other.
+        const double lift = (fm.ascent() - fm.descent()) / 2.0;
+        auto centred = [&](QChar glyph, double cx, double cy) {
+            p.drawText(QPointF(cx - fm.horizontalAdvance(glyph) / 2.0, cy + lift),
+                       QString(glyph));
+        };
+        // A set goes on the border of every place the line touches, centred on that place,
+        // unless a divider crosses the middle it would be centred on. Whether a line
+        // touches a place is read off the places themselves rather than off this place's
+        // own lines: the line crossing the middle may belong to a split this place cannot be
+        // resized by at all.
+        // (Kaida, 2026-11-25: "in the case of pane 1 selected and we affect both pane 2 and
+        // 3 we can draw 2 sets, 1 on each of them" and "there is a set in the middle of
+        // pane 1 for no reason".)
+        auto straddles = [](int line_at, int near_edge, int far_edge) {
+            // Within a cell: the divider cell belongs to neither side, and each child starts
+            // on one side of it or the other.
+            return std::abs(line_at - near_edge) <= 1 || std::abs(line_at - far_edge) <= 1;
+        };
+        if (tab_lr_.ok) {
+            const double x = activePadding() + (tab_lr_.at + 0.5) * cw;
+            for (const PaneRect& other : tab_cells_) {
+                if (!other.valid() || !straddles(tab_lr_.at, other.col, other.endCol()))
+                    continue;
+                if (tab_lr_.from > other.row || tab_lr_.from + tab_lr_.span < other.endRow())
+                    continue;
+                const double middle_row = other.row + other.rows / 2.0;
+                bool crossed = false;
+                for (const PaneRect& edge : tab_cells_) {
+                    if (!edge.valid())
+                        continue;
+                    if (std::abs(edge.row - middle_row) <= 1.0 ||
+                        std::abs(edge.endRow() - middle_row) <= 1.0)
+                        crossed = true;
+                }
+                if (crossed)
+                    continue;
+                const double y = gridTop() + middle_row * ch;
+                if (tab_lr_.negative)
+                    centred(QChar(0x25C0), x - cw * 0.8, y); // ◀
+                if (tab_lr_.positive)
+                    centred(QChar(0x25B6), x + cw * 0.8, y); // ▶
+            }
+        }
+        if (tab_ud_.ok) {
+            const double y = gridTop() + (tab_ud_.at + 0.5) * ch;
+            for (const PaneRect& other : tab_cells_) {
+                if (!other.valid() || !straddles(tab_ud_.at, other.row, other.endRow()))
+                    continue;
+                if (tab_ud_.from > other.col || tab_ud_.from + tab_ud_.span < other.endCol())
+                    continue;
+                const double middle_col = other.col + other.cols / 2.0;
+                bool crossed = false;
+                for (const PaneRect& edge : tab_cells_) {
+                    if (!edge.valid())
+                        continue;
+                    if (std::abs(edge.col - middle_col) <= 1.0 ||
+                        std::abs(edge.endCol() - middle_col) <= 1.0)
+                        crossed = true;
+                }
+                if (crossed)
+                    continue;
+                const double x = activePadding() + middle_col * cw;
+                if (tab_ud_.negative)
+                    centred(QChar(0x25B2), x, y - ch * 0.75); // ▲
+                if (tab_ud_.positive)
+                    centred(QChar(0x25BC), x, y + ch * 0.75); // ▼
+            }
+        }
+
+        // The name of the mode, with the two ways out of it, in the middle of the place being
+        // stretched. A mode announced only by arrows on its borders leaves someone who
+        // landed in it by accident looking for the door.
+        // (Kaida, 2026-11-25: "in the center of the selected pane in resize mode can we show
+        // Resize Mode / Enter - Confirm / Esc - Cancel".)
+        static const char* kNotes[] = {"Resize Mode", "", "Enter - Confirm", "Esc - Cancel"};
+        const int note_count = static_cast<int>(sizeof(kNotes) / sizeof(kNotes[0]));
+        double widest = 0.0;
+        for (const char* line : kNotes)
+            widest = std::max(widest, fm.horizontalAdvance(QString::fromUtf8(line)));
+        const double box_w = widest + 4.0 * padding_;
+        const double box_h = (note_count + 1.0) * ch + 2.0 * padding_;
+        const QRectF note(activePadding() + (here.col + here.cols / 2.0) * cw - box_w / 2.0,
+                          gridTop() + (here.row + here.rows / 2.0) * ch - box_h / 2.0, box_w,
+                          box_h);
+        const Color bg = screen_.defaultBackground();
+        const Color fg = screen_.defaultForeground();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(ink(fg, 90), 1));
+        p.setBrush(ground(std::clamp(static_cast<int>(bg.r * 0.62), 0, 255),
+                          std::clamp(static_cast<int>(bg.g * 0.62), 0, 255),
+                          std::clamp(static_cast<int>(bg.b * 0.62 + 12), 0, 255)));
+        p.drawRoundedRect(note, panelRadius(ch), panelRadius(ch));
+        p.setRenderHint(QPainter::Antialiasing, false);
+        double baseline = note.y() + padding_ + fm.ascent() + ch * 0.5;
+        for (int i = 0; i < note_count; ++i) {
+            const QString text = QString::fromUtf8(kNotes[i]);
+            if (!text.isEmpty()) {
+                p.setPen(i == 0 ? accent_ink : ink(fg, 225));
+                p.drawText(
+                    QRectF(note.x(), baseline - fm.ascent(), note.width(), fm.height()),
+                    Qt::AlignHCenter | Qt::AlignVCenter, text);
+            }
+            baseline += ch;
+        }
+    }
+
     // The Ctrl+K guide. The key stands in the accent so the eye can find the letter it is
     // looking for; the words beside it are the panel's own voice, and both columns are as
     // wide as their widest entry, so the rows read as a table rather than as eight notes
@@ -4759,9 +4957,13 @@ private:
         // standing against the edge of the panel.
         // (Kaida, 2026-11-25: "add a bit of padding left and right (about 8px)".)
         const double side = 2.0 * padding_ + 8.0;
+        // The same air at the top and the bottom: a heading that touches the top of the
+        // panel is a heading printed on the border.
+        // (Kaida, 2026-11-25: "the tooltip should have a bit of padding up and bottom too".)
+        const double air = 8.0;
         const double box = std::max(key_w + gap + what_w, title_w) + 2.0 * side;
         const double tall =
-            (sizeof(kGuide) / sizeof(kGuide[0]) + 2.0) * ch + 2.0 * padding_;
+            (sizeof(kGuide) / sizeof(kGuide[0]) + 2.0) * ch + 2.0 * padding_ + 2.0 * air;
         const QRectF panel((width() - box) / 2.0, (height() - tall) / 2.0, box, tall);
         const Color bg = screen_.defaultBackground();
         const Color fg = screen_.defaultForeground();
@@ -4782,7 +4984,7 @@ private:
         // a heading with the list touching it is not a heading.
         // (Kaida, 2026-11-25: "Title Centered and underlined at the top with spacing between
         // it and the keys below".)
-        const double title_y = panel.y() + padding_ + fm.ascent();
+        const double title_y = panel.y() + padding_ + air + fm.ascent();
         p.setPen(ink(fg, 255));
         p.drawText(QRectF(panel.x(), title_y - fm.ascent(), panel.width(), fm.height()),
                    Qt::AlignHCenter | Qt::AlignVCenter, title);
@@ -6113,6 +6315,11 @@ private:
     // Ctrl+K then R: the arrows move the divider of the place in hand instead of the
     // cursor, until Enter keeps it or Esc puts the arrangement back.
     bool resize_mode_ = false;
+    // The lines the place in hand can be resized by, as the session described them: one
+    // travelled sideways, one up and down. Resize mode draws its arrows on these and
+    // accepts only the arrows they say have room.
+    TerminalBackend::DividerLine tab_lr_;
+    TerminalBackend::DividerLine tab_ud_;
     Overlay overlay_;
     // The theme picker, when it is up: the model holds the decisions, and the
     // theme as it was on opening is kept so leaving with Esc puts the window

@@ -28,4 +28,25 @@
 
 ## Fixed since
 
+- **Resizing only moved one axis.** `resizeDivider` moved the split a place was made by and
+  no further, so a place stacked under another could stretch itself taller but never wider —
+  the vertical line that decides its width belongs to a branch higher up the tree. It now
+  walks up to the nearest branch dividing the way the arrow points, and takes the axis from
+  the arrow: Left and Right mean the nearest vertical line, Up and Down the nearest
+  horizontal one.
+- **Resizing moved the wrong place.** The request was carried out on the session's idea of
+  focus — the last place made — so selecting place 1 and pressing `R` stretched place 3. It
+  now uses the place *that window* is looking at, the same mapping "new pane" already used.
+- **Resize mode said nothing about itself.** The session now sends, per window, the lines the
+  place that window is looking at can be moved by: which axis, where the line sits, how far
+  it runs, and whether either end has room. The window draws `◀ ▶` and `▲ ▼` on those lines —
+  one set on the border of every place the line touches, centred on that place, and none
+  where a divider crosses the middle it would have been centred on — and accepts an arrow
+  only along an axis with a line and a direction with room, so the keys and the screen are
+  one statement. `Ctrl+Shift+Arrow` and the tab bar are refused while a resize is on the way,
+  and the middle of the place being stretched says `Resize Mode`, `Enter - Confirm`,
+  `Esc - Cancel`.
+
+## Fixed since
+
 - **A setting for the view a new session opens in.** `default_view_mode` in `~/.config/kai-term/kai-term.conf` (`side-by-side` or `tabs`), with a row in the settings menu for it. It applies to a session the window starts for itself; a session joined by `kai-term attach ID --window` keeps the view it already has, because which way the work was laid out is part of what that session is. `Ctrl+K T` still changes the view of the session in hand either way.
