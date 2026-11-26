@@ -502,12 +502,16 @@ rather than claiming a bare chord a program inside the window already answers to
 paste (**Ctrl+Shift+C** / **Ctrl+Shift+V**) and stepping the places (**Ctrl+Shift+Left** /
 **Ctrl+Shift+Right**) stay as direct chords, and **Ctrl+K, then R** is resize mode and
 **Ctrl+K, then F** is the file manager on the way.
-- In **resize mode** the place you are looking at owns the keys. Its own borders carry the
-  marks — `◀ ▶` on the edge **Left** and **Right** will move, `▲ ▼` on the edge **Up** and
-  **Down** will — and an edge with no room left that way carries no arrow and does nothing.
-  An arrow pushes whoever lies beyond that edge out of the way, the whole way along the line:
-  a place grows by taking room from its neighbours. **Enter** keeps the new arrangement,
-  **Esc** puts it back, and the middle of the place says which is which.
+- In **resize mode** the place you are looking at owns the keys, and each of its four borders
+  is asked about on its own. An arrow takes room for the place from whatever lies beyond that
+  border — **Left** from the left, **Down** from below — and **Shift** sends the same border
+  back the other way, which shrinks the place and gives the room back. A border with no room
+  that way carries no arrow and answers no key. The marks sit on the place's own borders and
+  nowhere else, and the middle of the place says what is what: **Arrows - Grow**,
+  **Shift - Shrink**, **Enter - Confirm**, **Esc - Cancel**. Room taken along a line that
+  runs the whole window moves the whole line, so a place can widen the row above it too; the
+  room comes from whoever is on the other side of the border you pressed, and from nobody
+  else in between.
 - Closing a window with something running asks **"Quit while `make` is running?"**
   inside the terminal itself — the terminal's own font on its own surface, not a
   window the desktop decorates — with **Yes**, **No** and **Save Session** in that

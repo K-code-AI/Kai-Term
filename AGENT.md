@@ -1049,6 +1049,48 @@ test that hangs should still cost a test and not a machine.
   `.scratch/marks_bottom_right.png`.
 
 
+- **2026-11-25, night — a border is not an axis.** Kaida: "3 pane in the same direction
+  3 vertical or 3 horizontal, the middle one cannot get bigger from both side as it should
+  ( shift invert the direction already so we could shrink back ) we should add information
+  about shift in the tooltip of the resize mode", and a minute earlier "sometimex the arrow
+  don't appear now". Both were one bug wearing two faces.
+
+  `branchAlongAxis` answers "the nearest split along this axis", which is a question about the
+  tree rather than about the place: with three places in a row the middle one's left border is
+  the root's line and its right border is the line it hangs under, so one of the two was
+  invisible — no mark, and the arrow that did answer moved the wrong border. The exact-cell
+  version of "is this line on that side" also caught the case behind the missing arrows: a
+  place one cell wide has both edges within a cell of one line, so a press on its left found
+  the line on its right, found no room, and refused instead of walking further up.
+
+  `edgeBranch` / `edgeAlongAxis` / `moveEdge` ask about a *border*, and `moveEdge` holds the
+  same-axis lines between that border and the place in the cells they stand in, so the room
+  goes to the place rather than being divided with a sibling — measured: five presses left on
+  the middle of three places 60|29|30 gives 50|39|30, the far place untouched. That holding is
+  why the far line's stored fraction changes while its cell does not, which is what the first
+  version of the wire check wrongly asserted; the check reads the rooms the window is told
+  about instead. `resizeDivider` now delegates to `moveEdge`, so there is one resize path.
+
+  The wire carries four borders (`edge_left`, `edge_right`, `edge_up`, `edge_down`) and the
+  press names the border it moved (`axis`, `side`, `delta`); the widget stores four lines and
+  draws a set on each of the place's own borders. `Shift` was doing something no screen
+  mentioned; the note now says Arrows - Grow / Shift - Shrink / Enter - Confirm /
+  Esc - Cancel.
+
+  Verified end to end over a real socket in `tests/session.cpp` rather than only in headers.
+  508 layout, 62 widget and 268 session checks pass; `ctest` 30/31 with the known
+  `wayland-close`. One run of the session test failed an unrelated check
+  ("the session is running another program") and passed twice after, so it is timing, not the
+  resize work — noted rather than waved away. Pictures: `.scratch/marks_three.png` (the middle
+  of three, a set each side) and `.scratch/marks_square.png` (bottom-right of four).
+
+  A live window was started against a private daemon in a private `XDG_RUNTIME_DIR` to check
+  the new binary really talks to itself, then closed and that daemon shut down; the daemon at
+  `/run/user/1000` was left alone, which matters because it still runs the old code and Kaida
+  has to restart it (`kai-term shutdown`, ending session `1w1`'s shell) before any of
+  tonight's fixes reach his screen.
+
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,

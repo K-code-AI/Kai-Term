@@ -169,10 +169,12 @@ public:
             MsgKind::SetViewMode, encodeFields({{"mode", tabs ? "tabs" : "side-by-side"}})));
     }
     void resizeBegin() override { static_cast<void>(client_.send(MsgKind::ResizeBegin)); }
-    void resizeDivider(int dcol, int drow) override {
-        static_cast<void>(client_.send(MsgKind::ResizeDivider,
-                                       encodeFields({{"dcol", std::to_string(dcol)},
-                                                     {"drow", std::to_string(drow)}})));
+    void resizeDivider(bool sideways, int side, int delta) override {
+        static_cast<void>(client_.send(
+            MsgKind::ResizeDivider,
+            encodeFields({{"axis", sideways ? "lr" : "ud"},
+                          {"side", std::to_string(side)},
+                          {"delta", std::to_string(delta)}})));
     }
     void resizeEnd(bool commit) override {
         static_cast<void>(client_.send(
@@ -286,8 +288,10 @@ private:
                         out.positive = values[4] != 0;
                         return out;
                     };
-                    tabs_.lr = line(fieldValue(fields, "lr_divider"));
-                    tabs_.ud = line(fieldValue(fields, "ud_divider"));
+                    tabs_.left = line(fieldValue(fields, "edge_left"));
+                    tabs_.right = line(fieldValue(fields, "edge_right"));
+                    tabs_.up = line(fieldValue(fields, "edge_up"));
+                    tabs_.down = line(fieldValue(fields, "edge_down"));
                 }
                 // `top,left,rows,cols` apart, in the order the places are listed. Anything
                 // that does not parse is left out rather than guessed at: a bar drawn from

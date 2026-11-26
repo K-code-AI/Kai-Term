@@ -69,8 +69,9 @@ struct TerminalOutputEvent : QEvent {
 // pane prints nothing on the pane being looked at, so nothing else would ever say so.
 struct TerminalTabsEvent : QEvent {
     TerminalTabsEvent(int panes, int focused, bool tabs, std::vector<PaneRect> cells,
-                      std::vector<int> numbers, int mine, TerminalBackend::DividerLine lr,
-                      TerminalBackend::DividerLine ud, int generation)
+                      std::vector<int> numbers, int mine, TerminalBackend::DividerLine left,
+                      TerminalBackend::DividerLine right, TerminalBackend::DividerLine up,
+                      TerminalBackend::DividerLine down, int generation)
         : QEvent(QEvent::None),
           panes(panes),
           focused(focused),
@@ -78,8 +79,10 @@ struct TerminalTabsEvent : QEvent {
           cells(std::move(cells)),
           numbers(std::move(numbers)),
           mine(mine),
-          lr(lr),
-          ud(ud),
+          left(left),
+          right(right),
+          up(up),
+          down(down),
           generation(generation) {}
     int panes;
     int focused;
@@ -89,10 +92,12 @@ struct TerminalTabsEvent : QEvent {
     std::vector<int> numbers;
     // Which place this window is being shown, as the session sees it; -1 = nobody said.
     int mine = -1;
-    // The lines this window's place can be resized by, one per axis, as the arrangement
-    // described them. Resize mode draws its arrows on these.
-    TerminalBackend::DividerLine lr;
-    TerminalBackend::DividerLine ud;
+    // The borders this window's place can be resized by, as the arrangement described them.
+    // Resize mode draws its arrows on these.
+    TerminalBackend::DividerLine left;
+    TerminalBackend::DividerLine right;
+    TerminalBackend::DividerLine up;
+    TerminalBackend::DividerLine down;
     int generation;
 };
 
@@ -870,8 +875,9 @@ public:
                     QCoreApplication::postEvent(this,
                                                 new TerminalTabsEvent(
                                                     bar.panes, bar.focused, bar.tabs,
-                                                    bar.cells, bar.numbers, bar.mine, bar.lr,
-                                                    bar.ud, generation));
+                                                    bar.cells, bar.numbers, bar.mine,
+                                                    bar.left, bar.right, bar.up, bar.down,
+                                                    generation));
                 }
                 // Bytes the backend is already holding are not waiting on the
                 // descriptor to become readable, so they are taken without asking.
@@ -1202,30 +1208,33 @@ public:
         const PaneRect here = tab_cells_[static_cast<std::size_t>(tab_focused_)];
         if (!here.valid())
             return marks;
-        // Within a cell of this place's own edge: the divider cell belongs to neither side,
-        // so the near child's far edge is the line and the far child's near edge is one past
-        // it. And the line has to run along the axis it travels for as far as this place
-        // goes, so a line in a band this place is not inside cannot be marked here.
-        auto is_edge = [](int line_at, int edge) { return std::abs(line_at - edge) <= 1; };
-        const bool lr_here = tab_lr_.ok && tab_lr_.from <= here.row &&
-                             tab_lr_.from + tab_lr_.span >= here.endRow() &&
-                             (is_edge(tab_lr_.at, here.col) || is_edge(tab_lr_.at, here.endCol()));
-        const bool ud_here = tab_ud_.ok && tab_ud_.from <= here.col &&
-                             tab_ud_.from + tab_ud_.span >= here.endCol() &&
-                             (is_edge(tab_ud_.at, here.row) || is_edge(tab_ud_.at, here.endRow()));
-        if (lr_here) {
-            const double middle_row = here.row + here.rows / 2.0;
-            if (tab_lr_.negative)
-                marks.push_back({QChar(0x25C0), middle_row, tab_lr_.at - 0.3}); // ◀
-            if (tab_lr_.positive)
-                marks.push_back({QChar(0x25B6), middle_row, tab_lr_.at + 1.3}); // ▶
-        }
-        if (ud_here) {
-            const double middle_col = here.col + here.cols / 2.0;
-            if (tab_ud_.negative)
-                marks.push_back({QChar(0x25B2), tab_ud_.at - 0.25, middle_col}); // ▲
-            if (tab_ud_.positive)
-                marks.push_back({QChar(0x25BC), tab_ud_.at + 1.25, middle_col}); // ▼
+        // The place in hand owns resize mode, so its own borders carry the marks — and each
+        // border carries its own, because a place's left border and its right border can
+        // belong to two different splits and travel separately. An arrow points the way that
+        // border can go, which is the way the place grows when it goes there.
+        // (Kaida, 2026-11-25: "arrow should appear between both bottom pane and between both
+        // right pane ... The focused pane has total control and will push away any other pane
+        // in it's way", and "3 pane in the same direction ... the middle one cannot get
+        // bigger from both side as it should".)
+        const double middle_row = here.row + here.rows / 2.0;
+        const double middle_col = here.col + here.cols / 2.0;
+        for (const std::pair<const TerminalBackend::DividerLine*, int>& edge :
+             {std::pair<const TerminalBackend::DividerLine*, int>{&tab_left_, -1},
+              {&tab_right_, 1}, {&tab_up_, -2}, {&tab_down_, 2}}) {
+            const TerminalBackend::DividerLine& line = *edge.first;
+            if (!line.ok)
+                continue;
+            if (edge.second == -1 || edge.second == 1) {
+                if (line.negative)
+                    marks.push_back({QChar(0x25C0), middle_row, line.at - 0.3}); // ◀
+                if (line.positive)
+                    marks.push_back({QChar(0x25B6), middle_row, line.at + 1.3}); // ▶
+            } else {
+                if (line.negative)
+                    marks.push_back({QChar(0x25B2), line.at - 0.25, middle_col}); // ▲
+                if (line.positive)
+                    marks.push_back({QChar(0x25BC), line.at + 1.25, middle_col}); // ▼
+            }
         }
         return marks;
     }
@@ -1530,22 +1539,27 @@ public:
     // different places and both are right.
     void setTabBar(int panes, int focused, bool tabs, std::vector<PaneRect> cells = {},
                    std::vector<int> numbers = {}, int mine = -1,
-                   TerminalBackend::DividerLine lr = {},
-                   TerminalBackend::DividerLine ud = {}) {
-        // The lines are part of "anything at all changed", because they move while a
+                   TerminalBackend::DividerLine left = {},
+                   TerminalBackend::DividerLine right = {},
+                   TerminalBackend::DividerLine up = {},
+                   TerminalBackend::DividerLine down = {}) {
+        // The borders are part of "anything at all changed", because they move while a
         // divider is being dragged: a frame that only says the line has shifted two cells
         // is exactly the frame that has to be drawn.
         if (panes == tab_panes_ && view_tabs_ == tabs && cells == tab_cells_ &&
             numbers == tab_numbers_ && (tab_chosen_ || focused == tab_focused_) &&
-            (mine < 0 || mine == tab_focused_) && lr == tab_lr_ && ud == tab_ud_)
+            (mine < 0 || mine == tab_focused_) && left == tab_left_ &&
+            right == tab_right_ && up == tab_up_ && down == tab_down_)
             return;
         const int places_before = tab_panes_;
         tab_panes_ = std::max(0, panes);
         view_tabs_ = tabs;
         tab_cells_ = std::move(cells);
         tab_numbers_ = std::move(numbers);
-        tab_lr_ = lr;
-        tab_ud_ = ud;
+        tab_left_ = left;
+        tab_right_ = right;
+        tab_up_ = up;
+        tab_down_ = down;
         if (static_cast<int>(tab_numbers_.size()) > tab_panes_)
             tab_numbers_.resize(static_cast<size_t>(tab_panes_));
         // The bar's cells are where each place sits, so they are also the answer to
@@ -1695,7 +1709,8 @@ public:
     // (Kaida, 2026-11-25: "we need to refuse the R key if 1. we have a singular session
     // 2. we are in tab view ... there is nothing to resize".)
     void resizeOrSayNothing() {
-        if (view_tabs_ || tab_panes_ <= 1 || (!tab_lr_.ok && !tab_ud_.ok)) {
+        if (view_tabs_ || tab_panes_ <= 1 || (!tab_left_.ok && !tab_right_.ok &&
+                                              !tab_up_.ok && !tab_down_.ok)) {
             noticeInTerminal("There is nothing to Resize");
             return;
         }
@@ -2052,7 +2067,7 @@ public:
             if (tabs->generation != generation_)
                 return true; // about a session this window no longer shows
             setTabBar(tabs->panes, tabs->focused, tabs->tabs, tabs->cells, tabs->numbers,
-                      tabs->mine, tabs->lr, tabs->ud);
+                      tabs->mine, tabs->left, tabs->right, tabs->up, tabs->down);
             return true;
         }
         if (auto* out = dynamic_cast<TerminalOutputEvent*>(e)) {
@@ -2358,17 +2373,25 @@ public:
             const bool sideways = key == Qt::Key_Left || key == Qt::Key_Right;
             const bool upright = key == Qt::Key_Up || key == Qt::Key_Down;
             if (sideways || upright) {
-                // An arrow does something only where the session said a line runs that way
-                // and has room left that way. An arrow that moved nothing would leave
-                // someone pressing keys at a screen that refuses to answer.
-                // (Kaida, 2026-11-25: "only accept input in the possible direction".)
-                const TerminalBackend::DividerLine& line = sideways ? tab_lr_ : tab_ud_;
-                int dir = sideways ? (key == Qt::Key_Right ? step : -step)
-                                   : (key == Qt::Key_Down ? step : -step);
-                if (shift)
-                    dir = -dir;
-                if (backend_ && line.ok && (dir < 0 ? line.negative : line.positive))
-                    backend_->resizeDivider(sideways ? dir : 0, sideways ? 0 : dir);
+                // The arrow names which *border* of the place in hand moves, and which way
+                // it grows: Left takes room from the left, Down from below. Shift sends that
+                // same border back over the place instead, which is how you shrink it and get
+                // a bit of room back. It does something only where the session said a line
+                // stands on that border and has room that way; an arrow that moved nothing
+                // would leave someone pressing keys at a screen that refuses to answer.
+                // (Kaida, 2026-11-25: "only accept input in the possible direction", "shift
+                // invert the direction already so we could shrink back", and "the middle one
+                // cannot get bigger from both side as it should" — the axis could name only
+                // one of a place's two borders, so one of the two ways never worked.)
+                const int side = sideways ? (key == Qt::Key_Right ? 1 : -1)
+                                          : (key == Qt::Key_Down ? 1 : -1);
+                const TerminalBackend::DividerLine& edge =
+                    sideways ? (side < 0 ? tab_left_ : tab_right_)
+                             : (side < 0 ? tab_up_ : tab_down_);
+                const int travel = (key == Qt::Key_Left || key == Qt::Key_Up) ? -step : step;
+                const int moved = shift ? -travel : travel;
+                if (backend_ && edge.ok && (moved < 0 ? edge.negative : edge.positive))
+                    backend_->resizeDivider(sideways, side, moved);
             } else if (key == Qt::Key_Return || key == Qt::Key_Enter) {
                 endResizeMode(true);
             } else if (key == Qt::Key_Escape) {
@@ -4857,12 +4880,15 @@ private:
         for (const ResizeMark& mark : resizeMarks())
             centred(mark.glyph, activePadding() + mark.col * cw, gridTop() + mark.row * ch);
 
-        // The name of the mode, with the two ways out of it, in the middle of the place being
-        // stretched. A mode announced only by arrows on its borders leaves someone who
-        // landed in it by accident looking for the door.
-        // (Kaida, 2026-11-25: "in the center of the selected pane in resize mode can we show
-        // Resize Mode / Enter - Confirm / Esc - Cancel".)
-        static const char* kNotes[] = {"Resize Mode", "", "Enter - Confirm", "Esc - Cancel"};
+        // The name of the mode, what its keys do, and the two ways out of it, in the middle
+        // of the place being stretched. A mode announced only by arrows on its borders leaves
+        // someone who landed in it by accident looking for the door — and Shift, which is the
+        // difference between growing a place and getting room back, is not on the borders at
+        // all. (Kaida, 2026-11-25: "in the center of the selected pane in resize mode can we
+        // show Resize Mode / Enter - Confirm / Esc - Cancel" and "we should add information
+        // about shift in the tooltip of the resize mode".)
+        static const char* kNotes[] = {"Resize Mode", "", "Arrows - Grow", "Shift - Shrink",
+                                       "Enter - Confirm", "Esc - Cancel"};
         const int note_count = static_cast<int>(sizeof(kNotes) / sizeof(kNotes[0]));
         double widest = 0.0;
         for (const char* line : kNotes)
@@ -6306,11 +6332,16 @@ private:
     // Ctrl+K then R: the arrows move the divider of the place in hand instead of the
     // cursor, until Enter keeps it or Esc puts the arrangement back.
     bool resize_mode_ = false;
-    // The lines the place in hand can be resized by, as the session described them: one
-    // travelled sideways, one up and down. Resize mode draws its arrows on these and
-    // accepts only the arrows they say have room.
-    TerminalBackend::DividerLine tab_lr_;
-    TerminalBackend::DividerLine tab_ud_;
+    // The four borders of the place in hand, as the session described them. Resize mode
+    // draws its arrows on these and accepts only the arrows they say have room. Four rather
+    // than two lines, because a place's left border and its right border can belong to two
+    // different splits, and pressing one arrow then moves the wrong line.
+    // (Kaida, 2026-11-25: "3 pane in the same direction ... the middle one cannot get bigger
+    // from both side as it should".)
+    TerminalBackend::DividerLine tab_left_;
+    TerminalBackend::DividerLine tab_right_;
+    TerminalBackend::DividerLine tab_up_;
+    TerminalBackend::DividerLine tab_down_;
     Overlay overlay_;
     // The theme picker, when it is up: the model holds the decisions, and the
     // theme as it was on opening is kept so leaving with Esc puts the window

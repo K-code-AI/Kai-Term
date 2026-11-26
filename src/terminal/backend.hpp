@@ -97,9 +97,10 @@ public:
     // The session's tab bar, when it has changed since the last time it was asked for.
     // A window holding a shell started here has no tab bar to speak of — one program, one
     // screen — and says so by never filling any of this in.
-    // One line a place can be resized by, in cells, as the arrangement described it. The
-    // window draws its resize arrows on this line and only accepts the arrows along its
-    // axis, so what a person can press and what is actually there are the same thing.
+    // One line a place can be resized by, in cells, as the arrangement described it: where
+    // it stands, how far its run goes, and which way it can still travel. The window draws
+    // its resize arrows on this line and only accepts the arrows along it, so what a person
+    // can press and what is actually there are the same thing.
     // (Kaida, 2026-11-25: "draw little arrow in the possible resize direction and only
     // accept input in the possible direction".)
     struct DividerLine {
@@ -125,12 +126,18 @@ public:
         // that was on it without anyone asking. -1 means nobody said, which is what a
         // window with a shell of its own hears, having no session to be told by.
         int mine = -1;
-        // The lines the place this view is looking at can be resized by, one per axis: a
-        // vertical line travelled sideways, and a horizontal one travelled up and down.
-        // Both unset means there is nothing to resize, which is the answer for a session
-        // with a single place and for a window holding a shell of its own.
-        DividerLine lr;
-        DividerLine ud;
+        // The four borders of the place this view is looking at. Up to four lines bound one
+        // place and they are not the same line: the middle of three places in a row is
+        // divided from its left neighbour by a line further up the arrangement than the one
+        // dividing it from its right, so each border is asked about on its own. All unset
+        // means there is nothing to resize, which is the answer for a session with a single
+        // place and for a window holding a shell of its own.
+        // (Kaida, 2026-11-25: "3 pane in the same direction ... the middle one cannot get
+        // bigger from both side as it should".)
+        DividerLine left;
+        DividerLine right;
+        DividerLine up;
+        DividerLine down;
         bool tabs = false; // one at a time with tabs, rather than all of them at once
         // Where each place sits, in cells, in the same order as the places. Empty when the
         // session has said nothing about sizes, which is the same as saying they are equal.
@@ -165,10 +172,14 @@ public:
     virtual void newPane(bool side_by_side = true) {}
     virtual void closePane() {}
     virtual void setViewMode(bool /*tabs*/) {}
-    // A hand resize, as a little session: begin (remember for a cancel), move the divider
-    // a cell along one axis, and end keeping or undoing it.
+    // A hand resize, as a little session: begin (remember for a cancel), move the line along
+    // one border of the place being looked at, and end keeping or undoing it. The border is
+    // named rather than the axis, because a place has two borders per axis and they can
+    // belong to different lines: `sideways` says which pair, `side` which of the pair (-1 the
+    // left or top, +1 the right or bottom), and `delta` how far that border travels in cells,
+    // negative being left or up.
     virtual void resizeBegin() {}
-    virtual void resizeDivider(int /*dcol*/, int /*drow*/) {}
+    virtual void resizeDivider(bool /*sideways*/, int /*side*/, int /*delta*/) {}
     virtual void resizeEnd(bool /*commit*/) {}
 
     virtual void stopProcess(bool /*closing*/ = false) {}

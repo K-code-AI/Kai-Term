@@ -962,8 +962,10 @@ private:
         // window to draw no arrow there and to ignore that arrow when it is pressed.
         // (Kaida, 2026-11-25: "draw little arrow in the possible resize direction and only
         // accept input in the possible direction".)
-        std::string lr_divider;
-        std::string ud_divider;
+        std::string lr_left;
+        std::string lr_right;
+        std::string ud_up;
+        std::string ud_down;
         {
             std::lock_guard<std::mutex> lock(record.layout_mutex);
             mode = record.layout.mode == ViewMode::Tabs ? "tabs" : "side-by-side";
@@ -1005,11 +1007,19 @@ private:
                 const int leaf = made_in_order[static_cast<size_t>(mine)];
                 const int rows = record.rows.load();
                 const int columns = record.cols.load();
-                lr_divider = dividerText(
-                    record.layout.layout.dividerAlongAxis(leaf, rows, columns,
-                                                          Split::LeftRight));
-                ud_divider = dividerText(
-                    record.layout.layout.dividerAlongAxis(leaf, rows, columns, Split::UpDown));
+                // Each of the four borders asked about on its own: the line along a place's
+                // left is not always the one along its right, and asking the axis which line
+                // it is can only ever name one of them.
+                // (Kaida, 2026-11-25: "3 pane in the same direction ... the middle one
+                // cannot get bigger from both side as it should".)
+                lr_left = dividerText(record.layout.layout.edgeAlongAxis(
+                    leaf, rows, columns, Split::LeftRight, -1));
+                lr_right = dividerText(record.layout.layout.edgeAlongAxis(
+                    leaf, rows, columns, Split::LeftRight, 1));
+                ud_up = dividerText(
+                    record.layout.layout.edgeAlongAxis(leaf, rows, columns, Split::UpDown, -1));
+                ud_down = dividerText(
+                    record.layout.layout.edgeAlongAxis(leaf, rows, columns, Split::UpDown, 1));
             }
         }
         return encodeFields({{"panes", std::to_string(panes)},
@@ -1017,8 +1027,10 @@ private:
                              {"mode", mode},
                              {"cells", cells},
                              {"numbers", numbers},
-                             {"lr_divider", lr_divider},
-                             {"ud_divider", ud_divider},
+                             {"edge_left", lr_left},
+                             {"edge_right", lr_right},
+                             {"edge_up", ud_up},
+                             {"edge_down", ud_down},
                              {"mine", std::to_string(mine)}});
     }
 
@@ -1760,13 +1772,14 @@ private:
                     // Nudge the divider of the place being looked at by a cell along one
                     // axis. The arrows choose the axis; the divider runs the other way.
                     const Fields f = decodeFields(frame.body);
-                    const int dcol = std::stoi(fieldValue(f, "dcol", "0"));
-                    const int drow = std::stoi(fieldValue(f, "drow", "0"));
-                    const int delta = dcol != 0 ? dcol : drow;
-                    // The arrows name the axis, and the arrangement finds the line on that
-                    // axis nearest the place — which is not always the split the place was
-                    // made by, since a stacked place is also inside the split beside it.
-                    const Split axis = dcol != 0 ? Split::LeftRight : Split::UpDown;
+                    const bool sideways = fieldValue(f, "axis", "lr") == "lr";
+                    const int side = std::stoi(fieldValue(f, "side", "1"));
+                    const int delta = std::stoi(fieldValue(f, "delta", "0"));
+                    const Split axis = sideways ? Split::LeftRight : Split::UpDown;
+                    // The border the arrow was pressed on rather than "the nearest line along
+                    // that axis": the arrangement finds the line standing on that side, which
+                    // for the middle of three places is a different line each way.
+                    // (Kaida, 2026-11-25: "the middle one cannot get bigger from both side".)
                     // The place *this view* is looking at, not the one the session made
                     // last: a window that selected place 1 means to resize place 1. The same
                     // mapping "new pane" uses, for the same reason.
@@ -1780,8 +1793,8 @@ private:
                         const int leaf = slot >= 0 && static_cast<size_t>(slot) < order.size()
                                              ? order[static_cast<size_t>(slot)]
                                              : record->layout.layout.focused();
-                        moved = record->layout.layout.resizeDivider(
-                            leaf, delta, record->rows.load(), record->cols.load(), axis);
+                        moved = record->layout.layout.moveEdge(
+                            leaf, delta, record->rows.load(), record->cols.load(), axis, side);
                     }
                     // Only worth announcing when a divider actually moved; a pane against
                     // its own edge says nothing and repaints nothing.

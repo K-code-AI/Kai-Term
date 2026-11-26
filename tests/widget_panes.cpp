@@ -449,13 +449,14 @@ int main(int argc, char** argv) {
     }
 
     {
-        // The marks belong to the place in hand, and to nobody else. Kaida's window: four
-        // places, both halves split up-down, standing in the bottom-right one — where a set
-        // belongs between the two bottom places, which `Left` and `Right` push, and between
-        // the two right-hand places, which `Up` and `Down` push, with nothing out in the other
-        // three. (Kaida, 2026-11-25: "arrow should appear between both bottom pane and between
-        // both right pane ... The focused pane has total control and will push away any other
-        // pane in it's way".)
+        // The marks belong to the borders of the place in hand, and to nobody else's.
+        // Kaida's window: four places, both halves split up-down, standing in the
+        // bottom-right one — where a set belongs between the two bottom places, which
+        // `Left` pushes, and between the two right-hand places, which `Up` pushes, with
+        // nothing out in the other three.
+        // (Kaida, 2026-11-25: "arrow should appear between both bottom pane and between both
+        // right pane ... The focused pane has total control and will push away any other pane
+        // in it's way".)
         kai::TerminalWidget w(55, 128, "/bin/sh");
         w.resize(1100, 900);
         w.show();
@@ -465,13 +466,14 @@ int main(int argc, char** argv) {
                                               {28, 0, 27, 63},   // 2 bottom left
                                               {0, 64, 27, 63},   // 3 top right
                                               {28, 64, 27, 63}}; // 4 bottom right
-        // The middle line is the whole window's. The line the bottom-right place is resized by
-        // up and down is the right half's, and runs across the right half only.
+        // The middle line is the whole window's. The line the bottom-right place is resized
+        // up by is the right half's, and runs across the right half only.
         const kai::TerminalBackend::DividerLine middle{true, 63, 0, 55, true, true};
         const kai::TerminalBackend::DividerLine right_half{true, 27, 64, 64, true, true};
         const kai::TerminalBackend::DividerLine left_half{true, 27, 0, 63, true, true};
+        const kai::TerminalBackend::DividerLine none{};
 
-        w.setTabBar(4, 3, false, four, {1, 2, 3, 4}, 3, middle, right_half);
+        w.setTabBar(4, 3, false, four, {1, 2, 3, 4}, 3, middle, none, right_half, none);
         w.enterResizeMode();
         pump(60);
 
@@ -495,7 +497,7 @@ int main(int argc, char** argv) {
         // Stand in the top-left place: the same middle line, marked on this place's own right
         // edge, and the left half's line on its bottom edge. The right half's line is not
         // marked over here, because the keys here cannot move it.
-        w.setTabBar(4, 0, false, four, {1, 2, 3, 4}, 0, middle, left_half);
+        w.setTabBar(4, 0, false, four, {1, 2, 3, 4}, 0, none, middle, none, left_half);
         pump(60);
         bool on_this_place = false;
         bool anywhere_in_the_right_half = false;
@@ -510,9 +512,11 @@ int main(int argc, char** argv) {
         expect("and a line on the far side of the window is not marked here",
                !anywhere_in_the_right_half);
 
-        // A line this place is not on says nothing here, even when it runs the place's whole
-        // band: three columns, standing in the left one, asked about the line between the
-        // other two.
+        // Three places in a row, which is where the marks used to run out: the middle one has
+        // a border each side, they are two different lines, and both of them move. Standing in
+        // the left place there is one border to mark; standing in the middle there are two.
+        // (Kaida, 2026-11-25: "3 pane in the same direction ... the middle one cannot get
+        // bigger from both side as it should".)
         kai::TerminalWidget three(30, 120, "/bin/sh");
         three.resize(1000, 600);
         three.show();
@@ -520,11 +524,23 @@ int main(int argc, char** argv) {
         const std::vector<kai::PaneRect> columns{{0, 0, 30, 39},
                                                  {0, 40, 30, 39},
                                                  {0, 80, 30, 40}};
-        three.setTabBar(3, 0, false, columns, {1, 2, 3}, 0, {true, 79, 0, 30, true, true}, {});
+        const kai::TerminalBackend::DividerLine first_line{true, 39, 0, 30, true, true};
+        const kai::TerminalBackend::DividerLine second_line{true, 79, 0, 30, true, true};
+        three.setTabBar(3, 0, false, columns, {1, 2, 3}, 0, none, first_line, none, none);
         three.enterResizeMode();
         pump(60);
-        expect("a line the place in hand is not against gets no marks",
-               three.resizeMarks().empty());
+        expect("the place against the window's edge is marked on its one border",
+               three.resizeMarks().size() == 2);
+        three.setTabBar(3, 1, false, columns, {1, 2, 3}, 1, first_line, second_line, none,
+                        none);
+        pump(60);
+        std::vector<double> marked_cols;
+        for (const kai::TerminalWidget::ResizeMark& m : three.resizeMarks())
+            marked_cols.push_back(m.col);
+        std::sort(marked_cols.begin(), marked_cols.end());
+        const std::vector<double> both_borders{38.7, 40.3, 78.7, 80.3};
+        expect("and the middle place is marked on both of its borders, one set each way",
+               marked_cols == both_borders);
 
         three.endResizeMode(false);
         pump(60);

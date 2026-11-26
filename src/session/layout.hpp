@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -321,20 +322,121 @@ public:
         const int branch_index = branchAlongAxis(node, axis);
         if (branch_index == kNil)
             return false; // nothing divides this place that way
-        Node& branch = nodes_[static_cast<size_t>(branch_index)];
-        const CellRect area = rectOfNode(branch_index, rows, cols);
-        const int extent = axis == Split::LeftRight ? area.cols : area.rows;
-        int first = 0;
-        int second = 0;
-        divide(extent, branch.ratio, first, second);
-        const int shared = extent - dividerCost(extent);
-        const int widest = std::max(kMinPaneCells, shared - kMinPaneCells);
-        const int moved = std::clamp(first + delta, kMinPaneCells, widest);
-        if (moved == first || shared <= 0)
+        // The line this finds stands on one side of the place or the other, and asking to
+        // move that side is the same request.
+        const LineGeometry line = lineGeometry(branch_index, rows, cols);
+        const CellRect here = rectOfNode(node, rows, cols);
+        const bool sideways = axis == Split::LeftRight;
+        const int near_edge = sideways ? here.left : here.top;
+        const int far_edge = sideways ? here.left + here.cols : here.top + here.rows;
+        const int side = std::abs(line.at - near_edge) <= std::abs(line.at - far_edge) ? -1 : 1;
+        return moveEdge(pane, delta, rows, cols, axis, side);
+    }
+
+    // ---- one edge of one place ------------------------------------------------
+    //
+    // Which line runs along one *side* of a place. This is not the same question as "the
+    // nearest split along that axis": three places in a row are made by two splits, and the
+    // middle one is divided from its left neighbour by a line further up the tree while its
+    // right neighbour is divided from it by the line it sits under. Asking for the nearest
+    // line can only ever name one of the two, so the middle place grew one way and refused
+    // the other, however hard its arrows were pressed.
+    // (Kaida, 2026-11-25: "3 pane in the same direction 3 vertical or 3 horizontal, the
+    // middle one cannot get bigger from both side as it should".)
+    int edgeBranch(int node, Split axis, int side, int rows, int cols) const {
+        if (node == kNil)
+            return kNil;
+        const CellRect here = rectOfNode(node, rows, cols);
+        const bool sideways = axis == Split::LeftRight;
+        const int near_edge = sideways ? here.left : here.top;
+        const int far_edge = sideways ? here.left + here.cols : here.top + here.rows;
+        // A line is on this side of the place, or it is not, and the test is exact: the
+        // divider cell sits immediately before the far child, and the near child ends on it.
+        // Allowing a cell of slack sounds harmless and is not — a place one cell wide has
+        // both its edges within a cell of the same line, so a press on its left found the
+        // line on its right, refused because that one had no room, and never went looking
+        // for the line further up that actually bounds it. (Kaida, 2026-11-25: "sometimex
+        // the arrow don't appear now".)
+        auto on_this_side = [side, near_edge, far_edge](int at) {
+            return side < 0 ? (at == near_edge || at == near_edge - 1) : at == far_edge;
+        };
+        for (int at = node; at != kNil;) {
+            const int above = parentOf(at);
+            if (above == kNil)
+                return kNil; // no line this side of the place: it is against the window
+            const Node& n = nodes_[static_cast<size_t>(above)];
+            if (n.split == axis && on_this_side(lineGeometry(above, rows, cols).at))
+                return above;
+            at = above;
+        }
+        return kNil;
+    }
+
+    // Where the line along one side of a place stands and which way it can still travel.
+    DividerInfo edgeAlongAxis(int pane, int rows, int cols, Split axis, int side) const {
+        DividerInfo info;
+        const int node = nodeIndexOfPane(pane);
+        if (node == kNil)
+            return info;
+        const int branch_index = edgeBranch(node, axis, side, rows, cols);
+        if (branch_index == kNil)
+            return info;
+        const LineGeometry line = lineGeometry(branch_index, rows, cols);
+        info.ok = true;
+        info.at = line.at;
+        info.from = line.from;
+        info.span = line.span;
+        info.negative = canTravel(line, -1);
+        info.positive = canTravel(line, 1);
+        return info;
+    }
+
+    // Move the line along one side of a place by whole cells, taking the room from whoever
+    // lies beyond it and giving all of it to the place. Where the way down from that line to
+    // the place passes another split the same way, that line is held in the cell it stands in
+    // rather than left to share the room out again: widening the middle of three places to
+    // the left widens the middle and narrows the left one, and leaves the right one alone.
+    // Without that, a place deep inside a chain of same-direction splits gets the room only
+    // every other press, and reads as a border that will not move.
+    bool moveEdge(int pane, int delta, int rows, int cols, Split axis, int side) {
+        const int node = nodeIndexOfPane(pane);
+        if (node == kNil || delta == 0)
             return false;
-        // Stored as the middle of the cell the line lands in, not its lower edge, so that
-        // reading the ratio back gives this same cell. See `ratioForCell`.
-        branch.ratio = ratioForCell(moved, shared);
+        const int branch_index = edgeBranch(node, axis, side, rows, cols);
+        if (branch_index == kNil)
+            return false;
+        const LineGeometry line = lineGeometry(branch_index, rows, cols);
+        if (line.shared <= 0)
+            return false;
+        // Clamped rather than refused, so a press that runs out of room stops with the line
+        // against the pane's minimum instead of doing nothing at all.
+        const int moved = std::clamp(line.first + delta, kMinPaneCells, widestFirst(line));
+        if (moved == line.first)
+            return false;
+        // Where the lines below stand is written down before anything moves, because after
+        // the move their areas are different and "the same cell" is the only thing worth
+        // asking them to keep.
+        std::vector<std::pair<int, int>> hold;
+        for (int at = node; at != branch_index;) {
+            const int above = parentOf(at);
+            if (above == kNil)
+                break;
+            const Node& n = nodes_[static_cast<size_t>(at)];
+            if (!n.leaf && n.split == axis)
+                hold.emplace_back(at, lineGeometry(at, rows, cols).at);
+            at = above;
+        }
+        // Outermost first: each one's area is settled by the moves above it.
+        std::reverse(hold.begin(), hold.end());
+        nodes_[static_cast<size_t>(branch_index)].ratio = ratioForCell(moved, line.shared);
+        for (const std::pair<int, int>& standing : hold) {
+            const LineGeometry now = lineGeometry(standing.first, rows, cols);
+            if (now.shared <= 0)
+                continue;
+            const int want = std::clamp(standing.second - now.start, kMinPaneCells,
+                                        widestFirst(now));
+            nodes_[static_cast<size_t>(standing.first)].ratio = ratioForCell(want, now.shared);
+        }
         return true;
     }
 
@@ -576,6 +678,51 @@ private:
 
     // A divider only exists where there is something on both sides of it.
     static int dividerCost(int extent) { return extent >= 2 * kMinPaneCells + 1 ? 1 : 0; }
+
+    // One branch's line, worked out in window cells once: where it stands, how far its run
+    // goes sideways, how much room its two children share and how much the near one holds.
+    // Every question about a line — where the arrows go, which way they may travel, what a
+    // press does — starts here, so that the window's marks and the session's arithmetic
+    // cannot drift into describing different lines.
+    struct LineGeometry {
+        int at = 0;     // the cell the line sits in
+        int from = 0;   // first cell of the run it spans, along the line
+        int span = 0;   // how many cells that run is
+        int start = 0;  // first cell of the branch's own area, along the axis it divides
+        int shared = 0; // cells the two children share
+        int first = 0;  // cells the near child holds
+    };
+
+    LineGeometry lineGeometry(int branch, int rows, int cols) const {
+        LineGeometry line;
+        if (branch == kNil || nodes_[static_cast<size_t>(branch)].leaf)
+            return line;
+        const Node& n = nodes_[static_cast<size_t>(branch)];
+        const CellRect area = rectOfNode(branch, rows, cols);
+        const bool sideways = n.split == Split::LeftRight;
+        const int extent = sideways ? area.cols : area.rows;
+        int second = 0;
+        line.shared = extent - dividerCost(extent);
+        divide(extent, n.ratio, line.first, second);
+        line.start = sideways ? area.left : area.top;
+        line.from = sideways ? area.top : area.left;
+        line.span = sideways ? area.rows : area.cols;
+        line.at = line.start + line.first;
+        return line;
+    }
+
+    // The farthest the near side may be stretched while both sides keep their minimum.
+    static int widestFirst(const LineGeometry& line) {
+        return std::max(kMinPaneCells, line.shared - kMinPaneCells);
+    }
+
+    // Whether the line can be moved `delta` cells and still leave a pane on each side.
+    static bool canTravel(const LineGeometry& line, int delta) {
+        if (line.shared <= 0)
+            return false;
+        const int moved = line.first + delta;
+        return moved >= kMinPaneCells && moved <= widestFirst(line);
+    }
 
     // The fraction that means "the line sits one cell past `at` cells of room".
     //

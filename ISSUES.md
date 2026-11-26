@@ -124,3 +124,25 @@
   `Up` takes from the place above and nobody else. Checked in `tests/widget_panes.cpp` (one
   set per pushable border, on this place's edges, none in the far half, none for a line this
   place is not against, none outside the mode) and `tests/layout.cpp` (what a push moves).
+
+- **The middle of three places could only grow one way.** Three places in a row are made by
+  two splits, and the middle one is divided from its left neighbour by a line further up the
+  arrangement than the one dividing it from its right. Asking "the nearest line along this
+  axis" can name only one of them, so one arrow moved the border the place was not pointing
+  at — which is also why an arrow sometimes did not appear: the border you were looking at had
+  no line of its own to describe, only a neighbour's. A border is now asked about by itself
+  (`edgeAlongAxis`, `moveEdge`), the line standing on that side is found by walking up until
+  one matches it exactly, and the lines the room has to pass on its way down are held in the
+  cells they stand in so the place gets all of the room instead of sharing it with a sibling.
+  The window is told about four borders rather than two lines, and marks each of the place's
+  own. A place one cell wide was the case that made the old "within a cell of an edge" test
+  wrong: both of its edges sit within a cell of the same line, so the press found the wrong
+  line, found it had no room, and refused. Checked in `tests/layout.cpp` (three in a row and
+  three stacked, both ways, to both extremes; the third of four places grows by all of it and
+  nobody else moves), `tests/session.cpp` (five presses over the wire on the left border: the
+  place grows five, its neighbour gives five, the far place keeps its room) and
+  `tests/widget_panes.cpp` (a set on each border the place can push).
+
+- **Shift was doing something nothing said.** It reverses the border's travel, which is how a
+  place gets shrunk back, and resize mode's note said only Enter and Esc. The note now reads
+  Arrows - Grow / Shift - Shrink / Enter - Confirm / Esc - Cancel.

@@ -75,7 +75,8 @@ enum class MsgKind : std::uint8_t {
     // undo because it owns the arrangement, so a second window watching sees the same
     // preview and the same rollback.
     ResizeBegin = 20, // no body: remember the arrangement for a possible cancel
-    ResizeDivider = 21, // fields: dcol, drow — cells to move the divider, one axis at a time
+    ResizeDivider = 21, // fields: axis (lr|ud), side (-1|+1), delta — move the line along
+                      // one border of the place being looked at, by that many cells
     ResizeEnd = 22, // fields: commit ("1" keep, "0" put back)
 
     // daemon -> client

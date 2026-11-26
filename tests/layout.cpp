@@ -672,6 +672,109 @@ int main() {
                smallestView({}, {40, 132}) == ViewSize{40, 132});
     }
 
+    {
+        // Three places in a row, and the middle one asked to grow both ways. Two splits make
+        // three places, and the middle is divided from its left neighbour by a line further up
+        // the tree than the one dividing it from its right, so "the nearest line along this
+        // axis" names one of them and the other is never found: the middle grew right and
+        // refused left, and pressing left just shrank it.
+        // (Kaida, 2026-11-25: "3 pane in the same direction 3 vertical or 3 horizontal, the
+        // middle one cannot get bigger from both side as it should".)
+        Layout l;
+        const int mid = l.splitPane(0, Split::LeftRight, 24, 121);
+        const int last = l.splitPane(mid, Split::LeftRight, 24, 121);
+        expect("the middle place has a line on its left", l.edgeAlongAxis(mid, 24, 121, Split::LeftRight, -1).ok);
+        expect("and one on its right", l.edgeAlongAxis(mid, 24, 121, Split::LeftRight, 1).ok);
+        expect("and the two are different lines",
+               l.edgeAlongAxis(mid, 24, 121, Split::LeftRight, -1).at !=
+                   l.edgeAlongAxis(mid, 24, 121, Split::LeftRight, 1).at);
+        expect("and the window edge beyond the outermost places is not a line",
+               !l.edgeAlongAxis(0, 24, 121, Split::LeftRight, -1).ok &&
+                   !l.edgeAlongAxis(last, 24, 121, Split::LeftRight, 1).ok);
+
+        // 60 | 29 | 30 to start with, the middle place 29 columns wide.
+        const int start = l.rectOf(mid, 24, 121).cols;
+        expect("the three places start 60, 29 and 30 across",
+               start == 29 && l.rectOf(0, 24, 121).cols == 60 &&
+                   l.rectOf(last, 24, 121).cols == 30);
+        for (int press = 0; press < 10; ++press)
+            static_cast<void>(l.moveEdge(mid, -1, 24, 121, Split::LeftRight, -1));
+        expect("ten presses left widen the middle by ten",
+               l.rectOf(mid, 24, 121).cols == start + 10);
+        expect("narrow the place on that side by ten", l.rectOf(0, 24, 121).cols == 50);
+        expect("and leave the far place exactly as it was",
+               l.rectOf(last, 24, 121).cols == 30);
+        for (int press = 0; press < 10; ++press)
+            static_cast<void>(l.moveEdge(mid, 1, 24, 121, Split::LeftRight, 1));
+        expect("and ten presses right widen it again, from the other side",
+               l.rectOf(mid, 24, 121).cols == start + 20);
+        expect("taking them from the place on that side",
+               l.rectOf(last, 24, 121).cols == 20);
+        expect("with the place on the first side left where it was",
+               l.rectOf(0, 24, 121).cols == 50);
+        expect("and the screen still tiled", tiles(l, 24, 121));
+
+        // Both ways to the ends: the middle can be squeezed to a single column, and pulled
+        // back across until the place on the other side is down to one.
+        for (int press = 0; press < 200; ++press)
+            static_cast<void>(l.moveEdge(mid, -1, 24, 121, Split::LeftRight, 1));
+        expect("the middle can be squeezed to one cell", l.rectOf(mid, 24, 121).cols == 1);
+        expect("and pressing further says so",
+               !l.moveEdge(mid, -1, 24, 121, Split::LeftRight, 1));
+        for (int press = 0; press < 200; ++press)
+            static_cast<void>(l.moveEdge(mid, -1, 24, 121, Split::LeftRight, -1));
+        expect("or stretched back until the place on that side is down to one",
+               l.rectOf(mid, 24, 121).cols == 50 && l.rectOf(0, 24, 121).cols == 1);
+        expect("while the far place keeps the room it was given",
+               l.rectOf(last, 24, 121).cols == 68);
+        expect("and pressing further says so too",
+               !l.moveEdge(mid, -1, 24, 121, Split::LeftRight, -1));
+        expect("and the screen still tiled", tiles(l, 24, 121));
+    }
+
+    {
+        // A place deeper in a chain of same-direction splits, where the room the edge takes
+        // has to travel past two other lines to reach it. Growing the third of four places to
+        // the left narrows the second and leaves the first and the fourth alone — the lines it
+        // passes are held where they stand, so none of the room leaks to a sibling on the way.
+        Layout l;
+        const int b = l.splitPane(0, Split::LeftRight, 24, 201);
+        const int c = l.splitPane(b, Split::LeftRight, 24, 201);
+        const int d = l.splitPane(c, Split::LeftRight, 24, 201);
+        const int c0 = l.rectOf(c, 24, 201).cols;
+        const int b0 = l.rectOf(b, 24, 201).cols;
+        const int d0 = l.rectOf(d, 24, 201).cols;
+        const int a0 = l.rectOf(0, 24, 201).cols;
+        for (int press = 0; press < 7; ++press)
+            static_cast<void>(l.moveEdge(c, -1, 24, 201, Split::LeftRight, -1));
+        expect("the place grows by all of it", l.rectOf(c, 24, 201).cols == c0 + 7);
+        expect("the place beyond its edge pays for all of it",
+               l.rectOf(b, 24, 201).cols == b0 - 7);
+        expect("and nobody else moves", l.rectOf(0, 24, 201).cols == a0 &&
+                                           l.rectOf(d, 24, 201).cols == d0);
+        expect("with the screen still tiled", tiles(l, 24, 201));
+    }
+
+    {
+        // The same, stacked: three places in a column, the middle asked to grow up and down.
+        Layout l;
+        const int mid = l.splitPane(0, Split::UpDown, 61, 80);
+        const int last = l.splitPane(mid, Split::UpDown, 61, 80);
+        // 30 | 14 | 15 to start with.
+        for (int press = 0; press < 6; ++press)
+            static_cast<void>(l.moveEdge(mid, -1, 61, 80, Split::UpDown, -1));
+        expect("up grows the middle place", l.rectOf(mid, 61, 80).rows == 20);
+        expect("taking it from the place above", l.rectOf(0, 61, 80).rows == 24);
+        expect("and not from the one below", l.rectOf(last, 61, 80).rows == 15);
+        for (int press = 0; press < 6; ++press)
+            static_cast<void>(l.moveEdge(mid, 1, 61, 80, Split::UpDown, 1));
+        expect("and down grows it again from the other side",
+               l.rectOf(mid, 61, 80).rows == 26);
+        expect("taking it from the place below", l.rectOf(last, 61, 80).rows == 9);
+        expect("with the place above left where it was", l.rectOf(0, 61, 80).rows == 24);
+        expect("and the screen still tiled", tiles(l, 61, 80));
+    }
+
     if (failures == 0) {
         std::cout << "PASS: " << checks << " layout checks passed\n";
         return 0;

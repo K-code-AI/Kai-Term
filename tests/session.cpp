@@ -2032,6 +2032,138 @@ int main() {
     }
 
     {
+        // Three places in a row, resized over the wire rather than in one header. What a
+        // border can do is the arrangement's answer; what the window draws and which arrows
+        // it believes is the same answer read off a message. A window told about one line
+        // while two borders can move draws its arrows on the wrong border and refuses the
+        // right key, which is how this read from the outside: the middle place grew one way
+        // and would not grow the other, no matter what was pressed.
+        // (Kaida, 2026-11-25: "3 pane in the same direction 3 vertical or 3 horizontal, the
+        // middle one cannot get bigger from both side as it should".)
+        expect("a session to push places around in", createSession("push-here", 24, 121));
+        TestClient pusher;
+        std::string pusher_shown;
+        std::string push_error;
+        expect("with a window looking at it ([" + push_error + "])",
+               attach(pusher, "push-here", 24, 121, pusher_shown, &push_error));
+        expect("three places in a row are arranged",
+               giveLayout("push-here",
+                          "split left-right 0.500\n  pane\n  split left-right 0.500\n"
+                          "    pane\n    pane\n")
+                   .empty());
+        static_cast<void>(pusher.send(MsgKind::ShowPane, encodeFields({{"pane", "1"}})));
+
+        // The tab bar for the middle place, with both of its borders on it.
+        auto next_bar = [](TestClient& viewer) {
+            for (int attempt = 0; attempt < 60; ++attempt) {
+                struct pollfd pfd {viewer.fd, POLLIN, 0};
+                if (::poll(&pfd, 1, 100) > 0) {
+                    char buf[8192];
+                    const ssize_t n = readSome(viewer.fd, buf, sizeof(buf));
+                    if (n > 0)
+                        viewer.reader.append(
+                            std::string_view(buf, static_cast<std::size_t>(n)));
+                }
+                Frame frame;
+                while (viewer.reader.pop(frame))
+                    if (frame.kind == MsgKind::Tabs)
+                        return decodeFields(frame.body);
+            }
+            return Fields{};
+        };
+        Fields bar = next_bar(pusher);
+        // `mine`, not `focused`: the borders belong to the place this window is looking at,
+        // which is this view's business and not the session's.
+        for (int attempt = 0; attempt < 8 && fieldValue(bar, "mine", "-1") != "1"; ++attempt)
+            bar = next_bar(pusher);
+        const std::string left_line = fieldValue(bar, "edge_left", "");
+        const std::string right_line = fieldValue(bar, "edge_right", "");
+        expect("the middle place is told about its left border ([" + left_line + "])",
+               !left_line.empty());
+        expect("and its right border ([" + right_line + "])", !right_line.empty());
+        expect("which are two different lines",
+               !left_line.empty() && !right_line.empty() &&
+                   left_line.substr(0, left_line.find(',')) !=
+                       right_line.substr(0, right_line.find(',')));
+        expect("and both of them can still travel",
+               !left_line.empty() && !right_line.empty() &&
+                   left_line.find(",1,1") != std::string::npos &&
+                   right_line.find(",1,1") != std::string::npos);
+
+        // Five presses on the left border, which is the one that used to be invisible: the
+        // middle place grows, the place on that side narrows, and the line between the middle
+        // and the far place is left exactly where it stood.
+        // What the press did is read off the rooms the window is told about, which is what
+        // anybody can see, rather than off the fractions the record happens to store: the
+        // line on the far side of the place is held in the cell it stands in, and a held cell
+        // is a different fraction in a wider room.
+        auto rooms = [](const Fields& news) {
+            std::vector<int> widths;
+            const std::string cells = fieldValue(news, "cells", "");
+            std::size_t at = 0;
+            while (at < cells.size()) {
+                const std::size_t semi = cells.find(';', at);
+                const std::string one = cells.substr(at, semi == std::string::npos ? semi
+                                                                                   : semi - at);
+                at = semi == std::string::npos ? cells.size() : semi + 1;
+                int seen[4] = {0, 0, 0, 0};
+                std::size_t mark = 0;
+                for (int i = 0; i < 4; ++i) {
+                    const std::size_t comma = one.find(',', mark);
+                    const std::string piece = comma == std::string::npos
+                                                  ? one.substr(mark)
+                                                  : one.substr(mark, comma - mark);
+                    if (!piece.empty())
+                        seen[i] = std::stoi(piece);
+                    mark = comma == std::string::npos ? one.size() : comma + 1;
+                }
+                widths.push_back(seen[3]); // columns
+            }
+            return widths;
+        };
+        for (int press = 0; press < 5; ++press) {
+            static_cast<void>(pusher.send(MsgKind::ResizeDivider,
+                                         encodeFields({{"axis", "lr"},
+                                                       {"side", "-1"},
+                                                       {"delta", "-1"}})));
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        }
+        // The last word, not the first: five presses announce five times, and the first of
+        // those frames describes the arrangement after one of them.
+        Fields moved = bar;
+        for (int quiet = 0; quiet < 4;) {
+            struct pollfd pfd {pusher.fd, POLLIN, 0};
+            if (::poll(&pfd, 1, 150) <= 0) {
+                ++quiet;
+                continue;
+            }
+            quiet = 0;
+            char buf[8192];
+            const ssize_t n = readSome(pusher.fd, buf, sizeof(buf));
+            if (n > 0)
+                pusher.reader.append(std::string_view(buf, static_cast<std::size_t>(n)));
+            Frame frame;
+            while (pusher.reader.pop(frame))
+                if (frame.kind == MsgKind::Tabs)
+                    moved = decodeFields(frame.body);
+        }
+        const std::vector<int> before = rooms(bar);
+        const std::vector<int> after = rooms(moved);
+        expect("three rooms were described ([" + fieldValue(bar, "cells", "") + "])",
+               before.size() == 3);
+        expect("and after five presses on its left border three still are ([" +
+                   fieldValue(moved, "cells", "") + "])",
+               after.size() == 3);
+        expect("the place in hand grew by all five",
+               before.size() == 3 && after.size() == 3 && after[1] == before[1] + 5);
+        expect("the place beyond that border gave all five",
+               before.size() == 3 && after.size() == 3 && after[0] == before[0] - 5);
+        expect("and the place on the far side of the place kept its room",
+               before.size() == 3 && after.size() == 3 && after[2] == before[2]);
+        static_cast<void>(pusher.send(MsgKind::Detach, ""));
+    }
+
+    {
         expect("one more session for the way out", createSession("last", 24, 80));
         TestClient watcher;
         std::string snapshot;
