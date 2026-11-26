@@ -1091,6 +1091,29 @@ test that hangs should still cost a test and not a machine.
   tonight's fixes reach his screen.
 
 
+- **2026-11-26, early — Shift became a toggle you can see.** Kaida: "Could the shift be a
+  toggle and clicking it would reverse the arrow to show the direction."
+
+  `resize_shrink_` is the mode, `Shift` taps to flip it, and `resizeMarks()` now draws one
+  point per border aimed the way the next press sends it — outward while growing, inward while
+  shrinking — instead of a pair that said "this border can go both ways" while the key did
+  only one of them. The note lights the line in force (`▸ Shift - Shrink`) and dims the other,
+  and both lines answer a press, since "clicking it" was in the ask.
+
+  Two things that looked easy and were not. A modifier pressed on its own is returned long
+  before the resize block is reached — the early `Key_Control || Key_Shift` guard exists
+  because treating modifiers as input used to throw away a selection — so the tap has to be
+  caught there, not in the mode. And a tap is only known on release: Shift held over an arrow
+  is one chord with the other meaning, and flipping the mode for that would leave the screen
+  aimed somewhere else after every Shift+arrow. Hence `shift_taps_`, spent by any other key.
+  Holding Shift over the toggle is XOR, which is what someone pressing both means.
+
+  70 widget checks pass (toggle turns the marks round on the borders they were on, a chord
+  leaves the mode alone, the note's lines set it); `ctest` 30/31 with the known
+  `wayland-close`. Pictures: `.scratch/marks_three.png` and `.scratch/marks_three_shrinking.png`
+  — same window, same borders, arrows turned round.
+
+
 ## Next Steps
 
 - **A persistent status line in the attached view**, if it is wanted: which session,

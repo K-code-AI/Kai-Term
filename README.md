@@ -504,14 +504,17 @@ paste (**Ctrl+Shift+C** / **Ctrl+Shift+V**) and stepping the places (**Ctrl+Shif
 **Ctrl+K, then F** is the file manager on the way.
 - In **resize mode** the place you are looking at owns the keys, and each of its four borders
   is asked about on its own. An arrow takes room for the place from whatever lies beyond that
-  border — **Left** from the left, **Down** from below — and **Shift** sends the same border
-  back the other way, which shrinks the place and gives the room back. A border with no room
-  that way carries no arrow and answers no key. The marks sit on the place's own borders and
-  nowhere else, and the middle of the place says what is what: **Arrows - Grow**,
-  **Shift - Shrink**, **Enter - Confirm**, **Esc - Cancel**. Room taken along a line that
-  runs the whole window moves the whole line, so a place can widen the row above it too; the
-  room comes from whoever is on the other side of the border you pressed, and from nobody
-  else in between.
+  border — **Left** from the left, **Down** from below. **Shift** turns the arrows round, and
+  it is a toggle: tap it once and the mode stays in shrink until you tap it again, so a run of
+  shrinking is one key rather than a key held down the whole time. Holding it over a single
+  arrow still reverses that one press without moving the toggle. Each border then carries one
+  point, aimed the way the next press sends it, and a border with no room that way carries
+  nothing and answers no key. The note in the middle of the place says which way it is
+  pointed — **Arrows - Grow**, **Shift - Shrink**, **Enter - Confirm**, **Esc - Cancel** — and
+  its two direction lines answer a click, for a hand that would rather point than remember a
+  modifier. Room taken along a line that runs the whole window moves the whole line, so a
+  place can widen the row above it too; the room comes from whoever is on the other side of
+  the border you pressed, and from nobody else in between.
 - Closing a window with something running asks **"Quit while `make` is running?"**
   inside the terminal itself — the terminal's own font on its own surface, not a
   window the desktop decorates — with **Yes**, **No** and **Save Session** in that

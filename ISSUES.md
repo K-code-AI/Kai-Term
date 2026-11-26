@@ -146,3 +146,16 @@
 - **Shift was doing something nothing said.** It reverses the border's travel, which is how a
   place gets shrunk back, and resize mode's note said only Enter and Esc. The note now reads
   Arrows - Grow / Shift - Shrink / Enter - Confirm / Esc - Cancel.
+
+- **Shift said nothing about which way it left the arrows.** It was a hold-to-reverse modifier
+  on a mode whose whole language is arrows, so the marks kept pointing outward while the next
+  press sent the border inward. `Shift` is now a toggle in resize mode — tap it once and the
+  mode stays in shrink — and each border carries one point aimed the way the next press sends
+  it, so turning the mode round turns the marks round with it. Holding Shift over one arrow
+  still reverses that press without moving the toggle, which meant deciding a tap on release:
+  a modifier pressed on its own is caught before resize mode is even looked at, and a chord
+  pressed under it must not also re-aim the screen for whoever comes after it. The note shows
+  which way it is pointed, and its two direction lines answer a press. Checked in
+  `tests/widget_panes.cpp` (a tapped Shift flips the mode and turns both marks round on the
+  borders they were on; a chord leaves the mode alone; pressing either line of the note sets
+  it).

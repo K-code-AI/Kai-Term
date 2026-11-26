@@ -1164,10 +1164,29 @@ public:
     bool showKeyHints() const { return show_key_hints_; }
     // Resize mode: the arrows stretch the place in hand. Enter keeps, Esc puts it back.
     bool inResizeMode() const { return resize_mode_; }
+    // Which way resize mode's arrows send a border: false sends it away from the place in
+    // hand, which grows the place; true sends it back over the place, which shrinks it.
+    // `Shift` flips this and it stays flipped, so a run of shrinking is one key rather than a
+    // key held down for every press — and the arrows on the borders turn round to show which
+    // way the next press goes. (Kaida, 2026-11-26: "Could the shift be a toggle and clicking
+    // it would reverse the arrow to show the direction".)
+    bool resizeShrinks() const { return resize_shrink_; }
+    void setResizeShrinks(bool shrink) {
+        if (resize_shrink_ == shrink)
+            return;
+        resize_shrink_ = shrink;
+        update();
+    }
+    // The two lines of the note that say which way the arrows go, in window pixels, so a
+    // press on one of them can be answered. Written by the painting that draws them.
+    QRectF resizeGrowRow() const { return resize_grow_row_; }
+    QRectF resizeShrinkRow() const { return resize_shrink_row_; }
     void enterResizeMode() {
         if (resize_mode_)
             return;
         resize_mode_ = true;
+        resize_shrink_ = false;
+        shift_taps_ = false;
         if (backend_)
             backend_->resizeBegin();
         update();
@@ -1176,6 +1195,8 @@ public:
         if (!resize_mode_)
             return;
         resize_mode_ = false;
+        resize_shrink_ = false;
+        shift_taps_ = false;
         if (backend_)
             backend_->resizeEnd(commit);
         update();
@@ -1208,32 +1229,37 @@ public:
         const PaneRect here = tab_cells_[static_cast<std::size_t>(tab_focused_)];
         if (!here.valid())
             return marks;
-        // The place in hand owns resize mode, so its own borders carry the marks — and each
-        // border carries its own, because a place's left border and its right border can
-        // belong to two different splits and travel separately. An arrow points the way that
-        // border can go, which is the way the place grows when it goes there.
+        // The place in hand owns resize mode, so its own borders carry the marks, and each
+        // border carries one point aimed the way the next press sends it: away from the place
+        // while the arrows grow it, back over the place once Shift has turned them round. A
+        // border with no room the way it would go carries nothing at all.
         // (Kaida, 2026-11-25: "arrow should appear between both bottom pane and between both
         // right pane ... The focused pane has total control and will push away any other pane
-        // in it's way", and "3 pane in the same direction ... the middle one cannot get
-        // bigger from both side as it should".)
+        // in it's way"; 2026-11-26: "clicking it would reverse the arrow to show the
+        // direction".)
         const double middle_row = here.row + here.rows / 2.0;
         const double middle_col = here.col + here.cols / 2.0;
-        for (const std::pair<const TerminalBackend::DividerLine*, int>& edge :
-             {std::pair<const TerminalBackend::DividerLine*, int>{&tab_left_, -1},
-              {&tab_right_, 1}, {&tab_up_, -2}, {&tab_down_, 2}}) {
-            const TerminalBackend::DividerLine& line = *edge.first;
+        struct Border {
+            const TerminalBackend::DividerLine* line;
+            int points;   // the way the arrow itself points, and the way it grows
+            bool sideways;
+        };
+        for (const Border& edge : {Border{&tab_left_, -1, true},
+                                   Border{&tab_right_, 1, true},
+                                   Border{&tab_up_, -1, false},
+                                   Border{&tab_down_, 1, false}}) {
+            const TerminalBackend::DividerLine& line = *edge.line;
             if (!line.ok)
                 continue;
-            if (edge.second == -1 || edge.second == 1) {
-                if (line.negative)
-                    marks.push_back({QChar(0x25C0), middle_row, line.at - 0.3}); // ◀
-                if (line.positive)
-                    marks.push_back({QChar(0x25B6), middle_row, line.at + 1.3}); // ▶
+            const int travel = resize_shrink_ ? -edge.points : edge.points;
+            if (!(travel < 0 ? line.negative : line.positive))
+                continue;
+            if (edge.sideways) {
+                marks.push_back({travel < 0 ? QChar(0x25C0) : QChar(0x25B6), middle_row,
+                                 travel < 0 ? line.at - 0.3 : line.at + 1.3});
             } else {
-                if (line.negative)
-                    marks.push_back({QChar(0x25B2), line.at - 0.25, middle_col}); // ▲
-                if (line.positive)
-                    marks.push_back({QChar(0x25BC), line.at + 1.25, middle_col}); // ▼
+                marks.push_back({travel < 0 ? QChar(0x25B2) : QChar(0x25BC),
+                                 travel < 0 ? line.at - 0.25 : line.at + 1.25, middle_col});
             }
         }
         return marks;
@@ -2293,8 +2319,17 @@ public:
         // so on, and treating it as ordinary input threw away the selection the
         // moment the user started pressing Ctrl+Shift+C to copy that selection.
         if (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt ||
-            key == Qt::Key_AltGr || key == Qt::Key_Meta)
+            key == Qt::Key_AltGr || key == Qt::Key_Meta) {
+            // Shift in resize mode is the toggle between growing and shrinking, and this is
+            // where a lone Shift arrives — before the mode is looked at, because a modifier
+            // pressed on its own is nobody's key. Remembered, not acted on: whether it was
+            // tapped is decided when it comes up, so that a chord pressed under it stays one
+            // key with the other meaning. (Kaida, 2026-11-26: "Could the shift be a
+            // toggle…".)
+            if (resize_mode_ && key == Qt::Key_Shift)
+                shift_taps_ = !ev->isAutoRepeat();
             return;
+        }
 
         // While one of the terminal's own dialogs is up it owns the keyboard.
         // Every key belongs to it and nothing reaches the shell: a stray
@@ -2372,7 +2407,9 @@ public:
             const int step = 1;
             const bool sideways = key == Qt::Key_Left || key == Qt::Key_Right;
             const bool upright = key == Qt::Key_Up || key == Qt::Key_Down;
-            if (sideways || upright) {
+            const bool arrow = sideways || upright;
+            shift_taps_ = false; // any other key spends the tap
+            if (arrow) {
                 // The arrow names which *border* of the place in hand moves, and which way
                 // it grows: Left takes room from the left, Down from below. Shift sends that
                 // same border back over the place instead, which is how you shrink it and get
@@ -2388,8 +2425,12 @@ public:
                 const TerminalBackend::DividerLine& edge =
                     sideways ? (side < 0 ? tab_left_ : tab_right_)
                              : (side < 0 ? tab_up_ : tab_down_);
-                const int travel = (key == Qt::Key_Left || key == Qt::Key_Up) ? -step : step;
-                const int moved = shift ? -travel : travel;
+                // The arrow names the border and the way it points; the mode — which `Shift`
+                // toggles and holding it reverses for one press — names the way that border
+                // travels. Holding Shift over a toggle is back where you started, which is
+                // what someone pressing the two together means.
+                const int points = (key == Qt::Key_Left || key == Qt::Key_Up) ? -step : step;
+                const int moved = (resize_shrink_ ^ shift) ? -points : points;
                 if (backend_ && edge.ok && (moved < 0 ? edge.negative : edge.positive))
                     backend_->resizeDivider(sideways, side, moved);
             } else if (key == Qt::Key_Return || key == Qt::Key_Enter) {
@@ -2449,8 +2490,37 @@ public:
     // selection and the middle button pastes. Holding Shift overrides reporting,
     // the xterm rule, and is how you copy text out of a program that grabbed the
     // mouse.
+    void keyReleaseEvent(QKeyEvent* ev) override {
+        // Shift, tapped on its own, is the toggle: the arrows turn round and stay turned
+        // until it is tapped again. A chord pressed under it is one key with the other
+        // meaning, and must not also flip the mode for whoever comes after it.
+        // (Kaida, 2026-11-26: "Could the shift be a toggle…".)
+        if (resize_mode_ && ev->key() == Qt::Key_Shift && shift_taps_) {
+            shift_taps_ = false;
+            setResizeShrinks(!resize_shrink_);
+            ev->accept();
+            return;
+        }
+        shift_taps_ = false;
+        QWidget::keyReleaseEvent(ev);
+    }
+
     void mousePressEvent(QMouseEvent* ev) override {
         setFocus();
+        // A press on the note's own lines picks which way the arrows go, for a hand that
+        // would rather point than remember a modifier.
+        if (resize_mode_ && !overlay_.active) {
+            if (resize_grow_row_.contains(ev->position())) {
+                setResizeShrinks(false);
+                ev->accept();
+                return;
+            }
+            if (resize_shrink_row_.contains(ev->position())) {
+                setResizeShrinks(true);
+                ev->accept();
+                return;
+            }
+        }
         // A dialog is up: the press either answers it or dismisses it, and it
         // is never a selection drag or a scroll-bar grab pretending not to be.
         if (overlay_.active) {
@@ -4887,8 +4957,15 @@ private:
         // all. (Kaida, 2026-11-25: "in the center of the selected pane in resize mode can we
         // show Resize Mode / Enter - Confirm / Esc - Cancel" and "we should add information
         // about shift in the tooltip of the resize mode".)
+        // The two direction lines are the mode showing which way it is pointed, and they are
+        // the two the hand can press: the one in force is lit and marked, the other dimmed,
+        // so the note says both what is set and what would set it.
+        // (Kaida, 2026-11-26: "Could the shift be a toggle and clicking it would reverse the
+        // arrow to show the direction".)
         static const char* kNotes[] = {"Resize Mode", "", "Arrows - Grow", "Shift - Shrink",
                                        "Enter - Confirm", "Esc - Cancel"};
+        constexpr int kGrowRow = 2;
+        constexpr int kShrinkRow = 3;
         const int note_count = static_cast<int>(sizeof(kNotes) / sizeof(kNotes[0]));
         double widest = 0.0;
         for (const char* line : kNotes)
@@ -4909,13 +4986,27 @@ private:
         p.setRenderHint(QPainter::Antialiasing, false);
         double baseline = note.y() + padding_ + fm.ascent() + ch * 0.5;
         for (int i = 0; i < note_count; ++i) {
+            const QRectF row(note.x(), baseline - fm.ascent(), note.width(), fm.height());
             const QString text = QString::fromUtf8(kNotes[i]);
-            if (!text.isEmpty()) {
-                p.setPen(i == 0 ? accent_ink : ink(fg, 225));
-                p.drawText(
-                    QRectF(note.x(), baseline - fm.ascent(), note.width(), fm.height()),
-                    Qt::AlignHCenter | Qt::AlignVCenter, text);
+            if (i == kGrowRow)
+                resize_grow_row_ = row;
+            else if (i == kShrinkRow)
+                resize_shrink_row_ = row;
+            if (text.isEmpty()) {
+                baseline += ch;
+                continue;
             }
+            const bool in_force = (i == kGrowRow && !resize_shrink_) ||
+                                  (i == kShrinkRow && resize_shrink_);
+            const bool a_choice = i == kGrowRow || i == kShrinkRow;
+            p.setPen(i == 0 ? accent_ink
+                            : (in_force ? accent_ink : ink(fg, a_choice ? 110 : 225)));
+            // The mark goes on the same width whether it is drawn or not, so the two lines
+            // of the choice sit under each other instead of sliding a letter apart.
+            p.drawText(row, Qt::AlignHCenter | Qt::AlignVCenter,
+                       a_choice ? (in_force ? QString::fromUtf8("\u25B8 ") :
+                                              QString::fromUtf8("  ")) + text
+                                : text);
             baseline += ch;
         }
     }
@@ -6332,6 +6423,15 @@ private:
     // Ctrl+K then R: the arrows move the divider of the place in hand instead of the
     // cursor, until Enter keeps it or Esc puts the arrangement back.
     bool resize_mode_ = false;
+    // Which way resize mode's arrows send a border. `Shift` taps to flip it and it stays
+    // flipped; see `resizeShrinks`.
+    bool resize_shrink_ = false;
+    // Shift came down and nothing else has since; released like that, it is a toggle.
+    bool shift_taps_ = false;
+    // The two lines of the resize note that name the direction, where they were painted, so
+    // a press on one of them can be answered.
+    mutable QRectF resize_grow_row_;
+    mutable QRectF resize_shrink_row_;
     // The four borders of the place in hand, as the session described them. Resize mode
     // draws its arrows on these and accepts only the arrows they say have room. Four rather
     // than two lines, because a place's left border and its right border can belong to two

@@ -448,6 +448,29 @@ int main(int argc, char** argv) {
         expect("and the next key typed clears it", w.notice().empty());
     }
 
+    // Three little hands for resize mode: a tapped Shift, a Shift held over another key, and
+    // a press of the pointer on a line of the note.
+    auto tapShift = [](kai::TerminalWidget& w) {
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Shift, Qt::NoModifier);
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Shift, Qt::NoModifier);
+        QApplication::sendEvent(&w, &down);
+        QApplication::sendEvent(&w, &up);
+        pump(30);
+    };
+    auto chordShiftLeft = [](kai::TerminalWidget& w) {
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Left, Qt::ShiftModifier);
+        QApplication::sendEvent(&w, &down);
+        QKeyEvent up(QEvent::KeyRelease, Qt::Key_Shift, Qt::ShiftModifier);
+        QApplication::sendEvent(&w, &up);
+        pump(30);
+    };
+    auto clickIn = [](kai::TerminalWidget& w, const QPointF& where) {
+        QMouseEvent press(QEvent::MouseButtonPress, where, Qt::LeftButton, Qt::LeftButton,
+                          Qt::NoModifier);
+        QApplication::sendEvent(&w, &press);
+        pump(30);
+    };
+
     {
         // The marks belong to the borders of the place in hand, and to nobody else's.
         // Kaida's window: four places, both halves split up-down, standing in the
@@ -489,10 +512,47 @@ int main(int argc, char** argv) {
             if (!sideways && m.col == 95.5)
                 on_the_right_border = true; // the middle of columns 64..126
         }
-        expect("the place in hand gets one set on each border it can push",
-               sideways_marks == 2 && upright_marks == 2);
-        expect("with ◀ ▶ on the border between the two bottom places", on_the_bottom_border);
-        expect("and ▲ ▼ on the border between the two right-hand places", on_the_right_border);
+        expect("the place in hand gets a mark on each border it can push",
+               sideways_marks == 1 && upright_marks == 1);
+        expect("with ◀ on the border between the two bottom places, pointing the way `Left`"
+               " takes room",
+               on_the_bottom_border);
+        expect("and ▲ on the border between the two right-hand places", on_the_right_border);
+
+        // Tapping Shift turns the marks round: same borders, other way, because that is which
+        // way the next press sends them. (Kaida, 2026-11-26: "Could the shift be a toggle and
+        // clicking it would reverse the arrow to show the direction".)
+        tapShift(w);
+        const std::vector<kai::TerminalWidget::ResizeMark> shrinking = w.resizeMarks();
+        bool turned_round_sideways = false;
+        bool turned_round_upright = false;
+        for (const kai::TerminalWidget::ResizeMark& m : shrinking) {
+            if (m.glyph == QChar(0x25B6) && m.row == 41.5 && m.col == 64.3)
+                turned_round_sideways = true; // ▶ on the same border, pointing inward
+            if (m.glyph == QChar(0x25BC) && m.col == 95.5 && m.row == 28.25)
+                turned_round_upright = true;
+        }
+        expect("Shift tapped once puts the mode in shrink", w.resizeShrinks());
+        expect("and the marks turn round on the borders they were on",
+               shrinking.size() == 2 && turned_round_sideways && turned_round_upright);
+        tapShift(w);
+        expect("tapped again, they point outward once more",
+               !w.resizeShrinks() && w.resizeMarks().size() == 2 &&
+                   w.resizeMarks()[0].glyph == QChar(0x25C0));
+
+        // A chord is not a tap: pressing Shift with an arrow reverses that one press and
+        // leaves the mode where it was, or every Shift+arrow would also re-aim the screen.
+        chordShiftLeft(w);
+        expect("a chord leaves the mode alone", !w.resizeShrinks());
+
+        // The note says it too, and takes a press: the line for the mode in force is the one
+        // that answers a click.
+        expect("the note's own lines are where it drew them",
+               !w.resizeGrowRow().isEmpty() && !w.resizeShrinkRow().isEmpty());
+        clickIn(w, w.resizeShrinkRow().center());
+        expect("pressing Shift - Shrink sets it", w.resizeShrinks());
+        clickIn(w, w.resizeGrowRow().center());
+        expect("and pressing Arrows - Grow puts it back", !w.resizeShrinks());
 
         // Stand in the top-left place: the same middle line, marked on this place's own right
         // edge, and the left half's line on its bottom edge. The right half's line is not
@@ -530,7 +590,7 @@ int main(int argc, char** argv) {
         three.enterResizeMode();
         pump(60);
         expect("the place against the window's edge is marked on its one border",
-               three.resizeMarks().size() == 2);
+               three.resizeMarks().size() == 1);
         three.setTabBar(3, 1, false, columns, {1, 2, 3}, 1, first_line, second_line, none,
                         none);
         pump(60);
@@ -538,9 +598,21 @@ int main(int argc, char** argv) {
         for (const kai::TerminalWidget::ResizeMark& m : three.resizeMarks())
             marked_cols.push_back(m.col);
         std::sort(marked_cols.begin(), marked_cols.end());
-        const std::vector<double> both_borders{38.7, 40.3, 78.7, 80.3};
-        expect("and the middle place is marked on both of its borders, one set each way",
-               marked_cols == both_borders);
+        const std::vector<double> growing_cols{38.7, 80.3}; // ◀ left, ▶ right
+        const std::vector<double> inward_wanted{40.3, 78.7}; // the same borders, turned round
+        expect("and the middle place is marked on both of its borders, aimed outward",
+               marked_cols == growing_cols);
+        three.setResizeShrinks(true);
+        pump(60);
+        std::vector<double> inward_cols;
+        for (const kai::TerminalWidget::ResizeMark& m : three.resizeMarks())
+            inward_cols.push_back(m.col);
+        std::sort(inward_cols.begin(), inward_cols.end());
+        expect("which is the whole of the complaint, fixed: both borders, and they turn"
+               " round when shrinking",
+               inward_cols == inward_wanted);
+        three.setResizeShrinks(false);
+        pump(60);
 
         three.endResizeMode(false);
         pump(60);
